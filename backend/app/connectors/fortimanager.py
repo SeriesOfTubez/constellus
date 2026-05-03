@@ -4,6 +4,10 @@ from app.core.secrets import get_secret
 
 class FortiManagerConnector(BaseConnector):
     name = "FortiManager"
+    env_key_map = {
+        "connector_url": "FORTIMANAGER_CONNECTOR_URL",
+        "api_key": "FORTIMANAGER_CONNECTOR_API_KEY",
+    }
     description = (
         "On-premises asset correlation — maps public IPs to internal hosts via VIP objects, "
         "retrieves firewall ACLs and IPS sensor status"

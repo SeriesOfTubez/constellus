@@ -5,6 +5,7 @@ from app.core.secrets import get_secret
 class CloudflareConnector(BaseConnector):
     name = "Cloudflare"
     description = "DNS record discovery and WAF proxy status per record"
+    env_key_map = {"api_token": "CLOUDFLARE_API_TOKEN"}
 
     def get_config_schema(self) -> dict:
         return {

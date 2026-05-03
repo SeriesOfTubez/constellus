@@ -30,3 +30,6 @@ Thumbs.db
 
 # Docker
 *.log
+
+backend/static/
+frontend/node_modules/

@@ -19,15 +19,10 @@ class TestResult:
 
 
 class BaseConnector(ABC):
-    """
-    All connectors implement this interface.
-    Credentials are never stored here — they are fetched from the
-    configured secrets provider at runtime via get_secret().
-    """
-
     name: str
     description: str
     version: str = "0.1.0"
+    env_key_map: dict[str, str] = {}
 
     @abstractmethod
     def test(self) -> TestResult:

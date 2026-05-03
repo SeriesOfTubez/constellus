@@ -5,6 +5,11 @@ from app.core.secrets import get_secret
 class WizConnector(BaseConnector):
     name = "Wiz"
     description = "Cloud asset correlation — maps public IPs to cloud resources and Wiz findings"
+    env_key_map = {
+        "client_id": "WIZ_CLIENT_ID",
+        "client_secret": "WIZ_CLIENT_SECRET",
+        "api_endpoint": "WIZ_API_ENDPOINT",
+    }
 
     def get_config_schema(self) -> dict:
         return {

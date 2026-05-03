@@ -1,7 +1,16 @@
-FROM python:3.12-slim AS builder
-WORKDIR /app
+# ── Stage 1: build frontend ───────────────────────────────────────────────────
+FROM node:22-slim AS frontend-builder
+WORKDIR /frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ ./
+# Vite outputs to backend/static; we redirect to /build/static so the runtime stage can copy it
+RUN npm run build -- --outDir /build/static
 
-# xmlsec1 is required by python3-saml for SAML signature validation
+# ── Stage 2: build Python deps ────────────────────────────────────────────────
+FROM python:3.12-slim AS py-builder
+WORKDIR /build
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libxmlsec1-dev \
@@ -9,11 +18,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# Runtime image — slim with non-root user
-# Note: distroless is incompatible with xmlsec1 native libs required by python3-saml
+# ── Stage 3: runtime ──────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 WORKDIR /app
 
@@ -22,8 +30,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --no-create-home --shell /bin/false sextant
 
-COPY --from=builder /install /usr/local
-COPY app/ app/
+COPY --from=py-builder /install /usr/local
+COPY backend/app/ app/
+COPY --from=frontend-builder /build/static/ static/
 
 USER sextant
 EXPOSE 8000

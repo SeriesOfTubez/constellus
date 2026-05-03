@@ -4,6 +4,7 @@ from app.connectors.base import BaseConnector, TestResult
 
 class NucleiConnector(BaseConnector):
     name = "Nuclei"
+    env_key_map: dict = {}
     description = "Risk detection — CVEs, misconfigs, exposed files, default credentials, EOL software"
 
     def get_config_schema(self) -> dict:

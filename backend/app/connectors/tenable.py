@@ -4,6 +4,7 @@ from app.core.secrets import get_secret
 
 class TenableConnector(BaseConnector):
     name = "Tenable"
+    env_key_map = {"api_key": "TENABLE_API_KEY", "api_secret": "TENABLE_API_SECRET"}
     description = "Patch and vulnerability correlation — maps internal IPs to Tenable assets and findings"
 
     def get_config_schema(self) -> dict:
