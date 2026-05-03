@@ -17,6 +17,10 @@ class LocalAuthProvider(AuthProvider):
         if not user or not user.is_active:
             return AuthResult(success=False, error="Invalid credentials")
 
+        # SSO-linked account without local fallback enabled
+        if user.auth_provider != "local" and not user.hashed_password:
+            return AuthResult(success=False, error="This account uses SSO. Please sign in via your identity provider.")
+
         if not verify_password(password, user.hashed_password):
             return AuthResult(success=False, error="Invalid credentials")
 
