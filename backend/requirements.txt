@@ -7,8 +7,8 @@ alembic==1.15.2
 psycopg2-binary==2.9.10
 httpx==0.28.1
 passlib[bcrypt]==1.7.4
-python-jose[cryptography]==3.3.0
+python-jose[cryptography]==3.4.0
 python3-saml==1.16.0
 defusedxml==0.7.1
-cryptography==44.0.2
+cryptography==46.0.5
 email-validator==2.2.0
