@@ -44,7 +44,7 @@ def _build_saml_settings(config) -> dict[str, Any]:
 
 
 def _extract_cert(metadata_xml: str) -> str:
-    import xml.etree.ElementTree as ET
+    import defusedxml.ElementTree as ET
     try:
         root = ET.fromstring(metadata_xml)
         cert = root.find(".//{http://www.w3.org/2000/09/xmldsig#}X509Certificate")
