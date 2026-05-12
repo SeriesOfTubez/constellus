@@ -22,7 +22,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libxmlsec1-openssl \
     curl \
-    && curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.4.1.tgz \
+    && curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-29.4.3.tgz \
     | tar -xz --strip-components=1 -C /usr/local/bin docker/docker \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 999 docker-host || true \
