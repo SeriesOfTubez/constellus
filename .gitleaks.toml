@@ -1,6 +1,6 @@
 [extend]
 useDefault = true
 
-[allowlist]
-description = "Allowlisted files"
-files = ['''.env.example''']
+[[allowlists]]
+description = "Example env file — contains placeholder values only, no real secrets"
+paths = ['''.env.example''']
