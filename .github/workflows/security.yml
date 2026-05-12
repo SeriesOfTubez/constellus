@@ -44,15 +44,11 @@ jobs:
           checkov -d . --framework dockerfile --framework github_actions --compact --quiet
 
       - name: Dockerfile Lint (Hadolint)
-        uses: hadolint/hadolint-action@v3.3.0
-        with:
-          recursive: true
-        env:
-          # Action mounts workspace at /github/workspace inside the hadolint container.
-          # HADOLINT_CONFIG must be the absolute in-container path — the action always
-          # passes this env var to Docker (empty by default), which prevents auto-discovery
-          # of .hadolint.yaml even when it exists at the repo root.
-          HADOLINT_CONFIG: /github/workspace/.hadolint.yaml
+        run: |
+          curl -sSL https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64 \
+            -o /tmp/hadolint && chmod +x /tmp/hadolint
+          find . -name 'Dockerfile' -not -path '*/node_modules/*' -print0 \
+            | xargs -0 /tmp/hadolint --config .hadolint.yaml
 
   build:
     name: Build & Image Scan
