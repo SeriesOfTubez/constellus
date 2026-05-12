@@ -47,6 +47,7 @@ jobs:
         uses: hadolint/hadolint-action@v3.3.0
         with:
           recursive: true
+          config: .hadolint.yaml
 
   build:
     name: Build & Image Scan
