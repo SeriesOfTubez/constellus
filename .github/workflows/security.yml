@@ -48,7 +48,9 @@ jobs:
           curl -sSL https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-Linux-x86_64 \
             -o /tmp/hadolint && chmod +x /tmp/hadolint
           find . -name 'Dockerfile' -not -path '*/node_modules/*' -print0 \
-            | xargs -0 /tmp/hadolint --config .hadolint.yaml
+            | xargs -0 /tmp/hadolint --ignore DL3008
+          # DL3008: apt-get version pinning impractical on Debian — see .hadolint.yaml
+          # --config flag is broken with xargs -0 across all tested versions; --ignore is equivalent
 
   build:
     name: Build & Image Scan
