@@ -2,9 +2,11 @@ import { useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { AlertTriangle, Filter, Loader2, ShieldCheck, ShieldOff, RefreshCw, ChevronDown } from "lucide-react"
+import { AlertTriangle, Filter, Loader2, ShieldCheck, ShieldOff, RefreshCw, ChevronDown, ExternalLink } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Separator } from "@/components/ui/separator"
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
@@ -137,6 +139,217 @@ function StateBadge({ state }: { state: Finding["state"] }) {
   )
 }
 
+// ── Finding detail sheet ──────────────────────────────────────────────────────
+
+function FindingDetailSheet({
+  finding,
+  onClose,
+  onStateChange,
+  onSuppress,
+  onVerify,
+}: {
+  finding: Finding
+  onClose: () => void
+  onStateChange: (id: string, state: string) => void
+  onSuppress: (f: Finding) => void
+  onVerify: (id: string) => void
+}) {
+  const detail = finding.detail ?? {}
+  const tags: string[] = (detail.tags as string[]) ?? []
+  const refs: string[] = (detail.references as string[]) ?? []
+  const extracted: string[] = (detail.extracted_results as string[]) ?? []
+  const matchedAt = detail.matched_at as string | undefined
+  const curlCmd = detail.curl_command as string | undefined
+
+  const hasEnrichment = finding.kev || finding.cvss_score != null || finding.epss_score != null || finding.cve_id || finding.cwe
+
+  return (
+    <Sheet open onOpenChange={(o) => !o && onClose()}>
+      <SheetContent className="w-[540px] sm:max-w-[540px] flex flex-col gap-0 p-0">
+        <SheetHeader className="px-6 pt-6 pb-4 border-b space-y-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <SeverityBadge severity={finding.severity} />
+            <CategoryBadge category={finding.category} />
+            <StateBadge state={finding.state} />
+          </div>
+          <SheetTitle className="text-base leading-snug">{finding.title}</SheetTitle>
+          <SheetDescription className="font-mono text-xs break-all">{finding.asset_value}</SheetDescription>
+        </SheetHeader>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+
+          {/* Enrichment */}
+          {hasEnrichment && (
+            <div className="rounded-md border p-4 space-y-2.5">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Enrichment</p>
+              {finding.cve_id && (
+                <div className="flex items-center gap-3 text-sm">
+                  <span className="text-xs text-muted-foreground w-20 shrink-0">CVE</span>
+                  <span className="font-mono">{finding.cve_id}</span>
+                </div>
+              )}
+              {finding.cvss_score != null && (
+                <div className="flex items-start gap-3 text-sm">
+                  <span className="text-xs text-muted-foreground w-20 shrink-0">CVSS</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-mono ${cvssColor(finding.cvss_score)}`}>
+                      {finding.cvss_version && <span className="opacity-60 mr-1">v{finding.cvss_version}</span>}
+                      {finding.cvss_score.toFixed(1)}
+                    </span>
+                    {finding.cvss_vector && (
+                      <span className="text-xs text-muted-foreground font-mono break-all">{finding.cvss_vector}</span>
+                    )}
+                  </div>
+                </div>
+              )}
+              {finding.epss_score != null && (
+                <div className="flex items-center gap-3 text-sm">
+                  <span className="text-xs text-muted-foreground w-20 shrink-0">EPSS</span>
+                  <span className="font-mono">{(finding.epss_score * 100).toFixed(2)}%</span>
+                  {finding.epss_percentile != null && (
+                    <span className="text-xs text-muted-foreground">{(finding.epss_percentile * 100).toFixed(0)}th percentile</span>
+                  )}
+                </div>
+              )}
+              {finding.kev && (
+                <div className="flex items-center gap-3 text-sm">
+                  <span className="text-xs text-muted-foreground w-20 shrink-0">KEV</span>
+                  <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-bold bg-red-500 text-white border-red-600">KEV</span>
+                  {finding.kev_date_added && (
+                    <span className="text-xs text-muted-foreground">Added {finding.kev_date_added}</span>
+                  )}
+                </div>
+              )}
+              {finding.cwe && (
+                <div className="flex items-center gap-3 text-sm">
+                  <span className="text-xs text-muted-foreground w-20 shrink-0">CWE</span>
+                  <span className="font-mono text-xs">{finding.cwe}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Description */}
+          {finding.description && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Description</p>
+              <p className="text-sm text-muted-foreground leading-relaxed">{finding.description}</p>
+            </div>
+          )}
+
+          {/* Match */}
+          {matchedAt && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Matched URL</p>
+              <p className="text-xs font-mono break-all bg-muted rounded px-3 py-2">{matchedAt}</p>
+            </div>
+          )}
+
+          {/* Extracted results */}
+          {extracted.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Extracted</p>
+              <div className="space-y-1">
+                {extracted.map((r, i) => (
+                  <p key={i} className="text-xs font-mono bg-muted rounded px-3 py-1.5 break-all">{r}</p>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Tags */}
+          {tags.length > 0 && (
+            <>
+              <Separator />
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Tags</p>
+                <div className="flex flex-wrap gap-1">
+                  {tags.map(tag => (
+                    <span key={tag} className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-xs font-mono text-muted-foreground">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* References */}
+          {refs.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">References</p>
+              <div className="space-y-1">
+                {refs.map((ref, i) => (
+                  <a key={i} href={ref} target="_blank" rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-xs text-blue-500 hover:underline break-all">
+                    <ExternalLink className="h-3 w-3 shrink-0" />{ref}
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Curl */}
+          {curlCmd && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Curl command</p>
+              <pre className="text-xs font-mono bg-muted/60 rounded p-3 overflow-x-auto whitespace-pre-wrap break-all">{curlCmd}</pre>
+            </div>
+          )}
+
+          <Separator />
+
+          <div className="grid grid-cols-2 gap-3 text-xs text-muted-foreground">
+            <div className="space-y-0.5">
+              <p>Source</p>
+              <p className="text-foreground capitalize">{finding.source}</p>
+            </div>
+            <div className="space-y-0.5">
+              <p>Discovered</p>
+              <p className="text-foreground">{new Date(finding.discovered_at).toLocaleString()}</p>
+            </div>
+            {finding.acknowledged_at && (
+              <div className="space-y-0.5">
+                <p>Acknowledged</p>
+                <p className="text-foreground">{new Date(finding.acknowledged_at).toLocaleString()}</p>
+              </div>
+            )}
+            {finding.suppressed_until && (
+              <div className="space-y-0.5">
+                <p>Suppressed until</p>
+                <p className="text-foreground">{new Date(finding.suppressed_until).toLocaleDateString()}</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="px-6 py-4 border-t flex flex-wrap gap-2">
+          {finding.state === "open" && (
+            <>
+              <Button size="sm" variant="outline" onClick={() => onStateChange(finding.id, "acknowledged")}>
+                <ShieldCheck className="h-3.5 w-3.5 mr-1.5" />Acknowledge
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => { onClose(); onSuppress(finding) }}>
+                <ShieldOff className="h-3.5 w-3.5 mr-1.5" />Suppress
+              </Button>
+            </>
+          )}
+          {(finding.state === "open" || finding.state === "acknowledged") && (
+            <Button size="sm" variant="outline" onClick={() => onVerify(finding.id)}>
+              <RefreshCw className="h-3.5 w-3.5 mr-1.5" />Re-verify
+            </Button>
+          )}
+          {finding.state === "suppressed" && (
+            <Button size="sm" variant="outline" onClick={() => onStateChange(finding.id, "open")}>
+              <ChevronDown className="h-3.5 w-3.5 mr-1.5 rotate-180" />Reopen
+            </Button>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
 // ── Suppress dialog ───────────────────────────────────────────────────────────
 
 const SUPPRESS_OPTIONS = [
@@ -204,6 +417,7 @@ export default function Findings() {
   const [categoryFilter, setCategoryFilter] = useState("all")
   const [stateFilter, setStateFilter] = useState(searchParams.get("state") ?? "open")
   const [suppressTarget, setSuppressTarget] = useState<Finding | null>(null)
+  const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
 
   const { data: findings, isLoading } = useQuery({
     queryKey: ["findings", stateFilter],
@@ -325,7 +539,7 @@ export default function Findings() {
             </TableHeader>
             <TableBody>
               {filtered.map(f => (
-                <TableRow key={`${f.id}-${f.discovered_at}`}>
+                <TableRow key={`${f.id}-${f.discovered_at}`} className="cursor-pointer" onClick={() => setSelectedFinding(f)}>
                   <TableCell><SeverityBadge severity={f.severity} /></TableCell>
                   <TableCell className="hidden sm:table-cell"><CategoryBadge category={f.category} /></TableCell>
                   <TableCell>
@@ -339,7 +553,7 @@ export default function Findings() {
                   <TableCell className="hidden md:table-cell font-mono text-xs text-muted-foreground">{f.asset_value}</TableCell>
                   <TableCell className="hidden lg:table-cell"><EnrichmentBadges finding={f} /></TableCell>
                   <TableCell className="hidden md:table-cell"><StateBadge state={f.state} /></TableCell>
-                  <TableCell>
+                  <TableCell onClick={e => e.stopPropagation()}>
                     <div className="flex items-center gap-1">
                       {f.state === "open" && (
                         <>
@@ -381,6 +595,16 @@ export default function Findings() {
 
       {suppressTarget && (
         <SuppressDialog finding={suppressTarget} onClose={() => setSuppressTarget(null)} />
+      )}
+
+      {selectedFinding && (
+        <FindingDetailSheet
+          finding={selectedFinding}
+          onClose={() => setSelectedFinding(null)}
+          onStateChange={(id, state) => stateMutation.mutate({ id, state })}
+          onSuppress={(f) => setSuppressTarget(f)}
+          onVerify={(id) => verifyMutation.mutate(id)}
+        />
       )}
     </div>
   )

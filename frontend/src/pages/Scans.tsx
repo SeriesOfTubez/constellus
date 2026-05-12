@@ -2,7 +2,7 @@ import { useState } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "react-router-dom"
 import { toast } from "sonner"
-import { Plus, Loader2, ScanLine, RefreshCw, XCircle, CheckSquare, Square, Pencil, Trash2 } from "lucide-react"
+import { Plus, Loader2, ScanLine, RefreshCw, XCircle, CheckSquare, Square, Pencil, Trash2, Info, Clock, CheckCircle2, AlertCircle } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -257,7 +258,119 @@ function EditScanDialog({ run, onClose }: { run: ScanRun; onClose: () => void })
   )
 }
 
-function ScanRow({ run }: { run: ScanRun }) {
+// ── Scan detail sheet ─────────────────────────────────────────────────────────
+
+function ScanDetailSheet({ run, onClose }: { run: ScanRun; onClose: () => void }) {
+  const navigate = useNavigate()
+  const badge = STATUS_BADGE[run.status]
+
+  const timeline = [
+    { label: "Created",   value: run.created_at,   icon: Clock },
+    { label: "Started",   value: run.started_at,   icon: CheckCircle2 },
+    { label: "Completed", value: run.completed_at,  icon: run.status === "failed" ? AlertCircle : CheckCircle2 },
+  ].filter(e => e.value)
+
+  return (
+    <Sheet open onOpenChange={(o) => !o && onClose()}>
+      <SheetContent className="w-[480px] sm:max-w-[480px] flex flex-col gap-0 p-0">
+        <SheetHeader className="px-6 pt-6 pb-4 border-b space-y-2">
+          <div className="flex items-center gap-2">
+            <Badge variant={badge.variant}>{badge.label}</Badge>
+            {run.status === "running" && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+          </div>
+          <SheetTitle className="text-base leading-snug">
+            {run.name ?? run.scope.domains.slice(0, 2).join(", ") ?? "Unnamed scan"}
+          </SheetTitle>
+        </SheetHeader>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+          {/* Stats */}
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { label: "Assets",   value: run.asset_count },
+              { label: "Findings", value: run.finding_count },
+              { label: "Duration", value: duration(run) },
+            ].map(({ label, value }) => (
+              <div key={label} className="rounded-md border p-3 text-center">
+                <p className="text-lg font-semibold">{value}</p>
+                <p className="text-xs text-muted-foreground">{label}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Scope */}
+          <div className="space-y-2">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Scope</p>
+            <div className="rounded-md border divide-y text-xs font-mono">
+              {run.scope.domains.map(d => (
+                <div key={d} className="px-3 py-2 flex items-center gap-2">
+                  <ScanLine className="h-3 w-3 text-muted-foreground shrink-0" />{d}
+                </div>
+              ))}
+              {run.scope.ip_ranges?.map(r => (
+                <div key={r} className="px-3 py-2 flex items-center gap-2">
+                  <ScanLine className="h-3 w-3 text-muted-foreground shrink-0" />{r}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Timeline */}
+          <Separator />
+          <div className="space-y-2">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Timeline</p>
+            <div className="space-y-2">
+              {timeline.map(({ label, value, icon: Icon }) => (
+                <div key={label} className="flex items-center gap-3 text-xs">
+                  <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                  <span className="text-muted-foreground w-20 shrink-0">{label}</span>
+                  <span>{new Date(value!).toLocaleString()}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Connectors */}
+          {run.connectors_used && run.connectors_used.length > 0 && (
+            <>
+              <Separator />
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Connectors used</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {run.connectors_used.map(c => (
+                    <span key={c} className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-mono">{c}</span>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Error */}
+          {run.error && (
+            <>
+              <Separator />
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-destructive">Error</p>
+                <pre className="text-xs font-mono bg-destructive/5 border border-destructive/20 rounded p-3 whitespace-pre-wrap break-all text-destructive">{run.error}</pre>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="px-6 py-4 border-t flex gap-2">
+          <Button size="sm" variant="outline" onClick={() => { navigate(`/assets?scan=${run.id}`); onClose() }}>
+            View assets
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => { navigate(`/findings?scan=${run.id}`); onClose() }}>
+            View findings
+          </Button>
+        </div>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+function ScanRow({ run, onDetail }: { run: ScanRun; onDetail: (run: ScanRun) => void }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const badge = STATUS_BADGE[run.status]
@@ -307,6 +420,9 @@ function ScanRow({ run }: { run: ScanRun }) {
           </div>
 
           <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+            <Button variant="ghost" size="sm" onClick={() => onDetail(run)} title="Details">
+              <Info className="h-4 w-4" />
+            </Button>
             {(run.status === "pending" || run.status === "running") && (
               <Button variant="ghost" size="sm" onClick={() => cancelMutation.mutate()} disabled={cancelMutation.isPending} title="Cancel">
                 <XCircle className="h-4 w-4" />
@@ -334,6 +450,7 @@ function ScanRow({ run }: { run: ScanRun }) {
 
 export default function Scans() {
   const [newScanOpen, setNewScanOpen] = useState(false)
+  const [selectedScan, setSelectedScan] = useState<ScanRun | null>(null)
   const qc = useQueryClient()
 
   const { data: scans, isLoading } = useQuery({
@@ -372,10 +489,14 @@ export default function Scans() {
           <Button className="mt-4" onClick={() => setNewScanOpen(true)}><Plus className="h-4 w-4" /> New scan</Button>
         </div>
       ) : (
-        <div className="space-y-3">{scans?.map(run => <ScanRow key={run.id} run={run} />)}</div>
+        <div className="space-y-3">{scans?.map(run => <ScanRow key={run.id} run={run} onDetail={setSelectedScan} />)}</div>
       )}
 
       <NewScanDialog open={newScanOpen} onClose={() => setNewScanOpen(false)} />
+
+      {selectedScan && (
+        <ScanDetailSheet run={selectedScan} onClose={() => setSelectedScan(null)} />
+      )}
     </div>
   )
 }

@@ -6,6 +6,8 @@ import { Globe, ScanLine, Filter, Trash2, Loader2, EyeOff, Eye } from "lucide-re
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Separator } from "@/components/ui/separator"
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { api, type Asset, type ScanRun } from "@/lib/api"
@@ -87,6 +89,104 @@ function MetaHints({ asset }: { asset: Asset }) {
   return <span className="text-xs text-muted-foreground font-mono">{hints.join(" · ")}</span>
 }
 
+// ── Asset detail sheet ────────────────────────────────────────────────────────
+
+function AssetDetailSheet({
+  asset,
+  onClose,
+  onScan,
+  onIgnore,
+}: {
+  asset: Asset
+  onClose: () => void
+  onScan: (id: string) => void
+  onIgnore: (id: string, ignored: boolean) => void
+}) {
+  const m = asset.asset_metadata
+  const sources: string[] = Array.isArray(m.sources)
+    ? (m.sources as string[])
+    : m.source ? [m.source as string] : []
+  const metaEntries = Object.entries(m).filter(([k]) => k !== "sources" && k !== "source")
+
+  return (
+    <Sheet open onOpenChange={(o) => !o && onClose()}>
+      <SheetContent className="w-[480px] sm:max-w-[480px] flex flex-col gap-0 p-0">
+        <SheetHeader className="px-6 pt-6 pb-4 border-b space-y-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <AssetTypeBadge type={asset.asset_type} />
+            {asset.ignored && <span className="text-xs text-muted-foreground italic">ignored</span>}
+          </div>
+          <SheetTitle className="font-mono text-sm break-all leading-relaxed">{asset.value}</SheetTitle>
+        </SheetHeader>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+          <div className="grid grid-cols-2 gap-4 text-xs">
+            <div className="space-y-0.5">
+              <p className="text-muted-foreground">Parent</p>
+              <p className="font-mono break-all">{asset.parent_value ?? "—"}</p>
+            </div>
+            <div className="space-y-0.5">
+              <p className="text-muted-foreground">Discovered</p>
+              <p>{new Date(asset.discovered_at).toLocaleString()}</p>
+            </div>
+          </div>
+
+          {sources.length > 0 && (
+            <>
+              <Separator />
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Sources</p>
+                <div className="space-y-2">
+                  {sources.map(src => {
+                    const meta = SOURCE_META[src] ?? { label: src.slice(0, 2).toUpperCase(), color: "bg-muted text-muted-foreground", description: src }
+                    return (
+                      <div key={src} className="flex items-center gap-2">
+                        <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold ${meta.color}`}>{meta.label}</span>
+                        <span className="text-xs text-muted-foreground">{meta.description}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+
+          {metaEntries.length > 0 && (
+            <>
+              <Separator />
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Metadata</p>
+                <div className="rounded-md border divide-y text-xs font-mono">
+                  {metaEntries.map(([k, v]) => (
+                    <div key={k} className="flex items-start gap-3 px-3 py-2">
+                      <span className="text-muted-foreground shrink-0 w-28">{k}</span>
+                      <span className="break-all text-foreground">
+                        {typeof v === "boolean" ? (v ? "true" : "false") : String(v ?? "—")}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="px-6 py-4 border-t flex gap-2">
+          {!asset.ignored && (
+            <Button size="sm" variant="outline" onClick={() => { onScan(asset.id); onClose() }}>
+              <ScanLine className="h-3.5 w-3.5 mr-1.5" />Scan
+            </Button>
+          )}
+          <Button size="sm" variant="outline" onClick={() => onIgnore(asset.id, !asset.ignored)}>
+            {asset.ignored ? <Eye className="h-3.5 w-3.5 mr-1.5" /> : <EyeOff className="h-3.5 w-3.5 mr-1.5" />}
+            {asset.ignored ? "Restore" : "Ignore"}
+          </Button>
+        </div>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Assets() {
@@ -96,6 +196,7 @@ export default function Assets() {
   const [typeFilter, setTypeFilter] = useState("all")
   const [scanFilter, setScanFilter] = useState(searchParams.get("scan") ?? "all")
   const [showIgnored, setShowIgnored] = useState(false)
+  const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null)
 
   const { data: scans } = useQuery({
     queryKey: ["scans"],
@@ -219,14 +320,18 @@ export default function Assets() {
             </TableHeader>
             <TableBody>
               {filtered.map(asset => (
-                <TableRow key={`${asset.id}-${asset.discovered_at}`} className={asset.ignored ? "opacity-50" : undefined}>
+                <TableRow
+                  key={`${asset.id}-${asset.discovered_at}`}
+                  className={`cursor-pointer ${asset.ignored ? "opacity-50" : ""}`}
+                  onClick={() => setSelectedAsset(asset)}
+                >
                   <TableCell><AssetTypeBadge type={asset.asset_type} /></TableCell>
                   <TableCell className="font-mono text-sm">{asset.value}</TableCell>
                   <TableCell className="hidden md:table-cell font-mono text-xs text-muted-foreground">{asset.parent_value ?? "—"}</TableCell>
                   <TableCell className="hidden lg:table-cell"><MetaHints asset={asset} /></TableCell>
                   <TableCell><SourceBadges metadata={asset.asset_metadata} /></TableCell>
                   <TableCell className="hidden xl:table-cell text-xs text-muted-foreground">{new Date(asset.discovered_at).toLocaleString()}</TableCell>
-                  <TableCell>
+                  <TableCell onClick={e => e.stopPropagation()}>
                     <div className="flex items-center gap-1">
                       {!asset.ignored && (
                         <Button variant="ghost" size="sm" onClick={() => scanMutation.mutate(asset.id)} disabled={scanMutation.isPending} title="On-demand scan">
@@ -258,6 +363,15 @@ export default function Assets() {
             </TableBody>
           </Table>
         </div>
+      )}
+
+      {selectedAsset && (
+        <AssetDetailSheet
+          asset={selectedAsset}
+          onClose={() => setSelectedAsset(null)}
+          onScan={(id) => scanMutation.mutate(id)}
+          onIgnore={(id, ignored) => ignoreMutation.mutate({ assetId: id, ignored })}
+        />
       )}
     </div>
   )

@@ -5,6 +5,8 @@ import { ShieldCheck, ShieldAlert, Plus, Trash2, RefreshCw, Copy, Loader2, Globe
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Separator } from "@/components/ui/separator"
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -164,7 +166,7 @@ export default function Targets() {
             </TableHeader>
             <TableBody>
               {targets.map(t => (
-                <TableRow key={t.id} className="cursor-pointer" onClick={() => !t.verified || t.type !== "domain" ? setDetailTarget(t) : undefined}>
+                <TableRow key={t.id} className="cursor-pointer" onClick={() => setDetailTarget(t)}>
                   <TableCell><TypeBadge type={t.type} /></TableCell>
                   <TableCell className="font-mono text-sm">{t.value}</TableCell>
                   <TableCell><StatusBadge target={t} /></TableCell>
@@ -179,7 +181,7 @@ export default function Targets() {
                       {!t.verified && (
                         <Button variant="ghost" size="sm" title={t.type === "domain" ? "Check TXT record" : "Acknowledge"}
                           disabled={verifyMutation.isPending || acknowledgeMutation.isPending}
-                          onClick={() => setDetailTarget(t)}>
+                          onClick={(e) => { e.stopPropagation(); setDetailTarget(t) }}>
                           <RefreshCw className="h-3.5 w-3.5" />
                         </Button>
                       )}
@@ -221,51 +223,91 @@ export default function Targets() {
         </DialogContent>
       </Dialog>
 
-      {/* Detail / verification dialog */}
+      {/* Detail / verification sheet */}
       {detailTarget && (
-        <Dialog open onOpenChange={() => setDetailTarget(null)}>
-          <DialogContent className="sm:max-w-lg">
-            <DialogHeader>
-              <DialogTitle className="font-mono flex items-center gap-2">
+        <Sheet open onOpenChange={(o) => !o && setDetailTarget(null)}>
+          <SheetContent className="w-[440px] sm:max-w-[440px] flex flex-col gap-0 p-0">
+            <SheetHeader className="px-6 pt-6 pb-4 border-b space-y-2">
+              <div className="flex items-center gap-2">
                 <TypeBadge type={detailTarget.type} />
-                {detailTarget.value}
-              </DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4 py-1">
-              <StatusBadge target={detailTarget} />
+                <StatusBadge target={detailTarget} />
+              </div>
+              <SheetTitle className="font-mono text-sm break-all">{detailTarget.value}</SheetTitle>
+            </SheetHeader>
 
-              <WhoisInfo target={detailTarget} />
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+              {/* Core info */}
+              <div className="grid grid-cols-2 gap-4 text-xs">
+                <div className="space-y-0.5">
+                  <p className="text-muted-foreground">Source</p>
+                  <p>{detailTarget.connector_id ? `Connector: ${detailTarget.connector_id}` : detailTarget.verification_method === "acknowledged" ? "Acknowledged" : "Manual"}</p>
+                </div>
+                {detailTarget.verified_at && (
+                  <div className="space-y-0.5">
+                    <p className="text-muted-foreground">Verified</p>
+                    <p>{new Date(detailTarget.verified_at).toLocaleString()}</p>
+                  </div>
+                )}
+                {detailTarget.notes && (
+                  <div className="col-span-2 space-y-0.5">
+                    <p className="text-muted-foreground">Notes</p>
+                    <p>{detailTarget.notes}</p>
+                  </div>
+                )}
+              </div>
+
+              {(detailTarget.whois_org || detailTarget.whois_asn) && (
+                <>
+                  <Separator />
+                  <WhoisInfo target={detailTarget} />
+                </>
+              )}
 
               {!detailTarget.verified && detailTarget.type === "domain" && (
-                <div className="space-y-3">
-                  <DomainVerifyInstructions target={detailTarget} />
-                  <p className="text-xs text-muted-foreground">DNS propagation can take a few minutes after publishing.</p>
-                  <Button className="w-full" disabled={verifyMutation.isPending}
-                    onClick={() => verifyMutation.mutate(detailTarget.id)}>
-                    {verifyMutation.isPending
-                      ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" />Checking…</>
-                      : <><RefreshCw className="h-4 w-4 mr-1.5" />Check Verification</>}
-                  </Button>
-                </div>
+                <>
+                  <Separator />
+                  <div className="space-y-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">DNS Verification</p>
+                    <DomainVerifyInstructions target={detailTarget} />
+                    <p className="text-xs text-muted-foreground">DNS propagation can take a few minutes after publishing.</p>
+                    <Button className="w-full" disabled={verifyMutation.isPending}
+                      onClick={() => verifyMutation.mutate(detailTarget.id)}>
+                      {verifyMutation.isPending
+                        ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" />Checking…</>
+                        : <><RefreshCw className="h-4 w-4 mr-1.5" />Check Verification</>}
+                    </Button>
+                  </div>
+                </>
               )}
 
               {!detailTarget.verified && detailTarget.type !== "domain" && (
-                <div className="space-y-3">
-                  <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3 text-sm text-yellow-600 dark:text-yellow-400">
-                    By acknowledging this target you confirm you own or are authorised to scan it.
-                    This confirmation is logged with your user account.
+                <>
+                  <Separator />
+                  <div className="space-y-3">
+                    <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3 text-sm text-yellow-600 dark:text-yellow-400">
+                      By acknowledging this target you confirm you own or are authorised to scan it.
+                      This confirmation is logged with your user account.
+                    </div>
+                    <Button className="w-full" disabled={acknowledgeMutation.isPending}
+                      onClick={() => acknowledgeMutation.mutate(detailTarget.id)}>
+                      {acknowledgeMutation.isPending
+                        ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" />Saving…</>
+                        : "I confirm — authorise scanning"}
+                    </Button>
                   </div>
-                  <Button className="w-full" disabled={acknowledgeMutation.isPending}
-                    onClick={() => acknowledgeMutation.mutate(detailTarget.id)}>
-                    {acknowledgeMutation.isPending
-                      ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" />Saving…</>
-                      : "I confirm — authorise scanning"}
-                  </Button>
-                </div>
+                </>
               )}
             </div>
-          </DialogContent>
-        </Dialog>
+
+            <div className="px-6 py-4 border-t flex gap-2">
+              <Button size="sm" variant="destructive" disabled={deleteMutation.isPending}
+                onClick={() => { if (confirm(`Remove ${detailTarget.value}?`)) deleteMutation.mutate(detailTarget.id) }}>
+                {deleteMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : <Trash2 className="h-3.5 w-3.5 mr-1.5" />}
+                Remove
+              </Button>
+            </div>
+          </SheetContent>
+        </Sheet>
       )}
     </div>
   )
