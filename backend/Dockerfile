@@ -16,6 +16,9 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 FROM python:3.12-slim AS runtime
 WORKDIR /app
 
+# Enable pipefail so curl | tar failures are caught (DL4006)
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libxmlsec1-openssl \
     curl \

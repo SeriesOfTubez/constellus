@@ -1,0 +1,6 @@
+# DL3008: Pinning apt-get package versions (e.g. gcc=4:12.2.0-3) is impractical
+# on Debian — version strings change with every release cycle and would require
+# constant maintenance with no meaningful security benefit over using slim/pinned
+# base images. Suppressed globally.
+ignore:
+  - DL3008
