@@ -47,7 +47,12 @@ jobs:
         uses: hadolint/hadolint-action@v3.3.0
         with:
           recursive: true
-          config: .hadolint.yaml
+        env:
+          # Action mounts workspace at /github/workspace inside the hadolint container.
+          # HADOLINT_CONFIG must be the absolute in-container path — the action always
+          # passes this env var to Docker (empty by default), which prevents auto-discovery
+          # of .hadolint.yaml even when it exists at the repo root.
+          HADOLINT_CONFIG: /github/workspace/.hadolint.yaml
 
   build:
     name: Build & Image Scan
