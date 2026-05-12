@@ -21,15 +21,11 @@ services:
       dockerfile: backend/Dockerfile
     ports:
       - "8000:8000"
-    # Dev only: root required for Docker socket access. Harden for production.
-    user: root
     environment:
       - SECRETS_PROVIDER=env
       - DATABASE_URL=postgresql://constellus:constellus@db:5432/constellus
     env_file:
       - .env
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       db:
         condition: service_healthy

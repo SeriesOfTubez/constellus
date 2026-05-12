@@ -30,6 +30,7 @@ Thumbs.db
 
 # Docker
 *.log
+docker-compose.override.yml
 
 backend/static/
 frontend/node_modules/

@@ -6,10 +6,15 @@ on:
   pull_request:
     branches: ["main"]
 
+# Minimal read-only permissions for all jobs (CKV_GHA_1)
+permissions:
+  contents: read
+
 jobs:
   security:
     name: Security Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,7 +26,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: SAST (Semgrep)
-        uses: semgrep/semgrep-action@v1
+        uses: semgrep/semgrep-action@v2
         with:
           config: >-
             p/security-audit
@@ -29,7 +34,7 @@ jobs:
             p/python
 
       - name: SCA (Trivy)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.29.0
         with:
           scan-type: fs
           scan-ref: .
@@ -38,7 +43,7 @@ jobs:
           ignore-unfixed: true
 
       - name: IaC Scan (Checkov)
-        uses: bridgecrewio/checkov-action@master
+        uses: bridgecrewio/checkov-action@v12
         with:
           directory: .
           soft_fail: false
@@ -52,15 +57,16 @@ jobs:
   build:
     name: Build & Image Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: security
     steps:
       - uses: actions/checkout@v4
 
       - name: Build backend image
-        run: docker build -t constellus-backend:${{ github.sha }} ./backend
+        run: docker build -t constellus-backend:${{ github.sha }} ./backend --file backend/Dockerfile
 
       - name: Scan backend image (Trivy)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.29.0
         with:
           scan-type: image
           image-ref: constellus-backend:${{ github.sha }}
