@@ -12,7 +12,7 @@ import { useAuthStore } from "@/lib/auth"
 
 export default function Login() {
   const navigate = useNavigate()
-  const { setAuth } = useAuthStore()
+  const { setAuth, setTokens } = useAuthStore()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [loading, setLoading] = useState(false)
@@ -22,6 +22,7 @@ export default function Login() {
     setLoading(true)
     try {
       const tokens = await api.post<TokenResponse>("/auth/login", { email, password })
+      setTokens(tokens)
       const user = await api.get<User>("/auth/me")
       setAuth(user, tokens)
       navigate("/dashboard")
@@ -43,7 +44,7 @@ export default function Login() {
         <Card className="w-full max-w-sm">
           <CardHeader className="text-center">
             <CardTitle className="text-2xl">Welcome back</CardTitle>
-            <CardDescription>Sign in to your Sextant account</CardDescription>
+            <CardDescription>Sign in to your Constellus account</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">

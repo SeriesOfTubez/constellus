@@ -113,7 +113,7 @@ export default function Sso() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Identity Provider</CardTitle>
-          <CardDescription>Enter your IdP metadata URL. Sextant fetches and caches the XML.</CardDescription>
+          <CardDescription>Enter your IdP metadata URL. Constellus fetches and caches the XML.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
@@ -194,7 +194,7 @@ export default function Sso() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Service Provider</CardTitle>
-          <CardDescription>Configure how Sextant identifies itself to your IdP.</CardDescription>
+          <CardDescription>Configure how Constellus identifies itself to your IdP.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
@@ -202,7 +202,7 @@ export default function Sso() {
             <Input
               value={spEntityId}
               onChange={(e) => setSpEntityId(e.target.value)}
-              placeholder="https://sextant.example.com"
+              placeholder="https://constellus.example.com"
             />
           </div>
           <div className="space-y-2">
@@ -210,7 +210,7 @@ export default function Sso() {
             <Input
               value={spAcsUrl}
               onChange={(e) => setSpAcsUrl(e.target.value)}
-              placeholder="https://sextant.example.com/api/auth/saml/acs"
+              placeholder="https://constellus.example.com/api/auth/saml/acs"
             />
             <p className="text-xs text-muted-foreground flex items-center gap-1">
               <ExternalLink className="h-3 w-3" /> Register this URL in your IdP

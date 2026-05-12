@@ -8,6 +8,8 @@ import {
   Users,
   Settings,
   ShieldCheck,
+  BadgeCheck,
+  ScrollText,
   LogOut,
 } from "lucide-react"
 import { Logo } from "@/components/Logo"
@@ -26,6 +28,8 @@ const NAV = [
 
 const ADMIN_NAV = [
   { to: "/admin/connectors", label: "Connectors", icon: Plug },
+  { to: "/admin/targets", label: "Targets", icon: BadgeCheck },
+  { to: "/admin/logs", label: "Logs", icon: ScrollText },
   { to: "/admin/sso", label: "SSO", icon: ShieldCheck },
   { to: "/admin/users", label: "Users", icon: Users },
   { to: "/admin/settings", label: "Settings", icon: Settings },

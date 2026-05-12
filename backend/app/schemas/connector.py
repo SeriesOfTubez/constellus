@@ -17,6 +17,7 @@ class ConnectorSummary(BaseModel):
     id: str
     name: str
     description: str
+    phase: str
     enabled: bool
     configured: bool
     schema: dict[str, Any]

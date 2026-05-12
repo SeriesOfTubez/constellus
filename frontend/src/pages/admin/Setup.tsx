@@ -17,7 +17,7 @@ const STEPS = ["Welcome", "Admin Account", "Done"]
 
 export default function Setup() {
   const navigate = useNavigate()
-  const { setAuth } = useAuthStore()
+  const { setAuth, setTokens } = useAuthStore()
   const [step, setStep] = useState(0)
   const [form, setForm] = useState({ full_name: "", email: "", password: "", confirm: "" })
   const [loading, setLoading] = useState(false)
@@ -46,6 +46,7 @@ export default function Setup() {
         email: form.email,
         password: form.password,
       })
+      setTokens(tokens)
       const user = await api.get<User>("/auth/me")
       setAuth(user, tokens)
       setStep(2)
@@ -79,7 +80,7 @@ export default function Setup() {
           {step === 0 && (
             <Card>
               <CardHeader>
-                <CardTitle className="text-2xl">Welcome to Sextant</CardTitle>
+                <CardTitle className="text-2xl">Welcome to Constellus</CardTitle>
                 <CardDescription>
                   Let's get you set up. This wizard creates your first admin account. You'll
                   configure connectors, SSO, and secrets from the admin portal afterward.
@@ -177,7 +178,7 @@ export default function Setup() {
                 <CardTitle className="text-2xl">You're all set</CardTitle>
                 <CardDescription>
                   Your admin account is created and you're signed in. Head to the dashboard to
-                  start configuring Sextant.
+                  start configuring Constellus.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">

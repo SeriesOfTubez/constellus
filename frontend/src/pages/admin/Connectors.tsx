@@ -7,20 +7,24 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Switch } from "@/components/ui/switch"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api, type ConnectorSummary } from "@/lib/api"
 
-type FieldDef = { label: string; type: string; help?: string; default?: unknown }
+type FieldDef = { label: string; type: string; help?: string; default?: unknown; options?: string[] }
 
-function ConnectorCard({
-  connector,
-  onConfigure,
-}: {
-  connector: ConnectorSummary
-  onConfigure: (c: ConnectorSummary) => void
-}) {
+const PHASE_META: Record<string, { label: string; description: string }> = {
+  discovery:    { label: "Discovery",    description: "DNS and zone data sources" },
+  enrichment:   { label: "Enrichment",   description: "Asset context — cloud, firewall, vulnerability management" },
+  scanning:     { label: "Scanning",     description: "Active vulnerability scanning" },
+  notification: { label: "Notification", description: "Outbound alerts — email, chat, webhooks" },
+}
+
+const PHASE_ORDER = ["discovery", "enrichment", "scanning", "notification"]
+
+function ConnectorCard({ connector, onConfigure }: { connector: ConnectorSummary; onConfigure: (c: ConnectorSummary) => void }) {
   const qc = useQueryClient()
 
   const toggleMutation = useMutation({
@@ -65,17 +69,10 @@ function ConnectorCard({
             )}
           </div>
           <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
+            <Button variant="outline" size="sm"
               onClick={() => testMutation.mutate()}
-              disabled={testMutation.isPending || !connector.configured}
-            >
-              {testMutation.isPending ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <FlaskConical className="h-3 w-3" />
-              )}
+              disabled={testMutation.isPending || !connector.configured}>
+              {testMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <FlaskConical className="h-3 w-3" />}
               Test
             </Button>
             <Button variant="outline" size="sm" onClick={() => onConfigure(connector)}>
@@ -93,35 +90,17 @@ function SecretInput({ value, onChange, placeholder, id }: { value: string; onCh
   const [show, setShow] = useState(false)
   return (
     <div className="relative">
-      <Input
-        id={id}
-        type={show ? "text" : "password"}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="pr-10"
-        placeholder={placeholder}
-      />
-      <button
-        type="button"
-        onClick={() => setShow((s) => !s)}
-        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-        tabIndex={-1}
-      >
+      <Input id={id} type={show ? "text" : "password"} value={value}
+        onChange={(e) => onChange(e.target.value)} className="pr-10" placeholder={placeholder} />
+      <button type="button" onClick={() => setShow(s => !s)} tabIndex={-1}
+        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
         {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
       </button>
     </div>
   )
 }
 
-function ConfigSheet({
-  connector,
-  open,
-  onClose,
-}: {
-  connector: ConnectorSummary | null
-  open: boolean
-  onClose: () => void
-}) {
+function ConfigSheet({ connector, open, onClose }: { connector: ConnectorSummary | null; open: boolean; onClose: () => void }) {
   const qc = useQueryClient()
   const [values, setValues] = useState<Record<string, string>>({})
   const [loaded, setLoaded] = useState(false)
@@ -132,8 +111,8 @@ function ConfigSheet({
       if (!connector) return null
       const data = await api.get<{ config: Record<string, string> }>(`/connectors/${connector.id}/config`)
       const filled: Record<string, string> = {}
-      Object.keys(connector.schema).forEach((k) => {
-        filled[k] = data.config[k] ?? ""
+      Object.entries(connector.schema).forEach(([k, f]: [string, FieldDef]) => {
+        filled[k] = data.config[k] ?? String(f.default ?? "")
       })
       setValues(filled)
       setLoaded(true)
@@ -166,26 +145,30 @@ function ConfigSheet({
           {!loaded
             ? Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)
             : Object.entries(connector.schema).map(([key, field]: [string, FieldDef]) => (
-                <div key={key} className="space-y-1.5">
-                  <Label htmlFor={key}>{field.label}</Label>
-                  {field.type === "secret" ? (
-                    <SecretInput
-                      id={key}
-                      value={values[key] ?? ""}
-                      onChange={(v) => setValues((s) => ({ ...s, [key]: v }))}
-                      placeholder={`Enter ${field.label.toLowerCase()}`}
-                    />
-                  ) : (
-                    <Input
-                      id={key}
-                      value={values[key] ?? ""}
-                      onChange={(e) => setValues((s) => ({ ...s, [key]: e.target.value }))}
-                      placeholder={field.help ?? `Enter ${field.label.toLowerCase()}`}
-                    />
-                  )}
-                  {field.help && <p className="text-xs text-muted-foreground">{field.help}</p>}
-                </div>
-              ))}
+              <div key={key} className="space-y-1.5">
+                <Label htmlFor={key}>{field.label}</Label>
+                {field.type === "secret" ? (
+                  <SecretInput id={key} value={values[key] ?? ""}
+                    onChange={(v) => setValues(s => ({ ...s, [key]: v }))}
+                    placeholder={`Enter ${field.label.toLowerCase()}`} />
+                ) : field.type === "select" ? (
+                  <Select value={values[key] ?? String(field.default ?? "")}
+                    onValueChange={(v) => setValues(s => ({ ...s, [key]: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {field.options?.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input id={key} value={values[key] ?? ""}
+                    onChange={(e) => setValues(s => ({ ...s, [key]: e.target.value }))}
+                    placeholder={field.help ?? `Enter ${field.label.toLowerCase()}`} />
+                )}
+                {field.help && field.type !== "select" && (
+                  <p className="text-xs text-muted-foreground">{field.help}</p>
+                )}
+              </div>
+            ))}
         </div>
 
         <SheetFooter>
@@ -208,8 +191,13 @@ export default function Connectors() {
     queryFn: () => api.get<ConnectorSummary[]>("/connectors/"),
   })
 
+  const grouped = PHASE_ORDER.reduce<Record<string, ConnectorSummary[]>>((acc, phase) => {
+    acc[phase] = (connectors ?? []).filter(c => c.phase === phase)
+    return acc
+  }, {})
+
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-6">
+    <div className="p-6 max-w-4xl mx-auto space-y-8">
       <div>
         <h1 className="text-2xl font-semibold">Connectors</h1>
         <p className="text-sm text-muted-foreground mt-1">
@@ -219,23 +207,27 @@ export default function Connectors() {
 
       {isLoading ? (
         <div className="grid gap-4 sm:grid-cols-2">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-40 w-full" />
-          ))}
+          {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-40 w-full" />)}
         </div>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2">
-          {connectors?.map((c) => (
-            <ConnectorCard key={c.id} connector={c} onConfigure={setConfiguring} />
-          ))}
-        </div>
+        PHASE_ORDER.filter(phase => grouped[phase]?.length > 0).map(phase => (
+          <div key={phase} className="space-y-3">
+            <div>
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+                {PHASE_META[phase]?.label ?? phase}
+              </h2>
+              <p className="text-xs text-muted-foreground">{PHASE_META[phase]?.description}</p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {grouped[phase].map(c => (
+                <ConnectorCard key={c.id} connector={c} onConfigure={setConfiguring} />
+              ))}
+            </div>
+          </div>
+        ))
       )}
 
-      <ConfigSheet
-        connector={configuring}
-        open={!!configuring}
-        onClose={() => setConfiguring(null)}
-      />
+      <ConfigSheet connector={configuring} open={!!configuring} onClose={() => setConfiguring(null)} />
     </div>
   )
 }

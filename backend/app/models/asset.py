@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, PrimaryKeyConstraint, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -34,16 +34,13 @@ class Asset(Base):
     """
 
     __tablename__ = "assets"
+    __table_args__ = (PrimaryKeyConstraint("id", "discovered_at"),)
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), default=uuid.uuid4)
+    discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
     scan_run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("scan_runs.id"), nullable=False, index=True)
-    asset_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
-    value: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
-    parent_value: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
-    metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    discovered_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        index=True,
-    )
+    asset_type: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    parent_value: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    asset_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
+    ignored: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")

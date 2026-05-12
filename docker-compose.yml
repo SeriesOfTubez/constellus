@@ -1,32 +1,69 @@
 services:
-  backend:
+  migrate:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    ports:
-      - "8000:8000"
+    command: alembic upgrade head
     environment:
-      - SECRETS_PROVIDER=env
-      - DATABASE_URL=postgresql://sextant:sextant@db:5432/sextant
+      - DATABASE_URL=postgresql://constellus:constellus@db:5432/constellus
     env_file:
       - .env
     depends_on:
       db:
         condition: service_healthy
     networks:
+      - data
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    # Dev only: root required for Docker socket access. Harden for production.
+    user: root
+    environment:
+      - SECRETS_PROVIDER=env
+      - DATABASE_URL=postgresql://constellus:constellus@db:5432/constellus
+    env_file:
+      - .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
       - app
       - data
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - API_TARGET=http://backend:8000
+    depends_on:
+      - backend
+    networks:
+      - app
+
   db:
     image: timescale/timescaledb:latest-pg16
+    ports:
+      - "5432:5432"
     environment:
-      POSTGRES_USER: sextant
-      POSTGRES_PASSWORD: sextant
-      POSTGRES_DB: sextant
+      POSTGRES_USER: constellus
+      POSTGRES_PASSWORD: constellus
+      POSTGRES_DB: constellus
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sextant"]
+      test: ["CMD-SHELL", "pg_isready -U constellus"]
       interval: 5s
       timeout: 5s
       retries: 5

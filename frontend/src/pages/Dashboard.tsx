@@ -1,13 +1,14 @@
 import { useQuery } from "@tanstack/react-query"
+import { Link } from "react-router-dom"
 import { AlertTriangle, Globe, ScanLine, TrendingUp } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useAuthStore } from "@/lib/auth"
 import { api } from "@/lib/api"
 
-function StatCard({ label, value, icon: Icon, loading }: { label: string; value?: number | string; icon: React.ElementType; loading?: boolean }) {
-  return (
-    <Card>
+function StatCard({ label, value, icon: Icon, loading, to }: { label: string; value?: number | string; icon: React.ElementType; loading?: boolean; to?: string }) {
+  const inner = (
+    <Card className={to ? "transition-colors hover:bg-accent/50 cursor-pointer" : undefined}>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
         <Icon className="h-4 w-4 text-muted-foreground" />
@@ -21,6 +22,7 @@ function StatCard({ label, value, icon: Icon, loading }: { label: string; value?
       </CardContent>
     </Card>
   )
+  return to ? <Link to={to} className="block">{inner}</Link> : inner
 }
 
 export default function Dashboard() {
@@ -49,9 +51,9 @@ export default function Dashboard() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Open Findings" value={findings?.length} icon={AlertTriangle} loading={fLoading} />
-        <StatCard label="Assets" value={assets?.length} icon={Globe} loading={aLoading} />
-        <StatCard label="Scans" value={scans?.length} icon={ScanLine} loading={sLoading} />
+        <StatCard label="Open Findings" value={findings?.length} icon={AlertTriangle} loading={fLoading} to="/findings" />
+        <StatCard label="Assets" value={assets?.length} icon={Globe} loading={aLoading} to="/assets" />
+        <StatCard label="Scans" value={scans?.length} icon={ScanLine} loading={sLoading} to="/scans" />
         <StatCard label="Risk Score" value="—" icon={TrendingUp} />
       </div>
 

@@ -19,6 +19,6 @@ export const useAuthStore = create<AuthState>()(
       setTokens: (tokens) => set((s) => ({ ...s, tokens })),
       clearAuth: () => set({ user: null, tokens: null }),
     }),
-    { name: "sextant-auth" }
+    { name: "constellus-auth" }
   )
 )

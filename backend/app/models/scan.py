@@ -24,6 +24,7 @@ class ScanRun(Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default=ScanStatus.PENDING)
     scope: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    options: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     connectors_used: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

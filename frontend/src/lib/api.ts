@@ -1,7 +1,9 @@
+import { useAuthStore } from "@/lib/auth"
+
 const BASE = "/api"
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const { tokens, clearAuth } = await import("@/lib/auth").then((m) => m.useAuthStore.getState())
+  const { tokens, clearAuth } = useAuthStore.getState()
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -43,7 +45,7 @@ async function tryRefresh(refreshToken: string): Promise<string | null> {
     })
     if (!res.ok) return null
     const data = await res.json()
-    const { setTokens } = (await import("@/lib/auth")).useAuthStore.getState()
+    const { setTokens } = useAuthStore.getState()
     setTokens(data)
     return data.access_token
   } catch {
@@ -90,9 +92,86 @@ export type ConnectorSummary = {
   id: string
   name: string
   description: string
+  phase: string
   enabled: boolean
   configured: boolean
   schema: Record<string, { label: string; type: string; help?: string; default?: unknown; options?: string[] }>
+}
+
+export type ScanScope = {
+  domains: string[]
+  ip_ranges: string[]
+}
+
+export type ScanRun = {
+  id: string
+  name: string | null
+  status: "pending" | "running" | "completed" | "failed" | "cancelled"
+  scope: ScanScope
+  connectors_used: string[] | null
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  error: string | null
+  asset_count: number
+  finding_count: number
+}
+
+export type AvailableDomain = {
+  domain: string
+  connector_id: string
+  connector_name: string
+}
+
+export type Asset = {
+  id: string
+  scan_run_id: string
+  asset_type: string
+  value: string
+  parent_value: string | null
+  asset_metadata: Record<string, unknown>
+  discovered_at: string
+  ignored: boolean
+}
+
+export type Target = {
+  id: string
+  type: "domain" | "ip" | "cidr"
+  value: string
+  verified: boolean
+  verification_method: string | null
+  connector_id: string | null
+  token: string
+  whois_org: string | null
+  whois_asn: string | null
+  verified_at: string | null
+  created_at: string
+  notes: string | null
+}
+
+export type Finding = {
+  id: string
+  scan_run_id: string
+  discovered_at: string
+  asset_value: string
+  finding_type: string
+  source: string
+  severity: "critical" | "high" | "medium" | "low" | "info"
+  title: string
+  description: string | null
+  detail: Record<string, unknown> | null
+  state: "open" | "acknowledged" | "suppressed" | "resolved"
+  acknowledged_at: string | null
+  suppressed_until: string | null
+  category: string | null
+  cve_id: string | null
+  cvss_score: number | null
+  cvss_vector: string | null
+  epss_score: number | null
+  epss_percentile: number | null
+  kev: boolean | null
+  kev_date_added: string | null
+  cwe: string | null
 }
 
 export type SamlConfig = {
