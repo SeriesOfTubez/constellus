@@ -47,6 +47,8 @@ jobs:
         run: |
           curl -sSL https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64 \
             -o /tmp/hadolint && chmod +x /tmp/hadolint
+          echo "=== .hadolint.yaml content ===" && cat .hadolint.yaml
+          echo "=== hadolint version ===" && /tmp/hadolint --version
           find . -name 'Dockerfile' -not -path '*/node_modules/*' -print0 \
             | xargs -0 /tmp/hadolint --config .hadolint.yaml
 
