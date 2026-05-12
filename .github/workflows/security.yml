@@ -61,7 +61,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build backend image
-        run: docker build -t constellus-backend:${{ github.sha }} ./backend --file backend/Dockerfile
+        run: docker build -t constellus-backend:${{ github.sha }} . --file backend/Dockerfile
 
       - name: Scan backend image (Trivy)
         uses: aquasecurity/trivy-action@v0.36.0
