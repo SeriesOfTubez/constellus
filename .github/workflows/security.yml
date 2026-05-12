@@ -39,11 +39,9 @@ jobs:
           ignore-unfixed: true
 
       - name: IaC Scan (Checkov)
-        uses: bridgecrewio/checkov-action@v12.1347.0
-        with:
-          directory: .
-          soft_fail: false
-          framework: dockerfile,github_actions
+        run: |
+          pip install checkov
+          checkov -d . --framework dockerfile --framework github_actions --compact --quiet
 
       - name: Dockerfile Lint (Hadolint)
         uses: hadolint/hadolint-action@v3.3.0
