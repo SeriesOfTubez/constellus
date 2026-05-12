@@ -16,14 +16,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Secret Scan (Gitleaks)
-        uses: gitleaks/gitleaks-action@v2.3.9
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            | tar -xz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --redact
+        # gitleaks-action@v2 is Node.js 20 only with no v3 available; CLI is consistent
+        # with our semgrep/checkov/hadolint approach and has no Node.js dependency
 
       - name: SAST (Semgrep)
         run: pip install semgrep && semgrep scan --config p/security-audit --config p/owasp-top-ten --config p/python --error --quiet
@@ -58,7 +61,7 @@ jobs:
     timeout-minutes: 20
     needs: security
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build backend image
         run: docker build -t constellus-backend:${{ github.sha }} . --file backend/Dockerfile
