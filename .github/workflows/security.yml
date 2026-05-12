@@ -21,17 +21,13 @@ jobs:
           fetch-depth: 0
 
       - name: Secret Scan (Gitleaks)
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: SAST (Semgrep)
-        uses: semgrep/semgrep-action@v1
-        with:
-          config: >-
-            p/security-audit
-            p/owasp-top-ten
-            p/python
+        run: pip install semgrep && semgrep scan --config p/security-audit --config p/owasp-top-ten --config p/python --error --quiet
+        # semgrep/semgrep-action is archived; running CLI directly is the current recommended approach
 
       - name: SCA (Trivy)
         uses: aquasecurity/trivy-action@v0.36.0
@@ -50,7 +46,7 @@ jobs:
           framework: dockerfile,github_actions
 
       - name: Dockerfile Lint (Hadolint)
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.3.0
         with:
           recursive: true
 
