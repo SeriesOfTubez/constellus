@@ -79,7 +79,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Build backend image
-        run: docker build -t constellus-backend:${{ github.sha }} . --file backend/Dockerfile
+        run: docker build -t constellus-backend:${{ github.sha }} . --file backend/Dockerfile --target runtime
 
       - name: Scan backend image (Trivy)
         uses: aquasecurity/trivy-action@v0.36.0
@@ -94,7 +94,7 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
-          image-ref: constellus-backend:${{ github.sha }}
+          image-ref: constellus-backend:${{ github.sha }}  # runtime stage — no Docker CLI
           format: cyclonedx
           output: sbom-image.cyclonedx.json
 

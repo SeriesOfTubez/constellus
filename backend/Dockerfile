@@ -12,18 +12,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# ── Stage 2: runtime ──────────────────────────────────────────────────────────
+# ── Stage 2: runtime (production) ────────────────────────────────────────────
+# Clean image — no Docker CLI. Used for production and CI image scanning.
 FROM python:3.12-slim AS runtime
 WORKDIR /app
-
-# Enable pipefail so curl | tar failures are caught (DL4006)
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libxmlsec1-openssl \
     curl \
-    && curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-29.4.3.tgz \
-    | tar -xz --strip-components=1 -C /usr/local/bin docker/docker \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 999 docker-host || true \
     && useradd --no-create-home --shell /bin/false --groups docker-host constellus
@@ -38,3 +34,18 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# ── Stage 3: dev ──────────────────────────────────────────────────────────────
+# Extends runtime with the Docker CLI for local Nuclei scanning.
+# Never used in production or CI image scans.
+FROM runtime AS dev
+
+# Enable pipefail so curl | tar failures are caught (DL4006)
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-29.4.3.tgz \
+    | tar -xz --strip-components=1 -C /usr/local/bin docker/docker \
+    && rm -rf /var/lib/apt/lists/*
+USER constellus
