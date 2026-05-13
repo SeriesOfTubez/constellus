@@ -1,6 +1,9 @@
 import defusedxml.ElementTree as ET
+import ipaddress
+import socket
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy.orm import Session
@@ -14,9 +17,40 @@ SAML_NS = {
     "ds": "http://www.w3.org/2000/09/xmldsig#",
 }
 
+_BLOCKED_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local / AWS metadata
+    ipaddress.ip_network("100.64.0.0/10"),   # RFC 6598 shared address space
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+)
+
+
+def _validate_metadata_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError("Metadata URL must use HTTPS")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("Invalid metadata URL: missing host")
+    try:
+        resolved = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise ValueError(f"Cannot resolve metadata URL host: {exc}") from exc
+    for _family, _type, _proto, _canon, sockaddr in resolved:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if ip.is_loopback or ip.is_reserved or any(ip in net for net in _BLOCKED_NETWORKS):
+            raise ValueError("Metadata URL resolves to a private or reserved address")
+
 
 def fetch_metadata_xml(metadata_url: str) -> str:
-    response = httpx.get(metadata_url, timeout=15, follow_redirects=True)
+    _validate_metadata_url(metadata_url)
+    # follow_redirects=False prevents redirect-based SSRF bypass
+    response = httpx.get(metadata_url, timeout=15, follow_redirects=False)
     response.raise_for_status()
     return response.text
 
