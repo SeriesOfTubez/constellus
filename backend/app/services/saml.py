@@ -1,21 +1,15 @@
-import defusedxml.ElementTree as ET
 import ipaddress
 import socket
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
-import httpx
+from onelogin.saml2.idp_metadata_parser import OneLogin_Saml2_IdPMetadataParser
 from sqlalchemy.orm import Session
 
 from app.models.saml_config import SamlConfig
 from app.models.user import User
 from app.schemas.saml import IdpMetadataPreview, SamlConfigCreate, SamlConfigUpdate
-
-SAML_NS = {
-    "md": "urn:oasis:names:tc:SAML:2.0:metadata",
-    "ds": "http://www.w3.org/2000/09/xmldsig#",
-}
 
 _BLOCKED_NETWORKS = (
     ipaddress.ip_network("10.0.0.0/8"),
@@ -31,14 +25,16 @@ _BLOCKED_NETWORKS = (
 
 
 def _validate_metadata_url(url: str, allowed_host: str | None = None) -> None:
+    """
+    Validate a metadata URL before passing it to the library.
+    python3-saml explicitly documents that callers are responsible for URL validation.
+    """
     parsed = urlparse(url)
     if parsed.scheme != "https":
         raise ValueError("Metadata URL must use HTTPS")
     host = parsed.hostname
     if not host:
         raise ValueError("Invalid metadata URL: missing host")
-    # When an existing config is present its host is the allowlist —
-    # prevents switching to a different IdP without a full reconfiguration.
     if allowed_host is not None and host.lower() != allowed_host.lower():
         raise ValueError("Metadata URL host does not match the configured IdP host")
     try:
@@ -51,53 +47,30 @@ def _validate_metadata_url(url: str, allowed_host: str | None = None) -> None:
             raise ValueError("Metadata URL resolves to a private or reserved address")
 
 
-def fetch_metadata_xml(metadata_url: str, allowed_host: str | None = None) -> str:
+def fetch_metadata_xml(metadata_url: str, allowed_host: str | None = None) -> bytes:
     _validate_metadata_url(metadata_url, allowed_host=allowed_host)
-    # follow_redirects=False prevents redirect-based SSRF bypass
-    response = httpx.get(metadata_url, timeout=15, follow_redirects=False)
-    response.raise_for_status()
-    return response.text
+    return OneLogin_Saml2_IdPMetadataParser.get_metadata(metadata_url, validate_cert=True, timeout=15)
 
 
-def parse_metadata(xml: str) -> IdpMetadataPreview:
+def parse_metadata(xml: bytes | str) -> IdpMetadataPreview:
     try:
-        root = ET.fromstring(xml)
-
-        # Support both EntityDescriptor and EntitiesDescriptor wrapping
-        if root.tag.endswith("EntitiesDescriptor"):
-            entity = root.find("md:EntityDescriptor", SAML_NS)
-        else:
-            entity = root
-
-        entity_id = entity.get("entityID", "")
-
-        # Extract SSO URL (HTTP-Redirect binding preferred, POST as fallback)
-        idp = entity.find("md:IDPSSODescriptor", SAML_NS)
-        sso_url = ""
-        if idp is not None:
-            for sso in idp.findall("md:SingleSignOnService", SAML_NS):
-                binding = sso.get("Binding", "")
-                if "HTTP-Redirect" in binding:
-                    sso_url = sso.get("Location", "")
-                    break
-            if not sso_url:
-                sso = idp.find("md:SingleSignOnService", SAML_NS)
-                if sso is not None:
-                    sso_url = sso.get("Location", "")
-
-        # Extract certificate subject if present
-        cert_subject = None
-        cert_el = entity.find(".//ds:X509Certificate", SAML_NS)
-        if cert_el is not None and cert_el.text:
-            cert_subject = f"Certificate present ({len(cert_el.text.strip())} chars)"
-
+        data = OneLogin_Saml2_IdPMetadataParser.parse(xml)
+        idp = data.get("idp", {})
+        entity_id = idp.get("entityId", "")
+        sso_url = idp.get("singleSignOnService", {}).get("url", "")
+        certs = idp.get("x509certMulti", {})
+        cert = (
+            (certs.get("signing") or certs.get("encryption") or [""])[0]
+            if certs else idp.get("x509cert", "")
+        )
+        cert_subject = f"Certificate present ({len(cert.strip())} chars)" if cert.strip() else None
         return IdpMetadataPreview(
             entity_id=entity_id,
             sso_url=sso_url,
             certificate_subject=cert_subject,
             valid=bool(entity_id and sso_url),
         )
-    except ET.ParseError as e:
+    except Exception as e:
         return IdpMetadataPreview(entity_id="", sso_url="", valid=False, error=str(e))
 
 
@@ -106,7 +79,6 @@ def get_config(db: Session) -> Optional[SamlConfig]:
 
 
 def create_config(db: Session, data: SamlConfigCreate) -> SamlConfig:
-    # First-time setup — no existing host to allowlist against; IP/scheme checks apply.
     xml = fetch_metadata_xml(data.metadata_url)
     config = SamlConfig(
         metadata_url=data.metadata_url,
@@ -128,8 +100,6 @@ def update_config(db: Session, config: SamlConfig, data: SamlConfigUpdate) -> Sa
         setattr(config, field, value)
 
     if data.metadata_url:
-        # Enforce that the new URL stays on the same IdP host — changing IdPs
-        # requires deleting and recreating the config.
         existing_host = urlparse(config.metadata_url).hostname
         config.metadata_xml = fetch_metadata_xml(data.metadata_url, allowed_host=existing_host)
         config.metadata_fetched_at = datetime.now(timezone.utc)
