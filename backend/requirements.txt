@@ -6,7 +6,7 @@ sqlalchemy==2.0.40
 alembic==1.15.2
 psycopg2-binary==2.9.10
 httpx==0.28.1
-bcrypt==4.3.0
+bcrypt==5.0.0
 PyJWT==2.12.1
 python3-saml==1.16.0
 defusedxml==0.7.1
