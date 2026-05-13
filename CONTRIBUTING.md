@@ -46,8 +46,9 @@ Every security control exists because it catches real things or prevents real in
 ```bash
 git clone https://github.com/SeriesOfTubez/constellus.git
 cd constellus
-cp .env.example .env
+cp .env.example .env  # set SECRET_KEY at minimum: openssl rand -hex 32
 pre-commit install    # required — activates secret scanning and Dockerfile linting on commit
+docker compose up -d
 ```
 
 See the [Quick Start](https://constellus.readthedocs.io/en/latest/getting-started/quickstart/) for the full setup.

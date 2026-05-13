@@ -10,21 +10,6 @@ services:
   migrate   # Runs Alembic migrations on startup, then exits
 ```
 
-## Dev override
-
-The `docker-compose.override.yml` file (gitignored) adds the Docker socket mount needed for Nuclei scanning. Create it locally:
-
-```yaml
-# docker-compose.override.yml
-services:
-  backend:
-    user: root
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-```
-
-Docker Compose merges this automatically — no command changes needed.
-
 ## Common commands
 
 ```bash
@@ -42,4 +27,19 @@ docker compose down
 
 # Wipe database
 docker compose down -v
+```
+
+## Nuclei templates
+
+The Nuclei binary is bundled in the backend image and runs directly — no Docker socket or privileged access required. On first scan Nuclei downloads its template library (~300MB). To persist templates across container restarts, add a volume:
+
+```yaml
+# docker-compose.override.yml
+services:
+  backend:
+    volumes:
+      - nuclei_templates:/home/constellus/.local
+
+volumes:
+  nuclei_templates:
 ```

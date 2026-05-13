@@ -3,7 +3,6 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-      target: dev
     command: alembic upgrade head
     environment:
       - DATABASE_URL=postgresql://constellus:constellus@db:5432/constellus
@@ -20,7 +19,6 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-      target: dev
     ports:
       - "8000:8000"
     environment:

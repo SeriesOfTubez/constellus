@@ -24,21 +24,7 @@ Edit `.env` and set at minimum:
 SECRET_KEY=your-secret-key-here   # generate with: openssl rand -hex 32
 ```
 
-## 3. Create the dev override file
-
-The Docker socket mount (required for Nuclei scanning) lives in a gitignored override file:
-
-```bash
-cat > docker-compose.override.yml << 'EOF'
-services:
-  backend:
-    user: root
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-EOF
-```
-
-## 4. Start the stack
+## 3. Start the stack
 
 ```bash
 docker compose up -d
@@ -53,6 +39,11 @@ This starts:
 | API docs | http://localhost:8000/api/docs |
 | Database | localhost:5432 |
 
-## 5. Complete setup
+## 4. Complete setup
 
 Navigate to [http://localhost:3000](http://localhost:3000) and follow the setup wizard to create your admin account.
+
+## Notes
+
+- **Nuclei scanning** — the Nuclei binary is bundled in the backend image. No Docker socket or additional setup is required. On first scan, Nuclei will download its template library (~300MB) — this is normal and only happens once per container lifecycle.
+- **Nuclei templates** — for persistent template storage across container restarts, mount a volume at `/home/constellus/.local`.
