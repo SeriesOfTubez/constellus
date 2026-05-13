@@ -8,20 +8,20 @@
 #   2. An accepted date
 #   3. A review date (max 90 days out)
 #
-# ── Docker CLI binary (usr/local/bin/docker) ──────────────────────────────────
+# ── Nuclei binary (usr/local/bin/nuclei) ─────────────────────────────────────
 #
-# The Docker static binary is baked into the backend image solely to run Nuclei
-# containers during scanning. It is a dev/self-hosted convenience — it will be
-# removed from the production image as part of the production hardening work
-# (see backlog: "Remove Docker CLI from production image").
+# These CVEs are in Nuclei v3.8.0's own Go module dependencies. We are on the
+# latest stable release — no patched version is available upstream yet.
+# Review dates are short (30 days) — upgrade Nuclei as soon as a fix ships.
 #
-# These are all Go stdlib DoS CVEs in docker-29.4.3 (Go 1.26.2). Fixed in
-# Go 1.26.3 but no Docker release with that Go version is available yet.
-# Risk: low — the Docker CLI is invoked internally via subprocess, not exposed
-# as a network service.
-#
-CVE-2026-33811  # Docker CLI Go stdlib: LookupCNAME DoS via long CNAME. Accepted: 2026-05-12  Review: 2026-08-12
-CVE-2026-33814  # Docker CLI Go stdlib: HTTP/2 SETTINGS infinite loop DoS. Accepted: 2026-05-12  Review: 2026-08-12
-CVE-2026-39820  # Docker CLI Go stdlib: ParseAddress DoS via crafted input. Accepted: 2026-05-12  Review: 2026-08-12
-CVE-2026-39836  # Docker CLI Go stdlib: NUL byte panic (Windows-only). Accepted: 2026-05-12  Review: 2026-08-12
-CVE-2026-42499  # Docker CLI Go stdlib: consumePhrase DoS via pathological input. Accepted: 2026-05-12  Review: 2026-08-12
+# CVE-2026-34040: docker/docker v28.3.3 auth bypass — Nuclei uses this library
+#   internally, not as a daemon. Not reachable through our scan workflow.
+CVE-2026-34040  # Nuclei dep: docker/docker auth bypass. No upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-06-12
+
+# CVE-2026-45022: go-git improper parsing — Nuclei clones templates from
+#   ProjectDiscovery's official repo only. No user-controlled git input.
+CVE-2026-45022  # Nuclei dep: go-git parsing issue. No upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-06-12
+
+# CVE-2026-29181: OTel baggage header DoS — internal observability SDK,
+#   not exposed to network input in our deployment.
+CVE-2026-29181  # Nuclei dep: OTel DoS via baggage header. No upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-06-12
