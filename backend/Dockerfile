@@ -35,6 +35,9 @@ COPY backend/app/ app/
 COPY backend/alembic/ alembic/
 COPY backend/alembic.ini .
 
+# pip is not needed at runtime — remove it to eliminate its CVE surface
+RUN python -m pip uninstall -y pip setuptools wheel
+
 USER constellus
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

@@ -25,3 +25,21 @@ CVE-2026-45022  # Nuclei dep: go-git parsing issue. No upstream fix in Nuclei ye
 # CVE-2026-29181: OTel baggage header DoS — internal observability SDK,
 #   not exposed to network input in our deployment.
 CVE-2026-29181  # Nuclei dep: OTel DoS via baggage header. No upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-06-12
+
+# ── Nuclei binary — new CVEs found 2026-05-12 ────────────────────────────────
+#
+# All in Nuclei v3.8.0 transitive Go deps. Still the latest stable release.
+# No patched Nuclei version available upstream.
+# Review: 2026-08-10
+#
+CVE-2026-39826  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-39825  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-39823  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-42499  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-39836  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-39820  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-33814  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-33811  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-41506  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-33997  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-32952  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10

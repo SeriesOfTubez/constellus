@@ -32,7 +32,7 @@ jobs:
         # with our semgrep/checkov/hadolint approach and has no Node.js dependency
 
       - name: Upload Gitleaks SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: gitleaks.sarif
@@ -49,7 +49,7 @@ jobs:
         # semgrep/semgrep-action is archived; running CLI directly is the current recommended approach
 
       - name: Upload Semgrep SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: semgrep.sarif
@@ -73,7 +73,7 @@ jobs:
           output: trivy-fs.sarif
 
       - name: Upload Trivy FS SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-fs.sarif
@@ -106,7 +106,7 @@ jobs:
           checkov -d . --framework dockerfile --framework github_actions --output cli --output sarif --output-file-path . --compact --quiet
 
       - name: Upload Checkov SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: results_sarif.sarif
@@ -151,7 +151,7 @@ jobs:
           output: trivy-image-vuln.sarif
 
       - name: Upload image CVE SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-image-vuln.sarif
@@ -175,7 +175,7 @@ jobs:
           output: trivy-image-config.sarif
 
       - name: Upload image config SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-image-config.sarif
