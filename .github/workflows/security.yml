@@ -6,9 +6,10 @@ on:
   pull_request:
     branches: ["main", "dev"]
 
-# Minimal read-only permissions for all jobs (CKV_GHA_1)
+# security-events: write required for SARIF uploads to GitHub code scanning
 permissions:
   contents: read
+  security-events: write
 
 jobs:
   security:
@@ -29,10 +30,25 @@ jobs:
         # with our semgrep/checkov/hadolint approach and has no Node.js dependency
 
       - name: SAST (Semgrep)
-        run: pip install semgrep && semgrep scan --config p/security-audit --config p/owasp-top-ten --config p/python --error --quiet
+        id: semgrep
+        continue-on-error: true
+        run: pip install semgrep && semgrep scan --config p/security-audit --config p/owasp-top-ten --config p/python --error --sarif --output semgrep.sarif --quiet
         # semgrep/semgrep-action is archived; running CLI directly is the current recommended approach
 
+      - name: Upload Semgrep SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Fail on Semgrep findings
+        if: steps.semgrep.outcome == 'failure'
+        run: exit 1
+
       - name: SCA (Trivy)
+        id: trivy_fs
+        continue-on-error: true
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
@@ -40,6 +56,19 @@ jobs:
           exit-code: "1"
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          format: sarif
+          output: trivy-fs.sarif
+
+      - name: Upload Trivy FS SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: Fail on Trivy FS findings
+        if: steps.trivy_fs.outcome == 'failure'
+        run: exit 1
 
       - name: Generate SBOM (filesystem)
         uses: aquasecurity/trivy-action@v0.36.0
@@ -82,6 +111,8 @@ jobs:
         run: docker build -t constellus-backend:${{ github.sha }} . --file backend/Dockerfile --target runtime
 
       - name: Scan backend image (Trivy — CVEs)
+        id: trivy_image_vuln
+        continue-on-error: true
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
@@ -90,8 +121,23 @@ jobs:
           exit-code: "1"
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          format: sarif
+          output: trivy-image-vuln.sarif
+
+      - name: Upload image CVE SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image-vuln.sarif
+          category: trivy-image-vuln
+
+      - name: Fail on image CVE findings
+        if: steps.trivy_image_vuln.outcome == 'failure'
+        run: exit 1
 
       - name: Scan backend image (Trivy — config)
+        id: trivy_image_config
+        continue-on-error: true
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
@@ -99,6 +145,19 @@ jobs:
           scanners: config
           exit-code: "1"
           severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-image-config.sarif
+
+      - name: Upload image config SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image-config.sarif
+          category: trivy-image-config
+
+      - name: Fail on image config findings
+        if: steps.trivy_image_config.outcome == 'failure'
+        run: exit 1
 
       - name: Generate image SBOM
         uses: aquasecurity/trivy-action@v0.36.0
