@@ -22,12 +22,25 @@ jobs:
           fetch-depth: 0
 
       - name: Secret Scan (Gitleaks)
+        id: gitleaks
+        continue-on-error: true
         run: |
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
             | tar -xz -C /tmp gitleaks
-          /tmp/gitleaks detect --source . --redact --config .gitleaks.toml
+          /tmp/gitleaks detect --source . --redact --config .gitleaks.toml --report-format sarif --report-path gitleaks.sarif
         # gitleaks-action@v2 is Node.js 20 only with no v3 available; CLI is consistent
         # with our semgrep/checkov/hadolint approach and has no Node.js dependency
+
+      - name: Upload Gitleaks SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
+
+      - name: Fail on Gitleaks findings
+        if: steps.gitleaks.outcome == 'failure'
+        run: exit 1
 
       - name: SAST (Semgrep)
         id: semgrep
@@ -86,9 +99,22 @@ jobs:
           retention-days: 90
 
       - name: IaC Scan (Checkov)
+        id: checkov
+        continue-on-error: true
         run: |
           pip install checkov
-          checkov -d . --framework dockerfile --framework github_actions --compact --quiet
+          checkov -d . --framework dockerfile --framework github_actions --output cli --output sarif --output-file-path . --compact --quiet
+
+      - name: Upload Checkov SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results_sarif.sarif
+          category: checkov
+
+      - name: Fail on Checkov findings
+        if: steps.checkov.outcome == 'failure'
+        run: exit 1
 
       - name: Dockerfile Lint (Hadolint)
         run: |
