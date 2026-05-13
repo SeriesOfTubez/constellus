@@ -2,9 +2,9 @@ name: Security
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "dev"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "dev"]
 
 # Minimal read-only permissions for all jobs (CKV_GHA_1)
 permissions:
