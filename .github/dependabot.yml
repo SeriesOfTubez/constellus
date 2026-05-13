@@ -1,0 +1,45 @@
+version: 2
+updates:
+
+  # Python — backend/requirements.txt
+  # Security PRs are created immediately on CVE publication (not bound to schedule)
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels: [dependencies, python]
+
+  # npm — frontend/package.json
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels: [dependencies, javascript]
+
+  # GitHub Actions — .github/workflows/*.yml (uses: pins)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels: [dependencies, github-actions]
+
+  # Docker base images — python:3.12-slim, node:22-slim
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies, docker]
+
+  - package-ecosystem: docker
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies, docker]
