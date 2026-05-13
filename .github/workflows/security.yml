@@ -81,14 +81,24 @@ jobs:
       - name: Build backend image
         run: docker build -t constellus-backend:${{ github.sha }} . --file backend/Dockerfile --target runtime
 
-      - name: Scan backend image (Trivy)
+      - name: Scan backend image (Trivy — CVEs)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
           image-ref: constellus-backend:${{ github.sha }}
+          scanners: vuln
           exit-code: "1"
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+
+      - name: Scan backend image (Trivy — config)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: constellus-backend:${{ github.sha }}
+          scanners: config
+          exit-code: "1"
+          severity: HIGH,CRITICAL
 
       - name: Generate image SBOM
         uses: aquasecurity/trivy-action@v0.36.0
