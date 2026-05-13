@@ -11,7 +11,7 @@ PyJWT==2.12.1
 python3-saml==1.16.0
 defusedxml==0.7.1
 cryptography==46.0.5
-email-validator==2.2.0
+email-validator==2.3.0
 dnspython==2.7.0
 ipwhois==1.3.0
 # CVE-2025-62727: starlette DoS via Range header merging — fixed in 0.49.1
