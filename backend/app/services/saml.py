@@ -30,13 +30,17 @@ _BLOCKED_NETWORKS = (
 )
 
 
-def _validate_metadata_url(url: str) -> None:
+def _validate_metadata_url(url: str, allowed_host: str | None = None) -> None:
     parsed = urlparse(url)
     if parsed.scheme != "https":
         raise ValueError("Metadata URL must use HTTPS")
     host = parsed.hostname
     if not host:
         raise ValueError("Invalid metadata URL: missing host")
+    # When an existing config is present its host is the allowlist —
+    # prevents switching to a different IdP without a full reconfiguration.
+    if allowed_host is not None and host.lower() != allowed_host.lower():
+        raise ValueError("Metadata URL host does not match the configured IdP host")
     try:
         resolved = socket.getaddrinfo(host, None)
     except socket.gaierror as exc:
@@ -47,8 +51,8 @@ def _validate_metadata_url(url: str) -> None:
             raise ValueError("Metadata URL resolves to a private or reserved address")
 
 
-def fetch_metadata_xml(metadata_url: str) -> str:
-    _validate_metadata_url(metadata_url)
+def fetch_metadata_xml(metadata_url: str, allowed_host: str | None = None) -> str:
+    _validate_metadata_url(metadata_url, allowed_host=allowed_host)
     # follow_redirects=False prevents redirect-based SSRF bypass
     response = httpx.get(metadata_url, timeout=15, follow_redirects=False)
     response.raise_for_status()
@@ -102,6 +106,7 @@ def get_config(db: Session) -> Optional[SamlConfig]:
 
 
 def create_config(db: Session, data: SamlConfigCreate) -> SamlConfig:
+    # First-time setup — no existing host to allowlist against; IP/scheme checks apply.
     xml = fetch_metadata_xml(data.metadata_url)
     config = SamlConfig(
         metadata_url=data.metadata_url,
@@ -122,9 +127,11 @@ def update_config(db: Session, config: SamlConfig, data: SamlConfigUpdate) -> Sa
     for field, value in data.model_dump(exclude_none=True).items():
         setattr(config, field, value)
 
-    # Re-fetch metadata if URL changed
     if data.metadata_url:
-        config.metadata_xml = fetch_metadata_xml(data.metadata_url)
+        # Enforce that the new URL stays on the same IdP host — changing IdPs
+        # requires deleting and recreating the config.
+        existing_host = urlparse(config.metadata_url).hostname
+        config.metadata_xml = fetch_metadata_xml(data.metadata_url, allowed_host=existing_host)
         config.metadata_fetched_at = datetime.now(timezone.utc)
 
     db.commit()
@@ -133,7 +140,8 @@ def update_config(db: Session, config: SamlConfig, data: SamlConfigUpdate) -> Sa
 
 
 def refresh_metadata(db: Session, config: SamlConfig) -> SamlConfig:
-    config.metadata_xml = fetch_metadata_xml(config.metadata_url)
+    stored_host = urlparse(config.metadata_url).hostname
+    config.metadata_xml = fetch_metadata_xml(config.metadata_url, allowed_host=stored_host)
     config.metadata_fetched_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(config)
@@ -155,12 +163,10 @@ def find_or_link_sso_user(
     3. Not found + JIT enabled — create a new account.
     4. Not found + JIT disabled — return None (login rejected).
     """
-    # Already linked to this IdP identity
     user = db.query(User).filter(User.sso_subject == sso_subject).first()
     if user:
         return user
 
-    # Existing local account with matching email — link it
     user = db.query(User).filter(User.email == email.lower()).first()
     if user:
         user.auth_provider = "saml"
@@ -169,7 +175,6 @@ def find_or_link_sso_user(
         db.refresh(user)
         return user
 
-    # No existing account
     if jit_provisioning:
         from app.core.auth import hash_password
         from app.models.user import UserRole
