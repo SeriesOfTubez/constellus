@@ -1,5 +1,5 @@
 # ── Stage 1: build Python deps ────────────────────────────────────────────────
-FROM python:3.12-slim AS py-builder
+FROM python:3.14-slim AS py-builder
 WORKDIR /build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -13,7 +13,7 @@ COPY backend/requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
