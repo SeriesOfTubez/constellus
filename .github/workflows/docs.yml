@@ -1,0 +1,41 @@
+name: Docs
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & Validate Docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r docs/requirements.txt
+
+      - name: Build docs (strict — fail on warnings)
+        run: mkdocs build --strict
+
+  publish:
+    name: Trigger ReadTheDocs Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Trigger RTD build
+        run: |
+          curl -X POST \
+            -H "Authorization: Token ${{ secrets.READTHEDOCS_TOKEN }}" \
+            https://readthedocs.org/api/v3/projects/constellus/versions/latest/builds/

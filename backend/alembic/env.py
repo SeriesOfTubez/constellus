@@ -19,7 +19,7 @@ target_metadata = Base.metadata
 
 config.set_main_option(
     "sqlalchemy.url",
-    os.getenv("DATABASE_URL", "postgresql://sextant:sextant@localhost:5432/sextant"),
+    os.getenv("DATABASE_URL", "postgresql://constellus:constellus@localhost:5432/constellus"),
 )
 
 

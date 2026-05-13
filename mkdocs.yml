@@ -1,0 +1,70 @@
+site_name: Constellus
+site_description: Open Source External Attack Surface Management
+site_url: https://constellus.readthedocs.io
+repo_url: https://github.com/SeriesOfTubez/constellus
+repo_name: SeriesOfTubez/constellus
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: fontawesome/brands/github
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Quick Start: getting-started/quickstart.md
+    - Configuration: getting-started/configuration.md
+    - Docker Compose: getting-started/docker.md
+  - Connectors:
+    - Overview: connectors/overview.md
+    - Cloudflare: connectors/cloudflare.md
+    - Tenable: connectors/tenable.md
+    - Wiz: connectors/wiz.md
+    - FortiManager: connectors/fortimanager.md
+    - Nuclei: connectors/nuclei.md
+    - Mailtrap: connectors/mailtrap.md
+  - Architecture:
+    - Overview: architecture/overview.md
+    - Scan Pipeline: architecture/scan-pipeline.md
+    - Data Model: architecture/data-model.md
+  - Development:
+    - Contributing: development/contributing.md
+    - Adding a Connector: development/adding-connector.md
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - tables

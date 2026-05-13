@@ -1,10 +1,12 @@
-# Sextant
+# Constellus
+
+> *Connect the dots, find the truth.*
 
 **External Attack Surface Management with end-to-end visibility.**
 
-Sextant maps your public-facing attack surface from DNS records all the way through to the internal asset serving the traffic — including cloud resource identity, firewall NAT mappings, patch status, and vulnerability data. No commercial tool on the market provides this complete chain in a single solution.
+Constellus maps your public-facing attack surface from DNS records all the way through to the internal asset serving the traffic — including cloud resource identity, firewall NAT mappings, patch status, and vulnerability data. No commercial tool on the market provides this complete chain in a single solution.
 
-[![Security Pipeline](https://github.com/SeriesOfTubez/sextant/actions/workflows/security.yml/badge.svg)](https://github.com/SeriesOfTubez/sextant/actions/workflows/security.yml)
+[![Security Pipeline](https://github.com/SeriesOfTubez/constellus/actions/workflows/security.yml/badge.svg)](https://github.com/SeriesOfTubez/constellus/actions/workflows/security.yml)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -19,7 +21,7 @@ Commercial EASM tools (Cortex Xpanse, CrowdStrike Falcon Surface, Tenable ASM) s
 - *Is that server patched?*
 - *Is the IPS sensor on the firewall rule in blocking mode or just logging?*
 
-Sextant answers all of it.
+Constellus answers all of it.
 
 ---
 
@@ -56,7 +58,7 @@ Public DNS Record
 
 ## Architecture
 
-Sextant is a container-based pipeline. Each scanning stage runs in its own container, spun up on demand with no idle infrastructure.
+Constellus is a container-based pipeline. Each scanning stage runs in its own container, spun up on demand with no idle infrastructure.
 
 ```
 Targets (CIDR / IPs / Domains)
@@ -138,7 +140,7 @@ All connectors are optional and independently togglable. Each has a **Test** but
 
 ```bash
 # Clone the repo
-git clone https://github.com/SeriesOfTubez/sextant.git
+git clone https://github.com/SeriesOfTubez/constellus.git
 cd sextant
 
 # Configure environment
@@ -207,7 +209,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 
 ### Secrets Provider
 
-Sextant reads all secrets from environment variables. What populates those variables is pluggable — point the setup wizard at your vault and Sextant handles the rest.
+Constellus reads all secrets from environment variables. What populates those variables is pluggable — point the setup wizard at your vault and Constellus handles the rest.
 
 | Deployment | Provider | Bootstrap |
 |---|---|---|
@@ -223,11 +225,11 @@ Sextant reads all secrets from environment variables. What populates those varia
 
 ### Local Accounts
 
-Sextant ships with email/password authentication using bcrypt password hashing and short-lived JWT access tokens (30 min) with rotating refresh tokens (7 days).
+Constellus ships with email/password authentication using bcrypt password hashing and short-lived JWT access tokens (30 min) with rotating refresh tokens (7 days).
 
 ### SAML SSO
 
-SAML 2.0 is supported via [python3-saml](https://github.com/SAML-Toolkits/python3-saml). Configure it by pointing Sextant at your IdP's metadata URL — the app fetches and parses it automatically.
+SAML 2.0 is supported via [python3-saml](https://github.com/SAML-Toolkits/python3-saml). Configure it by pointing Constellus at your IdP's metadata URL — the app fetches and parses it automatically.
 
 **Seamless account migration:** When SSO is enabled, existing local accounts are automatically linked to their SSO identity on first login (matched by email). Roles and settings are preserved. No manual account recreation or RBAC reassignment required.
 
@@ -333,7 +335,3 @@ All submitted code runs through the security pipeline. PRs that introduce findin
 ## License
 
 MIT — see [LICENSE](LICENSE)
-
----
-
-*Sextant — named after the precision navigation instrument that measures your exact position relative to fixed reference points.*
