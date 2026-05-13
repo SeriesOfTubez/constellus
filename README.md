@@ -137,13 +137,35 @@ Every push runs the following checks automatically. The build only proceeds if a
 
 ---
 
+## About this project
+
+Constellus is designed and maintained by a security practitioner with experience across security engineering, network security, DevOps, AppSec, and security architecture.
+
+**This project uses AI-assisted development.** The implementation is written with [Claude](https://claude.ai) (Anthropic) as a coding assistant. The architecture, security requirements, threat model, and domain decisions are authored by the human maintainer. This is disclosed openly — AI-generated code has different failure modes than human-written code, and the security community deserves to know.
+
+The security pipeline exists precisely because of this. Every commit is scanned for secrets, SAST findings, vulnerable dependencies, and IaC misconfigurations. No finding at HIGH or CRITICAL severity ships.
+
+---
+
+## Transparency
+
+### Software Bill of Materials
+
+A CycloneDX SBOM covering the full dependency tree and built container image is generated on every CI run and attached as a workflow artifact. See the [Actions tab](https://github.com/SeriesOfTubez/constellus/actions) for the latest.
+
+### Security policy
+
+To report a vulnerability, please use [GitHub Security Advisories](https://github.com/SeriesOfTubez/constellus/security/advisories/new) rather than a public issue.
+
+---
+
 ## Contributing
 
 Contributions are welcome. Please open an issue before submitting a PR for significant changes.
 
 All submitted code runs through the security pipeline. PRs with HIGH or CRITICAL findings in Gitleaks, Semgrep, or Trivy will not be merged until resolved.
 
-See [Contributing →](https://constellus.readthedocs.io/en/latest/development/contributing/)
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development principles, the AI assistance policy, and dependency standards.
 
 ---
 

@@ -41,6 +41,21 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
 
+      - name: Generate SBOM (filesystem)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: sbom.cyclonedx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom.cyclonedx.json
+          retention-days: 90
+
       - name: IaC Scan (Checkov)
         run: |
           pip install checkov
@@ -74,3 +89,18 @@ jobs:
           exit-code: "1"
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+
+      - name: Generate image SBOM
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: constellus-backend:${{ github.sha }}
+          format: cyclonedx
+          output: sbom-image.cyclonedx.json
+
+      - name: Upload image SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-image-${{ github.sha }}
+          path: sbom-image.cyclonedx.json
+          retention-days: 90
