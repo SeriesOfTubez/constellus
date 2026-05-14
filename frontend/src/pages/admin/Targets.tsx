@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
+import { useFlyout } from "@/lib/flyout"
 import { toast } from "sonner"
 import { ShieldCheck, ShieldAlert, Plus, Trash2, RefreshCw, Copy, Loader2, Globe, Server, Network } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -80,12 +81,12 @@ export default function Targets() {
   const qc = useQueryClient()
   const [addOpen, setAddOpen] = useState(false)
   const [newValue, setNewValue] = useState("")
-  const [detailTarget, setDetailTarget] = useState<Target | null>(null)
-
   const { data: targets, isLoading } = useQuery({
     queryKey: ["targets"],
     queryFn: () => api.get<Target[]>("/targets/"),
   })
+
+  const { selected: detailTarget, open: openTarget, close: closeTarget } = useFlyout(targets ?? [])
 
   const addMutation = useMutation({
     mutationFn: (value: string) => api.post<Target>("/targets/", { value }),
@@ -94,7 +95,7 @@ export default function Targets() {
       qc.invalidateQueries({ queryKey: ["targets"] })
       setAddOpen(false)
       setNewValue("")
-      if (!created.verified) setDetailTarget(created)
+      if (!created.verified) openTarget(created)
     },
     onError: (e: Error) => toast.error(e.message),
   })
@@ -104,7 +105,7 @@ export default function Targets() {
     onSuccess: (updated) => {
       toast.success(`${updated.value} verified`)
       qc.invalidateQueries({ queryKey: ["targets"] })
-      setDetailTarget(updated)
+      openTarget(updated)
     },
     onError: (e: Error) => toast.error(e.message),
   })
@@ -114,7 +115,7 @@ export default function Targets() {
     onSuccess: (updated) => {
       toast.success(`${updated.value} acknowledged`)
       qc.invalidateQueries({ queryKey: ["targets"] })
-      setDetailTarget(updated)
+      openTarget(updated)
     },
     onError: (e: Error) => toast.error(e.message),
   })
@@ -124,7 +125,7 @@ export default function Targets() {
     onSuccess: () => {
       toast.success("Target removed")
       qc.invalidateQueries({ queryKey: ["targets"] })
-      setDetailTarget(null)
+      closeTarget()
     },
     onError: () => toast.error("Failed to remove target"),
   })
@@ -166,7 +167,7 @@ export default function Targets() {
             </TableHeader>
             <TableBody>
               {targets.map(t => (
-                <TableRow key={t.id} className="cursor-pointer" onClick={() => setDetailTarget(t)}>
+                <TableRow key={t.id} className="cursor-pointer" onClick={() => openTarget(t)}>
                   <TableCell><TypeBadge type={t.type} /></TableCell>
                   <TableCell className="font-mono text-sm">{t.value}</TableCell>
                   <TableCell><StatusBadge target={t} /></TableCell>
@@ -181,7 +182,7 @@ export default function Targets() {
                       {!t.verified && (
                         <Button variant="ghost" size="sm" title={t.type === "domain" ? "Check TXT record" : "Acknowledge"}
                           disabled={verifyMutation.isPending || acknowledgeMutation.isPending}
-                          onClick={(e) => { e.stopPropagation(); setDetailTarget(t) }}>
+                          onClick={(e) => { e.stopPropagation(); openTarget(t) }}>
                           <RefreshCw className="h-3.5 w-3.5" />
                         </Button>
                       )}
@@ -225,7 +226,7 @@ export default function Targets() {
 
       {/* Detail / verification sheet */}
       {detailTarget && (
-        <Sheet open onOpenChange={(o) => !o && setDetailTarget(null)}>
+        <Sheet open onOpenChange={(o) => !o && closeTarget()}>
           <SheetContent className="w-[440px] sm:max-w-[440px] flex flex-col gap-0 p-0">
             <SheetHeader className="px-6 pt-6 pb-4 border-b space-y-2">
               <div className="flex items-center gap-2">

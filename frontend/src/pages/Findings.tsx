@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { useSearchParams } from "react-router-dom"
+import { useFlyout } from "@/lib/flyout"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { AlertTriangle, Filter, Loader2, ShieldCheck, ShieldOff, RefreshCw, ChevronDown, ExternalLink } from "lucide-react"
@@ -417,7 +418,6 @@ export default function Findings() {
   const [categoryFilter, setCategoryFilter] = useState("all")
   const [stateFilter, setStateFilter] = useState(searchParams.get("state") ?? "open")
   const [suppressTarget, setSuppressTarget] = useState<Finding | null>(null)
-  const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
 
   const { data: findings, isLoading } = useQuery({
     queryKey: ["findings", stateFilter],
@@ -455,6 +455,8 @@ export default function Findings() {
   })
 
   const categories = [...new Set((findings ?? []).map(f => f.category).filter(Boolean))].sort() as string[]
+
+  const { selected: selectedFinding, open: openFinding, close: closeFinding } = useFlyout(filtered)
 
   const counts = SEVERITY_ORDER.reduce<Record<string, number>>((acc, s) => {
     acc[s] = (findings ?? []).filter(f => f.severity === s).length
@@ -539,7 +541,7 @@ export default function Findings() {
             </TableHeader>
             <TableBody>
               {filtered.map(f => (
-                <TableRow key={`${f.id}-${f.discovered_at}`} className="cursor-pointer" onClick={() => setSelectedFinding(f)}>
+                <TableRow key={`${f.id}-${f.discovered_at}`} className="cursor-pointer" onClick={() => openFinding(f)}>
                   <TableCell><SeverityBadge severity={f.severity} /></TableCell>
                   <TableCell className="hidden sm:table-cell"><CategoryBadge category={f.category} /></TableCell>
                   <TableCell>
@@ -600,7 +602,7 @@ export default function Findings() {
       {selectedFinding && (
         <FindingDetailSheet
           finding={selectedFinding}
-          onClose={() => setSelectedFinding(null)}
+          onClose={closeFinding}
           onStateChange={(id, state) => stateMutation.mutate({ id, state })}
           onSuppress={(f) => setSuppressTarget(f)}
           onVerify={(id) => verifyMutation.mutate(id)}

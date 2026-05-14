@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { useSearchParams } from "react-router-dom"
+import { useFlyout } from "@/lib/flyout"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Globe, ScanLine, Filter, Trash2, Loader2, EyeOff, Eye } from "lucide-react"
@@ -196,7 +197,6 @@ export default function Assets() {
   const [typeFilter, setTypeFilter] = useState("all")
   const [scanFilter, setScanFilter] = useState(searchParams.get("scan") ?? "all")
   const [showIgnored, setShowIgnored] = useState(false)
-  const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null)
 
   const { data: scans } = useQuery({
     queryKey: ["scans"],
@@ -242,6 +242,8 @@ export default function Assets() {
   })
 
   const types = [...new Set((assets ?? []).map(a => a.asset_type))].sort()
+
+  const { selected: selectedAsset, open: openAsset, close: closeAsset } = useFlyout(filtered)
 
   return (
     <div className="p-6 space-y-6">
@@ -323,7 +325,7 @@ export default function Assets() {
                 <TableRow
                   key={`${asset.id}-${asset.discovered_at}`}
                   className={`cursor-pointer ${asset.ignored ? "opacity-50" : ""}`}
-                  onClick={() => setSelectedAsset(asset)}
+                  onClick={() => openAsset(asset)}
                 >
                   <TableCell><AssetTypeBadge type={asset.asset_type} /></TableCell>
                   <TableCell className="font-mono text-sm">{asset.value}</TableCell>
@@ -368,7 +370,7 @@ export default function Assets() {
       {selectedAsset && (
         <AssetDetailSheet
           asset={selectedAsset}
-          onClose={() => setSelectedAsset(null)}
+          onClose={closeAsset}
           onScan={(id) => scanMutation.mutate(id)}
           onIgnore={(id, ignored) => ignoreMutation.mutate({ assetId: id, ignored })}
         />

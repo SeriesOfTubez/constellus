@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "react-router-dom"
+import { useFlyout } from "@/lib/flyout"
 import { toast } from "sonner"
 import { Plus, Loader2, ScanLine, RefreshCw, XCircle, CheckSquare, Square, Pencil, Trash2, Info, Clock, CheckCircle2, AlertCircle } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
@@ -450,7 +451,6 @@ function ScanRow({ run, onDetail }: { run: ScanRun; onDetail: (run: ScanRun) => 
 
 export default function Scans() {
   const [newScanOpen, setNewScanOpen] = useState(false)
-  const [selectedScan, setSelectedScan] = useState<ScanRun | null>(null)
   const qc = useQueryClient()
 
   const { data: scans, isLoading } = useQuery({
@@ -461,6 +461,8 @@ export default function Scans() {
       return data?.some(s => s.status === "running" || s.status === "pending") ? 3000 : false
     },
   })
+
+  const { selected: selectedScan, open: openScan, close: closeScan } = useFlyout(scans ?? [])
 
   return (
     <div className="p-6 space-y-6">
@@ -489,13 +491,13 @@ export default function Scans() {
           <Button className="mt-4" onClick={() => setNewScanOpen(true)}><Plus className="h-4 w-4" /> New scan</Button>
         </div>
       ) : (
-        <div className="space-y-3">{scans?.map(run => <ScanRow key={run.id} run={run} onDetail={setSelectedScan} />)}</div>
+        <div className="space-y-3">{scans?.map(run => <ScanRow key={run.id} run={run} onDetail={openScan} />)}</div>
       )}
 
       <NewScanDialog open={newScanOpen} onClose={() => setNewScanOpen(false)} />
 
       {selectedScan && (
-        <ScanDetailSheet run={selectedScan} onClose={() => setSelectedScan(null)} />
+        <ScanDetailSheet run={selectedScan} onClose={closeScan} />
       )}
     </div>
   )
