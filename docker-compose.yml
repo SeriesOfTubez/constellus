@@ -24,6 +24,8 @@ services:
     environment:
       - SECRETS_PROVIDER=env
       - DATABASE_URL=postgresql://constellus:constellus@db:5432/constellus
+      - NUCLEI_URL=http://nuclei-worker:8001
+      - NUCLEI_INTERNAL_TOKEN=${NUCLEI_INTERNAL_TOKEN}
     env_file:
       - .env
     depends_on:
@@ -34,6 +36,20 @@ services:
     networks:
       - app
       - data
+
+  nuclei-worker:
+    build:
+      context: ./nuclei-worker
+      dockerfile: Dockerfile
+    environment:
+      - NUCLEI_INTERNAL_TOKEN=${NUCLEI_INTERNAL_TOKEN}
+    env_file:
+      - .env
+    # Note: in production restrict this service to a network shared only with
+    # the backend. Here it shares 'app' for simplicity — deployer should segment.
+    networks:
+      - app
+    restart: unless-stopped
 
   frontend:
     build:
