@@ -33,7 +33,7 @@ jobs:
 
       - name: Upload Gitleaks SARIF
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: always() && hashFiles('gitleaks.sarif') != ''
         with:
           sarif_file: gitleaks.sarif
           category: gitleaks
@@ -50,7 +50,7 @@ jobs:
 
       - name: Upload Semgrep SARIF
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: always() && hashFiles('semgrep.sarif') != ''
         with:
           sarif_file: semgrep.sarif
           category: semgrep
@@ -74,7 +74,7 @@ jobs:
 
       - name: Upload Trivy FS SARIF
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: always() && hashFiles('trivy-fs.sarif') != ''
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
@@ -107,7 +107,7 @@ jobs:
 
       - name: Upload Checkov SARIF
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: always() && hashFiles('results_sarif.sarif') != ''
         with:
           sarif_file: results_sarif.sarif
           category: checkov
@@ -152,7 +152,7 @@ jobs:
 
       - name: Upload image CVE SARIF
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: always() && hashFiles('trivy-image-vuln.sarif') != ''
         with:
           sarif_file: trivy-image-vuln.sarif
           category: trivy-image-vuln
@@ -176,7 +176,7 @@ jobs:
 
       - name: Upload image config SARIF
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: always() && hashFiles('trivy-image-config.sarif') != ''
         with:
           sarif_file: trivy-image-config.sarif
           category: trivy-image-config
