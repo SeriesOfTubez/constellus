@@ -1,3 +1,5 @@
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+
 repos:
   # Basic hygiene — fast, no external deps
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -24,3 +26,20 @@ repos:
     rev: v2.14.0
     hooks:
       - id: hadolint-docker
+
+  # Block commits/messages that reference a domain, IP, or CIDR currently
+  # configured as a live Target in the dev DB — see scripts/refresh_target_denylist.py
+  # for why this exists and how the snapshot it checks against is built.
+  - repo: local
+    hooks:
+      - id: target-domain-check-diff
+        name: Check staged changes for live Target values
+        entry: python scripts/check_target_domains.py --stage pre-commit
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: target-domain-check-message
+        name: Check commit message for live Target values
+        entry: python scripts/check_target_domains.py --stage commit-msg
+        language: system
+        stages: [commit-msg]
