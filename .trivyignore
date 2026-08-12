@@ -1,0 +1,45 @@
+# Trivy CVE ignore list
+#
+# Format:
+#   CVE-XXXX-XXXXX  # Reason. Accepted: YYYY-MM-DD  Review: YYYY-MM-DD
+#
+# Do not add entries without:
+#   1. A documented reason
+#   2. An accepted date
+#   3. A review date (max 90 days out)
+#
+# ── Nuclei binary (usr/local/bin/nuclei) ─────────────────────────────────────
+#
+# These CVEs are in Nuclei v3.8.0's own Go module dependencies. We are on the
+# latest stable release — no patched version is available upstream yet.
+# Review dates are short (30 days) — upgrade Nuclei as soon as a fix ships.
+#
+# CVE-2026-34040: docker/docker v28.3.3 auth bypass — Nuclei uses this library
+#   internally, not as a daemon. Not reachable through our scan workflow.
+CVE-2026-34040  # Nuclei dep: docker/docker auth bypass. No upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-06-12
+
+# CVE-2026-45022: go-git improper parsing — Nuclei clones templates from
+#   ProjectDiscovery's official repo only. No user-controlled git input.
+CVE-2026-45022  # Nuclei dep: go-git parsing issue. No upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-06-12
+
+# CVE-2026-29181: OTel baggage header DoS — internal observability SDK,
+#   not exposed to network input in our deployment.
+CVE-2026-29181  # Nuclei dep: OTel DoS via baggage header. No upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-06-12
+
+# ── Nuclei binary — new CVEs found 2026-05-12 ────────────────────────────────
+#
+# All in Nuclei v3.8.0 transitive Go deps. Still the latest stable release.
+# No patched Nuclei version available upstream.
+# Review: 2026-08-10
+#
+CVE-2026-39826  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-39825  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-39823  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-42499  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-39836  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-39820  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-33814  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-33811  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-41506  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-33997  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10
+CVE-2026-32952  # Nuclei dep: no upstream fix in Nuclei yet. Accepted: 2026-05-12  Review: 2026-08-10

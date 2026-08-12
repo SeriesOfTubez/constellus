@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Example env file — contains placeholder values only, no real secrets"
+paths = ['''.env.example''']

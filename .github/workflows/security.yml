@@ -1,0 +1,278 @@
+name: Security
+
+on:
+  push:
+    branches: ["main", "dev"]
+  pull_request:
+    branches: ["main", "dev"]
+
+# security-events: write required for SARIF uploads to GitHub code scanning
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Secret Scan (Gitleaks)
+        id: gitleaks
+        continue-on-error: true
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            | tar -xz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --redact --config .gitleaks.toml --report-format sarif --report-path gitleaks.sarif
+        # gitleaks-action@v2 is Node.js 20 only with no v3 available; CLI is consistent
+        # with our semgrep/checkov/hadolint approach and has no Node.js dependency
+
+      - name: Upload Gitleaks SARIF
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        if: always() && hashFiles('gitleaks.sarif') != ''
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
+
+      - name: Fail on Gitleaks findings
+        if: steps.gitleaks.outcome == 'failure'
+        run: exit 1
+
+      - name: SAST (Semgrep)
+        id: semgrep
+        continue-on-error: true
+        run: pip install semgrep && semgrep scan --config p/security-audit --config p/owasp-top-ten --config p/python --error --sarif --output semgrep.sarif --quiet
+        # semgrep/semgrep-action is archived; running CLI directly is the current recommended approach
+
+      - name: Upload Semgrep SARIF
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        if: always() && hashFiles('semgrep.sarif') != ''
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Fail on Semgrep findings
+        if: steps.semgrep.outcome == 'failure'
+        run: exit 1
+
+      - name: SCA (Trivy)
+        id: trivy_fs
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-fs.sarif
+
+      - name: Upload Trivy FS SARIF
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        if: always() && hashFiles('trivy-fs.sarif') != ''
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: Fail on Trivy FS findings
+        if: steps.trivy_fs.outcome == 'failure'
+        run: exit 1
+
+      - name: Generate SBOM (filesystem)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: sbom.cyclonedx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom.cyclonedx.json
+          retention-days: 90
+
+      - name: IaC Scan (Checkov)
+        id: checkov
+        continue-on-error: true
+        run: |
+          pip install checkov
+          checkov -d . --framework dockerfile --framework github_actions --output cli --output sarif --output-file-path . --compact --quiet
+
+      - name: Upload Checkov SARIF
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        if: always() && hashFiles('results_sarif.sarif') != ''
+        with:
+          sarif_file: results_sarif.sarif
+          category: checkov
+
+      - name: Fail on Checkov findings
+        if: steps.checkov.outcome == 'failure'
+        run: exit 1
+
+      - name: Dockerfile Lint (Hadolint)
+        run: |
+          curl -sSL https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-Linux-x86_64 \
+            -o /tmp/hadolint && chmod +x /tmp/hadolint
+          find . -name 'Dockerfile' -not -path '*/node_modules/*' -print0 \
+            | xargs -0 /tmp/hadolint --ignore DL3008
+          # DL3008: apt-get version pinning impractical on Debian — see .hadolint.yaml
+          # --config flag is broken with xargs -0 across all tested versions; --ignore is equivalent
+
+  frontend:
+    name: Frontend Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck (tsc -b)
+        working-directory: frontend
+        run: npm run typecheck
+
+  backend-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      db:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_USER: constellus
+          POSTGRES_PASSWORD: constellus
+          POSTGRES_DB: constellus
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U constellus"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt pytest
+
+      - name: Run DB migrations
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Run pytest
+        working-directory: backend
+        run: python -m pytest app/tests/ -q
+
+  scanner-worker-tests:
+    name: Scanner-Worker Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: scanner-worker
+        run: pip install -r requirements.txt pytest
+
+      - name: Run pytest
+        working-directory: scanner-worker
+        run: python -m pytest tests/ -q
+
+  build:
+    name: Build & Image Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: security
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build backend image
+        run: docker build -t constellus-backend:${{ github.sha }} . --file backend/Dockerfile --target runtime
+
+      - name: Scan backend image (Trivy — CVEs)
+        id: trivy_image_vuln
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: constellus-backend:${{ github.sha }}
+          scanners: vuln
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-image-vuln.sarif
+
+      - name: Upload image CVE SARIF
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        if: always() && hashFiles('trivy-image-vuln.sarif') != ''
+        with:
+          sarif_file: trivy-image-vuln.sarif
+          category: trivy-image-vuln
+
+      - name: Fail on image CVE findings
+        if: steps.trivy_image_vuln.outcome == 'failure'
+        run: exit 1
+
+      - name: Scan backend image (Trivy — config)
+        id: trivy_image_config
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: constellus-backend:${{ github.sha }}
+          scanners: misconfig
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-image-config.sarif
+
+      - name: Upload image config SARIF
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        if: always() && hashFiles('trivy-image-config.sarif') != ''
+        with:
+          sarif_file: trivy-image-config.sarif
+          category: trivy-image-config
+
+      - name: Fail on image config findings
+        if: steps.trivy_image_config.outcome == 'failure'
+        run: exit 1
+
+      - name: Generate image SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: constellus-backend:${{ github.sha }}  # runtime stage — no Docker CLI
+          format: cyclonedx
+          output: sbom-image.cyclonedx.json
+
+      - name: Upload image SBOM artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-image-${{ github.sha }}
+          path: sbom-image.cyclonedx.json
+          retention-days: 90

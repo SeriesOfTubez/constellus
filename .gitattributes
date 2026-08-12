@@ -1,0 +1,9 @@
+# Normalize all text files to LF in the repo and on checkout.
+# This overrides core.autocrlf and ensures consistent line endings
+# across Windows dev machines and Linux CI/containers.
+* text=auto eol=lf
+
+# Windows-only scripts must use CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

@@ -1,0 +1,72 @@
+version: 2
+updates:
+
+  # Python — backend/requirements.txt
+  - package-ecosystem: pip
+    directory: /backend
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels: [dependencies, python]
+    cooldown:
+      semver-patch-days: 3
+      semver-minor-days: 5
+      semver-major-days: 60
+
+  # npm — frontend/package.json
+  - package-ecosystem: npm
+    directory: /frontend
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels: [dependencies, javascript]
+    cooldown:
+      semver-patch-days: 3
+      semver-minor-days: 5
+      semver-major-days: 60
+
+  # GitHub Actions — .github/workflows/*.yml
+  # semver-*-days not supported for github-actions; default-days only
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels: [dependencies, github-actions]
+    cooldown:
+      default-days: 7
+
+  # Docker base images — backend
+  # semver-*-days not supported for docker; default-days only
+  # Python base image: ignore major/minor bumps — psycopg2-binary and other
+  # packages need time to publish wheels for new Python versions.
+  # Re-evaluate when moving off 3.12 (supported until Oct 2028).
+  - package-ecosystem: docker
+    directory: /backend
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies, docker]
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: "python"
+        versions: ["3.13.*", "3.14.*", "3.15.*", "3.16.*"]
+
+  # Docker base images — frontend
+  - package-ecosystem: docker
+    directory: /frontend
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies, docker]
+    cooldown:
+      default-days: 7

@@ -1,0 +1,92 @@
+services:
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: alembic upgrade head
+    environment:
+      - DATABASE_URL=postgresql://constellus:constellus@db:5432/constellus
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - data
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - SECRETS_PROVIDER=env
+      - DATABASE_URL=postgresql://constellus:constellus@db:5432/constellus
+      - SCANNER_URL=http://scanner-worker:8001
+      - SCANNER_INTERNAL_TOKEN=${SCANNER_INTERNAL_TOKEN}
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - app
+      - data
+
+  scanner-worker:
+    build:
+      context: ./scanner-worker
+      dockerfile: Dockerfile
+    environment:
+      - SCANNER_INTERNAL_TOKEN=${SCANNER_INTERNAL_TOKEN}
+    env_file:
+      - .env
+    cap_add:
+      - NET_RAW
+    # Note: in production restrict this service to a network shared only with
+    # the backend. Here it shares 'app' for simplicity — deployer should segment.
+    networks:
+      - app
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - API_TARGET=http://backend:8000
+    depends_on:
+      - backend
+    networks:
+      - app
+
+  db:
+    image: timescale/timescaledb:latest-pg16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: constellus
+      POSTGRES_PASSWORD: constellus
+      POSTGRES_DB: constellus
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U constellus"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - data
+
+networks:
+  app:
+  data:
+
+volumes:
+  db_data:

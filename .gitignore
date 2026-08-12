@@ -1,0 +1,46 @@
+# Environment
+.env
+*.env.local
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code
+CLAUDE.md
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+docker-compose.override.yml
+
+# mkdocs build output
+site/
+
+backend/static/
+frontend/node_modules/
+
+# Design mockups/inspo — local reference only, not part of the repo
+/design/

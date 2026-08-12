@@ -1,0 +1,3 @@
+fastapi==0.136.1
+uvicorn[standard]==0.34.2
+defusedxml==0.7.1

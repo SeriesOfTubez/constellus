@@ -1,0 +1,137 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CONSTELLUS TOKEN SYSTEM
+   ───────────────────────────────────────────────────────────────────────────
+   THEMEABLE  (org branding)  ──  --brand, --brand-dim, --logo-glow
+              Applied at boot via CSS var override from app_settings.
+              --brand must come from the curated accent palette (Design Decisions).
+
+   LOCKED     (never themeable)  ──  severity palette · graphite surfaces · text
+              Severity vars carry semantic meaning; recolouring them breaks the
+              at-a-glance risk read that is the whole point of the product.
+
+   shadcn/Radix components consume the standard --background/--foreground/etc.
+   vars in the section below, which are mapped from the locked graphite tokens.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+
+  --color-background:              var(--background);
+  --color-foreground:              var(--foreground);
+  --color-card:                    var(--card);
+  --color-card-foreground:         var(--card-foreground);
+  --color-popover:                 var(--popover);
+  --color-popover-foreground:      var(--popover-foreground);
+  --color-primary:                 var(--primary);
+  --color-primary-foreground:      var(--primary-foreground);
+  --color-secondary:               var(--secondary);
+  --color-secondary-foreground:    var(--secondary-foreground);
+  --color-muted:                   var(--muted);
+  --color-muted-foreground:        var(--muted-foreground);
+  --color-accent:                  var(--accent);
+  --color-accent-foreground:       var(--accent-foreground);
+  --color-destructive:             var(--destructive);
+  --color-destructive-foreground:  var(--destructive-foreground);
+  --color-border:                  var(--border);
+  --color-input:                   var(--input);
+  --color-ring:                    var(--ring);
+
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up:   accordion-up 0.2s ease-out;
+}
+
+@keyframes accordion-down {
+  from { height: 0; }
+  to   { height: var(--radix-accordion-content-height); }
+}
+@keyframes accordion-up {
+  from { height: var(--radix-accordion-content-height); }
+  to   { height: 0; }
+}
+
+/* ── THEMEABLE: org branding ─────────────────────────────────────────────── */
+:root {
+  --brand:     #8b7bf0;                  /* placeholder violet — clears all severity hues */
+  --brand-dim: rgba(139, 123, 240, 0.14);
+  --logo-glow: #b3a8ff;
+}
+
+/* ── LOCKED: severity palette ────────────────────────────────────────────── */
+:root {
+  --sev-critical: #f04267;
+  --sev-high:     #ff8a3d;
+  --sev-medium:   #f5c542;
+  --sev-low:      #4a9eff;
+  --sev-unknown:  #7b8290;
+  --sev-clean:    #34d399;
+}
+
+/* ── LOCKED: graphite surfaces ───────────────────────────────────────────── */
+:root {
+  --surface-bg:        #0b0c0e;
+  --surface-panel:     #131417;
+  --surface-panel-2:   #17191d;
+  --surface-hover:     #1c1f24;
+  --surface-line:      #23262c;
+  --surface-line-soft: #1a1d22;
+}
+
+/* ── LOCKED: text scale ──────────────────────────────────────────────────── */
+:root {
+  --text-default: #e7e9ee;
+  --text-dim:     #9aa0ab;
+  --text-faint:   #6b7280;
+}
+
+/* ── shadcn / Radix component vars ───────────────────────────────────────────
+   Dark-first: :root carries the dark values. .dark is identical so the
+   ThemeProvider's class toggle keeps working. Light mode is deferred.
+   ─────────────────────────────────────────────────────────────────────────── */
+:root,
+.dark {
+  --radius: 0.5rem;
+
+  --background:             #0b0c0e;
+  --foreground:             #e7e9ee;
+
+  --card:                   #131417;
+  --card-foreground:        #e7e9ee;
+
+  --popover:                #17191d;
+  --popover-foreground:     #e7e9ee;
+
+  --primary:                #8b7bf0;
+  --primary-foreground:     #ffffff;
+
+  --secondary:              #17191d;
+  --secondary-foreground:   #9aa0ab;
+
+  --muted:                  #1c1f24;
+  --muted-foreground:       #9aa0ab;
+
+  --accent:                 #1c1f24;
+  --accent-foreground:      #e7e9ee;
+
+  --destructive:            #f04267;
+  --destructive-foreground: #ffffff;
+
+  --border:                 #23262c;
+  --input:                  #17191d;
+  --ring:                   #8b7bf0;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}

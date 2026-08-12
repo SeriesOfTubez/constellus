@@ -1,0 +1,453 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Risky internet-exposed services — curated ruleset
+#
+# The *service* is the risk, not the port. But well-known ports are reliable
+# predictors of their service, so we match on either:
+#
+#   ports[]     — well-known, near-dedicated ports. Trusted enough to fire
+#                 even when no banner/service was identified ("inferred").
+#                 Only ports that ~always run the named service belong here —
+#                 never reused-for-web ports like 8080/8443.
+#
+#   services[]  — normalized service labels from open_ports[].service, with
+#                 aliases for every tool that might produce them (banner_grab,
+#                 nmap-style, Shodan, future fingerprinters, tlsx). Matched
+#                 case-insensitively. Source-agnostic by design — this file
+#                 never depends on which connector wrote the service field.
+#
+# A finding fires when EITHER a port matches OR a detected service matches.
+# When only the port matched, the analyzer labels it "service unconfirmed".
+# When the service was identified, confidence is "confirmed" and can upgrade
+# an inferred hit.
+#
+# Severities are OUR opinion (the product's exposure stance). Port→service
+# naming is seeded from nmap-services; the "which services are risky" set is
+# cross-referenced against the nuclei-templates network/ + exposures/ taxonomy.
+# References use stable MITRE ATT&CK technique IDs where applicable.
+#
+# Gates handled by the analyzer, not this file:
+#   - public_only: findings only fire on publicly-routable IPs.
+#   - dedup/resolve: fingerprint exposed-service:{asset_id}:{port}; a closed
+#     port lets the finding go stale and auto-resolve.
+#
+# NOTE: the current port scanner (naabu) is TCP-only. UDP-native services
+# (SNMP/161, TFTP/69, NetBIOS-NS/137) are included for forward-completeness
+# but will not trigger until UDP scanning exists. Marked `udp_only: true`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: 1
+
+defaults:
+  category: exposure
+  public_only: true
+
+rules:
+  # ── Remote access / management — should never face the public internet ──────
+  - id: exposed-rdp
+    name: "Remote Desktop (RDP) exposed to the internet"
+    severity: critical
+    ports: [3389]
+    services: [rdp, ms-wbt-server, ms-wbt, msrdp]
+    rationale: >-
+      Remote Desktop on a public IP is among the most-abused ransomware and
+      initial-access vectors. Even patched, it is a continuous brute-force and
+      credential-stuffing target and should sit behind a VPN or zero-trust proxy.
+    remediation: "Remove public exposure; require VPN/ZTNA. Never expose 3389 directly."
+    references: ["https://attack.mitre.org/techniques/T1021/001/"]
+
+  - id: exposed-smb
+    name: "SMB / file sharing exposed to the internet"
+    severity: critical
+    ports: [445]
+    services: [smb, microsoft-ds, netbios-ssn, cifs]
+    rationale: >-
+      Public SMB exposes file shares and the protocol's long history of wormable
+      RCE (EternalBlue/MS17-010). It is a top lateral-movement and ransomware surface.
+    remediation: "Block 445 at the edge; SMB should never traverse the public internet."
+    references: ["https://attack.mitre.org/techniques/T1021/002/"]
+
+  - id: exposed-netbios
+    name: "NetBIOS exposed to the internet"
+    severity: high
+    ports: [139]            # 137/138 are UDP — see exposed-netbios-ns
+    services: [netbios-ssn, netbios]
+    rationale: >-
+      NetBIOS leaks host, domain, and share information and is a legacy Windows
+      networking surface that should never be reachable externally.
+    remediation: "Block NetBIOS (137-139) at the perimeter."
+
+  - id: exposed-msrpc
+    name: "Microsoft RPC endpoint mapper exposed to the internet"
+    severity: high
+    ports: [135]
+    services: [msrpc, epmap, ms-rpc, dcerpc]
+    rationale: >-
+      The RPC endpoint mapper enumerates internal services and underpins much of
+      Windows/AD lateral movement. Public exposure is a reconnaissance gift.
+    remediation: "Block 135 at the edge; restrict RPC to internal networks."
+
+  - id: exposed-winrm
+    name: "WinRM (remote PowerShell) exposed to the internet"
+    severity: critical
+    ports: [5985, 5986]
+    services: [winrm, wsman]
+    rationale: >-
+      WinRM grants remote PowerShell execution. Public exposure is a direct
+      remote-management and lateral-movement channel (5985 is cleartext HTTP).
+    remediation: "Restrict WinRM to internal/management networks behind VPN."
+    references: ["https://attack.mitre.org/techniques/T1021/006/"]
+
+  - id: exposed-vnc
+    name: "VNC remote desktop exposed to the internet"
+    severity: critical
+    ports: [5900, 5901, 5902, 5903]
+    services: [vnc, rfb]
+    rationale: >-
+      VNC frequently ships with weak, default, or no authentication and gives
+      full interactive desktop control. Public exposure is routinely abused.
+    remediation: "Place VNC behind a VPN; enforce strong auth. Never expose publicly."
+    references: ["https://attack.mitre.org/techniques/T1021/005/"]
+
+  - id: exposed-telnet
+    name: "Telnet exposed to the internet"
+    severity: critical
+    ports: [23]
+    services: [telnet]
+    rationale: >-
+      Telnet transmits credentials and sessions in cleartext and is trivially
+      intercepted. There is no safe reason to expose it publicly.
+    remediation: "Disable Telnet; use SSH. Block port 23 at the edge."
+
+  - id: exposed-rservices
+    name: "Legacy r-services (rsh/rlogin/rexec) exposed to the internet"
+    severity: critical
+    ports: [512, 513, 514]
+    services: [exec, login, shell, rsh, rlogin, rexec]
+    rationale: >-
+      The BSD r-services authenticate weakly and run in cleartext. Their presence
+      on a public host indicates a badly outdated, high-risk system.
+    remediation: "Disable r-services entirely; use SSH."
+
+  - id: exposed-ssh
+    name: "SSH exposed to the internet"
+    severity: high
+    ports: [22]
+    services: [ssh]
+    rationale: >-
+      Interactive SSH is remote shell access to the server — comparable in severity
+      to RDP when exposed publicly. OpenSSH brute-force, credential-stuffing, and
+      vulnerability exploitation are active attack vectors. An OpenSSH banner cannot
+      be distinguished from an SFTP-only config remotely; the safe default is to
+      treat it as shell access. If this port is SFTP-only, tag the asset
+      `ssh:sftp-only` to downgrade to Low.
+    remediation: >-
+      Restrict to known source IPs or require a VPN/ZTNA gateway. Enforce key-only
+      authentication (disable PasswordAuthentication). Keep the daemon patched and
+      monitor for unusual login patterns. If SFTP-only, disable interactive shell
+      access and tag the asset `ssh:sftp-only`.
+    references: ["https://attack.mitre.org/techniques/T1021/004/"]
+    # Banner-based severity overrides — checked after a port/service match.
+    # Patterns are case-insensitive substring matches against banner_snippet.
+    # Priority: tag_overrides > banner_overrides > rule severity.
+    banner_overrides:
+      - pattern: "Serv-U"
+        severity: low
+        label: "Serv-U SFTP Server — dedicated SFTP, reduced shell risk"
+      - pattern: "GoAnywhere"
+        severity: low
+        label: "GoAnywhere MFT — dedicated SFTP/MFT, reduced shell risk"
+      - pattern: "CompleteFTP"
+        severity: low
+        label: "CompleteFTP — dedicated SFTP, reduced shell risk"
+      - pattern: "mod_sftp"
+        severity: low
+        label: "ProFTPD mod_sftp — dedicated SFTP, reduced shell risk"
+      - pattern: "SFTPGo"
+        severity: low
+        label: "SFTPGo — dedicated SFTP, reduced shell risk"
+      - pattern: "WS_FTP"
+        severity: low
+        label: "WS_FTP Server — dedicated SFTP, reduced shell risk"
+      - pattern: "Bitvise"
+        severity: low
+        label: "Bitvise SSH Server — primarily SFTP; verify if shell is enabled"
+      - pattern: "dropbear"
+        severity: critical
+        label: "Dropbear SSH — embedded device (router/IoT), likely root shell"
+      - pattern: "OpenSSH_for_Windows"
+        severity: critical
+        label: "OpenSSH on Windows — administrative shell access highly likely"
+    # Asset-tag overrides — highest priority, user-declared intent.
+    tag_overrides:
+      - tag: "ssh:sftp-only"
+        severity: low
+        label: "SFTP-only — no interactive shell access"
+
+  - id: exposed-ldap
+    name: "LDAP directory service exposed to the internet"
+    severity: critical
+    ports: [389, 636, 3268, 3269]
+    services: [ldap, ldaps, globalcatldap, globalcatldapssl]
+    rationale: >-
+      LDAP exposes directory structure and accounts and often fronts Active
+      Directory. Port 389 is cleartext. Public exposure enables enumeration.
+    remediation: "Restrict LDAP/AD to internal networks."
+
+  - id: exposed-kerberos
+    name: "Kerberos (KDC) exposed to the internet"
+    severity: critical
+    ports: [88, 464]
+    services: [kerberos, kerberos-sec, kpasswd]
+    rationale: >-
+      A reachable KDC usually means a Domain Controller is internet-facing —
+      enabling AS-REP roasting and other pre-auth attacks against AD.
+    remediation: "Domain Controllers must never be exposed to the public internet."
+
+  - id: exposed-dns
+    name: "DNS server exposed to the internet"
+    severity: medium
+    ports: [53]
+    services: [dns, domain]
+    class: infrastructure
+    rationale: >-
+      A DNS server answering on the public internet is an infrastructure service
+      that rarely belongs there — finding one on a host that also serves web/app
+      traffic usually signals accidental exposure rather than an intentional
+      nameserver. Open recursive resolvers are abused as DNS amplification /
+      reflection DDoS vectors (a small spoofed query yields a large reply aimed at
+      a victim), and they enable cache poisoning and internal-name reconnaissance.
+    remediation: >-
+      Don't run public-facing DNS unless this host is an intentional authoritative
+      nameserver. If it is, disable recursion for external clients (authoritative-only);
+      otherwise restrict port 53 to internal networks / trusted resolvers and enable
+      response rate limiting (RRL) to blunt amplification abuse.
+    references: ["https://www.cisa.gov/news-events/alerts/2013/03/29/dns-amplification-attacks"]
+
+  # ── Databases & data stores — never expose to the public internet ───────────
+  - id: exposed-mssql
+    name: "Microsoft SQL Server exposed to the internet"
+    severity: critical
+    ports: [1433]
+    services: [ms-sql-s, mssql, ms-sql, microsoft-sql-server]
+    rationale: >-
+      A public database engine exposes the entire data tier to brute force and
+      unauthenticated-exposure attacks. MSSQL public exposure is a frequent breach root cause.
+    remediation: "Bind to internal interfaces only; front with a bastion/VPN."
+
+  - id: exposed-mysql
+    name: "MySQL / MariaDB exposed to the internet"
+    severity: critical
+    ports: [3306]
+    services: [mysql, mariadb]
+    rationale: "A public relational database is a direct path to bulk data theft and is widely scanned and brute-forced."
+    remediation: "Bind to localhost/private network; never expose 3306 publicly."
+
+  - id: exposed-postgres
+    name: "PostgreSQL exposed to the internet"
+    severity: critical
+    ports: [5432]
+    services: [postgresql, postgres]
+    rationale: "A public PostgreSQL instance exposes the data tier to brute force and known auth bypasses."
+    remediation: "Bind to private interfaces; use a bastion/VPN for admin access."
+
+  - id: exposed-mongodb
+    name: "MongoDB exposed to the internet"
+    severity: critical
+    ports: [27017, 27018, 27019]
+    services: [mongodb, mongod]
+    rationale: >-
+      MongoDB is notorious for unauthenticated public instances — the source of
+      many mass data leaks and ransom wipes. Public exposure is critical by default.
+    remediation: "Enable auth, bind to private interfaces, never expose publicly."
+
+  - id: exposed-redis
+    name: "Redis exposed to the internet"
+    severity: critical
+    ports: [6379]
+    services: [redis]
+    rationale: >-
+      Redis defaults to no authentication and a public instance allows data theft
+      and, via known techniques, remote code execution on the host.
+    remediation: "Enable requirepass/ACLs, bind to localhost, firewall 6379."
+
+  - id: exposed-elasticsearch
+    name: "Elasticsearch exposed to the internet"
+    severity: critical
+    ports: [9200, 9300]
+    services: [elasticsearch, elastic]
+    rationale: >-
+      Open Elasticsearch clusters have leaked enormous volumes of data. The HTTP
+      API (9200) often allows unauthenticated read/write when publicly reachable.
+    remediation: "Enable security/auth, bind privately, firewall 9200/9300."
+
+  - id: exposed-memcached
+    name: "Memcached exposed to the internet"
+    severity: high
+    ports: [11211]
+    services: [memcached, memcache]
+    rationale: >-
+      Public Memcached leaks cached application data and is a powerful UDP
+      reflection/amplification DDoS source. It has no authentication.
+    remediation: "Bind to localhost, disable UDP, firewall 11211."
+
+  - id: exposed-oracle-db
+    name: "Oracle Database / TNS listener exposed to the internet"
+    severity: critical
+    ports: [1521, 1522, 1525, 1526]
+    services: [oracle, oracle-tns, tns, ncube-lm]
+    rationale: "A public Oracle TNS listener exposes the data tier and historically allows SID enumeration and auth attacks."
+    remediation: "Restrict the TNS listener to internal networks."
+
+  - id: exposed-couchdb
+    name: "CouchDB exposed to the internet"
+    severity: high
+    ports: [5984, 6984]
+    services: [couchdb]
+    rationale: "Public CouchDB instances have leaked data and suffered unauthenticated RCE (e.g. CVE-2017-12635)."
+    remediation: "Require auth, bind privately, firewall 5984/6984."
+
+  - id: exposed-cassandra
+    name: "Cassandra exposed to the internet"
+    severity: high
+    ports: [9042]            # NOT 7000/7001 — inter-node ports collide with WebLogic etc.
+    services: [cassandra, cql]
+    rationale: "Public Cassandra exposes the data store and inter-node protocol to attack."
+    remediation: "Bind to private interfaces; firewall client and gossip ports."
+
+  - id: exposed-influxdb
+    name: "InfluxDB exposed to the internet"
+    severity: high
+    ports: [8086]
+    services: [influxdb]
+    rationale: "Public time-series databases leak operational/metrics data and may allow unauthenticated queries."
+    remediation: "Enable auth, bind privately, firewall 8086."
+
+  - id: exposed-neo4j
+    name: "Neo4j exposed to the internet"
+    severity: high
+    ports: [7474, 7687]
+    services: [neo4j, bolt]
+    rationale: "Public Neo4j (HTTP/Bolt) exposes the graph database and has had unauthenticated/default-credential exposure."
+    remediation: "Set strong auth, bind privately, firewall 7474/7687."
+
+  # ── Container / orchestration control planes — critical ─────────────────────
+  - id: exposed-docker-api
+    name: "Docker Engine API exposed to the internet"
+    severity: critical
+    ports: [2375, 2376]
+    services: [docker]
+    rationale: >-
+      The Docker API (2375 unencrypted, 2376 TLS) grants container and host
+      control. A public, unauthenticated 2375 is effectively instant host RCE.
+    remediation: "Never expose the Docker API; use SSH or mTLS-restricted access."
+
+  - id: exposed-kubernetes-api
+    name: "Kubernetes API server exposed to the internet"
+    severity: critical
+    ports: [6443]            # NOT 8080 — too reused-for-web to infer from the port
+    services: [kubernetes, kube-apiserver]
+    rationale: >-
+      A public Kubernetes API server is full cluster control. 6443 is a constant
+      credential/anon-access target; the legacy insecure 8080 API (no auth) is
+      caught only on confirmed service since the bare port is ambiguous.
+    remediation: "Restrict the API server to private networks / authorized CIDRs."
+
+  - id: exposed-kubelet
+    name: "Kubelet API exposed to the internet"
+    severity: critical
+    ports: [10250, 10255]
+    services: [kubelet]
+    rationale: "The Kubelet API can allow command execution in pods; public exposure (esp. read-only 10255) leaks cluster data."
+    remediation: "Firewall kubelet ports to the control plane only."
+
+  - id: exposed-etcd
+    name: "etcd exposed to the internet"
+    severity: critical
+    ports: [2379, 2380]
+    services: [etcd]
+    rationale: "etcd stores all Kubernetes cluster state and secrets. Public exposure can mean full cluster compromise."
+    remediation: "Restrict etcd to the control plane; enforce client cert auth."
+
+  # ── Message queues / big data — high ────────────────────────────────────────
+  - id: exposed-kafka
+    name: "Apache Kafka broker exposed to the internet"
+    severity: high
+    ports: [9092, 9093]
+    services: [kafka]
+    rationale: "Public Kafka brokers leak event/stream data and often run without auth."
+    remediation: "Enable SASL/TLS, bind privately, firewall broker ports."
+
+  - id: exposed-rabbitmq
+    name: "RabbitMQ exposed to the internet"
+    severity: high
+    ports: [5672, 15672]
+    services: [rabbitmq, amqp]
+    rationale: "Public RabbitMQ (AMQP 5672, mgmt UI 15672) exposes message data and frequently ships with the guest/guest default."
+    remediation: "Change defaults, bind privately, firewall 5672/15672."
+
+  - id: exposed-zookeeper
+    name: "ZooKeeper exposed to the internet"
+    severity: high
+    ports: [2181]
+    services: [zookeeper]
+    rationale: "ZooKeeper exposes distributed-system coordination data and is typically unauthenticated."
+    remediation: "Bind to private interfaces; firewall 2181."
+
+  # ── File transfer / monitoring — high ───────────────────────────────────────
+  - id: exposed-ftp
+    name: "FTP exposed to the internet"
+    severity: high
+    ports: [21]
+    services: [ftp]
+    rationale: >-
+      FTP transmits credentials and data in cleartext and frequently permits
+      anonymous access. Banner/version detection often reveals exploitable daemons.
+    remediation: "Replace with SFTP/FTPS; disable anonymous access; firewall 21."
+
+  - id: exposed-rsync
+    name: "rsync daemon exposed to the internet"
+    severity: high
+    ports: [873]
+    services: [rsync]
+    rationale: "Public rsync modules are commonly unauthenticated and allow bulk read/write of files."
+    remediation: "Require auth, bind privately, firewall 873."
+
+  - id: exposed-snmp
+    name: "SNMP exposed to the internet"
+    severity: high
+    udp_only: true
+    ports: [161]
+    services: [snmp]
+    rationale: >-
+      SNMP (UDP) leaks device configuration and topology via default community
+      strings (public/private) and is an amplification DDoS source.
+    remediation: "Use SNMPv3 with auth, restrict to management networks. (Detected only once UDP scanning exists.)"
+
+  - id: exposed-tftp
+    name: "TFTP exposed to the internet"
+    severity: high
+    udp_only: true
+    ports: [69]
+    services: [tftp]
+    rationale: "TFTP (UDP) has no authentication and often serves device configs/firmware — a direct data-leak surface."
+    remediation: "Disable public TFTP; restrict to provisioning networks. (Detected only once UDP scanning exists.)"
+
+  - id: exposed-netbios-ns
+    name: "NetBIOS Name Service exposed to the internet"
+    severity: high
+    udp_only: true
+    ports: [137]
+    services: [netbios-ns]
+    rationale: "NetBIOS Name Service (UDP) leaks host and domain naming information."
+    remediation: "Block 137 at the edge. (Detected only once UDP scanning exists.)"
+
+  # ── Remote display — high ───────────────────────────────────────────────────
+  - id: exposed-x11
+    name: "X11 display server exposed to the internet"
+    severity: high
+    ports: [6000, 6001, 6002, 6003, 6004, 6005, 6006]
+    services: [x11, x-window]
+    rationale: >-
+      An exposed X11 server can allow remote keystroke capture and screen reading
+      when access control is disabled (xhost +), a classic credential-theft vector.
+    remediation: "Disable TCP listening (-nolisten tcp); tunnel X11 over SSH only."

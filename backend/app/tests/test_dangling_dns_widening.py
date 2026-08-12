@@ -1,0 +1,318 @@
+"""Integration tests for dangling_dns_analyzer's target-scope widening and
+cadence/budget gate — planning#114, epic#81 Phase D follow-up L2.
+
+Two layers, per the issue's own test plan:
+  - Gate-computation tests call `_compute_gate_open_ids` directly against a
+    real DB session (needed for its "has an open finding" subquery) with
+    lightweight SimpleNamespace records — mirrors test_dangling_dns_routing.py's
+    convention, just DB-backed for the one query that requires it.
+  - End-to-end tests call `analyze_dangling_dns` itself against real
+    dns_record/ip_address assets + real findings (write_assets/write_findings),
+    with domain_affinity/origin_corroboration/takeover_fingerprint
+    monkeypatched — mirrors test_ownership_stamping.py's pattern.
+
+Run with:  python -m app.tests.test_dangling_dns_widening
+       or: pytest app/tests/test_dangling_dns_widening.py
+"""
+
+import uuid
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+from app.connectors.base import DiscoveredAsset, DiscoveredFinding
+from app.core.database import SessionLocal
+from app.models.asset_canonical import AssetCanonical
+from app.models.finding_canonical import FindingCanonical
+from app.models.target import Target, TargetType
+from app.services import dangling_dns_analyzer as dda
+from app.services import domain_affinity as da
+from app.services import origin_corroboration as oc
+from app.services import takeover_fingerprint as tf
+from app.services.asset_writer import write_assets
+from app.services.finding_writer import write_findings
+
+
+def _syn_record(stamp: str | None = None, cdn: str | None = None):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        value=f"syn-{uuid.uuid4().hex[:8]}.example.com",
+        asset_metadata={"record_type": "A", "content": "203.0.113.9", "cdn": cdn, "dangling_probe_at": stamp},
+    )
+
+
+def _cleanup(db, *, domains: list[str] = (), values: list[str] = (), target_ids: list = ()):
+    all_values = list(domains) + list(values)
+    if all_values:
+        db.query(FindingCanonical).filter(
+            FindingCanonical.asset_canonical_id.in_(
+                db.query(AssetCanonical.id).filter(AssetCanonical.value.in_(all_values))
+            )
+        ).delete(synchronize_session=False)
+        db.query(AssetCanonical).filter(AssetCanonical.value.in_(all_values)).delete(synchronize_session=False)
+    if target_ids:
+        db.query(Target).filter(Target.id.in_(target_ids)).delete(synchronize_session=False)
+    db.commit()
+
+
+# ── Gate computation ────────────────────────────────────────────────────────
+
+def test_touched_record_gate_open_regardless_of_stamp():
+    fresh = datetime.now(timezone.utc).isoformat()
+    record = _syn_record(stamp=fresh)
+    db = SessionLocal()
+    try:
+        ids = dda._compute_gate_open_ids(db, [record], touched_asset_ids={record.id})
+        assert record.id in ids
+    finally:
+        db.close()
+
+
+def test_cdn_scope_only_record_never_gate_open():
+    """Regression #2: a CDN-annotated scope-only record with no open
+    finding must never enter the due-candidate pool, regardless of stamp."""
+    record = _syn_record(stamp=None, cdn="cloudfront.net")
+    db = SessionLocal()
+    try:
+        ids = dda._compute_gate_open_ids(db, [record], touched_asset_ids=set())
+        assert record.id not in ids
+    finally:
+        db.close()
+
+
+def test_scope_only_fresh_stamp_not_due():
+    fresh = datetime.now(timezone.utc).isoformat()
+    record = _syn_record(stamp=fresh)
+    db = SessionLocal()
+    try:
+        ids = dda._compute_gate_open_ids(db, [record], touched_asset_ids=set())
+        assert record.id not in ids
+    finally:
+        db.close()
+
+
+def test_scope_only_stale_or_missing_stamp_is_due():
+    stale = (datetime.now(timezone.utc) - timedelta(days=_days_past_ttl())).isoformat()
+    stale_record = _syn_record(stamp=stale)
+    never_stamped = _syn_record(stamp=None)
+    db = SessionLocal()
+    try:
+        ids = dda._compute_gate_open_ids(db, [stale_record, never_stamped], touched_asset_ids=set())
+        assert stale_record.id in ids
+        assert never_stamped.id in ids
+    finally:
+        db.close()
+
+
+def _days_past_ttl() -> int:
+    return dda._DANGLING_PROBE_TTL_DAYS + 1
+
+
+def test_budget_caps_scope_only_probes_oldest_stamped_first():
+    now = datetime.now(timezone.utc)
+    budget = dda._DANGLING_PROBE_BUDGET
+    # budget + 3 candidates, all past TTL, each stamped one minute apart —
+    # the 3 NEWEST (least stale) must lose out to the budget cap.
+    records = [
+        _syn_record(stamp=(now - timedelta(days=_days_past_ttl(), minutes=i)).isoformat())
+        for i in range(budget + 3)
+    ]
+    # records[0] has the smallest `minutes` subtracted -> newest of the stale set;
+    # records[-1] has the largest -> oldest. Oldest-first means records[-1..] win.
+    db = SessionLocal()
+    try:
+        ids = dda._compute_gate_open_ids(db, records, touched_asset_ids=set())
+        assert len(ids) == budget
+        oldest = records[3:]  # the budget-many oldest-stamped records
+        newest = records[:3]  # the 3 that should lose to the cap
+        assert all(r.id in ids for r in oldest)
+        assert all(r.id not in ids for r in newest)
+    finally:
+        db.close()
+
+
+def test_open_finding_bypasses_gate_regardless_of_fresh_stamp():
+    suffix = uuid.uuid4().hex[:8]
+    value = f"open-finding-{suffix}.example.com"
+    db = SessionLocal()
+    try:
+        write_assets(db, uuid.uuid4(), [
+            DiscoveredAsset(asset_type="dns_record", value=value, parent_value=None,
+                             asset_metadata={"record_type": "A", "content": "203.0.113.20"}),
+        ])
+        asset = db.query(AssetCanonical).filter(AssetCanonical.value == value).one()
+        # Very fresh stamp — would normally NOT be due — but an open finding
+        # must bypass the gate unconditionally regardless.
+        asset.asset_metadata = {**asset.asset_metadata, "dangling_probe_at": datetime.now(timezone.utc).isoformat()}
+        db.commit()
+
+        write_findings(db, uuid.uuid4(), [
+            DiscoveredFinding(
+                asset_value=value, asset_id=asset.id, finding_type="dangling_dns", source="constellus",
+                severity="medium", title="t", description="d", detail={"fingerprint": "dangling-dns"},
+            ),
+        ])
+
+        ids = dda._compute_gate_open_ids(db, [asset], touched_asset_ids=set())
+        assert asset.id in ids
+    finally:
+        _cleanup(db, values=[value])
+        db.close()
+
+
+# ── End-to-end analyze_dangling_dns ─────────────────────────────────────────
+
+def test_scope_only_record_gets_probed_and_stamped_with_no_touched_assets():
+    """The whole reason planning#114 exists: a domain target's dns_record
+    that no connector touched this run must still get evaluated via scope,
+    not silently skipped the way touched-only selection would leave it."""
+    suffix = uuid.uuid4().hex[:8]
+    domain = f"widen-{suffix}.example.com"
+    da.resolve_origin = lambda db, record: "203.0.113.30"
+    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: da.AffinityResult(
+        hostname=hostname, origin_ip=origin_ip, verdict=da.VERDICT_AFFINE, signals=[], matrix={"443": {}},
+    )
+    tf.find_takeover_signal = lambda db, asset_id, since: None
+
+    db = SessionLocal()
+    target_ids: list = []
+    try:
+        target = Target(id=uuid.uuid4(), type=TargetType.DOMAIN, value=domain, verified=True)
+        db.add(target)
+        db.commit()
+        target_ids.append(target.id)
+
+        write_assets(db, uuid.uuid4(), [
+            DiscoveredAsset(asset_type="dns_record", value=domain, parent_value=None,
+                             asset_metadata={"record_type": "A", "content": "203.0.113.30"}),
+        ])
+        asset = db.query(AssetCanonical).filter(AssetCanonical.value == domain).one()
+        assert (asset.asset_metadata or {}).get("dangling_probe_at") is None
+
+        dda.analyze_dangling_dns(
+            db, uuid.uuid4(), {"domains": [domain], "ip_ranges": []}, set(),
+            since=datetime.now(timezone.utc) - timedelta(minutes=1),
+        )
+
+        db.refresh(asset)
+        assert asset.asset_metadata.get("dangling_probe_at") is not None, (
+            "planning#114: a scope-only, never-touched record must still get "
+            "probed and stamped via target_scope, not silently skipped"
+        )
+    finally:
+        _cleanup(db, domains=[domain], target_ids=target_ids)
+        db.close()
+
+
+def test_worker_down_does_not_resolve_backdated_open_finding():
+    """Regression #1, end-to-end: an empty probe matrix (scanner-worker
+    unreachable) must not resolve an open finding just because it's past
+    the grace window — the record was never actually judged clean."""
+    suffix = uuid.uuid4().hex[:8]
+    value = f"worker-down-{suffix}.example.com"
+    da.resolve_origin = lambda db, record: "203.0.113.40"
+    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: da.AffinityResult(
+        hostname=hostname, origin_ip=origin_ip, verdict=da.VERDICT_INDETERMINATE, signals=[], matrix={},
+    )
+    tf.find_takeover_signal = lambda db, asset_id, since: None
+
+    db = SessionLocal()
+    try:
+        write_assets(db, uuid.uuid4(), [
+            DiscoveredAsset(asset_type="dns_record", value=value, parent_value=None,
+                             asset_metadata={"record_type": "A", "content": "203.0.113.40"}),
+        ])
+        asset = db.query(AssetCanonical).filter(AssetCanonical.value == value).one()
+
+        write_findings(db, uuid.uuid4(), [
+            DiscoveredFinding(
+                asset_value=value, asset_id=asset.id, finding_type="dangling_dns", source="constellus",
+                severity="medium", title="t", description="d", detail={"fingerprint": "dangling-dns"},
+            ),
+        ])
+        finding = db.query(FindingCanonical).filter(FindingCanonical.asset_canonical_id == asset.id).one()
+        finding.last_seen_at = datetime.now(timezone.utc) - timedelta(days=dda._DANGLING_GRACE_DAYS + 1)
+        db.commit()
+
+        dda.analyze_dangling_dns(
+            db, uuid.uuid4(), {"domains": [], "ip_ranges": []}, {asset.id},
+            since=datetime.now(timezone.utc) - timedelta(minutes=1),
+        )
+
+        db.refresh(finding)
+        db.refresh(asset)
+        assert finding.state == "open", "an empty probe matrix must never resolve an open finding"
+        assert asset.asset_metadata.get("dangling_probe_at") is None, (
+            "an empty matrix produced no evidence — must not be stamped as probed"
+        )
+    finally:
+        _cleanup(db, values=[value])
+        db.close()
+
+
+def test_per_record_exception_is_caught_and_does_not_abort_the_batch():
+    """One record's evaluation raising must not prevent the rest of the
+    batch from being processed (planning#114 fail-soft requirement)."""
+    suffix = uuid.uuid4().hex[:8]
+    bad_value = f"raises-{suffix}.example.com"
+    good_value = f"good-{suffix}.example.com"
+
+    def _resolve_origin(db, record):
+        if record.value == bad_value:
+            raise RuntimeError("simulated failure")
+        return "203.0.113.50"
+
+    da.resolve_origin = _resolve_origin
+    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: da.AffinityResult(
+        hostname=hostname, origin_ip=origin_ip, verdict=da.VERDICT_AFFINE, signals=[], matrix={"443": {}},
+    )
+    tf.find_takeover_signal = lambda db, asset_id, since: None
+
+    db = SessionLocal()
+    try:
+        write_assets(db, uuid.uuid4(), [
+            DiscoveredAsset(asset_type="dns_record", value=bad_value, parent_value=None,
+                             asset_metadata={"record_type": "A", "content": "203.0.113.51"}),
+            DiscoveredAsset(asset_type="dns_record", value=good_value, parent_value=None,
+                             asset_metadata={"record_type": "A", "content": "203.0.113.50"}),
+        ])
+        bad_asset = db.query(AssetCanonical).filter(AssetCanonical.value == bad_value).one()
+        good_asset = db.query(AssetCanonical).filter(AssetCanonical.value == good_value).one()
+
+        dda.analyze_dangling_dns(
+            db, uuid.uuid4(), {"domains": [], "ip_ranges": []}, {bad_asset.id, good_asset.id},
+            since=datetime.now(timezone.utc) - timedelta(minutes=1),
+        )
+
+        db.refresh(good_asset)
+        assert good_asset.asset_metadata.get("dangling_probe_at") is not None, (
+            "the good record must still be evaluated despite the bad record raising"
+        )
+    finally:
+        _cleanup(db, values=[bad_value, good_value])
+        db.close()
+
+
+def _run():
+    tests = [
+        test_touched_record_gate_open_regardless_of_stamp,
+        test_cdn_scope_only_record_never_gate_open,
+        test_scope_only_fresh_stamp_not_due,
+        test_scope_only_stale_or_missing_stamp_is_due,
+        test_budget_caps_scope_only_probes_oldest_stamped_first,
+        test_open_finding_bypasses_gate_regardless_of_fresh_stamp,
+        test_scope_only_record_gets_probed_and_stamped_with_no_touched_assets,
+        test_worker_down_does_not_resolve_backdated_open_finding,
+        test_per_record_exception_is_caught_and_does_not_abort_the_batch,
+    ]
+    for fn in tests:
+        try:
+            fn()
+            print(f"OK: {fn.__name__}")
+        except AssertionError as exc:
+            print(f"FAIL: {fn.__name__}: {exc}")
+            raise SystemExit(1)
+    print("ALL PASS")
+
+
+if __name__ == "__main__":
+    _run()

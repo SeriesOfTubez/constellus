@@ -1,0 +1,53 @@
+{
+  "name": "constellus",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b",
+    "lint": "tsc -b"
+  },
+  "dependencies": {
+    "@hookform/resolvers": "^3.9.0",
+    "@radix-ui/react-avatar": "^1.2.6",
+    "@radix-ui/react-dialog": "^1.1.23",
+    "@radix-ui/react-dropdown-menu": "^2.1.24",
+    "@radix-ui/react-label": "^2.1.11",
+    "@radix-ui/react-progress": "^1.1.16",
+    "@radix-ui/react-select": "^2.3.7",
+    "@radix-ui/react-separator": "^1.1.15",
+    "@radix-ui/react-slot": "^1.3.3",
+    "@radix-ui/react-switch": "^1.3.7",
+    "@radix-ui/react-tabs": "^1.1.21",
+    "@radix-ui/react-toast": "^1.2.23",
+    "@radix-ui/react-tooltip": "^1.2.16",
+    "@tanstack/react-query": "^5.101.4",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.28.0",
+    "punycode": "^2.3.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.8",
+    "react-hook-form": "^7.84.0",
+    "react-router-dom": "^7.18.2",
+    "sonner": "^2.0.7",
+    "tailwind-merge": "^3.6.0",
+    "tldts": "^7.4.10",
+    "zod": "^4.4.3",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^25.9.5",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "tailwindcss": "^4.3.3",
+    "tw-animate-css": "^1.0.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.2.0"
+  }
+}
