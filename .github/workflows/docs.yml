@@ -27,15 +27,8 @@ jobs:
       - name: Build docs (strict — fail on warnings)
         run: mkdocs build --strict
 
-  publish:
-    name: Trigger ReadTheDocs Build
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-    steps:
-      - name: Trigger RTD build
-        run: |
-          curl -X POST \
-            -H "Authorization: Token ${{ secrets.READTHEDOCS_TOKEN }}" \
-            https://readthedocs.org/api/v3/projects/constellus/versions/latest/builds/
+  # No separate "trigger RTD" job: Read the Docs' own GitHub App integration
+  # rebuilds automatically on every push to dev via its own webhook — a
+  # manual API-triggered rebuild here would be redundant, and worse, a
+  # misleading one (curl doesn't fail on an HTTP error without -f, so an
+  # invalid/missing token would silently "succeed" here while doing nothing).

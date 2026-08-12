@@ -26,3 +26,7 @@ Constellus discovers, correlates, and risk-scores your public-facing infrastruct
 - [Shared infrastructure & dangling DNS](architecture/shared-infra-verification.md)
 - [Authentication & SSO](architecture/authentication.md)
 - [GitHub repository](https://github.com/SeriesOfTubez/constellus)
+
+---
+
+*This site rebuilds automatically on every push to `dev`.*
