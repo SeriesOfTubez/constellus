@@ -21,11 +21,16 @@ repos:
     hooks:
       - id: gitleaks
 
-  # Dockerfile linting
+  # Dockerfile linting — matches security.yml's CI invocation: ignore DL3008
+  # (impractical on Debian, see .hadolint.yaml) and only block on real errors,
+  # not style warnings. The hadolint-docker hook doesn't auto-load
+  # .hadolint.yaml the way the raw binary does in CI, so this is spelled out
+  # explicitly rather than relying on the config file alone.
   - repo: https://github.com/hadolint/hadolint
     rev: v2.14.0
     hooks:
       - id: hadolint-docker
+        args: ["--ignore", "DL3008", "--failure-threshold", "error"]
 
   # Block commits/messages that reference a domain, IP, or CIDR currently
   # configured as a live Target in the dev DB — see scripts/refresh_target_denylist.py
