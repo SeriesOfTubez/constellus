@@ -4,3 +4,40 @@ useDefault = true
 [[allowlists]]
 description = "Example env file — contains placeholder values only, no real secrets"
 paths = ['''.env.example''']
+
+# gitleaks' default ruleset only covers credential-shaped secrets (API keys,
+# tokens, private keys) — it has no concept of "customer domain" or "real IP."
+# These two rules close that gap for the classes of data that actually leaked
+# here (2026-08): a real customer's domain/subdomains and two real origin IPs,
+# none of which look anything like a credential.
+
+[[rules]]
+id = "non-reserved-public-ipv4"
+description = "Public (non-reserved) IPv4 literal — likely real infrastructure, not test/example data. Use RFC 5737 documentation addresses (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) for examples instead."
+regex = '''\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'''
+
+  [rules.allowlist]
+  description = "Private (RFC 1918), loopback, link-local, multicast/reserved, RFC 5737 documentation ranges, and our own well-known public DNS resolvers"
+  regexes = [
+    '''^10\.''',
+    '''^172\.(1[6-9]|2[0-9]|3[01])\.''',
+    '''^192\.168\.''',
+    '''^127\.''',
+    '''^169\.254\.''',
+    '''^192\.0\.2\.''',
+    '''^198\.51\.100\.''',
+    '''^203\.0\.113\.''',
+    '''^0\.0\.0\.0$''',
+    '''^255\.255\.255\.255$''',
+    '''^1\.1\.1\.1$''',
+    '''^1\.0\.0\.1$''',
+    '''^8\.8\.8\.8$''',
+    '''^8\.8\.4\.4$''',
+    '''^(22[4-9]|23[0-9])\.''',
+    '''^(24[0-9]|25[0-5])\.''',
+  ]
+
+[[rules]]
+id = "known-leaked-customer-identifiers"
+description = "Specific real customer domain/identifiers that leaked into this repo's history (2026-08) — must never reappear, e.g. from an old chat log, backup, or copy-paste"
+regex = '''(?i)\b(scinomix\.com|qxo\.com|kodiakbp\.com|stuffed-foods\.com|kodiak-mobile-api-prod)\b'''
