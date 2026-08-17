@@ -103,11 +103,15 @@ def _register_ct_refresher() -> None:
 
 
 def _register_epss_refresher() -> None:
-    """Sample EPSS scores for all active CVEs every 12h.
+    """Sample EPSS scores for all active CVEs every 12h, then prune expired rows.
 
     FIRST.org publishes once per day; 12h polling catches same-day score
     changes quickly while the PK in epss_history deduplicates to one row
     per (cve_id, calendar day) automatically.
+
+    Retention rides on the same tick rather than a separate job — pruning is
+    idempotent, so running it twice a day is harmless, and it replaces the
+    TimescaleDB retention policy removed from migration 0033.
     """
     if _scheduler is None:
         return
@@ -132,6 +136,14 @@ def _run_epss_refresh() -> None:
         log.info("EPSS history refresh complete — %d rows upserted", count)
     except Exception:
         log.error("EPSS history refresh failed", exc_info=True)
+    # Retention runs even when the refresh failed — an upstream FIRST.org
+    # outage must not let the table grow unbounded. Its own session because a
+    # failed refresh may have left this one needing a rollback.
+    try:
+        db.rollback()
+        epss_history_service.prune_expired(db)
+    except Exception:
+        log.error("EPSS history retention failed", exc_info=True)
     finally:
         db.close()
 

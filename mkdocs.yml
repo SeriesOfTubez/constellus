@@ -38,6 +38,7 @@ nav:
     - Quick Start: getting-started/quickstart.md
     - Configuration: getting-started/configuration.md
     - Docker Compose: getting-started/docker.md
+    - Database Requirements: getting-started/database-requirements.md
   - Connectors:
     - Overview: connectors/overview.md
     - Cloudflare: connectors/cloudflare.md
@@ -58,6 +59,7 @@ nav:
   - Development:
     - Contributing: development/contributing.md
     - Adding a Connector: development/adding-connector.md
+    - Reviewing Dependabot PRs: development/dependabot-review.md
 
 plugins:
   - search
