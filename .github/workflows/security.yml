@@ -152,7 +152,12 @@ jobs:
     timeout-minutes: 10
     services:
       db:
-        image: timescale/timescaledb:latest-pg16
+        # Stock PostgreSQL, matching docker-compose. Deliberately NOT the
+        # timescaledb image: Constellus requires no extensions, and running
+        # the test gate on a build where timescaledb is unavailable is what
+        # keeps that true. See app/tests/test_database_requirements.py and
+        # docs/getting-started/database-requirements.md.
+        image: postgres:18
         env:
           POSTGRES_USER: constellus
           POSTGRES_PASSWORD: constellus

@@ -1,7 +1,7 @@
 """
 EPSS score history service.
 
-Maintains the epss_history hypertable — one row per (cve_id, calendar day).
+Maintains the epss_history table — one row per (cve_id, calendar day).
 Queried by:
   - cve_enrichment: seeds today's sample + backfills 12 weekly points for new CVEs
   - scheduler: 12h periodic refresh for all CVEs currently in active findings
@@ -9,6 +9,11 @@ Queried by:
 
 FIRST.org publishes one data set per calendar day. We poll every 12h to
 catch same-day updates quickly; the PK deduplicates to one row per day.
+
+Retention: the table was originally a TimescaleDB hypertable whose 84-day
+window was enforced by `add_retention_policy`. That call was removed so the
+schema runs on stock PostgreSQL with no extensions; `prune_expired` below is
+the replacement, run daily by the scheduler.
 """
 
 import logging
@@ -25,9 +30,43 @@ log = logging.getLogger(__name__)
 _EPSS_URL = "https://api.first.org/data/v1/epss"
 _BACKFILL_WEEKS = 12
 _CHUNK = 100
+# Rolling window kept on disk. Must stay >= _BACKFILL_WEEKS so a freshly
+# backfilled CVE isn't pruned back down on the next retention pass.
+_RETENTION_DAYS = 84
 
 
 # ── public API ────────────────────────────────────────────────────────────────
+
+def retention_cutoff(retention_days: int = _RETENTION_DAYS) -> datetime:
+    """Midnight UTC of the oldest day the rolling window keeps.
+
+    Deliberately derived from the *UTC* date, not `date.today()`. Rows are
+    stored at midnight UTC, so a local date shifts the cutoff by the host's
+    offset — east of UTC that prunes a day early, west of it a day of expired
+    rows survives every pass. Split out from prune_expired so the boundary is
+    testable without a database.
+    """
+    today_utc = datetime.now(timezone.utc).date()
+    return _midnight_utc(today_utc - timedelta(days=retention_days))
+
+
+def prune_expired(db: Session, retention_days: int = _RETENTION_DAYS) -> int:
+    """Delete samples older than the rolling window. Returns rows removed.
+
+    Replaces the TimescaleDB retention policy dropped with the hypertable.
+    The table is bounded and low-volume (one row per tracked CVE per day), so
+    a scheduled DELETE is sufficient — no partitioning needed at this grain.
+    """
+    cutoff = retention_cutoff(retention_days)
+    result = db.execute(
+        text("DELETE FROM epss_history WHERE recorded_date < :cutoff"),
+        {"cutoff": cutoff},
+    )
+    db.commit()
+    removed = result.rowcount or 0
+    if removed:
+        log.info("epss_history retention: pruned %d row(s) older than %s", removed, cutoff.date())
+    return removed
 
 def upsert_current(db: Session, cve_ids: Sequence[str]) -> int:
     """Fetch today's EPSS for cve_ids and upsert into epss_history."""

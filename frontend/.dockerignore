@@ -1,0 +1,29 @@
+# Keep the host's install out of the build context.
+#
+# The Dockerfile runs `npm ci` from package-lock.json and then `COPY . .` for
+# the source. Without this file that second COPY drops the host's node_modules
+# straight over the freshly installed one, so the image ends up running
+# whatever happens to be on the developer's machine instead of what the
+# lockfile pins — silently, and differently per developer. It also risks
+# copying Windows/macOS native binaries into a Linux image.
+node_modules
+.vite
+
+# Build output — the image serves the Vite dev server, and prod builds are
+# produced inside the image, never copied in.
+dist
+build
+
+# Local-only
+.env
+.env.*
+*.local
+npm-debug.log*
+yarn-error.log*
+.DS_Store
+
+# Never needed at runtime
+.git
+.gitignore
+coverage
+*.tsbuildinfo

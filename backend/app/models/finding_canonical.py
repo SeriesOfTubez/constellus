@@ -49,6 +49,11 @@ class FindingCanonical(Base):
     cvss_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     cvss_vector: Mapped[str | None] = mapped_column(Text, nullable=True)
     cvss_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Who produced cvss_score — 'nvd' | 'cna' | a connector id. NULL = unknown
+    # provenance, never a default. Since NVD stopped routinely re-scoring CVEs
+    # a CNA had already scored (April 2026), cvss_version alone can't answer
+    # this. Same trust-signal role ssvc_source plays for SSVC (migration 0038).
+    cvss_source: Mapped[str | None] = mapped_column(Text, nullable=True)
     epss_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     epss_percentile: Mapped[float | None] = mapped_column(Float, nullable=True)
     kev: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

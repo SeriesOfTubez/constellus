@@ -1,5 +1,12 @@
 """initial schema
 
+The `assets`, `findings` and `audit_logs` tables originally became TimescaleDB
+hypertables here. Those `create_hypertable()` calls were removed so the chain
+runs on stock PostgreSQL with no extensions — see the database requirements doc.
+`assets` and `findings` are dropped by 0025 regardless; `audit_logs` remains a
+plain table. The composite primary keys (`id, occurred_at` etc.) are left as-is:
+they were shaped for the hypertable partition key and are harmless without it.
+
 Revision ID: 0001
 Revises:
 Create Date: 2026-05-03
@@ -60,7 +67,6 @@ def upgrade() -> None:
     op.create_index("ix_assets_value", "assets", ["value"])
     op.create_index("ix_assets_asset_type", "assets", ["asset_type"])
     op.create_index("ix_assets_discovered_at", "assets", ["discovered_at"])
-    op.execute("SELECT create_hypertable('assets', 'discovered_at', if_not_exists => TRUE)")
 
     op.create_table(
         "findings",
@@ -84,7 +90,6 @@ def upgrade() -> None:
     op.create_index("ix_findings_severity", "findings", ["severity"])
     op.create_index("ix_findings_state", "findings", ["state"])
     op.create_index("ix_findings_discovered_at", "findings", ["discovered_at"])
-    op.execute("SELECT create_hypertable('findings', 'discovered_at', if_not_exists => TRUE)")
 
     op.create_table(
         "audit_logs",
@@ -101,7 +106,6 @@ def upgrade() -> None:
     op.create_index("ix_audit_logs_user_id", "audit_logs", ["user_id"])
     op.create_index("ix_audit_logs_action", "audit_logs", ["action"])
     op.create_index("ix_audit_logs_occurred_at", "audit_logs", ["occurred_at"])
-    op.execute("SELECT create_hypertable('audit_logs', 'occurred_at', if_not_exists => TRUE)")
 
 
 def downgrade() -> None:

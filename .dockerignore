@@ -1,0 +1,43 @@
+# Build context for backend/Dockerfile, whose context is the repo root.
+#
+# The backend and scanner-worker Dockerfiles use narrow, explicit COPYs
+# (backend/app/, backend/alembic/, main.py) rather than `COPY . .`, so this
+# file is about build speed and image hygiene rather than correctness — it
+# keeps virtualenvs, caches and secrets out of the context entirely.
+# See frontend/.dockerignore for the case where it *is* correctness.
+
+# Python local state
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+
+# Node
+node_modules
+frontend/dist
+
+# VCS and tooling
+.git
+.github
+.gitignore
+.pre-commit-config.yaml
+
+# Local config and secrets — must never enter an image layer
+.env
+.env.*
+!.env.example
+
+# Docs and design assets are not needed to build or run
+docs
+design
+site
+
+# Editor / OS noise
+.vscode
+.idea
+.DS_Store
+Thumbs.db

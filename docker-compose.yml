@@ -67,7 +67,12 @@ services:
       - app
 
   db:
-    image: timescale/timescaledb:latest-pg16
+    # Stock PostgreSQL — Constellus requires no extensions. Was
+    # timescale/timescaledb:latest-pg16 until the hypertables were removed.
+    # Keep this in lockstep with the `db` service container in
+    # .github/workflows/security.yml, or CI stops testing what dev runs.
+    # See docs/getting-started/database-requirements.md.
+    image: postgres:18
     ports:
       - "5432:5432"
     environment:
@@ -75,7 +80,12 @@ services:
       POSTGRES_PASSWORD: constellus
       POSTGRES_DB: constellus
     volumes:
-      - db_data:/var/lib/postgresql/data
+      # NOT /var/lib/postgresql/data. From PostgreSQL 18 the official images
+      # store data in major-version-specific subdirectories (…/18/docker) so
+      # `pg_upgrade --link` can work across versions without crossing a mount
+      # boundary. Mounting the old path makes the image refuse to start rather
+      # than silently orphan the data. See docker-library/postgres#1259.
+      - db_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U constellus"]
       interval: 5s
