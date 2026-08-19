@@ -18,6 +18,12 @@ from app.models.asset_edge import AssetEdge, EDGE_TYPES, NODE_TYPES
 from app.models.ct_query_cache import CTQueryCache
 from app.models.notification_rule import NotificationRule
 from app.models.cpe_cve_range import CpeCveRange
+from app.models.observer import Observer, OBSERVER_KINDS, OBSERVER_TRUST, OBSERVER_ADDRESSING
+from app.models.claim_type import ClaimType
+from app.models.claim import AssetClaim, ClaimHistory, CLAIM_TYPES
+from app.models.asset_state import AssetState, ESTATE_VALUES
+from app.models.edge_relationship import EdgeTypeRelationship, EDGE_RELATIONSHIPS
+from app.models.authorisation_decision import AuthorisationDecision
 
 __all__ = [
     "User", "UserRole",
@@ -42,4 +48,17 @@ __all__ = [
     "CTQueryCache",
     "NotificationRule",
     "CpeCveRange",
+    "Observer",
+    "OBSERVER_KINDS",
+    "OBSERVER_TRUST",
+    "OBSERVER_ADDRESSING",
+    "ClaimType",
+    "AssetClaim",
+    "ClaimHistory",
+    "CLAIM_TYPES",
+    "AssetState",
+    "ESTATE_VALUES",
+    "EdgeTypeRelationship",
+    "EDGE_RELATIONSHIPS",
+    "AuthorisationDecision",
 ]

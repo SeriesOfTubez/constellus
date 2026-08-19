@@ -32,6 +32,10 @@ class DiscoveredAsset:
     value: str
     parent_value: str | None = None
     asset_metadata: dict[str, Any] = field(default_factory=dict)
+    # Stable observer slug (planning#142 L1) — matches Observer.name once a
+    # producer starts setting it. Additive-only: defaults to None so every
+    # existing producer keeps working unchanged until it opts in.
+    observer: str | None = None
 
 
 @dataclass
