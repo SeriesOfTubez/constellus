@@ -1,12 +1,31 @@
 """Tests for app.services.cpe_normalizer.
 
-Pure-assert style: no pytest dependency required.
+Pure-assert style for the parsing helpers below (no pytest dependency
+required). The `enrich_cpe` claim-emission section further down (planning#144
+L3c-1) needs a real DB — same convention as test_projector.py/
+test_hosting_classifier.py: a persisted ip_address AssetCanonical row to
+resolve the "cpe_normalizer" observer + asset_claims round-trip, run through
+`projector.project` to prove `software` actually lands on
+asset_state.open_ports alongside naabu's own fields.
+
 Run with:  python -m app.tests.test_cpe_normalizer       (from /app)
        or: pytest app/tests/test_cpe_normalizer.py        (if pytest installed)
 """
 
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy.orm.attributes import flag_modified
+
+from app.core.database import SessionLocal
+from app.models.asset_canonical import AssetCanonical
+from app.models.asset_state import AssetState
+from app.models.claim import AssetClaim, ClaimHistory
+from app.models.observer import Observer
+from app.services import projector
 from app.services.cpe_normalizer import (
     build_cpe23,
+    enrich_cpe,
     normalize_port_software,
     _parse_cpe_string,
 )
@@ -127,6 +146,201 @@ def test_no_software_signal():
 
 def test_build_cpe23():
     assert build_cpe23("php", "php", "7.4.16") == "cpe:2.3:a:php:php:7.4.16:*:*:*:*:*:*:*"
+
+
+# ── enrich_cpe: port_observation claim emission (planning#144 L3c-1, real DB) ─
+#
+# `enrich_cpe` writes software[] onto asset_metadata.open_ports entries (kept
+# as-is — the API still serializes it) AND upserts a "cpe_normalizer"
+# port_observation claim carrying just {port, software} for ports with
+# software. The projector's `_merge_open_ports` folds that claim's
+# contribution in by port number alongside whatever naabu already claimed
+# for the same port, so `software` lands on the same asset_state.open_ports
+# entry naabu populated (incl. naabu's own last_seen_at) — proven end-to-end
+# below via projector.project(), not just by inspecting the claim row.
+
+def _observer_id(db, name: str) -> uuid.UUID:
+    return db.query(Observer).filter(Observer.name == name).one().id
+
+
+def _make_ip_asset(db, ip: str, open_ports: list[dict]) -> AssetCanonical:
+    now = datetime.now(timezone.utc)
+    row = AssetCanonical(
+        id=uuid.uuid4(), asset_type="ip_address", value=ip, parent_value=None,
+        first_seen_at=now, last_seen_at=now,
+        asset_metadata={"sources": ["naabu"], "open_ports": open_ports},
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def _add_naabu_port_claim(db, asset_id, ports: list[dict], last_observed_at: datetime) -> None:
+    """Insert-or-update the naabu port_observation claim — a plain insert
+    would violate asset_claims' (asset, observer, claim_type) unique
+    constraint on the second call for the same asset (the software-removal
+    test re-seeds naabu's claim to simulate a later scan)."""
+    observer_id = _observer_id(db, "naabu")
+    existing = (
+        db.query(AssetClaim)
+        .filter(
+            AssetClaim.asset_canonical_id == asset_id,
+            AssetClaim.observer_id == observer_id,
+            AssetClaim.claim_type == "port_observation",
+        )
+        .first()
+    )
+    if existing is None:
+        db.add(AssetClaim(
+            asset_canonical_id=asset_id,
+            observer_id=observer_id,
+            claim_type="port_observation",
+            claim_value={"ports": ports},
+            evidence={},
+            first_observed_at=last_observed_at,
+            last_observed_at=last_observed_at,
+        ))
+    else:
+        existing.claim_value = {"ports": ports}
+        existing.last_observed_at = last_observed_at
+    db.commit()
+
+
+def _cpe_claim(db, asset_id) -> AssetClaim | None:
+    return (
+        db.query(AssetClaim)
+        .filter(
+            AssetClaim.asset_canonical_id == asset_id,
+            AssetClaim.observer_id == _observer_id(db, "cpe_normalizer"),
+            AssetClaim.claim_type == "port_observation",
+        )
+        .first()
+    )
+
+
+def _cleanup(value: str) -> None:
+    db = SessionLocal()
+    try:
+        rows = db.query(AssetCanonical).filter(AssetCanonical.value == value).all()
+        ids = [r.id for r in rows]
+        if ids:
+            db.query(ClaimHistory).filter(ClaimHistory.asset_canonical_id.in_(ids)).delete(synchronize_session=False)
+        db.query(AssetCanonical).filter(AssetCanonical.value == value).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_enrich_cpe_claim_merges_with_naabu_into_projected_open_ports():
+    """OpenSSH banner on port 22, naabu-observed -> enrich_cpe's
+    cpe_normalizer claim carries {port: 22, software: [...]}; projector.project
+    folds it onto the SAME open_ports entry naabu's own claim populated, so
+    the projected entry carries BOTH naabu's fields (protocol, last_seen_at)
+    AND software. Also checks the asset_metadata mutation still happens."""
+    ip = f"203.0.113.{20 + (uuid.uuid4().int % 40)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        port_entry = {
+            "port": 22, "protocol": "tcp", "service": "ssh",
+            "service_version": "OpenSSH 8.9p1 Ubuntu-3ubuntu0.1",
+            "last_seen_at": now.isoformat(),
+        }
+        asset = _make_ip_asset(db, ip, [dict(port_entry)])
+        _add_naabu_port_claim(db, asset.id, [dict(port_entry)], now)
+
+        enrich_cpe(db, {asset.id})
+
+        # asset_metadata mutation still happens (additive, kept for the API).
+        db.refresh(asset)
+        meta_entry = asset.asset_metadata["open_ports"][0]
+        assert meta_entry.get("software"), meta_entry
+        assert meta_entry["software"][0]["product"] == "openssh", meta_entry
+
+        # cpe_normalizer's own claim carries just {port, software}.
+        claim = _cpe_claim(db, asset.id)
+        assert claim is not None
+        assert claim.claim_value == {
+            "ports": [{"port": 22, "software": meta_entry["software"]}]
+        }, claim.claim_value
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+
+        state = db.query(AssetState).filter(AssetState.asset_canonical_id == asset.id).one()
+        by_port = {p["port"]: p for p in state.open_ports}
+        assert set(by_port) == {22}, by_port
+        entry = by_port[22]
+        # naabu's own fields survive the merge.
+        assert entry["protocol"] == "tcp", entry
+        assert entry["last_seen_at"] == now.isoformat(), entry
+        # cpe_normalizer's contribution lands on the SAME entry.
+        assert entry.get("software"), entry
+        assert entry["software"][0]["product"] == "openssh", entry
+        assert entry["software"][0]["version"] == "8.9p1", entry
+    finally:
+        db.close()
+        _cleanup(ip)
+
+
+def test_enrich_cpe_software_removal_propagates_to_projected_state():
+    """Banner signal disappearing (service_version cleared) must clear
+    `software` from the projected asset_state.open_ports entry too — proves
+    upsert_single_claim's whole-value replace (empty `ports` list once no
+    entry has software) actually removes the stale software claim rather
+    than leaving it stuck from a prior scan."""
+    ip = f"203.0.113.{80 + (uuid.uuid4().int % 40)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        port_entry = {
+            "port": 22, "protocol": "tcp", "service": "ssh",
+            "service_version": "OpenSSH 8.9p1 Ubuntu-3ubuntu0.1",
+            "last_seen_at": now.isoformat(),
+        }
+        asset = _make_ip_asset(db, ip, [dict(port_entry)])
+        _add_naabu_port_claim(db, asset.id, [dict(port_entry)], now)
+
+        # First pass: software present.
+        enrich_cpe(db, {asset.id})
+        projector.project(db, {asset.id}, now)
+        db.commit()
+        state = db.query(AssetState).filter(AssetState.asset_canonical_id == asset.id).one()
+        assert {p["port"]: p for p in state.open_ports}[22].get("software"), state.open_ports
+
+        # Banner signal disappears (e.g. re-scanned host now returns a
+        # generic/unrecognized banner) — asset_metadata is the ongoing input
+        # enrich_cpe recomputes from each run, so mutate it directly, same as
+        # a fresh scan_executor pass would via the writer merge.
+        db.refresh(asset)
+        later = datetime.now(timezone.utc)
+        asset.asset_metadata["open_ports"][0]["service_version"] = "unknown/9.9"
+        asset.asset_metadata["open_ports"][0]["last_seen_at"] = later.isoformat()
+        flag_modified(asset, "asset_metadata")
+        db.commit()
+        _add_naabu_port_claim(db, asset.id, [{
+            "port": 22, "protocol": "tcp", "service": "ssh",
+            "service_version": "unknown/9.9", "last_seen_at": later.isoformat(),
+        }], later)
+
+        enrich_cpe(db, {asset.id})
+
+        claim = _cpe_claim(db, asset.id)
+        assert claim is not None
+        assert claim.claim_value == {"ports": []}, claim.claim_value
+
+        db.refresh(asset)
+        assert "software" not in asset.asset_metadata["open_ports"][0], asset.asset_metadata
+
+        projector.project(db, {asset.id}, later)
+        db.commit()
+        state = db.query(AssetState).filter(AssetState.asset_canonical_id == asset.id).one()
+        entry = {p["port"]: p for p in state.open_ports}[22]
+        assert "software" not in entry, entry
+    finally:
+        db.close()
+        _cleanup(ip)
 
 
 if __name__ == "__main__":

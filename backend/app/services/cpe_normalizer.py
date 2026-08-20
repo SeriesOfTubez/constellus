@@ -30,14 +30,19 @@ where the version *range* comparison actually needs them.
 import logging
 import re
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.asset import AssetType
 from app.models.asset_canonical import AssetCanonical
+from app.services.claim_emitter import upsert_single_claim
 
 log = logging.getLogger(__name__)
+
+_OBSERVER_NAME = "cpe_normalizer"
+_CLAIM_TYPE = "port_observation"
 
 # (optional service filter, regex, cpe_vendor, cpe_product, version_group)
 # Applied to service_version; ALL that match contribute (multi-product banner).
@@ -195,7 +200,23 @@ def normalize_port_software(entry: dict) -> list[dict]:
 def enrich_cpe(db: Session, touched_asset_ids: set[uuid.UUID]) -> None:
     """Post-scan CPE normalization. Writes `software[]` onto each open_ports[]
     entry of every touched IP asset. Idempotent — recomputed from the current
-    banner/cpe each scan. Called from scan_executor before eol_enrichment."""
+    banner/cpe each scan. Called from scan_executor before eol_enrichment.
+
+    planning#144 L3c-1: alongside the existing asset_metadata mutation (kept
+    — the API still serializes it for the UI until L3c-2's bridge), also
+    emits a `port_observation` claim per touched IP asset carrying just
+    `{port, software}` for each port with software. The projector's
+    `_merge_open_ports` folds this claim's contribution across observers by
+    port number, so `software` ends up on the same asset_state.open_ports
+    entry naabu (or another prober) already populates — no projector change
+    needed here.
+
+    Emitted for every touched IP asset with open_ports, even when no entry
+    has software (empty `ports` list) — `upsert_single_claim` replaces the
+    whole claim_value, so this is what lets a software signal that
+    disappears (banner/cpe gone) actually clear out of the projected state
+    instead of leaving a stale claim behind.
+    """
     if not touched_asset_ids:
         return
 
@@ -210,6 +231,7 @@ def enrich_cpe(db: Session, touched_asset_ids: set[uuid.UUID]) -> None:
     if not assets:
         return
 
+    now = datetime.now(timezone.utc)
     updated = 0
     for asset in assets:
         open_ports: list[dict] = (asset.asset_metadata or {}).get("open_ports") or []
@@ -227,16 +249,24 @@ def enrich_cpe(db: Session, touched_asset_ids: set[uuid.UUID]) -> None:
                 del entry["software"]
                 changed = True
 
-        if not changed:
-            continue
+        if changed:
+            # open_ports entries were mutated in place — flag_modified forces
+            # the JSONB flush. (A dict-spread reassignment is NOT enough
+            # here: the nested mutation already pollutes the old value, so
+            # old == new by value and SQLAlchemy's JSON comparator skips the
+            # flush.)
+            flag_modified(asset, "asset_metadata")
+            updated += 1
 
-        # open_ports entries were mutated in place — flag_modified forces the
-        # JSONB flush. (A dict-spread reassignment is NOT enough here: the nested
-        # mutation already pollutes the old value, so old == new by value and
-        # SQLAlchemy's JSON comparator skips the flush.)
-        flag_modified(asset, "asset_metadata")
-        updated += 1
+        claim_value = {
+            "ports": [
+                {"port": entry["port"], "software": entry["software"]}
+                for entry in open_ports
+                if isinstance(entry, dict) and entry.get("software") and isinstance(entry.get("port"), int)
+            ]
+        }
+        upsert_single_claim(db, asset.id, _OBSERVER_NAME, _CLAIM_TYPE, claim_value, now)
 
     if updated:
-        db.commit()
         log.info("CPE normalization: wrote software intel on %d asset(s)", updated)
+    db.commit()
