@@ -165,6 +165,42 @@ def _merge_open_ports(existing: list, new: list) -> list:
     return sorted(by_port.values(), key=lambda p: p["port"])
 
 
+# ── standalone attributes upsert (planning#144 L3b-3) ──────────────────────
+
+def merge_state_attributes(db: Session, asset_id: uuid.UUID, patch: dict) -> None:
+    """Upsert `patch` into one asset's `asset_state.attributes`, JSONB `||`
+    merged in — the same merge operator `project()`'s own upsert uses for
+    `attributes` (see the on_conflict_do_update below). That's what lets the
+    two compose safely: this function and the projector write disjoint keys
+    (e.g. `dangling_dns_analyzer` writes `dangling_probe_at`, `project()`
+    writes `probe_class`/`provider_mx`/...), so neither ever clobbers the
+    other's key, regardless of which runs first or last.
+
+    For callers outside the projector proper that need to persist a single
+    attributes key straight to `asset_state` without doing a full claims
+    projection (first user: `dangling_dns_analyzer`'s `dangling_probe_at`
+    freshness stamp, moved off `asset_metadata` in this slice). On a fresh
+    row — no projector run has touched this asset yet — the other NOT-NULL
+    columns get their table defaults (`open_ports=[]`, `hosting={}`,
+    `eol_summary={}`); `estate`/`projected_at` stay NULL until a real
+    projection runs. Does not commit — same convention as `project()`.
+    """
+    stmt = pg_insert(AssetState.__table__).values(
+        asset_canonical_id=asset_id,
+        open_ports=[],
+        hosting={},
+        eol_summary={},
+        attributes=patch,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["asset_canonical_id"],
+        set_={
+            "attributes": AssetState.__table__.c.attributes.op("||")(stmt.excluded.attributes),
+        },
+    )
+    db.execute(stmt)
+
+
 # ── projector ────────────────────────────────────────────────────────────
 
 def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:

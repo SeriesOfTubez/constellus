@@ -440,76 +440,6 @@ _SHODAN_PORT_GRACE_DAYS = 14
 # asset_writer._prune_stale_ports. See planning#69/#72.
 _CONFIRMED_PORT_GRACE_DAYS = 3
 
-# A host that returns many ports nmap could not L7-confirm is exhibiting
-# firewall deception (proxied TCP handshakes / SYN-flood protection that
-# answers on closed ports). Above this count of unconfirmed-but-nmap-scanned
-# ports, treat the host as deceptive and hide the unconfirmed ones.
-_PHANTOM_SUPPRESS_THRESHOLD = 20
-
-
-def _suppress_phantom_ports(metadata: dict, now: datetime | None = None) -> dict:
-    """Hide phantom ports on firewall-deception hosts.
-
-    nmap tags each open_ports entry with l7_confirmed (bool) after -sV probing
-    and writes nmap_verified_at to asset_metadata when it finishes a cycle.
-    A host with more than _PHANTOM_SUPPRESS_THRESHOLD entries explicitly
-    marked l7_confirmed=False (real False, not missing/None) on a cycle where
-    nmap authoritatively scanned (nmap_verified_at >= naabu_last_scan_at) is
-    treated as a firewall-deception host: those False entries are dropped.
-
-    Fail-open in all ambiguous cases:
-    - Missing naabu_last_scan_at or nmap_verified_at → unchanged.
-    - Unparseable timestamps → unchanged.
-    - nmap_verified_at < naabu_last_scan_at (nmap stale/skipped) → unchanged.
-    - Entries without an l7_confirmed field (Shodan/legacy) → never counted
-      as unconfirmed and never dropped.
-
-    The `now` parameter is exposed for testing (currently unused but kept
-    consistent with _filter_stale_ports signature).
-    """
-    open_ports = metadata.get("open_ports")
-    if not isinstance(open_ports, list):
-        return metadata
-
-    naabu_last_scan_at = metadata.get("naabu_last_scan_at")
-    nmap_verified_at = metadata.get("nmap_verified_at")
-    if not naabu_last_scan_at or not nmap_verified_at:
-        return metadata
-
-    try:
-        naabu_ts = datetime.fromisoformat(naabu_last_scan_at)
-        if naabu_ts.tzinfo is None:
-            naabu_ts = naabu_ts.replace(tzinfo=timezone.utc)
-    except (ValueError, AttributeError):
-        return metadata
-
-    try:
-        nmap_ts = datetime.fromisoformat(nmap_verified_at)
-        if nmap_ts.tzinfo is None:
-            nmap_ts = nmap_ts.replace(tzinfo=timezone.utc)
-    except (ValueError, AttributeError):
-        return metadata
-
-    # nmap must have authoritatively scanned THIS cycle; if stale, fail-open.
-    if nmap_ts < naabu_ts:
-        return metadata
-
-    # Only explicit False counts — missing/None/True are not phantom.
-    unconfirmed_count = sum(
-        1 for entry in open_ports
-        if isinstance(entry, dict) and entry.get("l7_confirmed") is False
-    )
-
-    if unconfirmed_count > _PHANTOM_SUPPRESS_THRESHOLD:
-        # Deception host: drop every entry with an explicit False confirmation.
-        filtered = [
-            entry for entry in open_ports
-            if not (isinstance(entry, dict) and entry.get("l7_confirmed") is False)
-        ]
-        return {**metadata, "open_ports": filtered}
-
-    return metadata
-
 
 def _filter_stale_ports(metadata: dict, now: datetime | None = None) -> dict:
     """Remove open_ports entries not re-observed in the most recent naabu scan.
@@ -577,7 +507,6 @@ def _serialize_asset(row: AssetCanonical, risk: dict | None = None) -> dict:
     metadata = row.asset_metadata or {}
     if row.asset_type == "ip_address":
         metadata = _filter_stale_ports(metadata)
-        metadata = _suppress_phantom_ports(metadata)
     return {
         "id": str(row.id),
         "asset_type": row.asset_type,

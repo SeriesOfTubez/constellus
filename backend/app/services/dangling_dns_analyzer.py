@@ -74,6 +74,10 @@ only exists once an evaluation already fired):
      never get a `dangling_probe_at` stamp (Layer 1 doesn't apply past a CDN
      boundary), so leaving them eligible would let them permanently starve
      the budget (always "never stamped", always sorted first, forever).
+     `dangling_probe_at` itself lives on `asset_state.attributes` (planning#144
+     L3b-3 — moved off `asset_metadata` via `projector.merge_state_attributes`;
+     the `cdn` read above stays on `asset_metadata`, that boundary judgment is
+     still asset_metadata-authoritative until #147/L3c).
 
 Also fixes a real, pre-existing bug independent of the widening: when the
 scanner-worker is unreachable, `domain_affinity.check_affinity` fails soft to
@@ -92,9 +96,10 @@ from sqlalchemy.orm import Session
 
 from app.connectors.base import DiscoveredFinding
 from app.models.asset_canonical import AssetCanonical
+from app.models.asset_state import AssetState
 from app.models.finding_canonical import FindingCanonical
 from app.models.target import Target, TargetType
-from app.services import domain_affinity, origin_corroboration, target_scope, takeover_fingerprint
+from app.services import domain_affinity, origin_corroboration, projector, target_scope, takeover_fingerprint
 from app.services.finding_writer import write_findings
 from app.services.target_service import apex_domain
 
@@ -197,7 +202,6 @@ def analyze_dangling_dns(
     findings: list[DiscoveredFinding] = []
     probed_clean_ids: set[uuid.UUID] = set()
     probed_stamp_ids: set[uuid.UUID] = set()
-    records_by_id = {r.id: r for r in records}
 
     for record in records:
         try:
@@ -229,7 +233,7 @@ def analyze_dangling_dns(
     # -> hosting_classifier.reverse_ip_domains commits mid-loop on hit paths,
     # the same shape #113 handled in shared_infra_verifier.verify_findings).
     if probed_stamp_ids:
-        _stamp_probe_timestamps(db, records_by_id, probed_stamp_ids)
+        _stamp_probe_timestamps(db, probed_stamp_ids)
 
     touched |= _resolve_clean_records(db, probed_clean_ids)
 
@@ -284,7 +288,8 @@ def _compute_gate_open_ids(
             continue  # never probeable, never occupies a budget slot
         due_candidates.append(record)
 
-    due_candidates.sort(key=lambda r: (r.asset_metadata or {}).get("dangling_probe_at") or "")
+    probe_stamps = _dangling_probe_stamps(db, {r.id for r in due_candidates})
+    due_candidates.sort(key=lambda r: probe_stamps.get(r.id) or "")
 
     now = datetime.now(timezone.utc)
     ttl_cutoff = now - timedelta(days=_DANGLING_PROBE_TTL_DAYS)
@@ -292,7 +297,7 @@ def _compute_gate_open_ids(
     for record in due_candidates:
         if budget_left <= 0:
             break
-        stamp = (record.asset_metadata or {}).get("dangling_probe_at")
+        stamp = probe_stamps.get(record.id)
         due = True
         if stamp:
             try:
@@ -306,13 +311,29 @@ def _compute_gate_open_ids(
     return gate_open_ids
 
 
-def _stamp_probe_timestamps(
-    db: Session, records_by_id: dict[uuid.UUID, AssetCanonical], stamped_ids: set[uuid.UUID],
-) -> None:
+def _dangling_probe_stamps(db: Session, record_ids: set[uuid.UUID]) -> dict[uuid.UUID, str | None]:
+    """Batch-read `dangling_probe_at` from `asset_state.attributes` for a set
+    of candidate record ids (planning#144 L3b-3 — moved off `asset_metadata`).
+    A record id with no `asset_state` row yet (nothing has projected/stamped
+    it) simply isn't in the returned dict, same as a missing key would be."""
+    if not record_ids:
+        return {}
+    rows = (
+        db.query(AssetState.asset_canonical_id, AssetState.attributes)
+        .filter(AssetState.asset_canonical_id.in_(record_ids))
+        .all()
+    )
+    return {asset_id: (attributes or {}).get("dangling_probe_at") for asset_id, attributes in rows}
+
+
+def _stamp_probe_timestamps(db: Session, stamped_ids: set[uuid.UUID]) -> None:
+    """Stamp `dangling_probe_at` on `asset_state.attributes` (planning#144
+    L3b-3 — moved off `asset_metadata`) via `projector.merge_state_attributes`,
+    which JSONB `||`-merges the single key in without disturbing any other
+    attributes key (e.g. the projector's own `probe_class`/`provider_mx`)."""
     now_iso = datetime.now(timezone.utc).isoformat()
     for record_id in stamped_ids:
-        record = records_by_id[record_id]
-        record.asset_metadata = {**(record.asset_metadata or {}), "dangling_probe_at": now_iso}
+        projector.merge_state_attributes(db, record_id, {"dangling_probe_at": now_iso})
     db.commit()
 
 

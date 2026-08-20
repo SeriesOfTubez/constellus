@@ -515,6 +515,75 @@ def test_no_cdn_metadata_no_cdn_attributes():
         _cleanup_ip(ip)
 
 
+# ── merge_state_attributes (planning#144 L3b-3) ─────────────────────────
+
+def test_merge_state_attributes_inserts_fresh_row_with_column_defaults():
+    """No projector run has ever touched this asset — merge_state_attributes
+    must still succeed (upsert, not update-only), landing the patch in
+    `attributes` with the other NOT-NULL columns at their table defaults."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"198.51.100.{10 + (int(suffix[:2], 16) % 60)}"
+    db = SessionLocal()
+    try:
+        asset = _make_asset(db, "ip_address", ip)
+
+        projector.merge_state_attributes(db, asset.id, {"dangling_probe_at": "2026-08-19T00:00:00+00:00"})
+        db.commit()
+
+        state = _state_for(db, asset.id)
+        assert state.attributes == {"dangling_probe_at": "2026-08-19T00:00:00+00:00"}
+        assert state.open_ports == []
+        assert state.hosting == {}
+        assert state.eol_summary == {}
+        assert state.estate is None
+        assert state.projected_at is None
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+def test_merge_state_attributes_merges_without_clobbering_existing_keys():
+    """A patch written by merge_state_attributes must compose with the
+    projector's own attributes || merge — disjoint keys survive both
+    directions, whichever runs first."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"198.51.100.{10 + (int(suffix[:2], 16) % 60)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip)
+        _add_port_claim(db, asset.id, "naabu", [
+            {"port": 80, "protocol": "tcp", "last_seen_at": now.isoformat()},
+        ], now)
+        db.commit()
+
+        # project() runs first and writes probe_class/provider_mx.
+        projector.project(db, {asset.id}, now)
+        db.commit()
+        state = _state_for(db, asset.id)
+        assert "probe_class" in state.attributes
+
+        # merge_state_attributes then adds a disjoint key — must not clobber
+        # what project() already wrote.
+        projector.merge_state_attributes(db, asset.id, {"dangling_probe_at": "2026-08-19T00:00:00+00:00"})
+        db.commit()
+
+        state = _state_for(db, asset.id)
+        assert state.attributes.get("dangling_probe_at") == "2026-08-19T00:00:00+00:00"
+        assert "probe_class" in state.attributes
+
+        # And the reverse order: a second project() run must not clobber the
+        # dangling_probe_at key merge_state_attributes already wrote.
+        projector.project(db, {asset.id}, now)
+        db.commit()
+        state = _state_for(db, asset.id)
+        assert state.attributes.get("dangling_probe_at") == "2026-08-19T00:00:00+00:00"
+        assert "probe_class" in state.attributes
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
 # ── idempotency ──────────────────────────────────────────────────────────
 
 def test_idempotent_double_projection():
