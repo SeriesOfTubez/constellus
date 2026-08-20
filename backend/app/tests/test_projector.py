@@ -56,6 +56,21 @@ def _add_port_claim(db, asset_id, observer_name: str, ports: list[dict], last_ob
     ))
 
 
+def _add_claim(db, asset_id, observer_name: str, claim_type: str, claim_value: dict, last_observed_at: datetime) -> None:
+    """planning#144 L3a: hosting_class / affinity_confirmation are seeded as
+    claims (not asset_metadata) for the estate/probe_class projector cases
+    below — same seeding style as _add_port_claim, just single-value."""
+    db.add(AssetClaim(
+        asset_canonical_id=asset_id,
+        observer_id=_observer_id(db, observer_name),
+        claim_type=claim_type,
+        claim_value=claim_value,
+        evidence={},
+        first_observed_at=last_observed_at,
+        last_observed_at=last_observed_at,
+    ))
+
+
 def _state_for(db, asset_id) -> AssetState:
     return db.query(AssetState).filter(AssetState.asset_canonical_id == asset_id).one()
 
@@ -219,16 +234,19 @@ def test_estate_mapping():
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
-        a_confirmed = _make_asset(db, "ip_address", ip_confirmed, metadata={
-            "ownership_verdict": {"verdict": "confirmed_ours", "evidence": {}},
-        })
-        a_rejected = _make_asset(db, "ip_address", ip_rejected, metadata={
-            "ownership_verdict": {"verdict": "rejected_shared_infra", "evidence": {}},
-        })
+        # planning#144 L3a: the ownership verdict is now an
+        # affinity_confirmation claim, not asset_metadata.
+        a_confirmed = _make_asset(db, "ip_address", ip_confirmed)
+        _add_claim(db, a_confirmed.id, "shared_infra_verifier", "affinity_confirmation",
+                   {"verdict": "confirmed_ours", "evidence": {}}, now)
+        a_rejected = _make_asset(db, "ip_address", ip_rejected)
+        _add_claim(db, a_rejected.id, "shared_infra_verifier", "affinity_confirmation",
+                   {"verdict": "rejected_shared_infra", "evidence": {}}, now)
         # No ownership signal at all -> estate must stay NULL, not default to
         # any of the three known values (planning#129 is an open decision;
         # this projector must not invent one).
         a_absent = _make_asset(db, "ip_address", ip_absent, metadata={"sources": ["dns_records"]})
+        db.commit()
 
         projector.project(db, {a_confirmed.id, a_rejected.id, a_absent.id}, now)
         db.commit()
@@ -281,6 +299,56 @@ def test_probe_class_rules():
         _cleanup_prefix(f"probe-class-{suffix}")
 
 
+def test_probe_class_direct_addressable_via_hosting_and_confirmed_ours():
+    """The other direct_addressable trigger, not CIDR-scoped: a datacenter
+    IP (hosting_class claim) with a confirmed_ours affinity_confirmation
+    claim. planning#144 L3a — both now claims, not asset_metadata."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"192.0.2.{190 + (int(suffix[:2], 16) % 40)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip)
+        _add_claim(db, asset.id, "hosting_classifier", "hosting_class", {"is_datacenter": True}, now)
+        _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
+                   {"verdict": "confirmed_ours"}, now)
+        db.commit()
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+
+        assert _state_for(db, asset.id).attributes.get("probe_class") == "direct_addressable"
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+def test_hosting_claim_only_asset_is_not_skipped():
+    """planning#144 L3a: an asset with ONLY a hosting_class claim — no port
+    claims, no asset_metadata, no affinity_confirmation claim — must still
+    get projected, not silently dropped by the projector's 'nothing to
+    project' skip condition."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"192.0.2.{230 + (int(suffix[:2], 16) % 20)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip)  # empty asset_metadata, no port claims
+        _add_claim(db, asset.id, "hosting_classifier", "hosting_class",
+                   {"is_datacenter": True, "company_name": "Acme Hosting"}, now)
+        db.commit()
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+
+        state = _state_for(db, asset.id)
+        assert state.hosting == {"is_datacenter": True, "company_name": "Acme Hosting"}
+        assert state.estate is None
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
 # ── idempotency ──────────────────────────────────────────────────────────
 
 def test_idempotent_double_projection():
@@ -289,10 +357,15 @@ def test_idempotent_double_projection():
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
-        asset = _make_asset(db, "ip_address", ip, metadata={
-            "ownership_verdict": {"verdict": "confirmed_ours"},
-            "hosting_class": {"is_datacenter": True},
-        })
+        # planning#144 L3a: hosting_class / ownership_verdict are now claims,
+        # not asset_metadata — this asset has NO asset_metadata contribution
+        # at all, only claims, exercising the projector's "claims-only, no
+        # metadata" skip-condition fix alongside idempotency.
+        asset = _make_asset(db, "ip_address", ip)
+        _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
+                   {"verdict": "confirmed_ours"}, now)
+        _add_claim(db, asset.id, "hosting_classifier", "hosting_class",
+                   {"is_datacenter": True}, now)
         _add_port_claim(db, asset.id, "naabu", [
             {"port": 80, "protocol": "tcp", "last_seen_at": now.isoformat()},
         ], now)

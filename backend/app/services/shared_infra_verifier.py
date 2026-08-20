@@ -98,7 +98,7 @@ from sqlalchemy.orm import Session
 from app.core.apex import apex_domain
 from app.models.asset_canonical import AssetCanonical
 from app.models.finding_canonical import FindingCanonical
-from app.services import domain_affinity, hosting_classifier, origin_corroboration, target_scope
+from app.services import claim_emitter, domain_affinity, hosting_classifier, origin_corroboration, target_scope
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +124,15 @@ _FINGERPRINTABLE_PRODUCTS = origin_corroboration._FINGERPRINTABLE_PRODUCTS
 # hosting_classifier.reverse_ip_domains' own 14-day TTL, since
 # ownership_unverifiable's freshness is gated by that same data source.
 _OWNERSHIP_VERDICT_TTL = timedelta(days=14)
+
+# planning#144 L3a: the ownership_verdict TTL cache moved off asset_metadata
+# onto an affinity_confirmation claim, attributed to this module's own
+# "shared_infra_verifier" observer. NOTE: this is the IP-level cache read by
+# classify_ip_ownership (_read_cache/_write_cache) only — stamp_findings_for_ip
+# below writes the same verdict onto each FINDING's verification_evidence, a
+# separate copy the frontend's finding badges read, which stays untouched.
+_OWNERSHIP_VERDICT_OBSERVER = "shared_infra_verifier"
+_OWNERSHIP_VERDICT_CLAIM_TYPE = "affinity_confirmation"
 
 # planning#115 — how long a contrary automatic re-verification must persist
 # before it's allowed to move a finding OUT of an already-decisive verdict
@@ -163,7 +172,7 @@ def classify_ip_ownership(db: Session, ip_asset: AssetCanonical, force: bool = F
     per-finding on a cache HIT, where the live probe that produced them
     didn't run this call.
     """
-    cached = None if force else _read_cache(ip_asset)
+    cached = None if force else _read_cache(db, ip_asset)
     if cached is not None:
         return cached
 
@@ -269,27 +278,22 @@ def classify_ip_ownership(db: Session, ip_asset: AssetCanonical, force: bool = F
     return result
 
 
-def _read_cache(ip_asset: AssetCanonical) -> dict | None:
-    meta = ip_asset.asset_metadata or {}
-    cached = meta.get("ownership_verdict")
-    fetched_at = meta.get("ownership_verdict_at")
-    if not cached or not fetched_at:
+def _read_cache(db: Session, ip_asset: AssetCanonical) -> dict | None:
+    claim = claim_emitter.get_current_claim(
+        db, ip_asset.id, _OWNERSHIP_VERDICT_OBSERVER, _OWNERSHIP_VERDICT_CLAIM_TYPE,
+    )
+    if claim is None:
         return None
-    try:
-        age = datetime.now(timezone.utc) - datetime.fromisoformat(fetched_at)
-    except ValueError:
-        return None
+    age = datetime.now(timezone.utc) - claim.last_observed_at
     if age >= _OWNERSHIP_VERDICT_TTL:
         return None
-    return cached
+    return claim.claim_value
 
 
 def _write_cache(db: Session, ip_asset: AssetCanonical, result: dict, now: datetime) -> None:
-    ip_asset.asset_metadata = {
-        **(ip_asset.asset_metadata or {}),
-        "ownership_verdict": result,
-        "ownership_verdict_at": now.isoformat(),
-    }
+    claim_emitter.upsert_single_claim(
+        db, ip_asset.id, _OWNERSHIP_VERDICT_OBSERVER, _OWNERSHIP_VERDICT_CLAIM_TYPE, result, now,
+    )
     db.commit()
 
 

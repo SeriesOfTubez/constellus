@@ -10,6 +10,16 @@ ip_asset.asset_metadata, so a plain SimpleNamespace stands in for the
 AssetCanonical row; a bare object with a no-op .commit() stands in for the
 DB session.
 
+planning#144 L3a: the ownership_verdict cache moved from an asset_metadata
+dict to an affinity_confirmation claim (claim_emitter.get_current_claim/
+upsert_single_claim), which needs a real DB session + persisted asset row to
+resolve the "shared_infra_verifier" observer. To keep this file DB-free,
+siv._read_cache/_write_cache are themselves monkeypatched below to a fake
+claims store keyed on the SimpleNamespace ip_asset object (mirrors the old
+direct-asset_metadata-mutation style) — the real claim_emitter-backed
+mechanics get their own round-trip proof in test_ownership_stamping.py's
+test_ownership_verdict_claim_cache_hit_and_ttl_refetch (real DB).
+
 For WHICH findings get selected/stamped (the DB-query half of
 stamp_findings_for_ip/verify_findings — the planning#113 widening beyond
 Shodan-only, and the NON_STAMPABLE_FINDING_TYPES exclusion), see the
@@ -35,13 +45,45 @@ _IP = "203.0.113.44"
 class _NoopSession:
     """classify_ip_ownership only calls db.commit() on a cache write —
     everything else it touches (_owned_hostnames_for_ip, the affinity/
-    hosting/corroboration calls) is monkeypatched per-test below."""
+    hosting/corroboration calls, and now the fake _read_cache/_write_cache
+    below) is monkeypatched per-test / at module load."""
     def commit(self):
         pass
 
 
 def _ip_asset(metadata: dict | None = None):
     return SimpleNamespace(id=uuid.uuid4(), asset_type="ip_address", value=_IP, asset_metadata=metadata or {})
+
+
+def _fake_read_cache(db, ip_asset):
+    """Stand-in for siv._read_cache: reads the fake claim stashed on
+    ip_asset by _fake_write_cache below, instead of querying asset_claims."""
+    return getattr(ip_asset, "_affinity_claim", None)
+
+
+def _fake_write_cache(db, ip_asset, result, now):
+    """Stand-in for siv._write_cache: stashes the claim value directly on
+    ip_asset instead of calling claim_emitter.upsert_single_claim (which
+    needs a real DB + persisted observer row)."""
+    ip_asset._affinity_claim = result
+    ip_asset._affinity_claim_written_at = now
+    db.commit()
+
+
+def _use_fake_cache() -> None:
+    """Install the fake _read_cache/_write_cache pair for the CURRENT test
+    only. Deliberately called inside each test function body rather than
+    once at module import time: shared_infra_verifier is in conftest.py's
+    _GUARDED_MODULES, whose autouse fixture snapshots/restores each
+    module's attributes per-test — but only back to whatever they were at
+    the START of that test. A module-level assignment (executed at
+    collection time, before the first test's snapshot) would become the
+    permanent "original" the fixture keeps restoring to, leaking the fake
+    cache into every other test file that runs afterward in the same pytest
+    process — the exact class of bug conftest.py's own docstring documents
+    for planning#68's domain_affinity.check_affinity leak."""
+    siv._read_cache = _fake_read_cache
+    siv._write_cache = _fake_write_cache
 
 
 def _owned_host(value="itsupport.contoso.com"):
@@ -63,6 +105,7 @@ def _affinity_result(verdict, matrix=None):
 
 
 def test_ambiguous_plus_corroboration_promotes_to_ownership_unverifiable():
+    _use_fake_cache()
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_INDETERMINATE)
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]
     hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=True, company_name="IONOS Inc.", asn=8560)
@@ -76,12 +119,13 @@ def test_ambiguous_plus_corroboration_promotes_to_ownership_unverifiable():
     assert result["verdict"] == "ownership_unverifiable"
     assert result["evidence"]["corroboration"]["corroborating_hostname"] == "othertenant.com"
     assert result["evidence"]["hosting_class"]["company_name"] == "IONOS Inc."
-    # Decisive verdict — cached onto the IP asset for reuse.
-    assert ip_asset.asset_metadata["ownership_verdict"]["verdict"] == "ownership_unverifiable"
-    assert "ownership_verdict_at" in ip_asset.asset_metadata
+    # Decisive verdict — cached as an affinity_confirmation claim for reuse.
+    assert ip_asset._affinity_claim["verdict"] == "ownership_unverifiable"
+    assert ip_asset._affinity_claim_written_at is not None
 
 
 def test_ambiguous_with_no_corroboration_stays_unverified():
+    _use_fake_cache()
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_INDETERMINATE)
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]
     hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=True, company_name="IONOS Inc.", asn=8560)
@@ -99,6 +143,7 @@ def test_budget_starvation_is_not_cached():
     exhausted (not because there's nothing to corroborate) must NOT be
     cached at the full TTL — otherwise the day's first ~15 IPs pin every
     other IP at unverified for the whole TTL window."""
+    _use_fake_cache()
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_INDETERMINATE)
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]
     hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=True)
@@ -107,12 +152,13 @@ def test_budget_starvation_is_not_cached():
     ip_asset = _ip_asset()
     result = siv.classify_ip_ownership(_NoopSession(), ip_asset)
     assert result["verdict"] == "unverified"
-    assert "ownership_verdict" not in ip_asset.asset_metadata, (
+    assert not hasattr(ip_asset, "_affinity_claim"), (
         "budget-starved result must be left uncached so the next call retries fresh"
     )
 
 
 def test_cache_hit_skips_recompute_entirely():
+    _use_fake_cache()
     calls = {"n": 0}
 
     def _spy(hostname, origin_ip, apexes, ports=None):
@@ -136,6 +182,7 @@ def test_cache_hit_skips_recompute_entirely():
 
 
 def test_not_a_datacenter_never_spends_corroboration_call():
+    _use_fake_cache()
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_INDETERMINATE)
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]
     hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=False)  # attempted=True by default
@@ -150,7 +197,7 @@ def test_not_a_datacenter_never_spends_corroboration_call():
     # A genuine (attempted) "not a datacenter" determination IS cacheable —
     # contrast with test_hosting_lookup_failure_is_not_cached below, where
     # the lookup itself failed rather than genuinely concluding this.
-    assert ip_asset.asset_metadata["ownership_verdict"]["verdict"] == "unverified"
+    assert ip_asset._affinity_claim["verdict"] == "unverified"
 
 
 def test_hosting_lookup_failure_is_not_cached():
@@ -160,6 +207,7 @@ def test_hosting_lookup_failure_is_not_cached():
     negative determination unless the caller checks `attempted`. Caching a
     failed lookup at the full TTL would mislabel the IP as non-datacenter
     (skipping corroboration entirely) for 14 days on what might be transient."""
+    _use_fake_cache()
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_INDETERMINATE)
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]
     hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=False, attempted=False)
@@ -171,12 +219,13 @@ def test_hosting_lookup_failure_is_not_cached():
     ip_asset = _ip_asset()
     result = siv.classify_ip_ownership(_NoopSession(), ip_asset)
     assert result["verdict"] == "unverified"
-    assert "ownership_verdict" not in ip_asset.asset_metadata, (
+    assert not hasattr(ip_asset, "_affinity_claim"), (
         "a failed hosting lookup must be left uncached so the next call retries fresh"
     )
 
 
 def test_unanimous_not_affine_still_hard_rejects_unaffected_by_phase_d():
+    _use_fake_cache()
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_NOT_AFFINE)
 
     def _should_not_be_called(*a, **k):
@@ -189,6 +238,7 @@ def test_unanimous_not_affine_still_hard_rejects_unaffected_by_phase_d():
 
 
 def test_confirmed_ours_unaffected_by_phase_d():
+    _use_fake_cache()
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_AFFINE)
 
     def _should_not_be_called(*a, **k):
@@ -201,13 +251,14 @@ def test_confirmed_ours_unaffected_by_phase_d():
 
 
 def test_no_owned_hostnames_cached_as_unverified():
+    _use_fake_cache()
     siv._owned_hostnames_for_ip = lambda db, ip: []
 
     ip_asset = _ip_asset()
     result = siv.classify_ip_ownership(_NoopSession(), ip_asset)
     assert result["verdict"] == "unverified"
     assert result["evidence"]["reason"] == "no owned hostnames resolve to this IP"
-    assert ip_asset.asset_metadata["ownership_verdict"]["verdict"] == "unverified"
+    assert ip_asset._affinity_claim["verdict"] == "unverified"
 
 
 def test_unverified_classification_stamps_nothing():
@@ -239,6 +290,7 @@ def test_unverified_classification_stamps_nothing():
 
 
 def test_stamp_findings_for_ip_includes_tech_absence_when_cve_product_matches():
+    _use_fake_cache()
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]
     matrix = {"80": {"owned": {"status_code": 404, "tech": ["nginx"]}}}
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(
@@ -279,6 +331,7 @@ def test_stamp_findings_for_ip_includes_tech_absence_when_cve_product_matches():
 def test_force_bypasses_ttl_cache():
     """planning#115: the manual Re-verify path must skip the cache and
     recompute live, even immediately after a cache-warming call."""
+    _use_fake_cache()
     calls = {"n": 0}
 
     def _spy(hostname, origin_ip, apexes, ports=None):

@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.connectors.http import connector_get
 from app.models.asset_canonical import AssetCanonical
+from app.services.claim_emitter import get_current_claim, upsert_single_claim
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +45,15 @@ _HACKERTARGET_URL = "https://api.hackertarget.com/reverseiplookup/"
 
 _HOSTING_CLASS_TTL = timedelta(days=30)
 _REVERSE_IP_TTL = timedelta(days=14)
+
+# This module is the "hosting_classifier" observer for both claim types it
+# writes (planning#144 L3a) — hosting_class (classify_ip) and reverse_ip
+# (reverse_ip_domains): both are TTL caches on the ip_address asset that used
+# to live in asset_metadata, now claims. No separate observer exists for the
+# reverse-IP lookup; it's the same producer module.
+_OBSERVER_NAME = "hosting_classifier"
+_HOSTING_CLASS_CLAIM_TYPE = "hosting_class"
+_REVERSE_IP_CLAIM_TYPE = "reverse_ip"
 
 # HackerTarget's free tier is ~20 lookups/day. Stay well under it so a burst
 # of eligible findings in one scan can't exhaust the day's quota — the rest
@@ -79,26 +89,23 @@ def _get_ip_asset(db: Session, ip: str) -> AssetCanonical | None:
 
 
 def classify_ip(db: Session, ip: str) -> HostingClass:
-    """Is `ip` a hosting/datacenter network? Cached on the ip_address asset
-    (`hosting_class` + `hosting_class_at`), long TTL — this rarely changes."""
+    """Is `ip` a hosting/datacenter network? Cached as a `hosting_class`
+    claim on the ip_address asset (planning#144 L3a — moved off
+    asset_metadata), long TTL — this rarely changes."""
     asset = _get_ip_asset(db, ip)
     if asset is None:
         return HostingClass(is_datacenter=False, attempted=False)
 
-    meta = asset.asset_metadata or {}
-    cached = meta.get("hosting_class")
-    fetched_at = meta.get("hosting_class_at")
-    if cached is not None and fetched_at:
-        try:
-            age = datetime.now(timezone.utc) - datetime.fromisoformat(fetched_at)
-            if age < _HOSTING_CLASS_TTL:
-                return HostingClass(
-                    is_datacenter=bool(cached.get("is_datacenter")),
-                    company_name=cached.get("company_name"),
-                    asn=cached.get("asn"),
-                )
-        except ValueError:
-            pass  # unparseable timestamp — treat as stale, refetch below
+    claim = get_current_claim(db, asset.id, _OBSERVER_NAME, _HOSTING_CLASS_CLAIM_TYPE)
+    if claim is not None:
+        age = datetime.now(timezone.utc) - claim.last_observed_at
+        if age < _HOSTING_CLASS_TTL:
+            cached = claim.claim_value
+            return HostingClass(
+                is_datacenter=bool(cached.get("is_datacenter")),
+                company_name=cached.get("company_name"),
+                asn=cached.get("asn"),
+            )
 
     try:
         resp = connector_get(_IPAPI_URL, params={"q": ip}, timeout=10)
@@ -115,39 +122,37 @@ def classify_ip(db: Session, ip: str) -> HostingClass:
     )
 
     now = datetime.now(timezone.utc)
-    asset.asset_metadata = {
-        **meta,
-        "hosting_class": {
+    upsert_single_claim(
+        db, asset.id, _OBSERVER_NAME, _HOSTING_CLASS_CLAIM_TYPE,
+        {
             "is_datacenter": result.is_datacenter,
             "company_name": result.company_name,
             "asn": result.asn,
         },
-        "hosting_class_at": now.isoformat(),
-    }
+        now,
+    )
     db.commit()
     return result
 
 
 def reverse_ip_domains(db: Session, ip: str) -> list[str]:
     """Domains historically observed resolving to `ip` (HackerTarget).
-    Cached on the ip_address asset (`reverse_ip_domains` +
-    `reverse_ip_domains_at`), long TTL. Returns [] on any failure, budget
-    exhaustion, or unconfigured state — never raises; callers already treat
-    an empty candidate list as "couldn't corroborate via this source."""
+    Cached as a `reverse_ip` claim on the ip_address asset (planning#144
+    L3a — moved off asset_metadata), long TTL. Returns [] on any failure,
+    budget exhaustion, or unconfigured state — never raises; callers already
+    treat an empty candidate list as "couldn't corroborate via this
+    source." Signature unchanged — origin_corroboration.py calls this."""
     asset = _get_ip_asset(db, ip)
     if asset is None:
         return []
 
-    meta = asset.asset_metadata or {}
-    cached = meta.get("reverse_ip_domains")
-    fetched_at = meta.get("reverse_ip_domains_at")
-    if cached is not None and fetched_at:
-        try:
-            age = datetime.now(timezone.utc) - datetime.fromisoformat(fetched_at)
-            if age < _REVERSE_IP_TTL:
+    claim = get_current_claim(db, asset.id, _OBSERVER_NAME, _REVERSE_IP_CLAIM_TYPE)
+    if claim is not None:
+        age = datetime.now(timezone.utc) - claim.last_observed_at
+        if age < _REVERSE_IP_TTL:
+            cached = claim.claim_value.get("domains")
+            if isinstance(cached, list):
                 return list(cached)
-        except ValueError:
-            pass
 
     if not _spend_reverse_ip_budget():
         log.info("hosting_classifier: reverse-IP daily budget exhausted, skipping %s", ip)
@@ -168,11 +173,7 @@ def reverse_ip_domains(db: Session, ip: str) -> list[str]:
     domains = [line for line in text.splitlines() if line and " " not in line]
 
     now = datetime.now(timezone.utc)
-    asset.asset_metadata = {
-        **meta,
-        "reverse_ip_domains": domains,
-        "reverse_ip_domains_at": now.isoformat(),
-    }
+    upsert_single_claim(db, asset.id, _OBSERVER_NAME, _REVERSE_IP_CLAIM_TYPE, {"domains": domains}, now)
     db.commit()
     return domains
 

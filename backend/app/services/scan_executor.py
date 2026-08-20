@@ -267,16 +267,17 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
         log.exception("Shared-infra verification failed for scan %s — scan still marked complete", scan_run_id)
 
     # Final projection pass (planning#143 L2 sub-slice C) — re-project this
-    # run's touched assets now that path-2 enrichment/verification has run,
-    # so `asset_state.estate`/`attributes.probe_class` (sourced from
-    # asset_metadata's ownership_verdict/hosting_class/provider_mx) reflect
-    # this run's data too, not just what write_assets projected mid-scan from
-    # claims alone. Placed here because verify_findings (via
-    # shared_infra_verifier -> hosting_classifier.classify_ip) is the last
-    # step in this run that writes path-2 asset_metadata keys the projector
-    # reads — nothing after this point (CVE/VulnCheck/SSVC/vulnx enrichment,
-    # risk scoring) writes assets_canonical.asset_metadata, they only touch
-    # findings_canonical. A projection failure must not fail the scan.
+    # run's touched assets now that enrichment/verification has run, so
+    # `asset_state.estate`/`attributes.probe_class` (sourced from the
+    # affinity_confirmation/hosting_class claims, planning#144 L3a, plus
+    # asset_metadata's still-path-2 provider_mx) reflect this run's data too,
+    # not just what write_assets projected mid-scan from port claims alone.
+    # Placed here because verify_findings (via shared_infra_verifier ->
+    # hosting_classifier.classify_ip) is the last step in this run that
+    # writes the claims/asset_metadata keys the projector reads — nothing
+    # after this point (CVE/VulnCheck/SSVC/vulnx enrichment, risk scoring)
+    # writes assets_canonical.asset_metadata or these claim types, they only
+    # touch findings_canonical. A projection failure must not fail the scan.
     try:
         projector.project(db, touched_asset_ids, datetime.now(timezone.utc))
     except Exception:

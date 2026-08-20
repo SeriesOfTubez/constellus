@@ -1,4 +1,5 @@
-"""Claim emission from the batch writer (planning#143, L2 sub-slice A).
+"""Claim emission from the batch writer (planning#143, L2 sub-slice A) +
+single-claim TTL-cache helpers for enrichment services (planning#144, L3a).
 
 Strangler-fig, additive: decomposes each incoming DiscoveredAsset's
 asset_metadata into asset_claims rows per Table 1 of the L2 key->claim
@@ -40,6 +41,13 @@ _upsert_canonical_batch, after it. That function already takes a
 `FOR UPDATE` lock on the touched assets_canonical rows, which serializes
 any concurrent writer touching the same asset before it reaches this
 function too — so no separate locking is taken here.
+
+`get_current_claim` / `upsert_single_claim` (bottom of this module) are a
+separate, unrelated entry point: a single-claim analogue of the same
+change-detection rule, for services (hosting_classifier,
+shared_infra_verifier) that read-modify-write one (asset, observer,
+claim_type) claim as a TTL cache on an already-persisted asset row, outside
+this batch path entirely.
 """
 
 import json
@@ -409,3 +417,123 @@ def _upsert_claims(db: Session, targets: dict[_TargetKey, dict], now: datetime) 
 def _json_equal(a: dict, b: dict) -> bool:
     """Canonical JSON comparison so key-order noise doesn't count as a change."""
     return json.dumps(a, sort_keys=True, default=str) == json.dumps(b, sort_keys=True, default=str)
+
+
+# ── single-claim helpers (planning#144 L3a) ─────────────────────────────────
+#
+# For enrichment services (hosting_classifier, shared_infra_verifier) that
+# read-modify-write a single (asset, observer, claim_type) claim as a TTL
+# cache, on an already-persisted asset row, outside write_assets'/
+# emit_claims' batch path. Same change-detection rule as _upsert_claims
+# above (reusing _json_equal), just for one target instead of a whole
+# batch's worth.
+
+def _observer_id(db: Session, observer_name: str) -> uuid.UUID | None:
+    row = db.query(Observer.id).filter(Observer.name == observer_name).first()
+    return row[0] if row else None
+
+
+def get_current_claim(
+    db: Session,
+    asset_canonical_id: uuid.UUID,
+    observer_name: str,
+    claim_type: str,
+) -> AssetClaim | None:
+    """The current (asset, observer, claim_type) claim row, or None if no
+    such claim exists (or `observer_name` isn't a seeded observer). Callers
+    doing TTL read-back compare against `.last_observed_at` themselves —
+    this helper doesn't apply any freshness policy."""
+    observer_id = _observer_id(db, observer_name)
+    if observer_id is None:
+        return None
+    return (
+        db.query(AssetClaim)
+        .filter(
+            AssetClaim.asset_canonical_id == asset_canonical_id,
+            AssetClaim.observer_id == observer_id,
+            AssetClaim.claim_type == claim_type,
+        )
+        .first()
+    )
+
+
+def upsert_single_claim(
+    db: Session,
+    asset_canonical_id: uuid.UUID,
+    observer_name: str,
+    claim_type: str,
+    claim_value: dict,
+    now: datetime,
+    evidence: dict | None = None,
+) -> AssetClaim | None:
+    """Insert or update the one (asset, observer, claim_type) claim row.
+
+    An unrecognised `observer_name` logs a warning and returns None without
+    writing anything — mirrors emit_claims' own unknown-observer handling,
+    defensive since this shouldn't happen for a seeded producer. Otherwise:
+    no existing row -> INSERT AssetClaim + INSERT ClaimHistory; existing,
+    value differs (JSON-equal comparison) -> UPDATE + INSERT ClaimHistory;
+    existing, value identical -> bump last_observed_at only. Ids are left
+    for the DB's uuidv7() default rather than generated app-side. Flushes
+    (not commits) — the caller's own transaction/commit boundary is
+    unchanged by this helper.
+    """
+    observer_id = _observer_id(db, observer_name)
+    if observer_id is None:
+        log.warning(
+            "claim_emitter: unknown observer %r — skipping single-claim upsert (asset=%s, claim_type=%s)",
+            observer_name, asset_canonical_id, claim_type,
+        )
+        return None
+
+    evidence = evidence or {}
+    existing = (
+        db.query(AssetClaim)
+        .filter(
+            AssetClaim.asset_canonical_id == asset_canonical_id,
+            AssetClaim.observer_id == observer_id,
+            AssetClaim.claim_type == claim_type,
+        )
+        .first()
+    )
+
+    if existing is None:
+        claim = AssetClaim(
+            asset_canonical_id=asset_canonical_id,
+            observer_id=observer_id,
+            claim_type=claim_type,
+            claim_value=claim_value,
+            evidence=evidence,
+            first_observed_at=now,
+            last_observed_at=now,
+        )
+        db.add(claim)
+        db.add(ClaimHistory(
+            asset_canonical_id=asset_canonical_id,
+            observer_id=observer_id,
+            claim_type=claim_type,
+            claim_value=claim_value,
+            evidence=evidence,
+            changed_at=now,
+        ))
+        db.flush()
+        return claim
+
+    if _json_equal(existing.claim_value, claim_value):
+        existing.last_observed_at = now
+        db.flush()
+        return existing
+
+    existing.claim_value = claim_value
+    existing.evidence = evidence
+    existing.last_observed_at = now
+    db.add(ClaimHistory(
+        asset_canonical_id=asset_canonical_id,
+        observer_id=observer_id,
+        claim_type=claim_type,
+        claim_value=claim_value,
+        evidence=evidence,
+        changed_at=now,
+    ))
+    db.flush()
+    return existing

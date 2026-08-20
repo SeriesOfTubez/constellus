@@ -8,12 +8,14 @@ Hybrid dual-source by design:
 
   - `open_ports` is projected from `port_observation` claims — proving the
     claim path actually carries the data readers need.
-  - `hosting` / `eol_summary` / `estate` (from `ownership_verdict`) /
-    `probe_class` (which also reads `provider_mx`) are read straight through
-    from `asset_metadata`, because the connectors/analyzers that produce them
-    (hosting_classifier, shared_infra_verifier, eol_enrichment, dns_records /
-    shodan for provider_mx) haven't been converted to emit claims yet — that
-    is a later slice, not this one.
+  - `hosting` (from a `hosting_class` claim) and `estate` (from an
+    `affinity_confirmation` claim's `verdict`) are also read from
+    `asset_claims` now (planning#144 L3a — hosting_classifier and
+    shared_infra_verifier's asset_metadata TTL-caches moved to claims).
+  - `eol_summary` and the `provider_mx` half of `probe_class` are still read
+    straight through from `asset_metadata`, because the producers of those
+    keys (eol_enrichment, dns_records/shodan for provider_mx) haven't been
+    converted to emit claims yet — that is a later slice, not this one.
 
 This module does NOT do the risky cutover: `asset_writer`'s merge loop stays
 in place and keeps authoring `asset_metadata` (the transitional compat
@@ -160,7 +162,8 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
     `asset_state`. Never writes `asset_metadata`. Idempotent — running twice
     over the same ids yields the same asset_state rows.
 
-    Skips any id with neither claims nor asset_metadata (nothing to project).
+    Skips any id with neither claims (port_observation, hosting_class,
+    affinity_confirmation) nor asset_metadata (nothing to project).
     """
     if not asset_ids:
         return
@@ -188,6 +191,34 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
     for asset_id, claim_value, last_observed_at, observer_name in claim_rows:
         claims_by_asset.setdefault(asset_id, []).append((observer_name, claim_value, last_observed_at))
 
+    # Single-value claims (planning#144 L3a): hosting_class (hosting_classifier
+    # observer) and affinity_confirmation (shared_infra_verifier observer),
+    # batch-loaded up front like port_observation above rather than a
+    # get_current_claim() call per asset in the loop below.
+    single_claim_observer_ids = {
+        name: observer_id
+        for observer_id, name in db.query(Observer.id, Observer.name)
+        .filter(Observer.name.in_(["hosting_classifier", "shared_infra_verifier"]))
+        .all()
+    }
+    hosting_class_by_asset: dict[uuid.UUID, dict] = {}
+    affinity_confirmation_by_asset: dict[uuid.UUID, dict] = {}
+    if single_claim_observer_ids:
+        single_claim_rows = (
+            db.query(AssetClaim.asset_canonical_id, AssetClaim.claim_type, AssetClaim.claim_value)
+            .filter(
+                AssetClaim.asset_canonical_id.in_(asset_ids),
+                AssetClaim.claim_type.in_(["hosting_class", "affinity_confirmation"]),
+                AssetClaim.observer_id.in_(single_claim_observer_ids.values()),
+            )
+            .all()
+        )
+        for asset_id, claim_type, claim_value in single_claim_rows:
+            if claim_type == "hosting_class":
+                hosting_class_by_asset[asset_id] = claim_value
+            elif claim_type == "affinity_confirmation":
+                affinity_confirmation_by_asset[asset_id] = claim_value
+
     # CIDR/IP-scoped ip_address ids, computed once for the whole batch —
     # target_scope._ip_scoped_asset_ids takes the full ip/cidr target list,
     # not a per-asset lookup.
@@ -204,8 +235,10 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         canonical = canonical_by_id.get(asset_id)
         asset_claims = claims_by_asset.get(asset_id, [])
         metadata = (canonical.asset_metadata or {}) if canonical is not None else {}
+        hosting_claim_value = hosting_class_by_asset.get(asset_id)
+        affinity_claim_value = affinity_confirmation_by_asset.get(asset_id)
 
-        if not asset_claims and not metadata:
+        if not asset_claims and not metadata and hosting_claim_value is None and affinity_claim_value is None:
             continue  # nothing to project for this id
 
         # ── open_ports: fold every observer's claim through _merge_open_ports,
@@ -232,16 +265,15 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
             cutoff_iso = naabu_last_observed_at.isoformat()
             merged_ports = _prune_stale_ports(merged_ports, cutoff_iso, now)
 
+        # ── hosting_class / affinity_confirmation claims (planning#144 L3a) ──
+        hosting = hosting_claim_value if isinstance(hosting_claim_value, dict) else {}
+
         # ── path-2 reads (still-authoritative asset_metadata) ─────────────
-        hosting = metadata.get("hosting_class")
-        if not isinstance(hosting, dict):
-            hosting = {}
         eol_summary = metadata.get("eol_services")
         if not isinstance(eol_summary, dict):
             eol_summary = {}
 
-        ownership_verdict = metadata.get("ownership_verdict")
-        verdict = ownership_verdict.get("verdict") if isinstance(ownership_verdict, dict) else None
+        verdict = affinity_claim_value.get("verdict") if isinstance(affinity_claim_value, dict) else None
         if verdict == "confirmed_ours":
             estate = "claimed_ours"
         elif verdict == "rejected_shared_infra":
