@@ -12,10 +12,21 @@ Hybrid dual-source by design:
     `affinity_confirmation` claim's `verdict`) are also read from
     `asset_claims` now (planning#144 L3a — hosting_classifier and
     shared_infra_verifier's asset_metadata TTL-caches moved to claims).
-  - `eol_summary` and the `provider_mx` half of `probe_class` are still read
-    straight through from `asset_metadata`, because the producers of those
-    keys (eol_enrichment, dns_records/shodan for provider_mx) haven't been
-    converted to emit claims yet — that is a later slice, not this one.
+  - `eol_summary` is still read straight through from `asset_metadata`,
+    because eol_enrichment hasn't been converted to emit claims yet — that
+    is a later slice, not this one. `provider_mx` (and the `no_probe` half
+    of `probe_class` that depends on it) is now RECOMPUTED here from the
+    `assets_canonical.record_type`/`.content` columns (planning#144 L3b-1
+    promoted those to columns; L3b-2 stops reading the transitional
+    `asset_metadata["provider_mx"]` mirror and derives it fresh instead).
+
+`attributes` on `asset_state` also carries three more derived/envelope
+keys as of L3b-2: `provider_mx` (recomputed, see above), `naabu_last_scan_at`
+(the naabu `port_observation` claim's `last_observed_at`, isoformatted —
+the same value used as the prune cutoff), and `cdn`/`cdn_domain` (a
+stopgap passthrough mirror of the still asset_metadata-authoritative CDN
+boundary judgment, so they survive the eventual `asset_metadata` column
+drop; #147 replaces this with the real CNAME->third-party edge).
 
 This module does NOT do the risky cutover: `asset_writer`'s merge loop stays
 in place and keeps authoring `asset_metadata` (the transitional compat
@@ -35,6 +46,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.connectors.base import is_provider_managed_mx
 from app.models.asset_canonical import AssetCanonical
 from app.models.asset_state import AssetState
 from app.models.claim import AssetClaim
@@ -284,8 +296,19 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
             # an open decision (planning#129).
             estate = None
 
-        provider_mx = bool(metadata.get("provider_mx"))
+        # ── provider_mx (recomputed from the L3b-1 record_type/content
+        # columns, not asset_metadata) ─────────────────────────────────────
         asset_type = canonical.asset_type if canonical is not None else None
+        if (
+            asset_type == "dns_record"
+            and canonical is not None
+            and canonical.record_type == "MX"
+            and canonical.content
+        ):
+            provider_mx = is_provider_managed_mx(canonical.content)
+        else:
+            provider_mx = False
+
         if provider_mx:
             probe_class = "no_probe"
         elif asset_type == "ip_address" and (
@@ -296,13 +319,26 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         else:
             probe_class = "name_only"
 
+        attributes: dict = {"probe_class": probe_class, "provider_mx": provider_mx}
+
+        if naabu_last_observed_at is not None:
+            attributes["naabu_last_scan_at"] = naabu_last_observed_at.isoformat()
+
+        # ── cdn / cdn_domain: stopgap passthrough mirror of the still
+        # asset_metadata-authoritative CDN boundary judgment (planning#144
+        # L3b-2 user decision) — do NOT recompute the judgment here.
+        if "cdn" in metadata:
+            attributes["cdn"] = metadata["cdn"]
+        if "cdn_domain" in metadata:
+            attributes["cdn_domain"] = metadata["cdn_domain"]
+
         rows_to_upsert.append({
             "asset_canonical_id": asset_id,
             "open_ports": merged_ports,
             "estate": estate,
             "hosting": hosting,
             "eol_summary": eol_summary,
-            "attributes": {"probe_class": probe_class},
+            "attributes": attributes,
             "projected_at": now,
         })
 

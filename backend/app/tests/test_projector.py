@@ -32,11 +32,19 @@ def _observer_id(db, name: str) -> uuid.UUID:
     return db.query(Observer).filter(Observer.name == name).one().id
 
 
-def _make_asset(db, asset_type: str, value: str, metadata: dict | None = None) -> AssetCanonical:
+def _make_asset(
+    db, asset_type: str, value: str, metadata: dict | None = None,
+    record_type: str | None = None, content: str | None = None,
+) -> AssetCanonical:
+    """planning#144 L3b-1 promoted dns_record identity (record_type/content)
+    to real assets_canonical columns; L3b-2's provider_mx recompute reads
+    those columns, not asset_metadata — pass record_type/content explicitly
+    for dns_record test rows that need them."""
     now = datetime.now(timezone.utc)
     row = AssetCanonical(
         id=uuid.uuid4(), asset_type=asset_type, value=value, parent_value=None,
         first_seen_at=now, last_seen_at=now, asset_metadata=metadata or {},
+        record_type=record_type, content=content,
     )
     db.add(row)
     db.commit()
@@ -263,16 +271,24 @@ def test_estate_mapping():
 # ── probe_class ──────────────────────────────────────────────────────────
 
 def test_probe_class_rules():
+    """planning#144 L3b-2: the MX leg of probe_class now comes from the
+    recomputed attributes["provider_mx"] (record_type/content COLUMNS), not
+    asset_metadata — a_mx is a dns_record MX row, not an ip_address with a
+    metadata flag."""
     suffix = uuid.uuid4().hex[:10]
-    ip_mx = f"192.0.2.{10 + (int(suffix[:2], 16) % 40)}"
     ip_cidr = f"192.0.2.{100 + (int(suffix[2:4], 16) % 40)}"
+    host_name_mx = f"probe-class-mx-{suffix}.example.com"
     host_name = f"probe-class-{suffix}.example.com"
     db = SessionLocal()
     target_id = None
     try:
         now = datetime.now(timezone.utc)
 
-        a_mx = _make_asset(db, "ip_address", ip_mx, metadata={"provider_mx": True})
+        a_mx = _make_asset(
+            db, "dns_record", host_name_mx,
+            metadata={"sources": ["dns_records"], "record_type": "MX", "content": "aspmx.l.google.com"},
+            record_type="MX", content="aspmx.l.google.com",
+        )
 
         cidr_value = f"{ip_cidr.rsplit('.', 1)[0]}.0/24"
         target_id = uuid.uuid4()
@@ -280,23 +296,27 @@ def test_probe_class_rules():
         db.commit()
         a_cidr = _make_asset(db, "ip_address", ip_cidr, metadata={"sources": ["naabu"]})
 
-        a_name = _make_asset(db, "dns_record", host_name, metadata={
-            "sources": ["dns_records"], "record_type": "A", "content": "192.0.2.250",
-        })
+        a_name = _make_asset(
+            db, "dns_record", host_name,
+            metadata={"sources": ["dns_records"], "record_type": "A", "content": "192.0.2.250"},
+            record_type="A", content="192.0.2.250",
+        )
 
         projector.project(db, {a_mx.id, a_cidr.id, a_name.id}, now)
         db.commit()
 
         assert _state_for(db, a_mx.id).attributes.get("probe_class") == "no_probe"
+        assert _state_for(db, a_mx.id).attributes.get("provider_mx") is True
         assert _state_for(db, a_cidr.id).attributes.get("probe_class") == "direct_addressable"
         assert _state_for(db, a_name.id).attributes.get("probe_class") == "name_only"
+        assert _state_for(db, a_name.id).attributes.get("provider_mx") is False
     finally:
         db.close()
         if target_id is not None:
             _cleanup_target(target_id)
-        _cleanup_ip(ip_mx)
         _cleanup_ip(ip_cidr)
         _cleanup_prefix(f"probe-class-{suffix}")
+        _cleanup_prefix(f"probe-class-mx-{suffix}")
 
 
 def test_probe_class_direct_addressable_via_hosting_and_confirmed_ours():
@@ -344,6 +364,152 @@ def test_hosting_claim_only_asset_is_not_skipped():
         state = _state_for(db, asset.id)
         assert state.hosting == {"is_datacenter": True, "company_name": "Acme Hosting"}
         assert state.estate is None
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+# ── derived attributes (planning#144 L3b-2) ─────────────────────────────────
+
+def test_provider_mx_recompute_from_columns():
+    """provider_mx is recomputed from the L3b-1 record_type/content COLUMNS
+    (is_provider_managed_mx), not read off asset_metadata: a managed MX ->
+    True, a non-managed MX -> False, a non-MX dns_record -> False."""
+    suffix = uuid.uuid4().hex[:10]
+    host_managed = f"provider-mx-managed-{suffix}.example.com"
+    host_unmanaged = f"provider-mx-unmanaged-{suffix}.example.com"
+    host_non_mx = f"provider-mx-nonmx-{suffix}.example.com"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        a_managed = _make_asset(
+            db, "dns_record", host_managed,
+            metadata={"record_type": "MX", "content": "aspmx.l.google.com"},
+            record_type="MX", content="aspmx.l.google.com",
+        )
+        a_unmanaged = _make_asset(
+            db, "dns_record", host_unmanaged,
+            metadata={"record_type": "MX", "content": "mail.custom-corp-example.com"},
+            record_type="MX", content="mail.custom-corp-example.com",
+        )
+        a_non_mx = _make_asset(
+            db, "dns_record", host_non_mx,
+            metadata={"record_type": "A", "content": "192.0.2.77"},
+            record_type="A", content="192.0.2.77",
+        )
+
+        projector.project(db, {a_managed.id, a_unmanaged.id, a_non_mx.id}, now)
+        db.commit()
+
+        assert _state_for(db, a_managed.id).attributes.get("provider_mx") is True
+        assert _state_for(db, a_unmanaged.id).attributes.get("provider_mx") is False
+        assert _state_for(db, a_non_mx.id).attributes.get("provider_mx") is False
+    finally:
+        db.close()
+        _cleanup_prefix(f"provider-mx-managed-{suffix}")
+        _cleanup_prefix(f"provider-mx-unmanaged-{suffix}")
+        _cleanup_prefix(f"provider-mx-nonmx-{suffix}")
+
+
+def test_naabu_last_scan_at_derived_from_claim():
+    """attributes["naabu_last_scan_at"] is the naabu port_observation claim's
+    last_observed_at, isoformatted — the same value already used as the
+    prune cutoff, now also exposed for the L3c port-lifecycle readers."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"198.51.100.{80 + (int(suffix[:2], 16) % 60)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip, metadata={"sources": ["naabu"]})
+        _add_port_claim(db, asset.id, "naabu", [
+            {"port": 443, "protocol": "tcp", "last_seen_at": now.isoformat()},
+        ], now)
+        db.commit()
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+
+        state = _state_for(db, asset.id)
+        assert state.attributes.get("naabu_last_scan_at") == now.isoformat()
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+def test_no_naabu_claim_no_naabu_last_scan_at():
+    """No naabu port_observation claim -> the key is absent entirely, not
+    set to null (mirrors the prune-cutoff's own 'no naabu claim' handling)."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"198.51.100.{200 + (int(suffix[:2], 16) % 50)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip, metadata={"sources": ["shodan"]})
+        _add_port_claim(db, asset.id, "shodan", [
+            {"port": 21, "protocol": "tcp", "last_seen_at": now.isoformat()},
+        ], now)
+        db.commit()
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+
+        state = _state_for(db, asset.id)
+        assert "naabu_last_scan_at" not in state.attributes
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+def test_cdn_and_cdn_domain_mirrored_from_metadata():
+    """cdn / cdn_domain are a stopgap passthrough copy from asset_metadata
+    into attributes (planning#144 L3b-2 user decision) — pure mirror, no
+    boundary judgment recomputed here."""
+    suffix = uuid.uuid4().hex[:10]
+    host_name = f"cdn-mirror-{suffix}.example.com"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(
+            db, "dns_record", host_name,
+            metadata={
+                "record_type": "CNAME", "content": "d123.cloudfront.net",
+                "cdn": True, "cdn_domain": "cloudfront.net",
+            },
+            record_type="CNAME", content="d123.cloudfront.net",
+        )
+        db.commit()
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+
+        state = _state_for(db, asset.id)
+        assert state.attributes.get("cdn") is True
+        assert state.attributes.get("cdn_domain") == "cloudfront.net"
+    finally:
+        db.close()
+        _cleanup_prefix(f"cdn-mirror-{suffix}")
+
+
+def test_no_cdn_metadata_no_cdn_attributes():
+    """No cdn/cdn_domain in asset_metadata -> neither key appears in
+    attributes (no invented default)."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"198.51.100.{10 + (int(suffix[:2], 16) % 60)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip, metadata={"sources": ["naabu"]})
+        _add_port_claim(db, asset.id, "naabu", [
+            {"port": 80, "protocol": "tcp", "last_seen_at": now.isoformat()},
+        ], now)
+        db.commit()
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+
+        state = _state_for(db, asset.id)
+        assert "cdn" not in state.attributes
+        assert "cdn_domain" not in state.attributes
     finally:
         db.close()
         _cleanup_ip(ip)
