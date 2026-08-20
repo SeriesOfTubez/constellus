@@ -317,9 +317,14 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         hosting = hosting_claim_value if isinstance(hosting_claim_value, dict) else {}
 
         # ── path-2 reads (still-authoritative asset_metadata) ─────────────
+        # eol_services is a LIST of per-port EOL records (eol_enrichment.py),
+        # not a dict — despite the column name `eol_summary` (planning#144
+        # L3c-2 found this passthrough guard checking the wrong type, which
+        # silently discarded every real eol_services list into `{}`; fixed
+        # here since it blocks the L3c-2 serializer bridge's eol_services key).
         eol_summary = metadata.get("eol_services")
-        if not isinstance(eol_summary, dict):
-            eol_summary = {}
+        if not isinstance(eol_summary, list):
+            eol_summary = []
 
         verdict = affinity_claim_value.get("verdict") if isinstance(affinity_claim_value, dict) else None
         if verdict == "confirmed_ours":

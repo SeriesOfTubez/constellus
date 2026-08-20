@@ -81,15 +81,18 @@ def test_observers_seeded_with_18_rows_and_correct_addressing():
     assert "cloud_inventory" not in by_name
 
 
-def test_claim_types_seeded_with_15_rows_and_exactly_two_authorisation_ttls():
+def test_claim_types_seeded_with_16_rows_and_exactly_two_authorisation_ttls():
     db = SessionLocal()
     try:
         rows = db.execute(text("SELECT claim_type, authorisation_ttl FROM claim_types")).all()
     finally:
         db.close()
-    assert len(rows) == 15, f"expected 15 seeded claim types, got {len(rows)}"
+    assert len(rows) == 16, f"expected 16 seeded claim types, got {len(rows)}"
     with_ttl = {claim_type for claim_type, ttl in rows if ttl is not None}
     assert with_ttl == {"affinity_confirmation", "cloud_inventory"}, with_ttl
+    by_type = dict(rows)
+    assert "observation" in by_type, "observation claim type (0041, L3c-2a) must be seeded"
+    assert by_type["observation"] is None, "observation carries no authorisation_ttl"
 
 
 def test_edge_type_relationships_seeded_with_7_rows():
@@ -252,7 +255,7 @@ def _run():
     tests = [
         test_all_seven_claims_layer_tables_exist,
         test_observers_seeded_with_18_rows_and_correct_addressing,
-        test_claim_types_seeded_with_15_rows_and_exactly_two_authorisation_ttls,
+        test_claim_types_seeded_with_16_rows_and_exactly_two_authorisation_ttls,
         test_edge_type_relationships_seeded_with_7_rows,
         test_claim_history_is_natively_partitioned_with_at_least_3_partitions,
         test_asset_claims_unique_constraint_behavior,

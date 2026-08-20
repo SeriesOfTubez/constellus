@@ -246,10 +246,13 @@ def _cleanup_ip(value: str) -> None:
         db.close()
 
 
-def test_non_emitted_keys_produce_no_claims():
+def test_non_emitted_keys_produce_only_observation_claim():
     """Identity keys (record_type/content), derived keys (provider_mx),
     edge keys (cdn_domain), and path-2 keys (hosting_class) must NOT
-    produce any asset_claims rows."""
+    produce any Table-1 asset_claims rows — but the asset-level observer
+    still resolves (sources=["dns_records"]), so the base-provenance
+    `observation` claim (L3c-2a, planning#144) IS emitted, carrying an
+    empty claim_value."""
     suffix = uuid.uuid4().hex[:10]
     value = f"claim-nonemit-{suffix}.example.com"
     db = SessionLocal()
@@ -269,13 +272,49 @@ def test_non_emitted_keys_produce_no_claims():
 
         row = db.query(AssetCanonical).filter(AssetCanonical.value == value).one()
         claims = _claims_for(db, row.id)
-        assert claims == [], f"expected no claims for non-emitted keys, got {[(c.claim_type, c.claim_value) for c in claims]}"
+        claim_types = {c.claim_type for c in claims}
+        assert claim_types == {"observation"}, (
+            f"expected only the observation claim for non-emitted keys, got {[(c.claim_type, c.claim_value) for c in claims]}"
+        )
+        assert claims[0].claim_value == {}
         # And the (skipped-in-this-slice) mx_preference field wasn't set, so
         # no mx_preference claim either.
         assert not any(c.claim_type == "mx_preference" for c in claims)
     finally:
         db.close()
         _cleanup(f"claim-nonemit-{suffix}")
+
+
+def test_identity_only_dns_record_emits_observation_claim():
+    """The common dns_resolve/dns_records shape for a plain A/AAAA/CNAME
+    hop — asset_metadata carrying ONLY {sources, record_type, content},
+    nothing else — used to emit NO claim at all, so that observer vanished
+    from the L3c-2 serializer bridge's reconstructed `sources` (see
+    test_serializer_bridge.py). It must now emit exactly one `observation`
+    claim attributed to dns_resolve, with an empty claim_value."""
+    suffix = uuid.uuid4().hex[:10]
+    value = f"claim-identity-only-{suffix}.example.com"
+    db = SessionLocal()
+    try:
+        write_assets(db, uuid.uuid4(), [DiscoveredAsset(
+            asset_type="dns_record", value=value, parent_value=None,
+            asset_metadata={
+                "sources": ["dns_resolve"],
+                "record_type": "A",
+                "content": "203.0.113.30",
+            },
+        )])
+
+        row = db.query(AssetCanonical).filter(AssetCanonical.value == value).one()
+        claims = _claims_for(db, row.id)
+        assert len(claims) == 1, f"expected exactly 1 claim (observation), got {[(c.claim_type, c.claim_value) for c in claims]}"
+        assert claims[0].claim_type == "observation"
+        assert claims[0].claim_value == {}
+        dns_resolve_id = _observer_id(db, "dns_resolve")
+        assert claims[0].observer_id == dns_resolve_id
+    finally:
+        db.close()
+        _cleanup(f"claim-identity-only-{suffix}")
 
 
 def test_explicit_observer_field_overrides_sources_fallback():

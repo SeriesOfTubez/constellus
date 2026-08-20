@@ -100,6 +100,17 @@ _PORT_OBSERVATION_CLAIM_TYPE = "port_observation"
 # Per-entry keys that are envelope data, not part of the stored port claim value.
 _PORT_ENTRY_ENVELOPE_KEYS = ("sources", "naabu_tier")
 
+# Base-provenance claim type (L3c-2a, planning#144): recorded for EVERY
+# asset+observer pair whose asset-level observer resolves, regardless of
+# whether any other Table 1 key was present. Constant `{}` value means
+# change-detection (_upsert_claims) treats every re-observation as a cheap
+# last_observed_at bump, never a new claim_history row after the first.
+# This exists so identity-only observers (dns_resolve/dns_records writing
+# just {sources, record_type, content}, which trip none of the other
+# _accumulate_* helpers below) still leave a trace in asset_claims — see
+# the L3c-2 serializer bridge's `sources` reconstruction in api/assets.py.
+_OBSERVATION_CLAIM_TYPE = "observation"
+
 
 def emit_claims(
     db: Session,
@@ -148,6 +159,7 @@ def emit_claims(
             if observer_id is None:
                 _warn_unknown_observer_once(observer_name, warned_observers)
             else:
+                _accumulate_observation_claim(targets, canonical_id, observer_id)
                 _accumulate_simple_claims(targets, canonical_id, observer_id, meta)
                 _accumulate_spf_claim(targets, canonical_id, observer_id, meta)
                 _accumulate_ct_claim(targets, canonical_id, observer_id, meta)
@@ -187,6 +199,16 @@ def _warn_unknown_observer_once(observer_name: str, warned_observers: set[str]) 
 
 
 # ── per-key accumulation into the batch's target map ─────────────────────────
+
+def _accumulate_observation_claim(
+    targets: dict[_TargetKey, dict],
+    canonical_id: uuid.UUID,
+    observer_id: uuid.UUID,
+) -> None:
+    """Base-provenance claim: this (asset, observer) pair was observed, full
+    stop. Always {} — see _OBSERVATION_CLAIM_TYPE docstring above."""
+    _merge_target(targets, (canonical_id, observer_id, _OBSERVATION_CLAIM_TYPE), {}, {})
+
 
 def _accumulate_simple_claims(
     targets: dict[_TargetKey, dict],

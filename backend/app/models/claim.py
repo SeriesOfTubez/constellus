@@ -28,6 +28,7 @@ CLAIM_TYPES: frozenset[str] = frozenset({
     "affinity_confirmation",
     "eol_status",
     "cloud_inventory",
+    "observation",
 })
 
 
