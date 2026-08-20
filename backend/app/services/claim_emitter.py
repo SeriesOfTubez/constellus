@@ -1,0 +1,411 @@
+"""Claim emission from the batch writer (planning#143, L2 sub-slice A).
+
+Strangler-fig, additive: decomposes each incoming DiscoveredAsset's
+asset_metadata into asset_claims rows per Table 1 of the L2 key->claim
+mapping, alongside the existing asset_metadata merge in
+_upsert_canonical_batch (asset_writer.py). The writer keeps authoring
+asset_metadata exactly as before; nothing reads asset_claims yet. See:
+
+  - the key->claim mapping (authoritative): L2 metadata-key -> claim
+    mapping doc, Table 1 + the envelope/observer-derivation/
+    change-detection sections (planning#143).
+  - app/models/claim.py (AssetClaim, ClaimHistory, CLAIM_TYPES) and
+    app/models/observer.py (Observer) for the L1 schema this writes to.
+
+Grain:
+  - Every claim type except port_observation is a single composite dict
+    built from a fixed set of source keys present on one DiscoveredAsset,
+    attributed to that asset's single resolved observer.
+  - port_observation is one claim per (asset, observer): open_ports[]
+    entries are grouped by their own per-entry `sources` list (each entry
+    may name more than one source, e.g. naabu-confirmed-by-nmap), so a
+    single asset's open_ports patch can fan out into multiple observers'
+    claims. `sources` (and the per-entry `naabu_tier`, which is envelope
+    data) are stripped from the stored port entries.
+
+Observer resolution: DiscoveredAsset.observer if set, else the single
+entry of asset_metadata["sources"]. A name not present in the seeded
+`observers` table causes that claim (or, for port_observation, just that
+source's group) to be skipped with a single warning per unknown name per
+call — defensive, shouldn't happen for seeded producers.
+
+Change-detection, per (asset, observer, claim_type):
+  - no existing row -> INSERT asset_claims + INSERT claim_history.
+  - existing, value differs (JSON-equal comparison) -> UPDATE asset_claims
+    + INSERT claim_history.
+  - existing, value identical -> UPDATE asset_claims.last_observed_at only.
+
+Concurrency: called from write_assets() in the same transaction as
+_upsert_canonical_batch, after it. That function already takes a
+`FOR UPDATE` lock on the touched assets_canonical rows, which serializes
+any concurrent writer touching the same asset before it reaches this
+function too — so no separate locking is taken here.
+"""
+
+import json
+import logging
+import uuid
+from datetime import datetime
+
+from sqlalchemy.orm import Session
+
+from app.connectors.base import DiscoveredAsset
+from app.models.claim import AssetClaim, ClaimHistory
+from app.models.observer import Observer
+
+log = logging.getLogger(__name__)
+
+_TargetKey = tuple[uuid.UUID, uuid.UUID, str]  # (asset_canonical_id, observer_id, claim_type)
+
+# ── Table 1: metadata key -> (claim_type, claim_value key) ──────────────────
+# Single-key claims: one metadata key maps straight into a one-field
+# claim_value dict, attributed to the asset's resolved observer.
+_SIMPLE_KEY_CLAIMS: dict[str, tuple[str, str]] = {
+    "ttl": ("dns_ttl", "ttl"),
+    "proxied": ("proxy_state", "proxied"),
+    "zone_id": ("cloudflare_zone", "zone_id"),
+    "mx_preference": ("mx_preference", "mx_preference"),
+    "tarpit_detected": ("host_tarpit", "tarpit_detected"),
+    "shodan_hostnames": ("reverse_hostname", "hostnames"),
+}
+
+# spf carries the full parsed dict as claim_value directly (no wrapper key).
+_SPF_METADATA_KEY = "spf"
+_SPF_CLAIM_TYPE = "spf_policy"
+
+# Composite claims: several metadata keys combine into one claim_value dict.
+_CT_KEYS: dict[str, str] = {"not_before": "not_before", "not_after": "not_after", "issuer": "issuer"}
+_CT_CLAIM_TYPE = "ct_cert_issuance"
+
+_SHODAN_HOST_KEYS: dict[str, str] = {
+    "shodan_org": "org",
+    "shodan_os": "os",
+    "shodan_country": "country",
+    "shodan_isp": "isp",
+    "shodan_asn": "asn",
+    "shodan_tags": "tags",
+    "shodan_last_update": "last_update",
+}
+_SHODAN_HOST_CLAIM_TYPE = "shodan_host"
+
+_PORT_OBSERVATION_CLAIM_TYPE = "port_observation"
+# Per-entry keys that are envelope data, not part of the stored port claim value.
+_PORT_ENTRY_ENVELOPE_KEYS = ("sources", "naabu_tier")
+
+
+def emit_claims(
+    db: Session,
+    assets: list[DiscoveredAsset],
+    canonical_map: dict[tuple, uuid.UUID],
+    now: datetime,
+) -> None:
+    """Decompose `assets`' asset_metadata into asset_claims rows.
+
+    Mirrors write_assets' canonical-key resolution via `_canonical_key`
+    (imported lazily from asset_writer to avoid a module-load cycle — see
+    the local import below). Call this after canonical rows are upserted
+    (canonical_map populated) and before commit.
+    """
+    if not assets:
+        return
+
+    observer_ids = _load_observer_ids(db)
+    if not observer_ids:
+        return
+
+    # Lazy import: asset_writer imports emit_claims from this module inside
+    # write_assets() (a local import there too), so importing it back here
+    # at module load time would be a circular import. By the time this
+    # function actually runs, asset_writer has already fully executed its
+    # module body, so this import is safe.
+    from app.services.asset_writer import _canonical_key
+
+    targets: dict[_TargetKey, dict] = {}
+    warned_observers: set[str] = set()
+
+    for asset in assets:
+        canonical_id = canonical_map.get(_canonical_key(asset.asset_type, asset.value, asset.asset_metadata))
+        if canonical_id is None:
+            continue
+        meta = asset.asset_metadata or {}
+        if not meta:
+            continue
+
+        # Non-port claims: attributed to this asset's single resolved observer.
+        observer_name = asset.observer or _single_source(meta.get("sources"))
+        if observer_name:
+            observer_id = observer_ids.get(observer_name)
+            if observer_id is None:
+                _warn_unknown_observer_once(observer_name, warned_observers)
+            else:
+                _accumulate_simple_claims(targets, canonical_id, observer_id, meta)
+                _accumulate_spf_claim(targets, canonical_id, observer_id, meta)
+                _accumulate_ct_claim(targets, canonical_id, observer_id, meta)
+                _accumulate_shodan_host_claim(targets, canonical_id, observer_id, meta)
+
+        # port_observation: attributed per-entry by each port's own `sources`,
+        # independent of (and possibly broader than) the asset-level observer
+        # resolved above.
+        _accumulate_port_observation(targets, canonical_id, observer_ids, meta, warned_observers)
+
+    if targets:
+        _upsert_claims(db, targets, now)
+
+
+# ── observer resolution ──────────────────────────────────────────────────────
+
+def _load_observer_ids(db: Session) -> dict[str, uuid.UUID]:
+    return {name: observer_id for observer_id, name in db.query(Observer.id, Observer.name).all()}
+
+
+def _single_source(sources) -> str | None:
+    if isinstance(sources, list) and len(sources) == 1:
+        return sources[0]
+    if isinstance(sources, str) and sources:
+        return sources
+    return None
+
+
+def _warn_unknown_observer_once(observer_name: str, warned_observers: set[str]) -> None:
+    if observer_name in warned_observers:
+        return
+    warned_observers.add(observer_name)
+    log.warning(
+        "claim_emitter: unknown observer %r — skipping claim emission attributed to it",
+        observer_name,
+    )
+
+
+# ── per-key accumulation into the batch's target map ─────────────────────────
+
+def _accumulate_simple_claims(
+    targets: dict[_TargetKey, dict],
+    canonical_id: uuid.UUID,
+    observer_id: uuid.UUID,
+    meta: dict,
+) -> None:
+    for meta_key, (claim_type, value_key) in _SIMPLE_KEY_CLAIMS.items():
+        if meta_key not in meta or meta[meta_key] is None:
+            continue
+        _merge_target(targets, (canonical_id, observer_id, claim_type), {value_key: meta[meta_key]}, {})
+
+
+def _accumulate_spf_claim(
+    targets: dict[_TargetKey, dict],
+    canonical_id: uuid.UUID,
+    observer_id: uuid.UUID,
+    meta: dict,
+) -> None:
+    spf = meta.get(_SPF_METADATA_KEY)
+    if not isinstance(spf, dict):
+        return
+    _merge_target(targets, (canonical_id, observer_id, _SPF_CLAIM_TYPE), dict(spf), {})
+
+
+def _accumulate_ct_claim(
+    targets: dict[_TargetKey, dict],
+    canonical_id: uuid.UUID,
+    observer_id: uuid.UUID,
+    meta: dict,
+) -> None:
+    if not any(k in meta for k in _CT_KEYS):
+        return
+    value = {value_key: meta.get(meta_key, "") for meta_key, value_key in _CT_KEYS.items()}
+    evidence = {}
+    ct_source = meta.get("ct_source")
+    if ct_source:
+        evidence["sub_source"] = ct_source
+    _merge_target(targets, (canonical_id, observer_id, _CT_CLAIM_TYPE), value, evidence)
+
+
+def _accumulate_shodan_host_claim(
+    targets: dict[_TargetKey, dict],
+    canonical_id: uuid.UUID,
+    observer_id: uuid.UUID,
+    meta: dict,
+) -> None:
+    present = {mk: vk for mk, vk in _SHODAN_HOST_KEYS.items() if mk in meta and meta[mk] is not None}
+    if not present:
+        return
+    value = {vk: meta[mk] for mk, vk in present.items()}
+    _merge_target(targets, (canonical_id, observer_id, _SHODAN_HOST_CLAIM_TYPE), value, {})
+
+
+def _accumulate_port_observation(
+    targets: dict[_TargetKey, dict],
+    canonical_id: uuid.UUID,
+    observer_ids: dict[str, uuid.UUID],
+    meta: dict,
+    warned_observers: set[str],
+) -> None:
+    """Group open_ports[] (plus bare shodan_ports[] ints) by observer.
+
+    One claim per (asset, observer) — L1's unique key is (asset, observer,
+    claim_type), so an observer's whole port list rides in one claim_value,
+    not one claim per port.
+    """
+    groups: dict[str, list[dict]] = {}
+
+    open_ports = meta.get("open_ports")
+    if isinstance(open_ports, list):
+        for entry in open_ports:
+            if not isinstance(entry, dict):
+                continue
+            sources = entry.get("sources")
+            source_names = sources if isinstance(sources, list) else ([sources] if sources else [])
+            # "nmap" is naabu's own verification sub-tool, not a seeded
+            # observer in its own right — naabu's claim already carries the
+            # nmap-enriched entry. Drop it here so it doesn't fan out into
+            # its own claim group and trip the unknown-observer warning.
+            source_names = [s for s in source_names if s != "nmap"]
+            if not source_names:
+                continue
+            stripped = {k: v for k, v in entry.items() if k not in _PORT_ENTRY_ENVELOPE_KEYS}
+            for source_name in source_names:
+                groups.setdefault(source_name, []).append(dict(stripped))
+
+    # shodan_ports: bare port ints alongside the richer open_ports entries.
+    # Fold in any port not already covered so no signal is silently dropped,
+    # without duplicating a port already carried by an open_ports entry.
+    shodan_ports = meta.get("shodan_ports")
+    if isinstance(shodan_ports, list):
+        shodan_group = groups.setdefault("shodan", [])
+        existing_ports = {e.get("port") for e in shodan_group}
+        for p in shodan_ports:
+            if isinstance(p, int) and p not in existing_ports:
+                shodan_group.append({"port": p, "protocol": "tcp"})
+                existing_ports.add(p)
+
+    for source_name, entries in groups.items():
+        if not entries:
+            continue
+        observer_id = observer_ids.get(source_name)
+        if observer_id is None:
+            _warn_unknown_observer_once(source_name, warned_observers)
+            continue
+
+        evidence = {}
+        if source_name == "naabu" and meta.get("naabu_tier"):
+            evidence["naabu_tier"] = meta["naabu_tier"]
+
+        claim_value = {
+            "ports": sorted(
+                entries, key=lambda e: e.get("port") if isinstance(e.get("port"), int) else 0
+            )
+        }
+        _merge_target(
+            targets, (canonical_id, observer_id, _PORT_OBSERVATION_CLAIM_TYPE),
+            claim_value, evidence, merge_ports=True,
+        )
+
+
+def _merge_target(
+    targets: dict[_TargetKey, dict],
+    key: _TargetKey,
+    claim_value: dict,
+    evidence: dict,
+    *,
+    merge_ports: bool = False,
+) -> None:
+    """Fold a new contribution into the batch's running target map.
+
+    Only matters when two DiscoveredAsset entries in the SAME batch
+    contribute to the same (asset, observer, claim_type) — rare, but keeps
+    later contributions from silently clobbering earlier ones instead of
+    combining them.
+    """
+    existing = targets.get(key)
+    if existing is None:
+        targets[key] = {"claim_value": claim_value, "evidence": evidence}
+        return
+
+    if merge_ports:
+        by_port = {
+            e["port"]: e for e in existing["claim_value"].get("ports", [])
+            if isinstance(e, dict) and isinstance(e.get("port"), int)
+        }
+        for e in claim_value.get("ports", []):
+            if isinstance(e, dict) and isinstance(e.get("port"), int):
+                by_port[e["port"]] = {**by_port.get(e["port"], {}), **e}
+        existing["claim_value"] = {"ports": sorted(by_port.values(), key=lambda x: x["port"])}
+    else:
+        existing["claim_value"] = {**existing["claim_value"], **claim_value}
+    existing["evidence"] = {**existing["evidence"], **evidence}
+
+
+# ── upsert with change-detection ──────────────────────────────────────────────
+
+def _upsert_claims(db: Session, targets: dict[_TargetKey, dict], now: datetime) -> None:
+    canonical_ids = {k[0] for k in targets}
+    observer_ids = {k[1] for k in targets}
+    claim_types = {k[2] for k in targets}
+
+    existing_rows = (
+        db.query(AssetClaim)
+        .filter(
+            AssetClaim.asset_canonical_id.in_(canonical_ids),
+            AssetClaim.observer_id.in_(observer_ids),
+            AssetClaim.claim_type.in_(claim_types),
+        )
+        .all()
+    )
+    existing_by_key: dict[_TargetKey, AssetClaim] = {
+        (r.asset_canonical_id, r.observer_id, r.claim_type): r for r in existing_rows
+    }
+
+    history_rows: list[ClaimHistory] = []
+
+    for key, data in targets.items():
+        canonical_id, observer_id, claim_type = key
+        claim_value = data["claim_value"]
+        evidence = data["evidence"]
+        existing = existing_by_key.get(key)
+
+        if existing is None:
+            # id omitted: AssetClaim/ClaimHistory both carry
+            # server_default=uuidv7() (L1 migration 0039) — let the DB assign
+            # it rather than generating a uuid4 app-side. No refresh needed;
+            # nothing here reads the assigned id back before commit.
+            db.add(AssetClaim(
+                asset_canonical_id=canonical_id,
+                observer_id=observer_id,
+                claim_type=claim_type,
+                claim_value=claim_value,
+                evidence=evidence,
+                first_observed_at=now,
+                last_observed_at=now,
+            ))
+            history_rows.append(ClaimHistory(
+                asset_canonical_id=canonical_id,
+                observer_id=observer_id,
+                claim_type=claim_type,
+                claim_value=claim_value,
+                evidence=evidence,
+                changed_at=now,
+            ))
+            continue
+
+        if _json_equal(existing.claim_value, claim_value):
+            existing.last_observed_at = now
+            continue
+
+        existing.claim_value = claim_value
+        existing.evidence = evidence
+        existing.last_observed_at = now
+        history_rows.append(ClaimHistory(
+            asset_canonical_id=canonical_id,
+            observer_id=observer_id,
+            claim_type=claim_type,
+            claim_value=claim_value,
+            evidence=evidence,
+            changed_at=now,
+        ))
+
+    if history_rows:
+        db.add_all(history_rows)
+    db.flush()
+
+
+def _json_equal(a: dict, b: dict) -> bool:
+    """Canonical JSON comparison so key-order noise doesn't count as a change."""
+    return json.dumps(a, sort_keys=True, default=str) == json.dumps(b, sort_keys=True, default=str)

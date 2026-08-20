@@ -1,0 +1,295 @@
+"""Synchronous, incremental claims -> asset_state projector (planning#143, L2
+sub-slice C).
+
+Reads `asset_claims` (path 1, the new grounding layer) + the still-
+authoritative `asset_metadata` on `assets_canonical` (path 2, not converted
+this slice) and folds them into one projected row per asset in `asset_state`.
+Hybrid dual-source by design:
+
+  - `open_ports` is projected from `port_observation` claims — proving the
+    claim path actually carries the data readers need.
+  - `hosting` / `eol_summary` / `estate` (from `ownership_verdict`) /
+    `probe_class` (which also reads `provider_mx`) are read straight through
+    from `asset_metadata`, because the connectors/analyzers that produce them
+    (hosting_classifier, shared_infra_verifier, eol_enrichment, dns_records /
+    shodan for provider_mx) haven't been converted to emit claims yet — that
+    is a later slice, not this one.
+
+This module does NOT do the risky cutover: `asset_writer`'s merge loop stays
+in place and keeps authoring `asset_metadata` (the transitional compat
+mirror every existing reader still uses). This module only ADDS a
+projection into `asset_state`, a table nothing reads yet.
+
+`_merge_open_ports` / `_prune_stale_ports` (plus their grace-period
+constants) used to live in `asset_writer.py`; they moved here verbatim as
+part of this slice so the projector and the writer's own asset_metadata
+merge share one definition. `asset_writer.py` imports them back and keeps
+calling them exactly as before — that's a pure move, not a rewrite.
+"""
+
+import uuid
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import Session
+
+from app.models.asset_canonical import AssetCanonical
+from app.models.asset_state import AssetState
+from app.models.claim import AssetClaim
+from app.models.observer import Observer
+from app.models.target import Target, TargetType
+from app.services import target_scope
+
+# ── moved verbatim from asset_writer.py ────────────────────────────────────
+
+# A Shodan-sourced port (never seen by our active scan) is kept as time-boxed
+# intel for this many days past its last_seen_at before the prune drops it.
+# Mirrors the read-time grace in app.api.assets._filter_stale_ports.
+_SHODAN_PORT_GRACE_DAYS = 14
+
+# A port confirmed by an active prober (l7_confirmed=True) is kept this many days
+# past its last confirmation even if later scans miss it. Real services flap —
+# intermittent / firewall throttling — so a single missed scan must not retire a
+# known-real port (validated 2026-06-23, planning#69: port 80 flapped
+# open<->filtered within seconds from two WANs). Shorter than the Shodan grace: a
+# confirmed port we can't re-confirm for days is probably genuinely closed.
+_CONFIRMED_PORT_GRACE_DAYS = 3
+
+
+def _prune_stale_ports(open_ports: list, naabu_last_scan_at: str, now: datetime) -> list:
+    """Drop ports not re-confirmed in the latest naabu scan, so stored
+    `open_ports` == the current truth (instead of accumulating forever).
+
+    A port is kept if it was re-observed at/after the latest naabu scan, OR it
+    was previously app-confirmed (l7_confirmed) within the confirmed grace window
+    (flap-guard for intermittent real ports), OR it's Shodan-sourced intel inside
+    the Shodan grace window, OR it has no timestamp to judge by. Everything else
+    (e.g. a firewall phantom that a later nmap-authoritative scan no longer
+    confirms) is removed at the source. This is the write-time counterpart of the
+    read-time `_filter_stale_ports` hide — here we delete, which also stops any
+    consumer from re-probing stale phantoms.
+    """
+    try:
+        cutoff = datetime.fromisoformat(naabu_last_scan_at)
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError, AttributeError):
+        return open_ports  # can't parse the marker — don't risk dropping anything
+    grace_cutoff = now - timedelta(days=_SHODAN_PORT_GRACE_DAYS)
+    confirmed_grace_cutoff = now - timedelta(days=_CONFIRMED_PORT_GRACE_DAYS)
+    kept: list = []
+    for entry in open_ports:
+        if not isinstance(entry, dict):
+            continue
+        raw = entry.get("last_seen_at")
+        if not raw:
+            kept.append(entry)  # no timestamp — keep, can't judge staleness
+            continue
+        try:
+            ts = datetime.fromisoformat(raw)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+        except (ValueError, AttributeError):
+            kept.append(entry)
+            continue
+        if ts >= cutoff:
+            kept.append(entry)
+        elif entry.get("l7_confirmed") is True and ts >= confirmed_grace_cutoff:
+            # Flap-guard: a previously-confirmed real port is kept through brief
+            # misses (it flaps) until the confirmed grace expires.
+            kept.append(entry)
+        elif "shodan" in (entry.get("sources") or []) and ts >= grace_cutoff:
+            kept.append(entry)
+        # else: stale / grace-expired — drop
+    return kept
+
+
+def _merge_open_ports(existing: list, new: list) -> list:
+    """Merge two `open_ports` lists keyed by port number.
+
+    Each entry is `{port, protocol, sources, last_seen_at, …}` plus any
+    fields contributed by service enrichers (`service`, `service_version`,
+    `tech_stack[]`, `tls_cert_sans[]`, etc.). Merge rules per port:
+
+    * `sources` — union, preserving first-seen order.
+    * Other primitive fields — last-write-wins for non-empty values.
+    * `last_seen_at` — the newer one wins (lexicographic ISO 8601 ordering).
+
+    A previously-known port that wasn't re-observed in this batch is kept
+    untouched; cleanup of stale ports is a separate lifecycle concern.
+    """
+    by_port: dict[int, dict] = {}
+    for entry in existing:
+        if isinstance(entry, dict) and isinstance(entry.get("port"), int):
+            by_port[entry["port"]] = dict(entry)
+
+    for entry in new:
+        if not isinstance(entry, dict):
+            continue
+        port = entry.get("port")
+        if not isinstance(port, int):
+            continue
+        current = by_port.get(port)
+        if current is None:
+            by_port[port] = dict(entry)
+            continue
+        for k, v in entry.items():
+            if k == "port":
+                continue
+            if v in (None, "", [], {}):
+                continue
+            if k == "sources":
+                existing_sources = current.get("sources", [])
+                src_list = v if isinstance(v, list) else [v]
+                current["sources"] = list(dict.fromkeys(existing_sources + src_list))
+            elif k == "last_seen_at":
+                if not current.get("last_seen_at") or v > current["last_seen_at"]:
+                    current["last_seen_at"] = v
+            else:
+                current[k] = v
+
+    return sorted(by_port.values(), key=lambda p: p["port"])
+
+
+# ── projector ────────────────────────────────────────────────────────────
+
+def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
+    """Fold claims + path-2 asset_metadata into `asset_state`, one row per id.
+
+    Read-only on `asset_claims` + `assets_canonical`; write-only on
+    `asset_state`. Never writes `asset_metadata`. Idempotent — running twice
+    over the same ids yields the same asset_state rows.
+
+    Skips any id with neither claims nor asset_metadata (nothing to project).
+    """
+    if not asset_ids:
+        return
+
+    canonical_by_id: dict[uuid.UUID, AssetCanonical] = {
+        r.id: r
+        for r in db.query(AssetCanonical).filter(AssetCanonical.id.in_(asset_ids)).all()
+    }
+
+    claim_rows = (
+        db.query(
+            AssetClaim.asset_canonical_id,
+            AssetClaim.claim_value,
+            AssetClaim.last_observed_at,
+            Observer.name,
+        )
+        .join(Observer, AssetClaim.observer_id == Observer.id)
+        .filter(
+            AssetClaim.asset_canonical_id.in_(asset_ids),
+            AssetClaim.claim_type == "port_observation",
+        )
+        .all()
+    )
+    claims_by_asset: dict[uuid.UUID, list[tuple[str, dict, datetime]]] = {}
+    for asset_id, claim_value, last_observed_at, observer_name in claim_rows:
+        claims_by_asset.setdefault(asset_id, []).append((observer_name, claim_value, last_observed_at))
+
+    # CIDR/IP-scoped ip_address ids, computed once for the whole batch —
+    # target_scope._ip_scoped_asset_ids takes the full ip/cidr target list,
+    # not a per-asset lookup.
+    ip_target_values = [
+        v for (v,) in db.query(Target.value)
+        .filter(Target.type.in_([TargetType.IP, TargetType.CIDR]))
+        .all()
+    ]
+    cidr_scoped_ids = target_scope._ip_scoped_asset_ids(db, ip_target_values)
+
+    rows_to_upsert: list[dict] = []
+
+    for asset_id in asset_ids:
+        canonical = canonical_by_id.get(asset_id)
+        asset_claims = claims_by_asset.get(asset_id, [])
+        metadata = (canonical.asset_metadata or {}) if canonical is not None else {}
+
+        if not asset_claims and not metadata:
+            continue  # nothing to project for this id
+
+        # ── open_ports: fold every observer's claim through _merge_open_ports,
+        # restoring the observer identity the emitter stripped, then prune on
+        # the naabu observer's last_observed_at (no naabu claim -> keep all).
+        merged_ports: list = []
+        naabu_last_observed_at: datetime | None = None
+        for observer_name, claim_value, last_observed_at in asset_claims:
+            ports = claim_value.get("ports") if isinstance(claim_value, dict) else None
+            if not isinstance(ports, list):
+                continue
+            restored: list[dict] = []
+            for entry in ports:
+                if not isinstance(entry, dict):
+                    continue
+                entry = dict(entry)
+                entry["sources"] = [observer_name]
+                restored.append(entry)
+            merged_ports = _merge_open_ports(merged_ports, restored)
+            if observer_name == "naabu":
+                naabu_last_observed_at = last_observed_at
+
+        if naabu_last_observed_at is not None:
+            cutoff_iso = naabu_last_observed_at.isoformat()
+            merged_ports = _prune_stale_ports(merged_ports, cutoff_iso, now)
+
+        # ── path-2 reads (still-authoritative asset_metadata) ─────────────
+        hosting = metadata.get("hosting_class")
+        if not isinstance(hosting, dict):
+            hosting = {}
+        eol_summary = metadata.get("eol_services")
+        if not isinstance(eol_summary, dict):
+            eol_summary = {}
+
+        ownership_verdict = metadata.get("ownership_verdict")
+        verdict = ownership_verdict.get("verdict") if isinstance(ownership_verdict, dict) else None
+        if verdict == "confirmed_ours":
+            estate = "claimed_ours"
+        elif verdict == "rejected_shared_infra":
+            estate = "not_ours"
+        else:
+            # No ownership signal (absent, unverified, ownership_unverifiable,
+            # …) -> NULL. Do not invent an estate-unknown default here; it's
+            # an open decision (planning#129).
+            estate = None
+
+        provider_mx = bool(metadata.get("provider_mx"))
+        asset_type = canonical.asset_type if canonical is not None else None
+        if provider_mx:
+            probe_class = "no_probe"
+        elif asset_type == "ip_address" and (
+            asset_id in cidr_scoped_ids
+            or (hosting.get("is_datacenter") is True and verdict == "confirmed_ours")
+        ):
+            probe_class = "direct_addressable"
+        else:
+            probe_class = "name_only"
+
+        rows_to_upsert.append({
+            "asset_canonical_id": asset_id,
+            "open_ports": merged_ports,
+            "estate": estate,
+            "hosting": hosting,
+            "eol_summary": eol_summary,
+            "attributes": {"probe_class": probe_class},
+            "projected_at": now,
+        })
+
+    if not rows_to_upsert:
+        return
+
+    stmt = pg_insert(AssetState.__table__).values(rows_to_upsert)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["asset_canonical_id"],
+        set_={
+            "open_ports": stmt.excluded.open_ports,
+            "estate": stmt.excluded.estate,
+            "hosting": stmt.excluded.hosting,
+            "eol_summary": stmt.excluded.eol_summary,
+            # Merge rather than overwrite so future keys (this slice only
+            # ever writes probe_class) don't clobber each other; same key
+            # from this run wins, matching every other merge in this module.
+            "attributes": AssetState.__table__.c.attributes.op("||")(stmt.excluded.attributes),
+            "projected_at": stmt.excluded.projected_at,
+        },
+    )
+    db.execute(stmt)

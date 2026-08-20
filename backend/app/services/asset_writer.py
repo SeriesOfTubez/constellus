@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import text, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -10,6 +10,18 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.asset_edge import AssetEdge
 from app.models.tag_rule import TagRule
 from app.models.target_asset_link import TargetAssetLink
+from app.services import projector
+# _merge_open_ports / _prune_stale_ports (+ their grace-period constants)
+# moved to projector.py (planning#143 L2 sub-slice C) — re-exported here so
+# this module's own merge loop below, and existing external importers
+# (scan_executor._hydrate_asset_ports, app.tests.test_prune_stale_ports),
+# keep working unchanged against a single definition.
+from app.services.projector import (  # noqa: F401
+    _CONFIRMED_PORT_GRACE_DAYS,
+    _SHODAN_PORT_GRACE_DAYS,
+    _merge_open_ports,
+    _prune_stale_ports,
+)
 from app.services.tag_service import apply_rules_preloaded, merge_tags
 
 
@@ -49,6 +61,21 @@ def write_assets(
 
     # ── 3. Emit edges between in-batch assets ─────────────────────────────────
     _emit_edges_for_batch(db, assets, canonical_map, now)
+
+    # ── 4. Emit claims in parallel with the asset_metadata merge above
+    # (planning#143 L2 sub-slice A — strangler-fig additive, nothing reads
+    # claims yet). Local import: claim_emitter imports `_canonical_key` back
+    # from this module, so importing it at module load time here would be a
+    # circular import; by the time write_assets() actually runs this module
+    # is fully loaded, so a local import is safe.
+    from app.services.claim_emitter import emit_claims
+    emit_claims(db, assets, canonical_map, now)
+
+    # ── 5. Project claims + still-authoritative asset_metadata into
+    # asset_state (planning#143 L2 sub-slice C). Same transaction as the
+    # claim emission and canonical/edge writes above, so the projection is
+    # atomic with the write it reflects.
+    projector.project(db, canonical_ids, now)
 
     db.commit()
     return canonical_ids
@@ -427,115 +454,6 @@ def _emit_edges_for_batch(
         set_={"last_seen_at": now},
     )
     db.execute(stmt)
-
-
-# A Shodan-sourced port (never seen by our active scan) is kept as time-boxed
-# intel for this many days past its last_seen_at before the prune drops it.
-# Mirrors the read-time grace in app.api.assets._filter_stale_ports.
-_SHODAN_PORT_GRACE_DAYS = 14
-
-# A port confirmed by an active prober (l7_confirmed=True) is kept this many days
-# past its last confirmation even if later scans miss it. Real services flap —
-# intermittent / firewall throttling — so a single missed scan must not retire a
-# known-real port (validated 2026-06-23, planning#69: port 80 flapped
-# open<->filtered within seconds from two WANs). Shorter than the Shodan grace: a
-# confirmed port we can't re-confirm for days is probably genuinely closed.
-_CONFIRMED_PORT_GRACE_DAYS = 3
-
-
-def _prune_stale_ports(open_ports: list, naabu_last_scan_at: str, now: datetime) -> list:
-    """Drop ports not re-confirmed in the latest naabu scan, so stored
-    `open_ports` == the current truth (instead of accumulating forever).
-
-    A port is kept if it was re-observed at/after the latest naabu scan, OR it
-    was previously app-confirmed (l7_confirmed) within the confirmed grace window
-    (flap-guard for intermittent real ports), OR it's Shodan-sourced intel inside
-    the Shodan grace window, OR it has no timestamp to judge by. Everything else
-    (e.g. a firewall phantom that a later nmap-authoritative scan no longer
-    confirms) is removed at the source. This is the write-time counterpart of the
-    read-time `_filter_stale_ports` hide — here we delete, which also stops any
-    consumer from re-probing stale phantoms.
-    """
-    try:
-        cutoff = datetime.fromisoformat(naabu_last_scan_at)
-        if cutoff.tzinfo is None:
-            cutoff = cutoff.replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError, AttributeError):
-        return open_ports  # can't parse the marker — don't risk dropping anything
-    grace_cutoff = now - timedelta(days=_SHODAN_PORT_GRACE_DAYS)
-    confirmed_grace_cutoff = now - timedelta(days=_CONFIRMED_PORT_GRACE_DAYS)
-    kept: list = []
-    for entry in open_ports:
-        if not isinstance(entry, dict):
-            continue
-        raw = entry.get("last_seen_at")
-        if not raw:
-            kept.append(entry)  # no timestamp — keep, can't judge staleness
-            continue
-        try:
-            ts = datetime.fromisoformat(raw)
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-        except (ValueError, AttributeError):
-            kept.append(entry)
-            continue
-        if ts >= cutoff:
-            kept.append(entry)
-        elif entry.get("l7_confirmed") is True and ts >= confirmed_grace_cutoff:
-            # Flap-guard: a previously-confirmed real port is kept through brief
-            # misses (it flaps) until the confirmed grace expires.
-            kept.append(entry)
-        elif "shodan" in (entry.get("sources") or []) and ts >= grace_cutoff:
-            kept.append(entry)
-        # else: stale / grace-expired — drop
-    return kept
-
-
-def _merge_open_ports(existing: list, new: list) -> list:
-    """Merge two `open_ports` lists keyed by port number.
-
-    Each entry is `{port, protocol, sources, last_seen_at, …}` plus any
-    fields contributed by service enrichers (`service`, `service_version`,
-    `tech_stack[]`, `tls_cert_sans[]`, etc.). Merge rules per port:
-
-    * `sources` — union, preserving first-seen order.
-    * Other primitive fields — last-write-wins for non-empty values.
-    * `last_seen_at` — the newer one wins (lexicographic ISO 8601 ordering).
-
-    A previously-known port that wasn't re-observed in this batch is kept
-    untouched; cleanup of stale ports is a separate lifecycle concern.
-    """
-    by_port: dict[int, dict] = {}
-    for entry in existing:
-        if isinstance(entry, dict) and isinstance(entry.get("port"), int):
-            by_port[entry["port"]] = dict(entry)
-
-    for entry in new:
-        if not isinstance(entry, dict):
-            continue
-        port = entry.get("port")
-        if not isinstance(port, int):
-            continue
-        current = by_port.get(port)
-        if current is None:
-            by_port[port] = dict(entry)
-            continue
-        for k, v in entry.items():
-            if k == "port":
-                continue
-            if v in (None, "", [], {}):
-                continue
-            if k == "sources":
-                existing_sources = current.get("sources", [])
-                src_list = v if isinstance(v, list) else [v]
-                current["sources"] = list(dict.fromkeys(existing_sources + src_list))
-            elif k == "last_seen_at":
-                if not current.get("last_seen_at") or v > current["last_seen_at"]:
-                    current["last_seen_at"] = v
-            else:
-                current[k] = v
-
-    return sorted(by_port.values(), key=lambda p: p["port"])
 
 
 def _canonical_key(asset_type: str, value: str, metadata: dict | None) -> tuple:

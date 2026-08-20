@@ -59,6 +59,7 @@ def start() -> None:
     _register_ct_refresher()
     _register_epss_refresher()
     _register_cpe_index_refresher()
+    _register_claim_history_maintenance()
 
 
 def _seed_default_connectors() -> None:
@@ -178,6 +179,43 @@ def _run_cpe_index_refresh() -> None:
         log.info("CPE index refresh complete — %s", stats)
     except Exception:
         log.error("CPE index refresh failed", exc_info=True)
+    finally:
+        db.close()
+
+
+def _register_claim_history_maintenance() -> None:
+    """Register the claim_history partition-maintenance job (L2 sub-slice D,
+    planning#143). Daily is far more often than strictly needed (partitions
+    are monthly), but it's cheap and idempotent, and it means a partition
+    that failed to create on a prior run gets retried the same day rather
+    than waiting up to a month. First run fires ~60s after startup so a
+    fresh deploy provisions the next-month partition immediately instead of
+    waiting for the first 24h tick.
+    """
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        _run_claim_history_maintenance,
+        trigger=IntervalTrigger(hours=24),
+        id="claim_history_maintenance",
+        name="claim_history partition maintenance",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
+    )
+    log.info("Scheduled claim_history_maintenance (every 24h; first run ~60s after start)")
+
+
+def _run_claim_history_maintenance() -> None:
+    from app.services import claim_history_maintenance
+
+    db = SessionLocal()
+    try:
+        stats = claim_history_maintenance.run(db)
+        log.info("claim_history maintenance complete — %s", stats)
+    except Exception:
+        log.error("claim_history maintenance failed", exc_info=True)
     finally:
         db.close()
 

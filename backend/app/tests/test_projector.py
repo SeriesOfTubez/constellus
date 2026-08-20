@@ -1,0 +1,330 @@
+"""Tests for the synchronous claims -> asset_state projector (L2 sub-slice
+C, planning#143).
+
+Claims are seeded directly as AssetClaim rows (not through write_assets /
+claim_emitter) so each test controls claim_value and last_observed_at
+precisely — mirrors the direct-function style of test_prune_stale_ports.py,
+just exercised through the DB-backed projector.project() instead of the
+bare function.
+
+Requires a live DB connection with migration 0039 applied (asset_claims,
+asset_state, observers seeded) — same style as test_claim_emission.py.
+
+Run with:  python -m app.tests.test_projector
+       or: pytest app/tests/test_projector.py
+"""
+
+import uuid
+from datetime import datetime, timedelta, timezone
+
+from app.core.database import SessionLocal
+from app.models.asset_canonical import AssetCanonical
+from app.models.asset_state import AssetState
+from app.models.claim import AssetClaim, ClaimHistory
+from app.models.observer import Observer
+from app.models.target import Target, TargetType
+from app.services import projector
+
+
+# ── helpers ──────────────────────────────────────────────────────────────
+
+def _observer_id(db, name: str) -> uuid.UUID:
+    return db.query(Observer).filter(Observer.name == name).one().id
+
+
+def _make_asset(db, asset_type: str, value: str, metadata: dict | None = None) -> AssetCanonical:
+    now = datetime.now(timezone.utc)
+    row = AssetCanonical(
+        id=uuid.uuid4(), asset_type=asset_type, value=value, parent_value=None,
+        first_seen_at=now, last_seen_at=now, asset_metadata=metadata or {},
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def _add_port_claim(db, asset_id, observer_name: str, ports: list[dict], last_observed_at: datetime) -> None:
+    db.add(AssetClaim(
+        asset_canonical_id=asset_id,
+        observer_id=_observer_id(db, observer_name),
+        claim_type="port_observation",
+        claim_value={"ports": ports},
+        evidence={},
+        first_observed_at=last_observed_at,
+        last_observed_at=last_observed_at,
+    ))
+
+
+def _state_for(db, asset_id) -> AssetState:
+    return db.query(AssetState).filter(AssetState.asset_canonical_id == asset_id).one()
+
+
+def _cleanup_ip(value: str) -> None:
+    db = SessionLocal()
+    try:
+        rows = db.query(AssetCanonical).filter(AssetCanonical.value == value).all()
+        ids = [r.id for r in rows]
+        if ids:
+            db.query(ClaimHistory).filter(ClaimHistory.asset_canonical_id.in_(ids)).delete(synchronize_session=False)
+        db.query(AssetCanonical).filter(AssetCanonical.value == value).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _cleanup_prefix(value_prefix: str) -> None:
+    db = SessionLocal()
+    try:
+        rows = db.query(AssetCanonical).filter(AssetCanonical.value.like(f"{value_prefix}%")).all()
+        ids = [r.id for r in rows]
+        if ids:
+            db.query(ClaimHistory).filter(ClaimHistory.asset_canonical_id.in_(ids)).delete(synchronize_session=False)
+        db.query(AssetCanonical).filter(AssetCanonical.value.like(f"{value_prefix}%")).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _cleanup_target(target_id) -> None:
+    db = SessionLocal()
+    try:
+        db.query(Target).filter(Target.id == target_id).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+
+
+# ── open_ports: merge across observers, sources restored ───────────────────
+
+def test_open_ports_merge_across_observers_with_restored_sources():
+    """naabu (80, 443) + tlsx (443, l7_confirmed) claims for one IP must
+    project into one asset_state.open_ports list with both ports; 443 must
+    carry tlsx's l7_confirmed field and sources unioned across both
+    observers — proving the emitter's stripped `sources` gets restored from
+    observer identity before the merge, not lost."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"203.0.113.{10 + (int(suffix[:2], 16) % 60)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip, metadata={"sources": ["naabu"]})
+
+        _add_port_claim(db, asset.id, "naabu", [
+            {"port": 80, "protocol": "tcp", "last_seen_at": now.isoformat()},
+            {"port": 443, "protocol": "tcp", "last_seen_at": now.isoformat()},
+        ], now)
+        _add_port_claim(db, asset.id, "tlsx", [
+            {"port": 443, "protocol": "tcp", "l7_confirmed": True, "last_seen_at": now.isoformat()},
+        ], now)
+        db.commit()
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+
+        state = _state_for(db, asset.id)
+        by_port = {p["port"]: p for p in state.open_ports}
+        assert set(by_port) == {80, 443}, by_port
+
+        entry_443 = by_port[443]
+        assert entry_443.get("l7_confirmed") is True
+        assert set(entry_443["sources"]) == {"naabu", "tlsx"}
+
+        entry_80 = by_port[80]
+        assert entry_80["sources"] == ["naabu"]
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+# ── prune + flap-guard ──────────────────────────────────────────────────────
+
+def test_prune_stale_port_and_flap_guard_kept():
+    """A port only re-observed in an old naabu claim entry (stale vs. the
+    naabu claim's own last_observed_at cutoff, never app-confirmed) is
+    dropped; a port previously l7_confirmed but not re-seen for only a
+    couple of days (inside the 3-day confirmed grace) is kept — mirrors
+    _prune_stale_ports' flap-guard case, now exercised end-to-end through
+    claims."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"203.0.113.{80 + (int(suffix[:2], 16) % 60)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        old = now - timedelta(days=30)
+        within_confirmed_grace = now - timedelta(days=2)
+
+        asset = _make_asset(db, "ip_address", ip, metadata={"sources": ["naabu"]})
+
+        # naabu's claim envelope (last_observed_at) is fresh — "now" — i.e.
+        # naabu did just run; but the 8080 entry inside its ports list wasn't
+        # re-confirmed this run (its own last_seen_at is 30 days stale), so
+        # it must be dropped. 22 was re-confirmed now, kept.
+        _add_port_claim(db, asset.id, "naabu", [
+            {"port": 22, "protocol": "tcp", "last_seen_at": now.isoformat()},
+            {"port": 8080, "protocol": "tcp", "last_seen_at": old.isoformat()},
+        ], now)
+        # A previously-confirmed real service on 443, 2 days stale — inside
+        # the 3-day confirmed grace, so kept despite predating the naabu cutoff.
+        _add_port_claim(db, asset.id, "tlsx", [
+            {"port": 443, "protocol": "tcp", "l7_confirmed": True, "last_seen_at": within_confirmed_grace.isoformat()},
+        ], now)
+        db.commit()
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+
+        state = _state_for(db, asset.id)
+        ports = {p["port"] for p in state.open_ports}
+        assert ports == {22, 443}, f"expected fresh(22) + flap-guarded(443), got {ports}"
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+def test_no_naabu_claim_skips_prune_keeps_all():
+    """No naabu port_observation claim at all -> prune is skipped entirely
+    (matches the old writer's 'no naabu_last_scan_at -> keep all')."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"203.0.113.{140 + (int(suffix[:2], 16) % 60)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        old = now - timedelta(days=365)
+        asset = _make_asset(db, "ip_address", ip, metadata={"sources": ["shodan"]})
+
+        _add_port_claim(db, asset.id, "shodan", [
+            {"port": 21, "protocol": "tcp", "last_seen_at": old.isoformat()},
+        ], now)
+        db.commit()
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+
+        state = _state_for(db, asset.id)
+        ports = {p["port"] for p in state.open_ports}
+        assert ports == {21}, "no naabu claim -> nothing pruned, stale shodan port kept"
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+# ── estate mapping ───────────────────────────────────────────────────────
+
+def test_estate_mapping():
+    suffix = uuid.uuid4().hex[:10]
+    ip_confirmed = f"203.0.113.{170 + (int(suffix[:2], 16) % 25)}"
+    ip_rejected = f"203.0.113.{200 + (int(suffix[2:4], 16) % 25)}"
+    ip_absent = f"203.0.113.{230 + (int(suffix[4:6], 16) % 25)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        a_confirmed = _make_asset(db, "ip_address", ip_confirmed, metadata={
+            "ownership_verdict": {"verdict": "confirmed_ours", "evidence": {}},
+        })
+        a_rejected = _make_asset(db, "ip_address", ip_rejected, metadata={
+            "ownership_verdict": {"verdict": "rejected_shared_infra", "evidence": {}},
+        })
+        # No ownership signal at all -> estate must stay NULL, not default to
+        # any of the three known values (planning#129 is an open decision;
+        # this projector must not invent one).
+        a_absent = _make_asset(db, "ip_address", ip_absent, metadata={"sources": ["dns_records"]})
+
+        projector.project(db, {a_confirmed.id, a_rejected.id, a_absent.id}, now)
+        db.commit()
+
+        assert _state_for(db, a_confirmed.id).estate == "claimed_ours"
+        assert _state_for(db, a_rejected.id).estate == "not_ours"
+        assert _state_for(db, a_absent.id).estate is None
+    finally:
+        db.close()
+        for ip in (ip_confirmed, ip_rejected, ip_absent):
+            _cleanup_ip(ip)
+
+
+# ── probe_class ──────────────────────────────────────────────────────────
+
+def test_probe_class_rules():
+    suffix = uuid.uuid4().hex[:10]
+    ip_mx = f"192.0.2.{10 + (int(suffix[:2], 16) % 40)}"
+    ip_cidr = f"192.0.2.{100 + (int(suffix[2:4], 16) % 40)}"
+    host_name = f"probe-class-{suffix}.example.com"
+    db = SessionLocal()
+    target_id = None
+    try:
+        now = datetime.now(timezone.utc)
+
+        a_mx = _make_asset(db, "ip_address", ip_mx, metadata={"provider_mx": True})
+
+        cidr_value = f"{ip_cidr.rsplit('.', 1)[0]}.0/24"
+        target_id = uuid.uuid4()
+        db.add(Target(id=target_id, type=TargetType.CIDR.value, value=cidr_value))
+        db.commit()
+        a_cidr = _make_asset(db, "ip_address", ip_cidr, metadata={"sources": ["naabu"]})
+
+        a_name = _make_asset(db, "dns_record", host_name, metadata={
+            "sources": ["dns_records"], "record_type": "A", "content": "192.0.2.250",
+        })
+
+        projector.project(db, {a_mx.id, a_cidr.id, a_name.id}, now)
+        db.commit()
+
+        assert _state_for(db, a_mx.id).attributes.get("probe_class") == "no_probe"
+        assert _state_for(db, a_cidr.id).attributes.get("probe_class") == "direct_addressable"
+        assert _state_for(db, a_name.id).attributes.get("probe_class") == "name_only"
+    finally:
+        db.close()
+        if target_id is not None:
+            _cleanup_target(target_id)
+        _cleanup_ip(ip_mx)
+        _cleanup_ip(ip_cidr)
+        _cleanup_prefix(f"probe-class-{suffix}")
+
+
+# ── idempotency ──────────────────────────────────────────────────────────
+
+def test_idempotent_double_projection():
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"198.51.100.{10 + (int(suffix[:2], 16) % 60)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip, metadata={
+            "ownership_verdict": {"verdict": "confirmed_ours"},
+            "hosting_class": {"is_datacenter": True},
+        })
+        _add_port_claim(db, asset.id, "naabu", [
+            {"port": 80, "protocol": "tcp", "last_seen_at": now.isoformat()},
+        ], now)
+        db.commit()
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+        db.expire_all()
+        first = _state_for(db, asset.id)
+        first_snapshot = (
+            first.open_ports, first.estate, first.hosting,
+            first.eol_summary, first.attributes, first.projected_at,
+        )
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+        db.expire_all()
+        second = _state_for(db, asset.id)
+        second_snapshot = (
+            second.open_ports, second.estate, second.hosting,
+            second.eol_summary, second.attributes, second.projected_at,
+        )
+
+        assert first_snapshot == second_snapshot, "double projection must yield an identical row"
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+if __name__ == "__main__":
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            fn()
+            print(f"ok  {name}")
+    print("all passed")
