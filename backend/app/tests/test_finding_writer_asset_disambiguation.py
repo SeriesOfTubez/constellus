@@ -59,11 +59,11 @@ def test_same_hostname_different_record_types_resolve_to_distinct_assets():
         ])
         a_row = db.query(AssetCanonical).filter(
             AssetCanonical.value == host,
-            AssetCanonical.asset_metadata["record_type"].astext == "A",
+            AssetCanonical.record_type == "A",
         ).one()
         mx_row = db.query(AssetCanonical).filter(
             AssetCanonical.value == host,
-            AssetCanonical.asset_metadata["record_type"].astext == "MX",
+            AssetCanonical.record_type == "MX",
         ).one()
 
         write_findings(db, uuid.uuid4(), [

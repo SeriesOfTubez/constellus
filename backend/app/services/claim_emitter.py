@@ -132,10 +132,12 @@ def emit_claims(
     warned_observers: set[str] = set()
 
     for asset in assets:
-        canonical_id = canonical_map.get(_canonical_key(asset.asset_type, asset.value, asset.asset_metadata))
+        meta = asset.asset_metadata or {}
+        canonical_id = canonical_map.get(
+            _canonical_key(asset.asset_type, asset.value, meta.get("record_type"), meta.get("content"))
+        )
         if canonical_id is None:
             continue
-        meta = asset.asset_metadata or {}
         if not meta:
             continue
 

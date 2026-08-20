@@ -147,8 +147,8 @@ def _owned_hostnames_for_ip(db: Session, ip: str) -> list[AssetCanonical]:
     return (
         db.query(AssetCanonical)
         .filter(AssetCanonical.asset_type == "dns_record")
-        .filter(AssetCanonical.asset_metadata["record_type"].astext.in_(["A", "AAAA"]))
-        .filter(AssetCanonical.asset_metadata["content"].astext == ip)
+        .filter(AssetCanonical.record_type.in_(["A", "AAAA"]))
+        .filter(AssetCanonical.content == ip)
         .all()
     )
 

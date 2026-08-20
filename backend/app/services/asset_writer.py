@@ -95,12 +95,13 @@ def _upsert_canonical_batch(
     canonical_key is:
       - ("dns_record", value, record_type, content) for DNS records — each
         distinct record is its own canonical identity (matches the
-        partial unique index from migration 0026).
+        record_type/content partial unique index, migration 0040).
       - (asset_type, value) for every other type.
     """
     unique: dict[tuple, DiscoveredAsset] = {}
     for a in assets:
-        unique[_canonical_key(a.asset_type, a.value, a.asset_metadata)] = a
+        meta = a.asset_metadata or {}
+        unique[_canonical_key(a.asset_type, a.value, meta.get("record_type"), meta.get("content"))] = a
 
     if not unique:
         return {}
@@ -119,7 +120,7 @@ def _upsert_canonical_batch(
         .all()
     )
     existing: dict[tuple, AssetCanonical] = {
-        _canonical_key(r.asset_type, r.value, r.asset_metadata): r
+        _canonical_key(r.asset_type, r.value, r.record_type, r.content): r
         for r in existing_rows
     }
 
@@ -133,7 +134,7 @@ def _upsert_canonical_batch(
     # concurrent transaction may insert the same key between our SELECT and
     # our INSERT. _defensive_insert_assets uses ON CONFLICT DO NOTHING so
     # that race can't raise IntegrityError and abort the whole batch (as a
-    # plain INSERT would against migration 0026's partial unique indexes).
+    # plain INSERT would against assets_canonical's partial unique indexes).
     to_insert: dict[tuple, AssetCanonical] = {}
     for key, asset in unique.items():
         if key in existing:
@@ -146,6 +147,8 @@ def _upsert_canonical_batch(
             first_seen_at=now,
             last_seen_at=now,
             asset_metadata=asset.asset_metadata or {},
+            record_type=(asset.asset_metadata or {}).get("record_type"),
+            content=(asset.asset_metadata or {}).get("content"),
         )
         if asset_rules:
             new_row.tags = merge_tags([], apply_rules_preloaded(asset_rules, new_row))
@@ -168,7 +171,7 @@ def _upsert_canonical_batch(
                 .all()
             )
             for r in locked:
-                existing[_canonical_key(r.asset_type, r.value, r.asset_metadata)] = r
+                existing[_canonical_key(r.asset_type, r.value, r.record_type, r.content)] = r
 
     for key, asset in unique.items():
         if key not in existing:
@@ -224,10 +227,16 @@ def _defensive_insert_assets(
     db: Session,
     new_rows: list[AssetCanonical],
 ) -> dict[tuple, uuid.UUID]:
-    """INSERT new asset rows with ON CONFLICT DO NOTHING, split by migration
-    0026's two partial unique indexes — a single INSERT's ON CONFLICT clause
-    can only target one conflict-inference index, and assets_canonical has
-    two (dns_record rows vs everything else).
+    """INSERT new asset rows with ON CONFLICT DO NOTHING, split by
+    assets_canonical's two partial unique indexes — a single INSERT's ON
+    CONFLICT clause can only target one conflict-inference index, and
+    assets_canonical has two (dns_record rows vs everything else).
+
+    The dns_record branch's `index_elements` MUST exactly match migration
+    0040's column-based `uq_assets_canonical_dns` index (asset_type, value,
+    coalesce(record_type,''), coalesce(content,'')) or Postgres can't infer
+    a conflict target and a colliding INSERT raises IntegrityError instead
+    of deduping.
 
     Returns {canonical_key: id} for rows that were actually inserted. Any
     row NOT present in the returned dict lost a race to a concurrent
@@ -261,8 +270,8 @@ def _defensive_insert_assets(
                 index_elements=[
                     "asset_type",
                     "value",
-                    text("coalesce(metadata->>'record_type', '')"),
-                    text("coalesce(metadata->>'content', '')"),
+                    text("coalesce(record_type, '')"),
+                    text("coalesce(content, '')"),
                 ],
                 index_where=text("asset_type = 'dns_record'"),
             )
@@ -270,12 +279,12 @@ def _defensive_insert_assets(
                 AssetCanonical.id,
                 AssetCanonical.asset_type,
                 AssetCanonical.value,
-                text("coalesce(metadata->>'record_type', '') AS record_type"),
-                text("coalesce(metadata->>'content', '') AS content"),
+                AssetCanonical.record_type,
+                AssetCanonical.content,
             )
         )
         for row in db.execute(stmt):
-            inserted[(row.asset_type, row.value, row.record_type, row.content)] = row.id
+            inserted[(row.asset_type, row.value, row.record_type or "", row.content or "")] = row.id
 
     return inserted
 
@@ -290,6 +299,8 @@ def _asset_row_values(row: AssetCanonical) -> dict:
         "last_seen_at": row.last_seen_at,
         "tags": row.tags or [],
         "metadata": row.asset_metadata or {},
+        "record_type": row.record_type,
+        "content": row.content,
     }
 
 
@@ -365,7 +376,7 @@ def _emit_edges_for_batch(
         rtype = meta.get("record_type")
         content = meta.get("content")
 
-        src_id = canonical_map.get(_canonical_key("dns_record", a.value, meta))
+        src_id = canonical_map.get(_canonical_key("dns_record", a.value, rtype, content))
         if not src_id:
             continue
 
@@ -456,16 +467,20 @@ def _emit_edges_for_batch(
     db.execute(stmt)
 
 
-def _canonical_key(asset_type: str, value: str, metadata: dict | None) -> tuple:
-    """Key matching the partial unique indexes from migration 0026.
+def _canonical_key(asset_type: str, value: str, record_type: str | None, content: str | None) -> tuple:
+    """Key matching assets_canonical's partial unique indexes (migration
+    0040 for dns_record — record_type/content are real columns, not a
+    metadata path).
 
     dns_records: (asset_type, value, record_type, content) so each distinct
     record gets its own canonical row. Empty/missing record_type or content
     are coalesced to '' to match the COALESCE() inside the unique index.
+    Callers pass record_type/content already read from whichever source is
+    authoritative for them at that call site — an incoming DiscoveredAsset's
+    asset_metadata, or a persisted AssetCanonical row's own columns.
     """
     if asset_type == "dns_record":
-        meta = metadata or {}
-        return (asset_type, value, meta.get("record_type") or "", meta.get("content") or "")
+        return (asset_type, value, record_type or "", content or "")
     return (asset_type, value)
 
 

@@ -53,7 +53,7 @@ def _compute_asset_risk(db: Session, assets: list[AssetCanonical]) -> dict:
     # must not inherit the risk of whatever IP the A/AAAA record resolves to.
     val_to_ids: dict[str, list] = {}
     for a in assets:
-        if a.asset_type == "dns_record" and (a.asset_metadata or {}).get("record_type") not in ("A", "AAAA"):
+        if a.asset_type == "dns_record" and a.record_type not in ("A", "AAAA"):
             continue
         val_to_ids.setdefault(a.value, []).append(a.id)
 
@@ -84,7 +84,7 @@ def _compute_asset_risk(db: Session, assets: list[AssetCanonical]) -> dict:
 
     target_to_owners: dict = {}
     for a in assets:
-        if a.asset_type == "dns_record" and (a.asset_metadata or {}).get("record_type") == "CNAME":
+        if a.asset_type == "dns_record" and a.record_type == "CNAME":
             for tid in chain_target_ids(a, _get_by_value):
                 target_to_owners.setdefault(tid, []).append(a.id)
 

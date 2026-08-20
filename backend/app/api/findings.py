@@ -123,9 +123,8 @@ def list_findings(
                 ids = [aid]
                 parent = db.get(AssetCanonical, aid)
                 if parent is not None:
-                    parent_meta = parent.asset_metadata or {}
-                    record_type = parent_meta.get("record_type")
-                    content = parent_meta.get("content")
+                    record_type = parent.record_type
+                    content = parent.content
                     if record_type in ("A", "AAAA", "CNAME") and content:
                         # This dns_record resolves to a host — roll up the
                         # findings of every asset along the chain it points to

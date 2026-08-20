@@ -187,7 +187,7 @@ def analyze_dangling_dns(
         )
         .all()
     )
-    records = [r for r in records if (r.asset_metadata or {}).get("record_type") in _RECORD_TYPES]
+    records = [r for r in records if r.record_type in _RECORD_TYPES]
     if not records:
         return set()
 
