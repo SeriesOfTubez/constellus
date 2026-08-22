@@ -7,6 +7,7 @@ import { ConnectedEntities, type ObservedName } from "@/components/ConnectedEnti
 import { OpenPortsPanel, type OpenPortEntry } from "@/components/OpenPortsPanel"
 import { TlsPanel } from "@/components/TlsPanel"
 import { AssetRiskCard } from "@/components/AssetRiskCard"
+import { AssetHygieneCard } from "@/components/AssetHygieneCard"
 import { SourceBadges, SOURCE_META, RecordTypeBadge, AssetTypeBadge } from "@/components/asset-badges"
 import { CategoryBadge, StateBadge, FindingRiskBadge } from "@/components/finding-badges"
 import { Button } from "@/components/ui/button"
@@ -310,6 +311,8 @@ function AssetDetailBody({
         {/* ── Overview — verdict + network/registration surfaces ── */}
         <TabsContent value="overview" className="pt-5 space-y-6">
           <AssetRiskCard asset={asset} findings={findings ?? []} />
+
+          <AssetHygieneCard asset={asset} />
 
           {/* Network */}
           {networkRows.length > 0 && (

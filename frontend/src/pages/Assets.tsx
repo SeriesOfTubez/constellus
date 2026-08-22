@@ -1,7 +1,7 @@
 import React, { useState } from "react"
 import { Link } from "react-router-dom"
 import { useFlyout } from "@/lib/flyout"
-import { useListView, type GroupMode } from "@/lib/listView"
+import { useListView, useUrlFlag, type GroupMode } from "@/lib/listView"
 import { ViewToggle, GroupBySelect } from "@/components/ListControls"
 import { AssetCard } from "@/components/AssetCard"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
@@ -10,6 +10,7 @@ import {
   Globe, RefreshCw, Filter, Trash2, Loader2,
   EyeOff, Eye, Tag, ChevronDown, ChevronRight,
   ChevronsDownUp, ChevronsUpDown, Clock, SquareArrowOutUpRight, Sparkles,
+  ArrowDownWideNarrow,
 } from "lucide-react"
 import { ConnectedEntities, type ObservedName } from "@/components/ConnectedEntities"
 import { OpenPortsPanel, type OpenPortEntry } from "@/components/OpenPortsPanel"
@@ -32,7 +33,9 @@ import { TagBadge } from "@/components/ui/tag-badge"
 import { TagEditor } from "@/components/ui/tag-editor"
 import { SourceBadges, SOURCE_META, RecordTypeBadge, AssetTypeBadge } from "@/components/asset-badges"
 import { SeverityBadge, StateBadge, RiskBandBadge, FindingRiskBadge, RISK_BAND_LABEL, RISK_BAND_ORDER } from "@/components/finding-badges"
+import { HygieneBandBadge } from "@/components/hygiene-badges"
 import { AssetRiskCard } from "@/components/AssetRiskCard"
+import { AssetHygieneCard } from "@/components/AssetHygieneCard"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { api, ApiError, type Asset, type Finding, type WhoisInfo, type DomainWhoisInfo } from "@/lib/api"
 import { useAuthStore } from "@/lib/auth"
@@ -103,6 +106,36 @@ const BAND_BORDER: Record<string, string> = {
 }
 
 const FLY_TRIGGER = "h-9 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:text-foreground text-muted-foreground text-xs font-medium px-3 transition-none"
+
+// planning#100 fix — the Risk column's no-findings fallback used to be a
+// bare "—" for every asset with no open findings, collapsing "we checked
+// and it's clean" and "nothing has ever looked at this" into the same
+// blank cell. `scanned` (backend hygiene_scorer.scanned_by_asset) tells
+// them apart. Uses the var(--sev-clean)/var(--sev-unknown) token
+// convention Dashboard.tsx already established for exactly this
+// clean-vs-unknown pair, rather than finding-badges.tsx's
+// Tailwind-hardcoded-hue convention (this isn't a new entry in the
+// Findings severity ramp, just a two-state doc chip).
+const CLEAN_CHIP_CLS = "inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold bg-[var(--sev-clean)]/15 text-[var(--sev-clean)] border-[var(--sev-clean)]/30"
+const UNSCANNED_CHIP_CLS = "inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold bg-[var(--sev-unknown)]/15 text-[var(--sev-unknown)] border-[var(--sev-unknown)]/30"
+
+// Worst-first hygiene rank for the "Worst-managed" saved view / Hygiene
+// column sort (planning#130 L2, 5c). Real scores sort ascending (0 =
+// worst hygiene, surfaces first); an unscored asset (`hygiene_score ===
+// null`, not-yet-computed or excluded) sorts to the END — same convention
+// ASSET_BAND_ORDER already uses for "unrated" (append, don't treat an
+// absent verdict as the worst one).
+function hygieneSortRank(asset: Asset): number {
+  return asset.hygiene_score ?? Number.POSITIVE_INFINITY
+}
+
+/** Reorders `list` worst-hygiene-first when the saved view is active;
+ *  returns it unchanged (and unsorted) otherwise. Client-side only — no
+ *  backend sort param, per the settled scope (planning#95 owns that). */
+function sortForWorstManaged(list: Asset[], active: boolean): Asset[] {
+  if (!active) return list
+  return [...list].sort((a, b) => hygieneSortRank(a) - hygieneSortRank(b))
+}
 
 function worstOf(rows: PivotAssetRow[]): Finding["severity"] | null {
   return rows.reduce<Finding["severity"] | null>((best, a) => {
@@ -415,6 +448,10 @@ function AssetDetailSheet({
                 {/* Risk verdict hero + band distribution + top finding spotlight */}
                 <AssetRiskCard asset={asset} findings={assetFindings} />
 
+                {/* Hygiene drill-down (planning#130 L2) — opposite polarity from
+                    Risk Score above, hence its own explicitly-labelled hero. */}
+                <AssetHygieneCard asset={asset} />
+
                 <Separator />
 
                 {/* Identity grid */}
@@ -696,6 +733,10 @@ export default function Assets() {
   const [selectedIds, setSelectedIds]   = useState(new Set<string>())
   const [bulkDeleteOpen, setBulkDeleteOpen]   = useState(false)
   const { view, setView, group, setGroup } = useListView("apex")
+  // "Worst-managed" saved view (planning#130 L2, 5c) — URL-backed like every
+  // other list-state control on this page (lib/listView.ts), not local
+  // state. Also drives the Hygiene column header's click-to-sort.
+  const [worstManaged, setWorstManaged] = useUrlFlag("worst_managed")
 
   const { data: assets, isLoading } = useQuery({
     queryKey: ["assets", showIgnored],
@@ -863,6 +904,15 @@ export default function Assets() {
         </Button>
       )}
 
+      {!isPivotTab && (
+        <Button variant={worstManaged ? "secondary" : "outline"} size="sm" className="h-9 gap-1.5"
+          onClick={() => setWorstManaged(!worstManaged)}
+          title="Sort by hygiene, worst-managed assets first">
+          <ArrowDownWideNarrow className="h-3.5 w-3.5" />
+          Worst-managed
+        </Button>
+      )}
+
       {!isPivotTab && sortedGroups.length > 1 && (
         <Button variant="outline" size="sm" className="h-9 gap-1.5" onClick={toggleAllCollapse}>
           {allCollapsed
@@ -950,7 +1000,8 @@ export default function Assets() {
               const isCollapsed = collapsedGroups.has(key)
               const isExpanded  = expandedGroups.has(key)
               const truncated   = !isFiltering && !isExpanded && groupAssets.length > PREVIEW_LIMIT
-              const visibleAssets = truncated ? groupAssets.slice(0, PREVIEW_LIMIT) : groupAssets
+              const orderedGroupAssets = sortForWorstManaged(groupAssets, worstManaged)
+              const visibleAssets = truncated ? orderedGroupAssets.slice(0, PREVIEW_LIMIT) : orderedGroupAssets
               const hiddenCount   = groupAssets.length - PREVIEW_LIMIT
               const groupSelectedCount = groupAssets.filter(a => selectedIds.has(a.id)).length
               const allGroupSelected   = groupSelectedCount === groupAssets.length
@@ -1007,6 +1058,16 @@ export default function Assets() {
                   <TableHead className="w-8" />
                   <TableHead>Name</TableHead>
                   <TableHead className="w-20">Risk</TableHead>
+                  <TableHead
+                    className="w-24 cursor-pointer select-none hover:text-foreground"
+                    onClick={() => setWorstManaged(!worstManaged)}
+                    title="Sort by hygiene, worst-managed assets first"
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      Hygiene
+                      {worstManaged && <ArrowDownWideNarrow className="h-3 w-3" />}
+                    </span>
+                  </TableHead>
                   <TableHead className="w-20">Type</TableHead>
                   <TableHead className="hidden md:table-cell">Content</TableHead>
                   <TableHead className="w-28">Sources</TableHead>
@@ -1020,7 +1081,8 @@ export default function Assets() {
                   const isCollapsed = collapsedGroups.has(key)
                   const isExpanded  = expandedGroups.has(key)
                   const truncated   = !isFiltering && !isExpanded && groupAssets.length > PREVIEW_LIMIT
-                  const visibleAssets = truncated ? groupAssets.slice(0, PREVIEW_LIMIT) : groupAssets
+                  const orderedGroupAssets = sortForWorstManaged(groupAssets, worstManaged)
+                  const visibleAssets = truncated ? orderedGroupAssets.slice(0, PREVIEW_LIMIT) : orderedGroupAssets
                   const hiddenCount   = groupAssets.length - PREVIEW_LIMIT
 
                   const groupSelectedCount = groupAssets.filter(a => selectedIds.has(a.id)).length
@@ -1050,7 +1112,7 @@ export default function Assets() {
                             ? <ChevronRight className="h-4 w-4 text-muted-foreground" />
                             : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
                         </TableCell>
-                        <TableCell colSpan={7}>
+                        <TableCell colSpan={8}>
                           <div className="flex items-center gap-2">
                             <span className={`text-sm font-semibold ${group === "apex" ? "font-mono" : ""}`}>{groupLabel(key, group)}</span>
                             <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full">
@@ -1098,7 +1160,16 @@ export default function Assets() {
                               ? <RiskBandBadge band={asset.risk_band} score={asset.risk_score} />
                               : asset.worst_severity
                                 ? <SeverityBadge severity={asset.worst_severity} />
-                                : <span className="text-muted-foreground text-xs">—</span>}
+                                : asset.scanned
+                                  ? <span className={CLEAN_CHIP_CLS}>Clean</span>
+                                  : <span className={UNSCANNED_CHIP_CLS}>Unscanned</span>}
+                          </TableCell>
+                          <TableCell>
+                            {asset.hygiene_band
+                              ? <HygieneBandBadge band={asset.hygiene_band} />
+                              : asset.surface === "not_ours"
+                                ? <span className="text-muted-foreground text-xs">—</span>
+                                : <span className="text-xs text-muted-foreground italic">Pending</span>}
                           </TableCell>
                           <TableCell>
                             {asset.asset_type === "dns_record" && asset.asset_metadata.record_type
@@ -1145,7 +1216,7 @@ export default function Assets() {
                       {!isCollapsed && truncated && (
                         <TableRow key={`more-${key}`} className="hover:bg-muted/30">
                           <TableCell /><TableCell />
-                          <TableCell colSpan={7} className="pl-4 py-2">
+                          <TableCell colSpan={8} className="pl-4 py-2">
                             <button
                               className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5 transition-colors"
                               onClick={() => setExpandedGroups(prev => new Set([...prev, key]))}

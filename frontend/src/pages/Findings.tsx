@@ -705,6 +705,15 @@ export default function Findings() {
       worst_severity: null,
       risk_band: RISK_BAND_ORDER[worstBandIndex(g.items)] ?? null,
       risk_score: g.items[0].risk_score,
+      // Synthetic fallback — this group has no matching real asset row, so
+      // there's nothing to report on any of these axes. "unknown" (not
+      // "not_ours") since we genuinely don't know the estate here; hygiene
+      // is unscored (null, never 0 — see AssetHygieneCard); scanned is
+      // conservatively false rather than guessed from Finding presence.
+      surface: "unknown",
+      hygiene_score: null,
+      hygiene_band: null,
+      scanned: false,
     }
 
   // ── Risk verdict pills (header primary action) ───────────────────────────────

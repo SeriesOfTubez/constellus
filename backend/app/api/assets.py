@@ -11,11 +11,12 @@ from app.api.deps import get_current_user, require_role
 from app.api.findings import _NOT_EXCLUDED_FROM_MAIN
 from app.core.database import get_db
 from app.models.asset_canonical import AssetCanonical
+from app.models.asset_hygiene_score import AssetHygieneScore
 from app.models.finding_canonical import FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.target_asset_link import TargetAssetLink
 from app.models.user import UserRole
-from app.services import claims_query, metadata_bridge, scan_executor, whois_service
+from app.services import claims_query, hygiene_scorer, metadata_bridge, scan_executor, whois_service
 from app.services.asset_chain import chain_target_ids
 
 # ── Severity helpers ──────────────────────────────────────────────────────────
@@ -300,8 +301,15 @@ def list_assets(
     risk = _compute_asset_risk(db, assets)
     bridge_sources = load_bridge_sources(db, [a.id for a in assets])
     surfaces = claims_query.surface_by_asset(db, [a.id for a in assets])
+    # planning#130 L2: hygiene score/band + the `scanned` proxy — batched the
+    # same way as `surfaces` above, never a per-row query.
+    scores = hygiene_scorer.scores_by_asset(db, [a.id for a in assets])
+    scanned = hygiene_scorer.scanned_by_asset(db, [a.id for a in assets])
     return [
-        _serialize_asset(a, risk.get(a.id), bridge_sources.get(a.id), surfaces.get(a.id))
+        _serialize_asset(
+            a, risk.get(a.id), bridge_sources.get(a.id), surfaces.get(a.id),
+            scores.get(a.id), scanned.get(a.id, False),
+        )
         for a in assets
     ]
 
@@ -350,7 +358,12 @@ def get_asset(
     risk = _compute_asset_risk(db, [asset])
     bridge_sources = load_bridge_sources(db, [asset.id])
     surface = claims_query.surface_by_asset(db, [asset.id])
-    return _serialize_asset(asset, risk.get(asset.id), bridge_sources.get(asset.id), surface.get(asset.id))
+    scores = hygiene_scorer.scores_by_asset(db, [asset.id])
+    scanned = hygiene_scorer.scanned_by_asset(db, [asset.id])
+    return _serialize_asset(
+        asset, risk.get(asset.id), bridge_sources.get(asset.id), surface.get(asset.id),
+        scores.get(asset.id), scanned.get(asset.id, False),
+    )
 
 
 @router.patch("/{asset_id}/ignore", status_code=200)
@@ -552,6 +565,8 @@ def _serialize_asset(
     risk: dict | None = None,
     bridge_sources: dict | None = None,
     surface: str | None = None,
+    hygiene: AssetHygieneScore | None = None,
+    scanned: bool = False,
 ) -> dict:
     risk = risk or {}
     claims = bridge_sources if bridge_sources is not None else _EMPTY_BRIDGE_SOURCES
@@ -578,4 +593,16 @@ def _serialize_asset(
         # SEEDED payload. `surface` is a query-layer read of asset_state,
         # not a bridged claim, so it doesn't belong in that reconstruction.
         "surface": surface if surface is not None else claims_query.SURFACE_UNKNOWN,
+        # planning#130 L2: hygiene score/band — same top-level rule as
+        # `surface` above and for the same reason (not a bridged claim, must
+        # never fold into `asset_metadata`). `null` (not 0, not omitted)
+        # when the asset has no `asset_hygiene_score` row: 0 is a real,
+        # worst-possible score, null means "not scored yet" — conflating
+        # the two is exactly the bug test_hygiene_serializer.py guards.
+        "hygiene_score": hygiene.score if hygiene is not None else None,
+        "hygiene_band": hygiene.band if hygiene is not None else None,
+        # planning#100: "has anything beyond bare identity ever been
+        # observed" — see hygiene_scorer.scanned_by_asset's docstring for
+        # the exact rule and its known limitation.
+        "scanned": scanned,
     }
