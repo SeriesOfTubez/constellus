@@ -63,6 +63,14 @@ def fetch_metadata_xml(metadata_url: str, allowed_host: str | None = None) -> by
     `urllib.request.urlopen` and re-resolves DNS — losing the IP we just
     validated. Our guarded transport pins the connection to the IP it
     validated, preserving Host header + TLS SNI for cert verification.
+
+    CodeQL flags the `client.get` below as `py/full-ssrf`: it sees a
+    user-supplied URL reach an HTTP sink and cannot model a custom httpx
+    transport as a sanitizer. Dismissed as a false positive, with the
+    analysis and the audit that backed it recorded in
+    `docs/development/codeql-triage.md` — read that before re-dismissing it,
+    because the guard it relies on was found to have real holes the first
+    time anyone checked (fixed in PR #3).
     """
     _validate_metadata_url(metadata_url, allowed_host=allowed_host)
     try:

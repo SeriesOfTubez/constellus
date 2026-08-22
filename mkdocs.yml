@@ -60,6 +60,7 @@ nav:
     - Contributing: development/contributing.md
     - Adding a Connector: development/adding-connector.md
     - Reviewing Dependabot PRs: development/dependabot-review.md
+    - CodeQL Alert Triage: development/codeql-triage.md
 
 plugins:
   - search
