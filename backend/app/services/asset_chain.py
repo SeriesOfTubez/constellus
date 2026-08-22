@@ -29,7 +29,9 @@ from typing import Callable, Protocol
 class _AssetLike(Protocol):
     id: object
     asset_type: str
-    asset_metadata: dict
+    value: str
+    record_type: str | None
+    content: str | None
 
 
 def _norm(name: str) -> str:
@@ -45,16 +47,16 @@ def chain_target_ids(
     `get_by_value(value)` returns the assets whose `value` equals the argument —
     backed by an in-memory index (the assets already loaded for a list view) or
     a DB query (a single-asset detail view). Each returned asset exposes `id`,
-    `asset_type`, and `asset_metadata`.
+    `asset_type`, `value`, `record_type`, and `content` — the dns_record
+    identity columns (migration 0040), not `asset_metadata`.
 
     Returns the terminal IP id(s) plus every intermediate CNAME/A/AAAA record
     id, de-duplicated, preserving discovery order. Empty when the chain
     dead-ends (e.g. a CDN CNAME whose terminal records are suppressed) or loops.
     """
     out: list = []
-    meta = start.asset_metadata or {}
-    rt = meta.get("record_type")
-    content = meta.get("content")
+    rt = start.record_type
+    content = start.content
     visited: set[str] = {_norm(start.value)} if getattr(start, "value", None) else set()
 
     while rt in ("A", "AAAA", "CNAME") and content:
@@ -79,13 +81,10 @@ def chain_target_ids(
 
         # If the hop's name has address records, that's the terminal — collect
         # every IP (dual-stack hosts have both A and AAAA) and stop.
-        addrs = [
-            t for t in targets
-            if (t.asset_metadata or {}).get("record_type") in ("A", "AAAA")
-        ]
+        addrs = [t for t in targets if t.record_type in ("A", "AAAA")]
         if addrs:
             for ar in addrs:
-                ip_val = (ar.asset_metadata or {}).get("content")
+                ip_val = ar.content
                 if not ip_val:
                     continue
                 for ip_asset in get_by_value(ip_val):
@@ -94,14 +93,10 @@ def chain_target_ids(
             break
 
         # Otherwise follow the next CNAME hop.
-        cname = next(
-            (t for t in targets if (t.asset_metadata or {}).get("record_type") == "CNAME"),
-            None,
-        )
+        cname = next((t for t in targets if t.record_type == "CNAME"), None)
         if cname is None:
             break
-        cmeta = cname.asset_metadata or {}
-        rt, content = cmeta.get("record_type"), cmeta.get("content")
+        rt, content = cname.record_type, cname.content
 
     # De-dupe, preserve order.
     seen: set = set()

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import text, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -10,6 +10,7 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.asset_edge import AssetEdge
 from app.models.tag_rule import TagRule
 from app.models.target_asset_link import TargetAssetLink
+from app.services import projector
 from app.services.tag_service import apply_rules_preloaded, merge_tags
 
 
@@ -50,6 +51,23 @@ def write_assets(
     # ── 3. Emit edges between in-batch assets ─────────────────────────────────
     _emit_edges_for_batch(db, assets, canonical_map, now)
 
+    # ── 4. Emit claims — as of planning#144 L3c-4 this is the ONLY place a
+    # batch's observations are recorded (the asset_metadata merge that used
+    # to run alongside it is gone with its column). Local import:
+    # claim_emitter imports `_canonical_key` back
+    # from this module, so importing it at module load time here would be a
+    # circular import; by the time write_assets() actually runs this module
+    # is fully loaded, so a local import is safe.
+    from app.services.claim_emitter import emit_claims
+    emit_claims(db, assets, canonical_map, now)
+
+    # ── 5. Project claims into asset_state (planning#143 L2 sub-slice C).
+    # Same transaction as the claim emission and canonical/edge writes
+    # above, so the projection is atomic with the write it reflects — and
+    # since L3c-4 that projection is the only current-state view there is,
+    # which makes this step load-bearing rather than additive.
+    projector.project(db, canonical_ids, now)
+
     db.commit()
     return canonical_ids
 
@@ -68,12 +86,13 @@ def _upsert_canonical_batch(
     canonical_key is:
       - ("dns_record", value, record_type, content) for DNS records — each
         distinct record is its own canonical identity (matches the
-        partial unique index from migration 0026).
+        record_type/content partial unique index, migration 0040).
       - (asset_type, value) for every other type.
     """
     unique: dict[tuple, DiscoveredAsset] = {}
     for a in assets:
-        unique[_canonical_key(a.asset_type, a.value, a.asset_metadata)] = a
+        meta = a.asset_metadata or {}
+        unique[_canonical_key(a.asset_type, a.value, meta.get("record_type"), meta.get("content"))] = a
 
     if not unique:
         return {}
@@ -82,8 +101,11 @@ def _upsert_canonical_batch(
     # full canonical key in Python — Postgres can't index on the full 4-tuple
     # in a way that's nice to query. FOR UPDATE serializes (blocks, doesn't
     # fail) any concurrent writer touching the same rows — planning#86: two
-    # concurrent scans reading-then-writing the same asset_metadata JSONB
-    # otherwise last-write-wins clobbers whichever wrote second.
+    # concurrent scans reading-then-writing the same asset row otherwise
+    # last-write-wins clobbers whichever wrote second. Still needed after
+    # planning#144 L3c-4 removed the JSONB merge that first motivated it:
+    # claim_emitter documents that it relies on this same FOR UPDATE to
+    # serialize concurrent claim upserts on the touched assets.
     type_value_pairs = {(k[0], k[1]) for k in unique.keys()}
     existing_rows = (
         db.query(AssetCanonical)
@@ -92,7 +114,7 @@ def _upsert_canonical_batch(
         .all()
     )
     existing: dict[tuple, AssetCanonical] = {
-        _canonical_key(r.asset_type, r.value, r.asset_metadata): r
+        _canonical_key(r.asset_type, r.value, r.record_type, r.content): r
         for r in existing_rows
     }
 
@@ -106,7 +128,7 @@ def _upsert_canonical_batch(
     # concurrent transaction may insert the same key between our SELECT and
     # our INSERT. _defensive_insert_assets uses ON CONFLICT DO NOTHING so
     # that race can't raise IntegrityError and abort the whole batch (as a
-    # plain INSERT would against migration 0026's partial unique indexes).
+    # plain INSERT would against assets_canonical's partial unique indexes).
     to_insert: dict[tuple, AssetCanonical] = {}
     for key, asset in unique.items():
         if key in existing:
@@ -118,10 +140,18 @@ def _upsert_canonical_batch(
             parent_value=asset.parent_value,
             first_seen_at=now,
             last_seen_at=now,
-            asset_metadata=asset.asset_metadata or {},
+            record_type=(asset.asset_metadata or {}).get("record_type"),
+            content=(asset.asset_metadata or {}).get("content"),
         )
         if asset_rules:
-            new_row.tags = merge_tags([], apply_rules_preloaded(asset_rules, new_row))
+            # planning#144 L3c-3: `metadata.<key>` rule fields are resolved
+            # against the in-batch observation, not the row — this row isn't
+            # inserted yet, so it has no claims to reconstruct from. Same
+            # dict the rule saw before, just passed explicitly so it survives
+            # L3c-4 dropping the column.
+            new_row.tags = merge_tags([], apply_rules_preloaded(
+                asset_rules, new_row, asset.asset_metadata or {},
+            ))
         to_insert[key] = new_row
 
     result: dict[tuple, uuid.UUID] = {}
@@ -141,7 +171,7 @@ def _upsert_canonical_batch(
                 .all()
             )
             for r in locked:
-                existing[_canonical_key(r.asset_type, r.value, r.asset_metadata)] = r
+                existing[_canonical_key(r.asset_type, r.value, r.record_type, r.content)] = r
 
     for key, asset in unique.items():
         if key not in existing:
@@ -151,40 +181,21 @@ def _upsert_canonical_batch(
         # parent_value: only fill if currently null — first observation wins
         if asset.parent_value and not row.parent_value:
             row.parent_value = asset.parent_value
-        # Shallow-merge metadata so later observations enrich without
-        # destroying earlier fields. `open_ports` is special-cased into a
-        # per-port merge so successive port scans (and future service
-        # enrichers like tlsx / httpx / banner-grab) can each contribute
-        # a slice to the same port entry instead of overwriting it.
-        if asset.asset_metadata:
-            merged = {**(row.asset_metadata or {})}
-            for mk, mv in asset.asset_metadata.items():
-                if mv in (None, "", [], {}):
-                    continue
-                if mk == "sources":
-                    existing_sources = merged.get("sources", [])
-                    merged["sources"] = list(dict.fromkeys(
-                        existing_sources + (mv if isinstance(mv, list) else [mv])
-                    ))
-                elif mk == "open_ports" and isinstance(mv, list):
-                    merged["open_ports"] = _merge_open_ports(
-                        merged.get("open_ports") or [], mv
-                    )
-                elif mk.endswith("_last_scan_at"):
-                    # Scan-time markers always advance — keep the newer ISO timestamp
-                    current = merged.get(mk)
-                    if not current or mv > current:
-                        merged[mk] = mv
-                elif mk not in merged or merged[mk] in (None, "", [], {}):
-                    merged[mk] = mv
-            # Prune ports not re-confirmed in the latest naabu scan so storage
-            # reflects current truth (no phantom accumulation). Keyed on the
-            # post-merge naabu_last_scan_at; fresh ports written this scan
-            # survive, stale phantoms are deleted (Shodan intel keeps its grace).
-            nls = merged.get("naabu_last_scan_at")
-            if nls and isinstance(merged.get("open_ports"), list):
-                merged["open_ports"] = _prune_stale_ports(merged["open_ports"], nls, now)
-            row.asset_metadata = merged
+        # planning#144 L3c-4: the shallow metadata merge that used to live
+        # here is GONE, along with the column it wrote. Every field it
+        # maintained now has a real home, reached by the claims path this
+        # function already drives (emit_claims -> project, above):
+        #   sources        -> distinct observers across the asset's claims
+        #   open_ports     -> port_observation claims, folded per-port by
+        #                     projector._merge_open_ports across observers
+        #   *_last_scan_at -> the naabu claim's last_observed_at
+        #   the prune      -> projector._prune_stale_ports, same functions,
+        #                     applied to the projection instead of the column
+        #   everything else-> its own claim type (Table 1 in claim_emitter)
+        # so the merge semantics were not dropped, they moved. The one
+        # behaviour that genuinely changed: claims replace per-observer
+        # rather than accumulate-and-never-clear, which is what lets a
+        # signal that disappears actually disappear.
         result[key] = row.id
 
     # Flush so subsequent edge inserts see the new canonical rows — the
@@ -197,10 +208,16 @@ def _defensive_insert_assets(
     db: Session,
     new_rows: list[AssetCanonical],
 ) -> dict[tuple, uuid.UUID]:
-    """INSERT new asset rows with ON CONFLICT DO NOTHING, split by migration
-    0026's two partial unique indexes — a single INSERT's ON CONFLICT clause
-    can only target one conflict-inference index, and assets_canonical has
-    two (dns_record rows vs everything else).
+    """INSERT new asset rows with ON CONFLICT DO NOTHING, split by
+    assets_canonical's two partial unique indexes — a single INSERT's ON
+    CONFLICT clause can only target one conflict-inference index, and
+    assets_canonical has two (dns_record rows vs everything else).
+
+    The dns_record branch's `index_elements` MUST exactly match migration
+    0040's column-based `uq_assets_canonical_dns` index (asset_type, value,
+    coalesce(record_type,''), coalesce(content,'')) or Postgres can't infer
+    a conflict target and a colliding INSERT raises IntegrityError instead
+    of deduping.
 
     Returns {canonical_key: id} for rows that were actually inserted. Any
     row NOT present in the returned dict lost a race to a concurrent
@@ -234,8 +251,8 @@ def _defensive_insert_assets(
                 index_elements=[
                     "asset_type",
                     "value",
-                    text("coalesce(metadata->>'record_type', '')"),
-                    text("coalesce(metadata->>'content', '')"),
+                    text("coalesce(record_type, '')"),
+                    text("coalesce(content, '')"),
                 ],
                 index_where=text("asset_type = 'dns_record'"),
             )
@@ -243,12 +260,12 @@ def _defensive_insert_assets(
                 AssetCanonical.id,
                 AssetCanonical.asset_type,
                 AssetCanonical.value,
-                text("coalesce(metadata->>'record_type', '') AS record_type"),
-                text("coalesce(metadata->>'content', '') AS content"),
+                AssetCanonical.record_type,
+                AssetCanonical.content,
             )
         )
         for row in db.execute(stmt):
-            inserted[(row.asset_type, row.value, row.record_type, row.content)] = row.id
+            inserted[(row.asset_type, row.value, row.record_type or "", row.content or "")] = row.id
 
     return inserted
 
@@ -262,7 +279,8 @@ def _asset_row_values(row: AssetCanonical) -> dict:
         "first_seen_at": row.first_seen_at,
         "last_seen_at": row.last_seen_at,
         "tags": row.tags or [],
-        "metadata": row.asset_metadata or {},
+        "record_type": row.record_type,
+        "content": row.content,
     }
 
 
@@ -338,7 +356,7 @@ def _emit_edges_for_batch(
         rtype = meta.get("record_type")
         content = meta.get("content")
 
-        src_id = canonical_map.get(_canonical_key("dns_record", a.value, meta))
+        src_id = canonical_map.get(_canonical_key("dns_record", a.value, rtype, content))
         if not src_id:
             continue
 
@@ -429,125 +447,20 @@ def _emit_edges_for_batch(
     db.execute(stmt)
 
 
-# A Shodan-sourced port (never seen by our active scan) is kept as time-boxed
-# intel for this many days past its last_seen_at before the prune drops it.
-# Mirrors the read-time grace in app.api.assets._filter_stale_ports.
-_SHODAN_PORT_GRACE_DAYS = 14
-
-# A port confirmed by an active prober (l7_confirmed=True) is kept this many days
-# past its last confirmation even if later scans miss it. Real services flap —
-# intermittent / firewall throttling — so a single missed scan must not retire a
-# known-real port (validated 2026-06-23, planning#69: port 80 flapped
-# open<->filtered within seconds from two WANs). Shorter than the Shodan grace: a
-# confirmed port we can't re-confirm for days is probably genuinely closed.
-_CONFIRMED_PORT_GRACE_DAYS = 3
-
-
-def _prune_stale_ports(open_ports: list, naabu_last_scan_at: str, now: datetime) -> list:
-    """Drop ports not re-confirmed in the latest naabu scan, so stored
-    `open_ports` == the current truth (instead of accumulating forever).
-
-    A port is kept if it was re-observed at/after the latest naabu scan, OR it
-    was previously app-confirmed (l7_confirmed) within the confirmed grace window
-    (flap-guard for intermittent real ports), OR it's Shodan-sourced intel inside
-    the Shodan grace window, OR it has no timestamp to judge by. Everything else
-    (e.g. a firewall phantom that a later nmap-authoritative scan no longer
-    confirms) is removed at the source. This is the write-time counterpart of the
-    read-time `_filter_stale_ports` hide — here we delete, which also stops any
-    consumer from re-probing stale phantoms.
-    """
-    try:
-        cutoff = datetime.fromisoformat(naabu_last_scan_at)
-        if cutoff.tzinfo is None:
-            cutoff = cutoff.replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError, AttributeError):
-        return open_ports  # can't parse the marker — don't risk dropping anything
-    grace_cutoff = now - timedelta(days=_SHODAN_PORT_GRACE_DAYS)
-    confirmed_grace_cutoff = now - timedelta(days=_CONFIRMED_PORT_GRACE_DAYS)
-    kept: list = []
-    for entry in open_ports:
-        if not isinstance(entry, dict):
-            continue
-        raw = entry.get("last_seen_at")
-        if not raw:
-            kept.append(entry)  # no timestamp — keep, can't judge staleness
-            continue
-        try:
-            ts = datetime.fromisoformat(raw)
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-        except (ValueError, AttributeError):
-            kept.append(entry)
-            continue
-        if ts >= cutoff:
-            kept.append(entry)
-        elif entry.get("l7_confirmed") is True and ts >= confirmed_grace_cutoff:
-            # Flap-guard: a previously-confirmed real port is kept through brief
-            # misses (it flaps) until the confirmed grace expires.
-            kept.append(entry)
-        elif "shodan" in (entry.get("sources") or []) and ts >= grace_cutoff:
-            kept.append(entry)
-        # else: stale / grace-expired — drop
-    return kept
-
-
-def _merge_open_ports(existing: list, new: list) -> list:
-    """Merge two `open_ports` lists keyed by port number.
-
-    Each entry is `{port, protocol, sources, last_seen_at, …}` plus any
-    fields contributed by service enrichers (`service`, `service_version`,
-    `tech_stack[]`, `tls_cert_sans[]`, etc.). Merge rules per port:
-
-    * `sources` — union, preserving first-seen order.
-    * Other primitive fields — last-write-wins for non-empty values.
-    * `last_seen_at` — the newer one wins (lexicographic ISO 8601 ordering).
-
-    A previously-known port that wasn't re-observed in this batch is kept
-    untouched; cleanup of stale ports is a separate lifecycle concern.
-    """
-    by_port: dict[int, dict] = {}
-    for entry in existing:
-        if isinstance(entry, dict) and isinstance(entry.get("port"), int):
-            by_port[entry["port"]] = dict(entry)
-
-    for entry in new:
-        if not isinstance(entry, dict):
-            continue
-        port = entry.get("port")
-        if not isinstance(port, int):
-            continue
-        current = by_port.get(port)
-        if current is None:
-            by_port[port] = dict(entry)
-            continue
-        for k, v in entry.items():
-            if k == "port":
-                continue
-            if v in (None, "", [], {}):
-                continue
-            if k == "sources":
-                existing_sources = current.get("sources", [])
-                src_list = v if isinstance(v, list) else [v]
-                current["sources"] = list(dict.fromkeys(existing_sources + src_list))
-            elif k == "last_seen_at":
-                if not current.get("last_seen_at") or v > current["last_seen_at"]:
-                    current["last_seen_at"] = v
-            else:
-                current[k] = v
-
-    return sorted(by_port.values(), key=lambda p: p["port"])
-
-
-def _canonical_key(asset_type: str, value: str, metadata: dict | None) -> tuple:
-    """Key matching the partial unique indexes from migration 0026.
+def _canonical_key(asset_type: str, value: str, record_type: str | None, content: str | None) -> tuple:
+    """Key matching assets_canonical's partial unique indexes (migration
+    0040 for dns_record — record_type/content are real columns, not a
+    metadata path).
 
     dns_records: (asset_type, value, record_type, content) so each distinct
     record gets its own canonical row. Empty/missing record_type or content
     are coalesced to '' to match the COALESCE() inside the unique index.
+    Callers pass record_type/content already read from whichever source is
+    authoritative for them at that call site — an incoming DiscoveredAsset's
+    asset_metadata, or a persisted AssetCanonical row's own columns.
     """
     if asset_type == "dns_record":
-        meta = metadata or {}
-        return (asset_type, value, meta.get("record_type") or "", meta.get("content") or "")
+        return (asset_type, value, record_type or "", content or "")
     return (asset_type, value)
 
 

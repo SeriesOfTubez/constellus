@@ -25,6 +25,7 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.asset_edge import EDGE_TYPES, NODE_TYPES, AssetEdge
 from app.models.finding_canonical import FindingCanonical
 from app.models.target import Target
+from app.services import metadata_bridge
 
 router = APIRouter()
 
@@ -200,6 +201,7 @@ def _shares_ip_with(
         return None
 
     # Collapse multi-IP siblings into one row; collect the shared IPs as metadata.
+    summaries = _asset_summaries(db, [sibling for sibling, _via in sibling_rows])
     by_id: dict[uuid.UUID, dict] = {}
     ips_by_sibling: dict[uuid.UUID, list[uuid.UUID]] = {}
     for sibling, via_ip in sibling_rows:
@@ -211,7 +213,7 @@ def _shares_ip_with(
                 "label": sibling.value,
                 "asset_type": sibling.asset_type,
                 "ignored": sibling.ignored,
-                "metadata": _asset_summary(sibling),
+                "metadata": summaries.get(sibling.id, {}),
             }
             ips_by_sibling[sibling.id] = []
         ips_by_sibling[sibling.id].append(via_ip)
@@ -252,6 +254,7 @@ def _hydrate(
     asset_ids = ids_by_type.get("asset_canonical")
     if asset_ids:
         rows = db.query(AssetCanonical).filter(AssetCanonical.id.in_(asset_ids)).all()
+        summaries = _asset_summaries(db, rows)
         for r in rows:
             out[("asset_canonical", r.id)] = {
                 "node_id": str(r.id),
@@ -259,7 +262,7 @@ def _hydrate(
                 "label": r.value,
                 "asset_type": r.asset_type,
                 "ignored": r.ignored,
-                "metadata": _asset_summary(r),
+                "metadata": summaries.get(r.id, {}),
             }
 
     finding_ids = ids_by_type.get("finding_canonical")
@@ -292,14 +295,28 @@ def _hydrate(
     return out
 
 
-def _asset_summary(row: AssetCanonical) -> dict:
-    """Strip metadata down to fields the panel needs — record_type, content."""
-    meta = row.asset_metadata or {}
-    keep = {}
-    for k in ("record_type", "content", "mx_preference", "provider_mx"):
-        if k in meta:
-            keep[k] = meta[k]
-    return keep
+_SUMMARY_KEYS = ("record_type", "content", "mx_preference", "provider_mx")
+
+
+def _asset_summaries(db: Session, rows: list[AssetCanonical]) -> dict[uuid.UUID, dict]:
+    """{asset_id: panel metadata} for `rows` — record_type/content (columns),
+    mx_preference (claim) and provider_mx (asset_state.attributes).
+
+    planning#144 L3c-3: reconstructed through `metadata_bridge` rather than
+    read off `assets_canonical.metadata`. The bridge is batch-loaded once for
+    the whole node set, so this stays two queries no matter how many nodes
+    the panel is hydrating — a per-row lookup here would be an N+1 on a
+    request that already caps out at _INLINE_CAP nodes per edge type.
+    """
+    if not rows:
+        return {}
+    sources = metadata_bridge.load_bridge_sources(db, [r.id for r in rows])
+    out: dict[uuid.UUID, dict] = {}
+    for row in rows:
+        claims = sources.get(row.id, metadata_bridge.EMPTY_BRIDGE_SOURCES)
+        meta = metadata_bridge.bridge_metadata(row, claims.get("state"), claims)
+        out[row.id] = {k: meta[k] for k in _SUMMARY_KEYS if k in meta}
+    return out
 
 
 def _node_sort_key(item: dict) -> tuple:

@@ -18,6 +18,7 @@ Run with:  python -m app.tests.test_ownership_stamping
 """
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from app.connectors.base import DiscoveredAsset, DiscoveredFinding
 from app.core.database import SessionLocal
@@ -25,9 +26,11 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.finding_canonical import FindingCanonical
 from app.models.target import Target, TargetType
 from app.services import domain_affinity as da
+from app.services import shared_infra_verifier as siv
 from app.services.asset_writer import write_assets
+from app.services.claim_emitter import get_current_claim, upsert_single_claim
 from app.services.finding_writer import write_findings
-from app.services.shared_infra_verifier import verify_findings
+from app.services.shared_infra_verifier import classify_ip_ownership, verify_findings
 
 
 def _cleanup(db, ip: str, host: str | None, target_ids: list) -> None:
@@ -251,10 +254,66 @@ def test_plain_unverified_ip_leaves_findings_unstamped_and_still_eligible():
         assert finding.verification is None
         assert finding.id not in touched_ids
         # But the IP-level cache itself IS written (avoids re-probing on
-        # every run) — only the finding-level stamp is withheld.
-        assert (ip_asset.asset_metadata or {}).get("ownership_verdict", {}).get("verdict") == "unverified"
+        # every run) — only the finding-level stamp is withheld. planning#144
+        # L3a: that cache is now an affinity_confirmation claim, not
+        # asset_metadata.
+        claim = get_current_claim(db, ip_asset.id, "shared_infra_verifier", "affinity_confirmation")
+        assert claim is not None and claim.claim_value.get("verdict") == "unverified"
     finally:
         _cleanup(db, ip, None, target_ids)
+        db.close()
+
+
+def test_ownership_verdict_claim_cache_hit_and_ttl_refetch():
+    """planning#144 L3a round-trip: the ownership_verdict TTL cache now
+    lives as an affinity_confirmation claim (shared_infra_verifier
+    observer) instead of asset_metadata. A claim within TTL is reused with
+    no recompute; a claim older than the TTL is recomputed and overwritten.
+    Real DB, through classify_ip_ownership -> claim_emitter.get_current_claim
+    /upsert_single_claim end to end (not the fake in-memory cache
+    test_shared_infra_verifier.py uses to stay DB-free)."""
+    suffix = uuid.uuid4().hex[:6]
+    ip = f"192.0.2.{10 + int(suffix, 16) % 190}"
+    host = f"owned-{suffix}.example.com"
+    calls = {"n": 0}
+
+    def _spy(hostname, origin_ip, apexes, ports=None):
+        calls["n"] += 1
+        return da.AffinityResult(hostname=hostname, origin_ip=origin_ip, verdict=da.VERDICT_AFFINE, signals=[], matrix={})
+    da.check_affinity = _spy
+
+    db = SessionLocal()
+    target_ids: list = []
+    try:
+        target = Target(id=uuid.uuid4(), type=TargetType.IP, value=ip, verified=True)
+        db.add(target)
+        db.commit()
+        target_ids.append(target.id)
+
+        ip_asset = _make_ip_with_owned_host(db, ip, host)
+
+        first = classify_ip_ownership(db, ip_asset)
+        assert calls["n"] == 1
+        assert first["verdict"] == "confirmed_ours"
+
+        second = classify_ip_ownership(db, ip_asset)
+        assert calls["n"] == 1, "an affinity_confirmation claim within TTL must not recompute"
+        assert second["verdict"] == "confirmed_ours"
+
+        # Age the claim past its TTL directly, then confirm a refetch happens.
+        stale = datetime.now(timezone.utc) - siv._OWNERSHIP_VERDICT_TTL - timedelta(days=1)
+        upsert_single_claim(db, ip_asset.id, "shared_infra_verifier", "affinity_confirmation", second, stale)
+        db.commit()
+
+        third = classify_ip_ownership(db, ip_asset)
+        assert calls["n"] == 2, "a claim past its TTL must recompute"
+        assert third["verdict"] == "confirmed_ours"
+
+        claim = get_current_claim(db, ip_asset.id, "shared_infra_verifier", "affinity_confirmation")
+        assert claim is not None
+        assert claim.last_observed_at > stale
+    finally:
+        _cleanup(db, ip, host, target_ids)
         db.close()
 
 
@@ -320,6 +379,7 @@ def _run():
         test_ip_target_with_no_touched_assets_still_gets_stamped,
         test_plain_unverified_ip_leaves_findings_unstamped_and_still_eligible,
         test_force_reverify_restamps_an_already_verified_finding_end_to_end,
+        test_ownership_verdict_claim_cache_hit_and_ttl_refetch,
     ]
     for fn in tests:
         try:

@@ -59,8 +59,14 @@ def compute_window(exposed: bool, kev: bool, automatable: bool, total: bool) -> 
     return _TABLE[(exposed, kev, automatable, total)]
 
 
-def compute_sla(finding, asset) -> dict | None:
+def compute_sla(finding, asset, state=None) -> dict | None:
     """Compute the BOD-26-04 SLA envelope for one finding + its asset.
+
+    `state` is the asset's projected `asset_state` row (or None). As of
+    planning#144 L3c-3 the `exposed` axis reads its port inventory from
+    there rather than `asset_metadata`; callers on a list path must
+    batch-load it (`projector.load_states`) rather than let this reach for
+    it per finding.
 
     Returns None when the finding doesn't meet the preconditions (no CVE, or
     SSVC data isn't from real Vulnrichment — a derived fallback is not
@@ -79,12 +85,13 @@ def compute_sla(finding, asset) -> dict | None:
     if finding.ssvc_source != "vulnrichment":
         return None
 
-    # Axis 1: exposed — mirrors risk_scorer._internet_facing
+    # Axis 1: exposed — mirrors risk_scorer._internet_facing, including its
+    # treatment of a missing projection as "no ports" (planning#144 L3c-3).
     exposed: bool = (
         asset is not None
         and (
             asset.asset_type == "ip_address"
-            or bool((asset.asset_metadata or {}).get("open_ports"))
+            or bool(state is not None and state.open_ports)
         )
     )
 

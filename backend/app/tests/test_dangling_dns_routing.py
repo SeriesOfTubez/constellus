@@ -28,12 +28,18 @@ _SINCE = datetime(2026, 1, 1, tzinfo=timezone.utc)
 _NO_APEXES: set[str] = set()
 
 
-def _record(value, record_type="A", content="203.0.113.5", cdn=None):
+def _record(value, record_type="A", content="203.0.113.5"):
     return SimpleNamespace(
         id=uuid.uuid4(),
         value=value,
-        asset_metadata={"record_type": record_type, "content": content, "cdn": cdn},
+        asset_metadata={"record_type": record_type, "content": content},
     )
+
+
+# planning#144 L3c-3: the CDN-boundary flag is no longer read off the record
+# — it lives on asset_state.attributes (projected from the `cdn_boundary`
+# claim) and is passed into _evaluate_record as `is_cdn` by the analyzer's
+# one batched load. These pure-function tests pass it directly.
 
 
 def _affinity_result(verdict, unreachable_votes=0, matrix=None, signals=None):
@@ -54,8 +60,8 @@ def test_high_tier_wins_regardless_of_cdn():
     tf.find_takeover_signal = lambda db, asset_id, since: {
         "finding_id": uuid.uuid4(), "template_id": "aws-s3-takeover", "title": "t", "matched_at": "x",
     }
-    record = _record("cdn.example.com", "CNAME", cdn="cloudfront.net")
-    result = dda._evaluate_record(None, record, _SINCE, _NO_APEXES, gate_open=True)
+    record = _record("cdn.example.com", "CNAME")
+    result = dda._evaluate_record(None, record, _SINCE, _NO_APEXES, gate_open=True, is_cdn=True)
     assert result.status == dda.STATUS_HIT
     assert result.tier_result["tier"] == dda.TIER_HIGH
     assert result.tier_result["layer"] == dda.LAYER_FINGERPRINT
@@ -200,8 +206,8 @@ def test_cdn_touched_this_run_is_probed_clean():
         return "203.0.113.5"
     da.resolve_origin = _should_not_be_called
 
-    record = _record("cdn.example.com", "CNAME", cdn="cloudfront.net")
-    result = dda._evaluate_record(None, record, _SINCE, _NO_APEXES, gate_open=True)
+    record = _record("cdn.example.com", "CNAME")
+    result = dda._evaluate_record(None, record, _SINCE, _NO_APEXES, gate_open=True, is_cdn=True)
     assert result.status == dda.STATUS_PROBED_CLEAN
     assert result.probed is False
     assert called["resolve_origin"] is False
@@ -212,8 +218,8 @@ def test_cdn_scope_only_untouched_is_skipped():
     excluded from the budget-gated bucket per planning#114 regression #2) ->
     skipped_not_judged, same code path as any other gate-closed record."""
     tf.find_takeover_signal = lambda db, asset_id, since: None
-    record = _record("cdn.example.com", "CNAME", cdn="cloudfront.net")
-    result = dda._evaluate_record(None, record, _SINCE, _NO_APEXES, gate_open=False)
+    record = _record("cdn.example.com", "CNAME")
+    result = dda._evaluate_record(None, record, _SINCE, _NO_APEXES, gate_open=False, is_cdn=True)
     assert result.status == dda.STATUS_SKIPPED
     assert result.probed is False
 

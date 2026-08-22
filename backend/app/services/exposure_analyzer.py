@@ -48,6 +48,7 @@ from sqlalchemy.orm import Session
 from app.connectors.base import DiscoveredFinding
 from app.models.asset_canonical import AssetCanonical
 from app.models.finding_canonical import FindingCanonical
+from app.services import projector
 from app.services.finding_writer import write_findings
 
 log = logging.getLogger(__name__)
@@ -398,11 +399,15 @@ def analyze_exposures(
     # a single missed scan.
     retained_by_asset: dict[uuid.UUID, set[int]] = {}
 
+    # planning#144 L3c-3: port inventory from the projected asset_state, one
+    # batched query, rather than each asset's asset_metadata column.
+    ports_by_asset = projector.open_ports_by_asset(db, [a.id for a in assets])
+
     for asset in assets:
         if not _is_public_ip(asset.value):
             continue
-        open_ports = (asset.asset_metadata or {}).get("open_ports")
-        if not isinstance(open_ports, list):
+        open_ports = ports_by_asset.get(asset.id)
+        if not open_ports:
             continue
 
         fresh, retained = _classify_ports(open_ports, since)

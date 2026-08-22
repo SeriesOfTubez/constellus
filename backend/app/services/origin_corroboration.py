@@ -42,7 +42,8 @@ from dataclasses import dataclass, field
 from sqlalchemy.orm import Session
 
 from app.models.asset_canonical import AssetCanonical
-from app.services import domain_affinity, hosting_classifier
+from app.models.claim import AssetClaim
+from app.services import claim_emitter, domain_affinity, hosting_classifier
 from app.services.target_service import apex_domain
 
 log = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ def corroborate_liveness(
     if ip_asset is None:
         return CorroborationResult(attempted=False)
 
-    shodan_hostnames = (ip_asset.asset_metadata or {}).get("shodan_hostnames") or []
+    shodan_hostnames = _shodan_hostnames(db, ip_asset.id)
     reverse_ip_hostnames = hosting_classifier.reverse_ip_domains(db, origin_ip)
     raw_hostnames = list(shodan_hostnames) + list(reverse_ip_hostnames)
 
@@ -151,6 +152,35 @@ def corroborate_liveness(
             hostnames_probed=hostnames_probed,
         )
     return CorroborationResult(attempted=True, hostnames_probed=hostnames_probed)
+
+
+def _shodan_hostnames(db: Session, ip_asset_id) -> list:
+    """Shodan's reverse-DNS `hostnames` for this IP, from the `reverse_hostname`
+    claim (planning#144 L3c-3 — moved off `asset_metadata["shodan_hostnames"]`,
+    which was the same data written by the same connector; see
+    claim_emitter._SIMPLE_KEY_CLAIMS).
+
+    Not observer-scoped on purpose: `reverse_hostname` is Shodan's today, but
+    the key's meaning here is "third-party reverse-DNS candidates for this
+    IP", and a second producer of that claim should feed the same candidate
+    pool rather than be silently ignored. Returns [] when nothing has
+    claimed it — the caller treats an empty candidate pool as
+    `attempted=False` (graceful degradation), unchanged.
+    """
+    claim = (
+        db.query(AssetClaim.claim_value)
+        .filter(
+            AssetClaim.asset_canonical_id == ip_asset_id,
+            AssetClaim.claim_type == claim_emitter._SIMPLE_KEY_CLAIMS["shodan_hostnames"][0],
+        )
+        .order_by(AssetClaim.last_observed_at.desc())
+        .first()
+    )
+    if claim is None:
+        return []
+    value_key = claim_emitter._SIMPLE_KEY_CLAIMS["shodan_hostnames"][1]
+    hostnames = (claim[0] or {}).get(value_key)
+    return list(hostnames) if isinstance(hostnames, list) else []
 
 
 def _ip_in_hostname(origin_ip: str, hostname: str) -> bool:

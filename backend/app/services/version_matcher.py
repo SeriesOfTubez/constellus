@@ -37,6 +37,7 @@ from app.connectors.base import DiscoveredFinding
 from app.models.asset_canonical import AssetCanonical
 from app.models.cpe_cve_range import CpeCveRange
 from app.models.finding_canonical import FindingCanonical
+from app.services import projector
 from app.services.cpe_cve_index import ranges_for_product
 from app.services.cpe_normalizer import to_canonical_product
 from app.services.finding_writer import write_findings
@@ -160,9 +161,16 @@ def match_versions(
     # software data for, so resolution is correctly scoped.
     matched_by_asset: dict[uuid.UUID, set[str]] = {}
 
+    # planning#144 L3c-3: port inventory (and the software[] cpe_normalizer
+    # attaches to it) from the projected asset_state, one batched query. This
+    # is why scan_executor projects between enrich_cpe and match_versions —
+    # cpe_normalizer's software now arrives as a claim, so it is only visible
+    # here once that projection has folded it in.
+    ports_by_asset = projector.open_ports_by_asset(db, [a.id for a in assets])
+
     for asset in assets:
-        open_ports = (asset.asset_metadata or {}).get("open_ports")
-        if not isinstance(open_ports, list):
+        open_ports = ports_by_asset.get(asset.id)
+        if not open_ports:
             continue
 
         had_software = False

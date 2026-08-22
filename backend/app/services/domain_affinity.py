@@ -129,9 +129,8 @@ def resolve_origin(db: Session, dns_record: AssetCanonical) -> str | None:
     Returns None when there's nothing resolvable, or a CNAME chain's
     candidate isn't corroborated by current public DNS.
     """
-    meta = dns_record.asset_metadata or {}
-    record_type = meta.get("record_type")
-    content = meta.get("content")
+    record_type = dns_record.record_type
+    content = dns_record.content
     if not content:
         return None
 

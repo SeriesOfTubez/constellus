@@ -15,7 +15,7 @@ from app.models.finding_canonical import FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.target_asset_link import TargetAssetLink
 from app.models.user import UserRole
-from app.services import scan_executor, whois_service
+from app.services import metadata_bridge, scan_executor, whois_service
 from app.services.asset_chain import chain_target_ids
 
 # ── Severity helpers ──────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ def _compute_asset_risk(db: Session, assets: list[AssetCanonical]) -> dict:
     # must not inherit the risk of whatever IP the A/AAAA record resolves to.
     val_to_ids: dict[str, list] = {}
     for a in assets:
-        if a.asset_type == "dns_record" and (a.asset_metadata or {}).get("record_type") not in ("A", "AAAA"):
+        if a.asset_type == "dns_record" and a.record_type not in ("A", "AAAA"):
             continue
         val_to_ids.setdefault(a.value, []).append(a.id)
 
@@ -84,7 +84,7 @@ def _compute_asset_risk(db: Session, assets: list[AssetCanonical]) -> dict:
 
     target_to_owners: dict = {}
     for a in assets:
-        if a.asset_type == "dns_record" and (a.asset_metadata or {}).get("record_type") == "CNAME":
+        if a.asset_type == "dns_record" and a.record_type == "CNAME":
             for tid in chain_target_ids(a, _get_by_value):
                 target_to_owners.setdefault(tid, []).append(a.id)
 
@@ -271,7 +271,8 @@ def list_assets(
         q = q.filter(AssetCanonical.ignored == False)  # noqa: E712
     assets = q.order_by(AssetCanonical.last_seen_at.desc()).limit(1000).all()
     risk = _compute_asset_risk(db, assets)
-    return [_serialize_asset(a, risk.get(a.id)) for a in assets]
+    bridge_sources = load_bridge_sources(db, [a.id for a in assets])
+    return [_serialize_asset(a, risk.get(a.id), bridge_sources.get(a.id)) for a in assets]
 
 
 @router.delete("/bulk", status_code=200)
@@ -316,7 +317,8 @@ def get_asset(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     risk = _compute_asset_risk(db, [asset])
-    return _serialize_asset(asset, risk.get(asset.id))
+    bridge_sources = load_bridge_sources(db, [asset.id])
+    return _serialize_asset(asset, risk.get(asset.id), bridge_sources.get(asset.id))
 
 
 @router.patch("/{asset_id}/ignore", status_code=200)
@@ -440,76 +442,6 @@ _SHODAN_PORT_GRACE_DAYS = 14
 # asset_writer._prune_stale_ports. See planning#69/#72.
 _CONFIRMED_PORT_GRACE_DAYS = 3
 
-# A host that returns many ports nmap could not L7-confirm is exhibiting
-# firewall deception (proxied TCP handshakes / SYN-flood protection that
-# answers on closed ports). Above this count of unconfirmed-but-nmap-scanned
-# ports, treat the host as deceptive and hide the unconfirmed ones.
-_PHANTOM_SUPPRESS_THRESHOLD = 20
-
-
-def _suppress_phantom_ports(metadata: dict, now: datetime | None = None) -> dict:
-    """Hide phantom ports on firewall-deception hosts.
-
-    nmap tags each open_ports entry with l7_confirmed (bool) after -sV probing
-    and writes nmap_verified_at to asset_metadata when it finishes a cycle.
-    A host with more than _PHANTOM_SUPPRESS_THRESHOLD entries explicitly
-    marked l7_confirmed=False (real False, not missing/None) on a cycle where
-    nmap authoritatively scanned (nmap_verified_at >= naabu_last_scan_at) is
-    treated as a firewall-deception host: those False entries are dropped.
-
-    Fail-open in all ambiguous cases:
-    - Missing naabu_last_scan_at or nmap_verified_at → unchanged.
-    - Unparseable timestamps → unchanged.
-    - nmap_verified_at < naabu_last_scan_at (nmap stale/skipped) → unchanged.
-    - Entries without an l7_confirmed field (Shodan/legacy) → never counted
-      as unconfirmed and never dropped.
-
-    The `now` parameter is exposed for testing (currently unused but kept
-    consistent with _filter_stale_ports signature).
-    """
-    open_ports = metadata.get("open_ports")
-    if not isinstance(open_ports, list):
-        return metadata
-
-    naabu_last_scan_at = metadata.get("naabu_last_scan_at")
-    nmap_verified_at = metadata.get("nmap_verified_at")
-    if not naabu_last_scan_at or not nmap_verified_at:
-        return metadata
-
-    try:
-        naabu_ts = datetime.fromisoformat(naabu_last_scan_at)
-        if naabu_ts.tzinfo is None:
-            naabu_ts = naabu_ts.replace(tzinfo=timezone.utc)
-    except (ValueError, AttributeError):
-        return metadata
-
-    try:
-        nmap_ts = datetime.fromisoformat(nmap_verified_at)
-        if nmap_ts.tzinfo is None:
-            nmap_ts = nmap_ts.replace(tzinfo=timezone.utc)
-    except (ValueError, AttributeError):
-        return metadata
-
-    # nmap must have authoritatively scanned THIS cycle; if stale, fail-open.
-    if nmap_ts < naabu_ts:
-        return metadata
-
-    # Only explicit False counts — missing/None/True are not phantom.
-    unconfirmed_count = sum(
-        1 for entry in open_ports
-        if isinstance(entry, dict) and entry.get("l7_confirmed") is False
-    )
-
-    if unconfirmed_count > _PHANTOM_SUPPRESS_THRESHOLD:
-        # Deception host: drop every entry with an explicit False confirmation.
-        filtered = [
-            entry for entry in open_ports
-            if not (isinstance(entry, dict) and entry.get("l7_confirmed") is False)
-        ]
-        return {**metadata, "open_ports": filtered}
-
-    return metadata
-
 
 def _filter_stale_ports(metadata: dict, now: datetime | None = None) -> dict:
     """Remove open_ports entries not re-observed in the most recent naabu scan.
@@ -572,12 +504,23 @@ def _filter_stale_ports(metadata: dict, now: datetime | None = None) -> dict:
     return {**metadata, "open_ports": fresh}
 
 
-def _serialize_asset(row: AssetCanonical, risk: dict | None = None) -> dict:
+# ── claims-bridge (planning#144 L3c-2/L3c-3) ────────────────────────────────
+#
+# The reconstruction itself moved to `app.services.metadata_bridge` in L3c-3
+# — api/edges.py and services/tag_service.py need the same dict and should
+# not import it out of a router. Re-exported here under the original private
+# names so this module's callers and test_serializer_bridge.py are unchanged.
+
+_EMPTY_BRIDGE_SOURCES = metadata_bridge.EMPTY_BRIDGE_SOURCES
+_bridge_metadata = metadata_bridge.bridge_metadata
+load_bridge_sources = metadata_bridge.load_bridge_sources
+
+def _serialize_asset(row: AssetCanonical, risk: dict | None = None, bridge_sources: dict | None = None) -> dict:
     risk = risk or {}
-    metadata = row.asset_metadata or {}
+    claims = bridge_sources if bridge_sources is not None else _EMPTY_BRIDGE_SOURCES
+    metadata = _bridge_metadata(row, claims.get("state"), claims)
     if row.asset_type == "ip_address":
         metadata = _filter_stale_ports(metadata)
-        metadata = _suppress_phantom_ports(metadata)
     return {
         "id": str(row.id),
         "asset_type": row.asset_type,

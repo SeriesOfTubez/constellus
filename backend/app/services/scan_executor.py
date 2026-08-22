@@ -42,6 +42,7 @@ from app.models.scan_template import ScanTemplate
 from app.services import aggressiveness
 from app.services import app_settings as settings_svc
 from app.services import nuclei_tag_filter
+from app.services import projector
 from app.services.asset_writer import write_assets
 from app.services.finding_writer import write_findings
 from app.services.target_service import is_verified, is_scan_authorised, apex_domain
@@ -230,11 +231,26 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     except Exception:
         log.exception("EOL enrichment failed for scan %s — scan still marked complete", scan_run_id)
 
+    # Mid-pipeline projection pass (planning#144 L3c-3). enrich_cpe and
+    # enrich_eol now publish their results as claims (port_observation
+    # carrying software[], and eol_status) instead of mutating
+    # asset_metadata in place, so those results are NOT visible to a reader
+    # of asset_state until they have been projected. match_versions below
+    # reads open_ports[].software[] from asset_state, so without this pass it
+    # would match against the PREVIOUS run's software and silently miss every
+    # newly-detected version. Cheap (one batched fold over touched ids) and
+    # idempotent — the final pass further down still runs.
+    try:
+        projector.project(db, touched_asset_ids, datetime.now(timezone.utc))
+    except Exception:
+        log.exception("Post-enrichment projection failed for scan %s — scan still marked complete", scan_run_id)
+
     # Native version→CVE matching — match each touched asset's installed software
     # (open_ports[].software[] from CPE normalization) against the local CPE→CVE
     # range index (#66). Emits source="version_match" CVE findings that the CVE
     # enrichment + risk scoring below then process like any other CVE finding.
-    # Runs after enrich_cpe (software[] must exist) / before cve_enrichment.
+    # Runs after enrich_cpe (software[] must exist, and must have been
+    # projected — see the pass immediately above) / before cve_enrichment.
     try:
         from app.services.version_matcher import match_versions
         version_ids = match_versions(
@@ -264,6 +280,22 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
         verify_findings(db, scope, touched_asset_ids, force=force_reverify)
     except Exception:
         log.exception("Shared-infra verification failed for scan %s — scan still marked complete", scan_run_id)
+
+    # Final projection pass (planning#143 L2 sub-slice C) — re-project this
+    # run's touched assets now that enrichment/verification has run, so
+    # `asset_state.estate`/`attributes.probe_class` (sourced from the
+    # affinity_confirmation/hosting_class claims, planning#144 L3a) reflect
+    # this run's data too, not just what write_assets projected mid-scan from
+    # port claims alone. Placed here because verify_findings (via
+    # shared_infra_verifier -> hosting_classifier.classify_ip) is the last
+    # step in this run that writes any claim the projector reads — nothing
+    # after this point (CVE/VulnCheck/SSVC/vulnx enrichment, risk scoring)
+    # writes asset claims at all, they only touch findings_canonical. A
+    # projection failure must not fail the scan.
+    try:
+        projector.project(db, touched_asset_ids, datetime.now(timezone.utc))
+    except Exception:
+        log.exception("Final projection failed for scan %s — scan still marked complete", scan_run_id)
 
     # Post-scan CVE enrichment — runs once across all canonical findings
     # touched by this run. EPSS (FIRST.org), CISA KEV, NVD CVSS (capped fallback).
@@ -925,7 +957,7 @@ def _hydrate_asset_ports(asset, persisted_meta: dict) -> None:
 
     Pure function (no DB): testable with any object that has .asset_metadata.
     """
-    from app.services.asset_writer import _merge_open_ports
+    from app.services.projector import _merge_open_ports
 
     meta = dict(asset.asset_metadata or {})
 
@@ -974,7 +1006,7 @@ def _hydrate_asset_ports(asset, persisted_meta: dict) -> None:
 def _hydrate_port_hints(db: Session, assets: list) -> None:
     """Copy persisted passive port hints onto in-batch IP assets.
 
-    Two sources are hydrated from the canonical DB row onto each in-batch IP:
+    Two sources are hydrated from the persisted projection onto each in-batch IP:
 
     * shodan_ports (list[int]) — naabu reads this and folds the ports into its
       nmap-verify candidate set so a Shodan-seen port gets independently
@@ -990,9 +1022,14 @@ def _hydrate_port_hints(db: Session, assets: list) -> None:
       honest timestamp.
 
     No-op when there are no public IPs or no stored hints.
-    """
-    from app.models.asset_canonical import AssetCanonical
 
+    planning#144 L3c-3: both hints are sourced from the claims layer rather
+    than `assets_canonical.metadata` — `open_ports` from the projected
+    `asset_state` (which carries the per-entry `sources` and `l7_confirmed`
+    this function keys off), `shodan_ports` from the shodan observer's own
+    `port_observation` claim. `_hydrate_asset_ports` itself is unchanged and
+    still takes a plain metadata-shaped dict.
+    """
     # AssetType is a str-Enum, so == "ip_address" matches both the enum members
     # (naabu/banner_grab patches) and bare strings (executor-built assets).
     ip_values = {
@@ -1002,15 +1039,7 @@ def _hydrate_port_hints(db: Session, assets: list) -> None:
     if not ip_values:
         return
 
-    rows = (
-        db.query(AssetCanonical.value, AssetCanonical.asset_metadata)
-        .filter(
-            AssetCanonical.asset_type == "ip_address",
-            AssetCanonical.value.in_(list(ip_values)),
-        )
-        .all()
-    )
-    by_ip: dict[str, dict] = {value: (meta or {}) for value, meta in rows}
+    by_ip = _persisted_port_hints(db, ip_values)
     if not by_ip:
         return
 
@@ -1021,6 +1050,63 @@ def _hydrate_port_hints(db: Session, assets: list) -> None:
         if not persisted_meta:
             continue
         _hydrate_asset_ports(a, persisted_meta)
+
+
+def _persisted_port_hints(db: Session, ip_values: set[str]) -> dict[str, dict]:
+    """{ip_value: metadata-shaped dict} carrying the two persisted port hints
+    `_hydrate_asset_ports` consumes — `open_ports` and `shodan_ports`
+    (planning#144 L3c-3, replacing a read of `assets_canonical.metadata`).
+
+    Three batched queries regardless of how many IPs are passed: the
+    canonical id/value pairs, their projected `asset_state` rows, and the
+    shodan-observer `port_observation` claims behind `shodan_ports`. An IP
+    with neither hint is omitted, so the caller's existing "no stored hints"
+    skip behaves exactly as before.
+    """
+    from app.models.asset_canonical import AssetCanonical
+    from app.models.claim import AssetClaim
+    from app.models.observer import Observer
+    from app.services import claim_emitter, projector
+
+    id_to_value: dict[uuid.UUID, str] = {
+        row.id: row.value
+        for row in (
+            db.query(AssetCanonical.id, AssetCanonical.value)
+            .filter(
+                AssetCanonical.asset_type == "ip_address",
+                AssetCanonical.value.in_(list(ip_values)),
+            )
+            .all()
+        )
+    }
+    if not id_to_value:
+        return {}
+
+    by_ip: dict[str, dict] = {}
+    for asset_id, open_ports in projector.open_ports_by_asset(db, id_to_value).items():
+        if open_ports:
+            by_ip.setdefault(id_to_value[asset_id], {})["open_ports"] = open_ports
+
+    # shodan_ports: bare port numbers off the shodan observer's own port
+    # claim — deliberately that observer's claim rather than the merged
+    # asset_state view, matching what the serializer bridge reconstructs.
+    shodan_claims = (
+        db.query(AssetClaim.asset_canonical_id, AssetClaim.claim_value)
+        .join(Observer, AssetClaim.observer_id == Observer.id)
+        .filter(
+            AssetClaim.asset_canonical_id.in_(list(id_to_value)),
+            AssetClaim.claim_type == claim_emitter._PORT_OBSERVATION_CLAIM_TYPE,
+            Observer.name == "shodan",
+        )
+        .all()
+    )
+    for asset_id, claim_value in shodan_claims:
+        ports = (claim_value or {}).get("ports") or []
+        port_numbers = [p["port"] for p in ports if isinstance(p, dict) and isinstance(p.get("port"), int)]
+        if port_numbers:
+            by_ip.setdefault(id_to_value[asset_id], {})["shodan_ports"] = sorted(set(port_numbers))
+
+    return by_ip
 
 
 def _get_connector_config(db: Session, connector_id: str) -> dict:
