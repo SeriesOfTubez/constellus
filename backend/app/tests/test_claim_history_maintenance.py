@@ -23,6 +23,7 @@ from app.services import claim_history_maintenance
 from app.services.claim_history_maintenance import (
     RETENTION_MONTHS,
     _add_months,
+    _assert_partition_name,
     _month_start,
     _partition_name,
 )
@@ -151,6 +152,55 @@ def test_retention_boundary_is_first_of_month_24_months_back():
 
     assert just_outside < cutoff
     assert just_inside >= cutoff
+
+
+# ── identifier safety ────────────────────────────────────────────────────────
+
+def test_assert_partition_name_accepts_this_modules_own_names():
+    """The generated name for any month must pass its own barrier —
+    otherwise maintenance would refuse to run at some future date."""
+    now = datetime.now(timezone.utc)
+    for months in (-36, -1, 0, 1, 13):
+        name = _partition_name(_add_months(_month_start(now), months))
+        assert _assert_partition_name(name) == name, name
+
+
+def test_assert_partition_name_rejects_non_partition_identifiers():
+    """CREATE/DROP TABLE take the partition name as an IDENTIFIER, which
+    Postgres will not bind-parameter, so it is composed via
+    psycopg2.sql.Identifier. This barrier is the second, independent check
+    that nothing but this module's own naming convention ever reaches that
+    composition — including the DEFAULT partition, which must never be
+    dropped.
+    """
+    hostile = [
+        "claim_history_default",            # real, but must never be dropped
+        "claim_history",                     # the parent table itself
+        "assets_canonical",                  # an unrelated table
+        "claim_history_2026_08; DROP TABLE assets_canonical",
+        'claim_history_2026_08" ; DROP TABLE assets_canonical --',
+        "claim_history_26_08",               # wrong year width
+        "claim_history_2026_8",              # wrong month width
+        "claim_history_2026_08_extra",
+        "",
+    ]
+    for name in hostile:
+        try:
+            _assert_partition_name(name)
+        except ValueError:
+            continue
+        raise AssertionError(f"barrier accepted a non-partition identifier: {name!r}")
+
+
+def test_retention_never_drops_the_default_partition():
+    """claim_history_default has no month to parse and holds anything
+    outside the seeded range — sweeping it would silently discard rows."""
+    db = SessionLocal()
+    try:
+        claim_history_maintenance.run(db)
+        assert "claim_history_default" in _existing_partitions(db)
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":

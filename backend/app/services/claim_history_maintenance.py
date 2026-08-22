@@ -27,12 +27,26 @@ guess partition names. Every partition to inspect is discovered by querying
 `claim_history_default` is recognized by name and excluded from both the
 "already exists" and "drop if expired" logic — it has no month to parse and
 must never be dropped.
+
+DDL and identifier safety: CREATE/DROP TABLE take the partition name as an
+IDENTIFIER, and Postgres does not accept bind parameters in that position —
+so these two statements cannot be parameterized the way every other query in
+this codebase is. They are issued through `psycopg2.sql.Identifier`, which
+quotes and escapes the identifier in the driver, instead of formatting it
+into a `text()` string. That makes them injection-safe by CONSTRUCTION
+rather than by argument: it no longer depends on `_partition_name` only ever
+emitting strftime digits, or on `_PARTITION_NAME_RE` having been applied at
+the call site. `_assert_partition_name` re-checks the name against that
+regex immediately before either statement as a second, independent barrier,
+so a name that somehow reached here from anywhere but this module's own
+naming convention raises instead of executing.
 """
 
 import logging
 import re
 from datetime import datetime, timezone
 
+from psycopg2 import sql
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -86,6 +100,36 @@ def _partition_name(month_start: datetime) -> str:
     return f"claim_history_{month_start.strftime('%Y_%m')}"
 
 
+def _assert_partition_name(name: str) -> str:
+    """Barrier for the two statements that interpolate an identifier.
+
+    Everything reaching CREATE/DROP below must match this module's own
+    `claim_history_YYYY_MM` convention. Independent of where the name came
+    from — `_partition_name`'s strftime, or a relname read out of pg_class —
+    so neither of those has to be trusted on its own.
+    """
+    if not _PARTITION_NAME_RE.match(name):
+        raise ValueError(f"refusing to run DDL against non-partition identifier {name!r}")
+    return name
+
+
+def _execute_ddl(db: Session, statement: sql.Composable, params: tuple = ()) -> None:
+    """Run one DDL statement carrying a psycopg2-quoted identifier.
+
+    Postgres won't bind-parameter an identifier, so partition DDL has to
+    interpolate the table name. Going through psycopg2's own
+    `sql.Identifier` composition (rather than an f-string into `text()`)
+    puts the quoting/escaping in the driver. Uses the session's existing
+    DBAPI connection, so this stays inside the caller's transaction and the
+    caller's `db.commit()` still applies.
+    """
+    cursor = db.connection().connection.cursor()
+    try:
+        cursor.execute(statement, params)
+    finally:
+        cursor.close()
+
+
 def _existing_partitions(db: Session) -> set[str]:
     """Children of claim_history, discovered via pg_inherits/pg_class —
     never guessed or hardcoded."""
@@ -107,10 +151,14 @@ def _ensure_partition_exists(db: Session, month_start: datetime, existing: set[s
     if name in existing:
         return None
     next_month = _add_months(month_start, 1)
-    db.execute(text(
-        "CREATE TABLE IF NOT EXISTS " + name + " "
-        "PARTITION OF claim_history FOR VALUES FROM (:from_bound) TO (:to_bound)"
-    ), {"from_bound": month_start, "to_bound": next_month})
+    _execute_ddl(
+        db,
+        sql.SQL(
+            "CREATE TABLE IF NOT EXISTS {} "
+            "PARTITION OF claim_history FOR VALUES FROM (%s) TO (%s)"
+        ).format(sql.Identifier(_assert_partition_name(name))),
+        (month_start, next_month),
+    )
     db.commit()
     log.info("claim_history: created partition %s", name)
     return name
@@ -155,7 +203,10 @@ def _apply_retention(db: Session, now: datetime) -> list[str]:
         year, month = int(match.group(1)), int(match.group(2))
         partition_month = now.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
         if partition_month < cutoff:
-            db.execute(text(f"DROP TABLE {name}"))
+            _execute_ddl(
+                db,
+                sql.SQL("DROP TABLE {}").format(sql.Identifier(_assert_partition_name(name))),
+            )
             db.commit()
             dropped.append(name)
             log.info("claim_history: dropped expired partition %s (cutoff=%s)", name, cutoff.date())
