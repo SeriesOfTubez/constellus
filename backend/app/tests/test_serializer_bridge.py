@@ -38,6 +38,7 @@ from app.api.assets import _bridge_metadata, _filter_stale_ports, load_bridge_so
 from app.connectors.base import DiscoveredAsset
 from app.core.database import SessionLocal
 from app.models.asset_canonical import AssetCanonical
+from app.models.asset_state import AssetState
 from app.models.claim import ClaimHistory
 from app.services import eol_enrichment
 from app.services.asset_writer import write_assets
@@ -333,10 +334,25 @@ def test_bridge_metadata_matches_asset_metadata_for_seeded_assets(monkeypatch):
         def _eol_key(rec):
             return (rec.get("port"), rec.get("product"), rec.get("version"), rec.get("is_eol"))
 
+        # eol_services can no longer be gated against the column: planning#144
+        # L3c-3 converted eol_enrichment to an `eol_status` claim and deleted
+        # its asset_metadata write, so the column is empty here BY DESIGN and
+        # `_expected_for` has nothing to compare against. This is the first
+        # key to fall out of the bridged==column premise; the rest follow at
+        # L3c-4 when the merge loop stops writing entirely. Gate it against
+        # the real source instead — the projected asset_state, which is what
+        # the bridge reads.
         bridged_eol = {_eol_key(r) for r in (ip_bridged.get("eol_services") or [])}
-        expected_eol = {_eol_key(r) for r in (ip_expected.get("eol_services") or [])}
-        assert bridged_eol == expected_eol, f"eol_services mismatch: bridged={bridged_eol} expected={expected_eol}"
+        state = db.query(AssetState).filter(AssetState.asset_canonical_id == ip_row.id).one()
+        projected_eol = {_eol_key(r) for r in (state.eol_summary or [])}
+        assert bridged_eol == projected_eol, (
+            f"eol_services mismatch: bridged={bridged_eol} projected={projected_eol}"
+        )
         assert bridged_eol, "expected at least one eol_services record from the seeded nginx/1.18 port"
+        assert not (ip_expected.get("eol_services") or []), (
+            "asset_metadata still carries eol_services — L3c-3 removed that write, "
+            f"got {ip_expected.get('eol_services')!r}"
+        )
 
         for key in (
             "shodan_org", "shodan_asn", "shodan_isp", "shodan_country", "shodan_os",

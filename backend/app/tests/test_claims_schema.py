@@ -81,18 +81,36 @@ def test_observers_seeded_with_18_rows_and_correct_addressing():
     assert "cloud_inventory" not in by_name
 
 
-def test_claim_types_seeded_with_16_rows_and_exactly_two_authorisation_ttls():
+def test_claim_types_seeded_with_17_rows_and_exactly_two_authorisation_ttls():
     db = SessionLocal()
     try:
         rows = db.execute(text("SELECT claim_type, authorisation_ttl FROM claim_types")).all()
     finally:
         db.close()
-    assert len(rows) == 16, f"expected 16 seeded claim types, got {len(rows)}"
+    assert len(rows) == 17, f"expected 17 seeded claim types, got {len(rows)}"
     with_ttl = {claim_type for claim_type, ttl in rows if ttl is not None}
     assert with_ttl == {"affinity_confirmation", "cloud_inventory"}, with_ttl
     by_type = dict(rows)
     assert "observation" in by_type, "observation claim type (0041, L3c-2a) must be seeded"
     assert by_type["observation"] is None, "observation carries no authorisation_ttl"
+    assert "cdn_boundary" in by_type, "cdn_boundary claim type (0042, L3c-3) must be seeded"
+    assert by_type["cdn_boundary"] is None, "cdn_boundary carries no authorisation_ttl"
+
+
+def test_claim_types_frozenset_matches_the_seeded_table():
+    """CLAIM_TYPES and the claim_types table are edited in separate files by
+    every claim-type migration (0041, 0042, ...) and there is a CHECK
+    constraint keyed off the same list — drift between them fails writes at
+    runtime, not at import, so pin them together here."""
+    from app.models.claim import CLAIM_TYPES
+    db = SessionLocal()
+    try:
+        seeded = {r[0] for r in db.execute(text("SELECT claim_type FROM claim_types")).all()}
+    finally:
+        db.close()
+    assert seeded == set(CLAIM_TYPES), (
+        f"only in table: {seeded - set(CLAIM_TYPES)}; only in CLAIM_TYPES: {set(CLAIM_TYPES) - seeded}"
+    )
 
 
 def test_edge_type_relationships_seeded_with_7_rows():
@@ -255,7 +273,8 @@ def _run():
     tests = [
         test_all_seven_claims_layer_tables_exist,
         test_observers_seeded_with_18_rows_and_correct_addressing,
-        test_claim_types_seeded_with_16_rows_and_exactly_two_authorisation_ttls,
+        test_claim_types_seeded_with_17_rows_and_exactly_two_authorisation_ttls,
+        test_claim_types_frozenset_matches_the_seeded_table,
         test_edge_type_relationships_seeded_with_7_rows,
         test_claim_history_is_natively_partitioned_with_at_least_3_partitions,
         test_asset_claims_unique_constraint_behavior,

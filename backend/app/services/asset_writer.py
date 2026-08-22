@@ -151,7 +151,14 @@ def _upsert_canonical_batch(
             content=(asset.asset_metadata or {}).get("content"),
         )
         if asset_rules:
-            new_row.tags = merge_tags([], apply_rules_preloaded(asset_rules, new_row))
+            # planning#144 L3c-3: `metadata.<key>` rule fields are resolved
+            # against the in-batch observation, not the row — this row isn't
+            # inserted yet, so it has no claims to reconstruct from. Same
+            # dict the rule saw before, just passed explicitly so it survives
+            # L3c-4 dropping the column.
+            new_row.tags = merge_tags([], apply_rules_preloaded(
+                asset_rules, new_row, asset.asset_metadata or {},
+            ))
         to_insert[key] = new_row
 
     result: dict[tuple, uuid.UUID] = {}

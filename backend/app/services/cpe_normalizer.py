@@ -33,10 +33,10 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.asset import AssetType
 from app.models.asset_canonical import AssetCanonical
+from app.services import projector
 from app.services.claim_emitter import upsert_single_claim
 
 log = logging.getLogger(__name__)
@@ -202,14 +202,21 @@ def enrich_cpe(db: Session, touched_asset_ids: set[uuid.UUID]) -> None:
     entry of every touched IP asset. Idempotent — recomputed from the current
     banner/cpe each scan. Called from scan_executor before eol_enrichment.
 
-    planning#144 L3c-1: alongside the existing asset_metadata mutation (kept
-    — the API still serializes it for the UI until L3c-2's bridge), also
-    emits a `port_observation` claim per touched IP asset carrying just
-    `{port, software}` for each port with software. The projector's
-    `_merge_open_ports` folds this claim's contribution across observers by
-    port number, so `software` ends up on the same asset_state.open_ports
-    entry naabu (or another prober) already populates — no projector change
-    needed here.
+    planning#144 L3c-1 made this emit a `port_observation` claim per touched
+    IP asset carrying just `{port, software}` for each port with software.
+    The projector's `_merge_open_ports` folds this claim's contribution
+    across observers by port number, so `software` ends up on the same
+    asset_state.open_ports entry naabu (or another prober) already populates.
+
+    L3c-3 completes the move: the input inventory is read from
+    `asset_state.open_ports`, and the transitional in-place
+    `asset_metadata["open_ports"][*]["software"]` mutation L3c-1 kept
+    alongside the claim is GONE. It had no readers left — L3c-2 repointed
+    the API serializer onto the bridge, and version_matcher (the only other
+    consumer of `software`) reads asset_state as of this slice — and, now
+    that the input is a copy out of asset_state rather than the metadata
+    dict itself, an in-place mutation would no longer have reached the
+    column anyway. The merge loop is once again asset_metadata's only writer.
 
     Emitted for every touched IP asset with open_ports, even when no entry
     has software (empty `ports` list) — `upsert_single_claim` replaces the
@@ -233,30 +240,27 @@ def enrich_cpe(db: Session, touched_asset_ids: set[uuid.UUID]) -> None:
 
     now = datetime.now(timezone.utc)
     updated = 0
+    # planning#144 L3c-3: port inventory from the projected asset_state, one
+    # batched query. Copied per entry because the claim built below is the
+    # only output — mutating asset_state's own JSONB in place here would be
+    # an undeclared write into another module's table.
+    ports_by_asset = projector.open_ports_by_asset(db, [a.id for a in assets])
     for asset in assets:
-        open_ports: list[dict] = (asset.asset_metadata or {}).get("open_ports") or []
+        open_ports: list[dict] = [
+            dict(entry) for entry in (ports_by_asset.get(asset.id) or []) if isinstance(entry, dict)
+        ]
         if not open_ports:
             continue
 
-        changed = False
         for entry in open_ports:
             software = normalize_port_software(entry)
             if software:
                 entry["software"] = software
-                changed = True
+                updated += 1
             elif "software" in entry:
-                # Software signal disappeared (banner/cpe gone) — clear stale data.
+                # Software signal disappeared (banner/cpe gone) — drop it so
+                # a stale value can't ride into the claim below.
                 del entry["software"]
-                changed = True
-
-        if changed:
-            # open_ports entries were mutated in place — flag_modified forces
-            # the JSONB flush. (A dict-spread reassignment is NOT enough
-            # here: the nested mutation already pollutes the old value, so
-            # old == new by value and SQLAlchemy's JSON comparator skips the
-            # flush.)
-            flag_modified(asset, "asset_metadata")
-            updated += 1
 
         claim_value = {
             "ports": [
@@ -268,5 +272,5 @@ def enrich_cpe(db: Session, touched_asset_ids: set[uuid.UUID]) -> None:
         upsert_single_claim(db, asset.id, _OBSERVER_NAME, _CLAIM_TYPE, claim_value, now)
 
     if updated:
-        log.info("CPE normalization: wrote software intel on %d asset(s)", updated)
+        log.info("CPE normalization: wrote software intel on %d port(s)", updated)
     db.commit()

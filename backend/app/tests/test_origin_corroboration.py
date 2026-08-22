@@ -1,19 +1,31 @@
 """Tests for app.services.origin_corroboration (planning#106, epic#81
 Phase C — Shodan affiliated-hostname liveness corroboration).
 
-Deterministic, no DB / no live network I/O for the pure candidate-
-selection and evidence-evaluation logic; corroborate_liveness's DB lookup
-+ probe call are covered separately by live verification against the real
-dev DB (see session notes — real Shodan-captured hostnames on the epic's
-motivating customer's IPs are all auto-PTR artifacts correctly filtered to
-zero candidates).
+Deterministic, no live network I/O for the pure candidate-selection and
+evidence-evaluation logic; corroborate_liveness's probe call is covered
+separately by live verification against the real dev DB (see session notes
+— real Shodan-captured hostnames on the epic's motivating customer's IPs
+are all auto-PTR artifacts correctly filtered to zero candidates).
+
+Its DB lookup half IS covered here as of planning#144 L3c-3, which moved
+the candidate source from `asset_metadata["shodan_hostnames"]` to the
+`reverse_hostname` claim. A silent [] out of that lookup degrades to
+`attempted=False` — corroboration quietly never running — so it needs a
+test that fails loudly rather than a monkeypatch that skips past it.
 
 Pure-assert style: no pytest dependency required.
 Run with:  python -m app.tests.test_origin_corroboration        (from /app)
        or: pytest app/tests/test_origin_corroboration.py
 """
 
+import uuid
+from datetime import datetime, timezone
+
+from app.core.database import SessionLocal
+from app.models.asset_canonical import AssetCanonical
+from app.models.claim import ClaimHistory
 from app.services import origin_corroboration as oc
+from app.services.claim_emitter import upsert_single_claim
 
 
 def test_ip_in_hostname_ipv4_plain():
@@ -131,6 +143,10 @@ def _run():
         test_tech_absence_not_applicable_when_owned_side_silent,
         test_tech_absence_present_when_owned_side_answers_without_product,
         test_tech_absence_false_when_product_actually_detected,
+        # DB-backed (planning#144 L3c-3) — need DATABASE_URL, unlike the
+        # pure-assert tests above.
+        test_shodan_hostnames_read_from_reverse_hostname_claim,
+        test_shodan_hostnames_empty_without_claim,
     ]
     for fn in tests:
         try:
@@ -140,6 +156,61 @@ def _run():
             print(f"FAIL: {fn.__name__}: {exc}")
             raise SystemExit(1)
     print("ALL PASS")
+
+
+# ── corroborate_liveness's candidate source (planning#144 L3c-3) ────────────
+
+def _seed_ip_with_reverse_hostname_claim(db, ip: str, hostnames):
+    now = datetime.now(timezone.utc)
+    row = AssetCanonical(
+        id=uuid.uuid4(), asset_type="ip_address", value=ip, parent_value=None,
+        first_seen_at=now, last_seen_at=now, asset_metadata={"sources": ["shodan"]},
+    )
+    db.add(row); db.commit(); db.refresh(row)
+    if hostnames is not None:
+        upsert_single_claim(db, row.id, "shodan", "reverse_hostname", {"hostnames": hostnames}, now)
+        db.commit()
+    return row
+
+
+def _cleanup_ip(value: str) -> None:
+    db = SessionLocal()
+    try:
+        ids = [r.id for r in db.query(AssetCanonical).filter(AssetCanonical.value == value).all()]
+        if ids:
+            db.query(ClaimHistory).filter(ClaimHistory.asset_canonical_id.in_(ids)).delete(synchronize_session=False)
+        db.query(AssetCanonical).filter(AssetCanonical.value == value).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_shodan_hostnames_read_from_reverse_hostname_claim():
+    """planning#144 L3c-3: the candidate pool comes from the
+    `reverse_hostname` claim, which is where claim_emitter's Table 1 puts
+    what asset_metadata["shodan_hostnames"] used to hold."""
+    ip = f"203.0.113.{150 + (uuid.uuid4().int % 40)}"
+    db = SessionLocal()
+    try:
+        row = _seed_ip_with_reverse_hostname_claim(db, ip, ["a.example.com", "b.example.com"])
+        assert sorted(oc._shodan_hostnames(db, row.id)) == ["a.example.com", "b.example.com"]
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+def test_shodan_hostnames_empty_without_claim():
+    """No claim -> [] (not an error). The caller unions this with
+    HackerTarget's reverse-IP list, and an empty union is the
+    graceful-degradation `attempted=False` signal."""
+    ip = f"203.0.113.{60 + (uuid.uuid4().int % 40)}"
+    db = SessionLocal()
+    try:
+        row = _seed_ip_with_reverse_hostname_claim(db, ip, None)
+        assert oc._shodan_hostnames(db, row.id) == []
+    finally:
+        db.close()
+        _cleanup_ip(ip)
 
 
 if __name__ == "__main__":

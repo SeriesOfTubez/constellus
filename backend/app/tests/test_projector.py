@@ -24,6 +24,7 @@ from app.models.claim import AssetClaim, ClaimHistory
 from app.models.observer import Observer
 from app.models.target import Target, TargetType
 from app.services import projector
+from app.services.claim_emitter import upsert_single_claim
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -460,10 +461,11 @@ def test_no_naabu_claim_no_naabu_last_scan_at():
         _cleanup_ip(ip)
 
 
-def test_cdn_and_cdn_domain_mirrored_from_metadata():
-    """cdn / cdn_domain are a stopgap passthrough copy from asset_metadata
-    into attributes (planning#144 L3b-2 user decision) — pure mirror, no
-    boundary judgment recomputed here."""
+def test_cdn_and_cdn_domain_projected_from_cdn_boundary_claim():
+    """cdn / cdn_domain come from the discovery observer's `cdn_boundary`
+    claim (planning#144 L3c-3, replacing L3b-2's asset_metadata passthrough
+    stopgap) — still a projection of dns_resolve's judgment, never
+    recomputed here."""
     suffix = uuid.uuid4().hex[:10]
     host_name = f"cdn-mirror-{suffix}.example.com"
     db = SessionLocal()
@@ -471,12 +473,12 @@ def test_cdn_and_cdn_domain_mirrored_from_metadata():
         now = datetime.now(timezone.utc)
         asset = _make_asset(
             db, "dns_record", host_name,
-            metadata={
-                "record_type": "CNAME", "content": "d123.cloudfront.net",
-                "cdn": True, "cdn_domain": "cloudfront.net",
-            },
+            metadata={"record_type": "CNAME", "content": "d123.cloudfront.net"},
             record_type="CNAME", content="d123.cloudfront.net",
         )
+        db.commit()
+        _add_claim(db, asset.id, "dns_resolve", "cdn_boundary",
+                   {"cdn": True, "cdn_domain": "cloudfront.net"}, now)
         db.commit()
 
         projector.project(db, {asset.id}, now)
@@ -490,9 +492,122 @@ def test_cdn_and_cdn_domain_mirrored_from_metadata():
         _cleanup_prefix(f"cdn-mirror-{suffix}")
 
 
+def test_cdn_boundary_claim_from_any_discovery_observer_is_projected():
+    """The cdn_boundary claim is deliberately NOT pinned to one observer —
+    the CNAME resolver that makes the judgment is dns_resolve today but the
+    key's meaning belongs to whoever resolved it (planning#144 L3c-3)."""
+    suffix = uuid.uuid4().hex[:10]
+    host_name = f"cdn-mirror-{suffix}.example.com"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(
+            db, "dns_record", host_name,
+            metadata={"record_type": "CNAME", "content": "x.fastly.net"},
+            record_type="CNAME", content="x.fastly.net",
+        )
+        db.commit()
+        _add_claim(db, asset.id, "dns_records", "cdn_boundary",
+                   {"cdn": True, "cdn_domain": "fastly.net"}, now)
+        db.commit()
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+
+        assert _state_for(db, asset.id).attributes.get("cdn_domain") == "fastly.net"
+    finally:
+        db.close()
+        _cleanup_prefix(f"cdn-mirror-{suffix}")
+
+
+def test_eol_summary_projected_from_eol_status_claim():
+    """eol_summary comes from eol_enrichment's `eol_status` claim
+    (planning#144 L3c-3) — it was the projector's last read of the
+    still-authoritative asset_metadata column. The claim wraps a LIST under
+    `services` despite the column being named eol_summary."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"198.51.100.{60 + (int(suffix[:2], 16) % 40)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip, metadata={})
+        db.commit()
+        services = [{"port": 443, "product": "nginx", "version": "1.18", "is_eol": True}]
+        _add_claim(db, asset.id, "eol_enrichment", "eol_status", {"services": services}, now)
+        db.commit()
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+
+        assert _state_for(db, asset.id).eol_summary == services
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+def test_eol_status_claim_emptied_clears_eol_summary():
+    """A cleared `eol_status` claim (`services: []` — what enrich_eol now
+    writes when a host has ports but nothing EOL on them) must empty
+    eol_summary, not leave the previous run's records stuck.
+
+    This is a deliberate behaviour CHANGE from the asset_metadata write it
+    replaced, which only ever SET eol_services and so let a stale record
+    outlive the service it described (planning#144 L3c-3)."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"198.51.100.{100 + (int(suffix[:2], 16) % 40)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip, metadata={})
+        db.commit()
+        _add_claim(db, asset.id, "eol_enrichment", "eol_status",
+                   {"services": [{"port": 443, "product": "nginx", "version": "1.18", "is_eol": True}]}, now)
+        db.commit()
+        projector.project(db, {asset.id}, now)
+        db.commit()
+        assert _state_for(db, asset.id).eol_summary, "precondition: eol_summary populated"
+
+        # Re-observation, not a second claim — upsert_single_claim is the
+        # whole-value replace enrich_eol itself uses.
+        later = now + timedelta(hours=1)
+        upsert_single_claim(db, asset.id, "eol_enrichment", "eol_status", {"services": []}, later)
+        db.commit()
+        projector.project(db, {asset.id}, later)
+        db.commit()
+
+        assert _state_for(db, asset.id).eol_summary == []
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+def test_eol_status_claim_from_another_observer_is_ignored():
+    """eol_status is pinned to the eol_enrichment observer — it is that
+    service's output, not an open vocabulary like cdn_boundary. A claim of
+    the same type from anyone else must not become eol_summary."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"198.51.100.{140 + (int(suffix[:2], 16) % 40)}"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip, metadata={})
+        db.commit()
+        _add_claim(db, asset.id, "shodan", "eol_status",
+                   {"services": [{"port": 1, "product": "bogus", "version": "0", "is_eol": True}]}, now)
+        db.commit()
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+
+        assert _state_for(db, asset.id).eol_summary == []
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
 def test_no_cdn_metadata_no_cdn_attributes():
-    """No cdn/cdn_domain in asset_metadata -> neither key appears in
-    attributes (no invented default)."""
+    """No `cdn_boundary` claim -> neither key appears in attributes (no
+    invented default)."""
     suffix = uuid.uuid4().hex[:10]
     ip = f"198.51.100.{10 + (int(suffix[:2], 16) % 60)}"
     db = SessionLocal()

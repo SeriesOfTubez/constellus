@@ -37,17 +37,25 @@ def _syn_record(db, *, cdn: str | None = None) -> AssetCanonical:
     """A real, minimal dns_record AssetCanonical row (not a bare
     SimpleNamespace, as this predated planning#144 L3b-3) — `_stamp` below
     needs `asset_state`'s FK to a real `assets_canonical` row to seed a
-    `dangling_probe_at` stamp against."""
+    `dangling_probe_at` stamp against.
+
+    planning#144 L3c-3: `cdn` is seeded onto `asset_state.attributes` (where
+    the projector now puts it, sourced from dns_resolve's `cdn_boundary`
+    claim) rather than onto `asset_metadata`, which the analyzer no longer
+    reads. Same route as `_stamp`."""
     now = datetime.now(timezone.utc)
     row = AssetCanonical(
         id=uuid.uuid4(), asset_type="dns_record", value=f"syn-{uuid.uuid4().hex[:8]}.example.com",
         parent_value=None, first_seen_at=now, last_seen_at=now,
-        asset_metadata={"record_type": "A", "content": "203.0.113.9", "cdn": cdn},
+        asset_metadata={"record_type": "A", "content": "203.0.113.9"},
         record_type="A", content="203.0.113.9",
     )
     db.add(row)
     db.commit()
     db.refresh(row)
+    if cdn:
+        projector.merge_state_attributes(db, row.id, {"cdn": True, "cdn_domain": cdn})
+        db.commit()
     return row
 
 

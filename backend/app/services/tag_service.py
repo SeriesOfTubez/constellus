@@ -32,24 +32,43 @@ ENTITY_TYPES = ("target", "asset", "finding")
 
 # ── Condition evaluator ───────────────────────────────────────────────────────
 
-def _get_field(entity: Any, field: str) -> Any:
+def _get_field(entity: Any, field: str, metadata: dict | None = None) -> Any:
+    """Resolve one rule `field` against `entity`.
+
+    `metadata.<key>` fields are the reason this takes an explicit `metadata`
+    override (planning#144 L3c-3). Asset rules address an open-ended key set
+    — `metadata.<key>` is documented as a supported field on TagRule and
+    nothing validates the key — so unlike every other reader in this slice
+    these cannot be repointed at a specific claim or column. Callers supply
+    the right reconstruction for their path instead:
+
+      * asset_writer evaluates rules against a row that does not exist yet
+        and therefore has no claims to reconstruct from — it passes the
+        in-batch DiscoveredAsset's own metadata, the same dict the rule saw
+        before this change.
+      * reevaluate_all walks persisted rows — it passes the claims-layer
+        reconstruction from `metadata_bridge`.
+
+    `metadata=None` keeps the old `entity.asset_metadata` fallback, which is
+    what target/finding rules (no metadata fields at all) still take.
+    """
     if field.startswith("metadata."):
         key = field[9:]
-        meta = getattr(entity, "asset_metadata", None) or {}
+        meta = metadata if metadata is not None else (getattr(entity, "asset_metadata", None) or {})
         return meta.get(key)
     return getattr(entity, field, None)
 
 
-def _evaluate(condition: dict, entity: Any) -> bool:
+def _evaluate(condition: dict, entity: Any, metadata: dict | None = None) -> bool:
     if "all" in condition:
-        return all(_evaluate(c, entity) for c in condition["all"])
+        return all(_evaluate(c, entity, metadata) for c in condition["all"])
     if "any" in condition:
-        return any(_evaluate(c, entity) for c in condition["any"])
+        return any(_evaluate(c, entity, metadata) for c in condition["any"])
 
     field = condition.get("field", "")
     op = condition.get("op", "eq")
     expected = condition.get("value")
-    actual = _get_field(entity, field)
+    actual = _get_field(entity, field, metadata)
 
     if op == "eq":
         return actual == expected
@@ -72,12 +91,14 @@ def _evaluate(condition: dict, entity: Any) -> bool:
 
 # ── Public helpers ────────────────────────────────────────────────────────────
 
-def apply_rules_preloaded(rules: list, entity: Any) -> list[str]:
-    """Evaluate a pre-fetched list of TagRule objects. Use in batch writers to avoid N+1 queries."""
+def apply_rules_preloaded(rules: list, entity: Any, metadata: dict | None = None) -> list[str]:
+    """Evaluate a pre-fetched list of TagRule objects. Use in batch writers to
+    avoid N+1 queries. `metadata` overrides the source for `metadata.<key>`
+    rule fields — see `_get_field`."""
     tags_to_add: list[str] = []
     for rule in rules:
         try:
-            if _evaluate(rule.condition, entity):
+            if _evaluate(rule.condition, entity, metadata):
                 tags_to_add.append(rule.tag)
         except Exception:
             log.debug("Tag rule %s evaluation error", rule.id, exc_info=True)
@@ -138,6 +159,7 @@ def reevaluate_all(db: Session) -> dict[str, int]:
     from app.models.asset_canonical import AssetCanonical
     from app.models.finding_canonical import FindingCanonical
     from app.models.target import Target
+    from app.services import metadata_bridge
 
     counts: dict[str, int] = {"target": 0, "asset": 0, "finding": 0}
 
@@ -157,11 +179,23 @@ def reevaluate_all(db: Session) -> dict[str, int]:
             rows = db.query(model).offset(offset).limit(batch).all()
             if not rows:
                 break
+            # planning#144 L3c-3: asset rules can address any `metadata.<key>`,
+            # so reconstruct the whole dict from the claims layer rather than
+            # read the asset_metadata column — batch-loaded per 500-row page,
+            # not per row. Only assets have metadata fields; targets and
+            # findings pass None and keep the plain attribute path.
+            bridged: dict = {}
+            if entity_type == "asset":
+                sources = metadata_bridge.load_bridge_sources(db, [r.id for r in rows])
+                for row in rows:
+                    claims = sources.get(row.id, metadata_bridge.EMPTY_BRIDGE_SOURCES)
+                    bridged[row.id] = metadata_bridge.bridge_metadata(row, claims.get("state"), claims)
             for entity in rows:
+                metadata = bridged.get(entity.id) if entity_type == "asset" else None
                 new_tags: list[str] = []
                 for rule in rules:
                     try:
-                        if _evaluate(rule.condition, entity):
+                        if _evaluate(rule.condition, entity, metadata):
                             new_tags.append(rule.tag)
                     except Exception:
                         pass

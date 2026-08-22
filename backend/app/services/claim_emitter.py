@@ -96,6 +96,16 @@ _SHODAN_HOST_KEYS: dict[str, str] = {
 }
 _SHODAN_HOST_CLAIM_TYPE = "shodan_host"
 
+# cdn / cdn_domain: dns_resolve's CDN-boundary judgment on a CNAME hop it
+# declined to follow (discovery/dns_resolve.py). Composite like _CT_KEYS —
+# `cdn` is the flag, `cdn_domain` the edge that matched. Emitted as a claim
+# as of L3c-3 (planning#144) so the judgment survives the asset_metadata
+# column drop; the projector previously mirrored it out of the persisted
+# column as an explicit stopgap. #147 replaces the whole annotation with a
+# real CNAME -> third-party edge and can retire this then.
+_CDN_KEYS: dict[str, str] = {"cdn": "cdn", "cdn_domain": "cdn_domain"}
+_CDN_CLAIM_TYPE = "cdn_boundary"
+
 _PORT_OBSERVATION_CLAIM_TYPE = "port_observation"
 # Per-entry keys that are envelope data, not part of the stored port claim value.
 _PORT_ENTRY_ENVELOPE_KEYS = ("sources", "naabu_tier")
@@ -164,6 +174,7 @@ def emit_claims(
                 _accumulate_spf_claim(targets, canonical_id, observer_id, meta)
                 _accumulate_ct_claim(targets, canonical_id, observer_id, meta)
                 _accumulate_shodan_host_claim(targets, canonical_id, observer_id, meta)
+                _accumulate_cdn_claim(targets, canonical_id, observer_id, meta)
 
         # port_observation: attributed per-entry by each port's own `sources`,
         # independent of (and possibly broader than) the asset-level observer
@@ -261,6 +272,28 @@ def _accumulate_shodan_host_claim(
         return
     value = {vk: meta[mk] for mk, vk in present.items()}
     _merge_target(targets, (canonical_id, observer_id, _SHODAN_HOST_CLAIM_TYPE), value, {})
+
+
+def _accumulate_cdn_claim(
+    targets: dict[_TargetKey, dict],
+    canonical_id: uuid.UUID,
+    observer_id: uuid.UUID,
+    meta: dict,
+) -> None:
+    """CDN-boundary judgment (planning#144 L3c-3). Keyed off `cdn` alone:
+    `cdn_domain` is the matched edge and is meaningless without the flag,
+    while `cdn` without a domain is still a usable boundary signal. A
+    falsy/absent `cdn` emits nothing — matching every other accumulator
+    here, and matching the pre-claims behaviour where dns_resolve only ever
+    SET the key (the merge loop never cleared it either)."""
+    if not meta.get(_CDN_KEYS["cdn"]):
+        return
+    value = {
+        value_key: meta[meta_key]
+        for meta_key, value_key in _CDN_KEYS.items()
+        if meta.get(meta_key) is not None
+    }
+    _merge_target(targets, (canonical_id, observer_id, _CDN_CLAIM_TYPE), value, {})
 
 
 def _accumulate_port_observation(

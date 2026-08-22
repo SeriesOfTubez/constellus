@@ -1,9 +1,19 @@
 """EOL enrichment — post-scan identification of end-of-life software.
 
 Reads service_version strings already extracted by the Layer 1 banner-grab
-connector from each IP asset's open_ports[] metadata. Normalises them to
+connector onto each IP asset's projected open_ports[]. Normalises them to
 known product / version-cycle pairs, queries the endoflife.date public API for
-each unique pair, and writes structured eol_services metadata back to the asset.
+each unique pair, and records the structured per-port EOL records against
+the asset.
+
+Reads its port inventory from `asset_state.open_ports` and writes its result
+as an `eol_status` claim (planning#144 L3c-3) — the projector folds that
+claim back into `asset_state.eol_summary`, which is what risk_scorer and the
+API serializer bridge read. The old `asset_metadata["eol_services"]` write
+is gone with the same change: L3c-2 repointed the serializer onto the
+bridge and L3c-3 repointed risk_scorer, leaving it with no readers. The
+`eol:{product}` TAG write is unaffected — tags are a real column and
+risk_scorer still short-circuits on them.
 
 Assets with at least one confirmed EOL service are auto-tagged eol:{product}.
 Responses are cached per-process with a 24 h TTL so repeated scans don't
@@ -17,7 +27,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -25,11 +35,20 @@ from sqlalchemy.orm import Session
 from app.connectors.http import connector_get
 from app.models.asset import AssetType
 from app.models.asset_canonical import AssetCanonical
+from app.services import projector
+from app.services.claim_emitter import upsert_single_claim
 from app.services.tag_service import merge_tags
 
 log = logging.getLogger(__name__)
 
 _EOL_API = "https://endoflife.date/api"
+
+# planning#144 L3c-3: this service's own claims-layer identity. Seeded in
+# migration 0039 as kind="enrich" — deliberately NOT one of the
+# `sources`-bearing kinds, so emitting these claims does not add
+# "eol_enrichment" to the serializer bridge's reconstructed `sources` list.
+_OBSERVER_NAME = "eol_enrichment"
+_CLAIM_TYPE = "eol_status"
 
 # Module-level response cache: (product, cycle) → (data | None, fetched_epoch)
 _cache: dict[tuple[str, str], tuple[dict | None, float]] = {}
@@ -104,7 +123,25 @@ def _parse_eol(eol_field: Any) -> tuple[str | None, bool, int | None]:
 
 
 def enrich_eol(db: Session, touched_asset_ids: set[uuid.UUID]) -> None:
-    """Post-scan EOL enrichment entry point. Called from scan_executor."""
+    """Post-scan EOL enrichment entry point. Called from scan_executor.
+
+    Port inventory comes from `asset_state.open_ports` (planning#144 L3c-3),
+    so this must run after a projection pass that has folded this run's
+    port claims — scan_executor's ordering guarantees that.
+
+    Emits an `eol_status` claim per touched IP asset that has ports, INCLUDING
+    when nothing on it is EOL (empty `services` list). `upsert_single_claim`
+    replaces the whole claim_value, so the empty case is what lets an EOL
+    signal that disappears — the service was upgraded, or the port closed —
+    actually clear out of `asset_state.eol_summary` instead of leaving a
+    stale record behind forever. That is a deliberate behaviour CHANGE from
+    the asset_metadata write this replaces, which only ever set the key and
+    so let a stale eol_services list outlive the service it described.
+
+    `eol:{product}` tags remain add-only (merge_tags never removes), so a
+    cleared EOL signal still leaves its tag behind — unchanged, and the
+    reason risk_scorer's tag short-circuit stays a separate check.
+    """
     if not touched_asset_ids:
         return
 
@@ -121,9 +158,11 @@ def enrich_eol(db: Session, touched_asset_ids: set[uuid.UUID]) -> None:
 
     log.info("EOL enrichment: checking %d IP asset(s)", len(assets))
     enriched = 0
+    now = datetime.now(timezone.utc)
+    ports_by_asset = projector.open_ports_by_asset(db, [a.id for a in assets])
 
     for asset in assets:
-        open_ports: list[dict] = (asset.asset_metadata or {}).get("open_ports") or []
+        open_ports: list[dict] = ports_by_asset.get(asset.id) or []
         if not open_ports:
             continue
 
@@ -162,11 +201,12 @@ def enrich_eol(db: Session, touched_asset_ids: set[uuid.UUID]) -> None:
             if is_eol:
                 eol_products.add(product)
 
+        upsert_single_claim(
+            db, asset.id, _OBSERVER_NAME, _CLAIM_TYPE, {"services": eol_services}, now,
+        )
+
         if not eol_services:
             continue
-
-        # Full dict replacement so SQLAlchemy detects the JSONB mutation
-        asset.asset_metadata = {**(asset.asset_metadata or {}), "eol_services": eol_services}
 
         if eol_products:
             new_tags = [f"eol:{p}" for p in sorted(eol_products)]
@@ -174,6 +214,6 @@ def enrich_eol(db: Session, touched_asset_ids: set[uuid.UUID]) -> None:
 
         enriched += 1
 
+    db.commit()
     if enriched:
-        db.commit()
         log.info("EOL enrichment: updated %d asset(s) with EOL metadata", enriched)

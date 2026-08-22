@@ -14,7 +14,7 @@ from app.models.finding import FindingState
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.user import UserRole
-from app.services import bod_sla, scan_executor
+from app.services import bod_sla, projector, scan_executor
 from app.services.asset_chain import chain_target_ids
 from app.services.finding_confidence import confidence_for, strongest
 
@@ -156,7 +156,14 @@ def list_findings(
         .limit(2000)
         .all()
     )
-    return _rollup_cve_findings([_serialize_finding(f, a) for f, a in rows])
+    # planning#144 L3c-3: bod_sla's `exposed` axis reads the projected
+    # asset_state, so batch-load it for the whole page in one query — this
+    # path serializes up to 2000 rows, where a per-finding lookup would be a
+    # textbook N+1.
+    states = projector.load_states(db, {f.asset_canonical_id for f, _a in rows})
+    return _rollup_cve_findings([
+        _serialize_finding(f, a, states.get(f.asset_canonical_id)) for f, a in rows
+    ])
 
 
 @router.post("/bulk/state")
@@ -345,7 +352,7 @@ def get_finding(
     if not finding:
         raise HTTPException(status_code=404, detail="Finding not found")
     asset = db.get(AssetCanonical, finding.asset_canonical_id)
-    return _serialize_finding(finding, asset)
+    return _serialize_finding(finding, asset, _finding_asset_state(db, finding))
 
 
 @router.get("/{finding_id}/epss-history")
@@ -390,7 +397,7 @@ def update_finding_state(
     db.commit()
 
     asset = db.get(AssetCanonical, finding.asset_canonical_id)
-    return _serialize_finding(finding, asset)
+    return _serialize_finding(finding, asset, _finding_asset_state(db, finding))
 
 
 @router.post("/{finding_id}/verify", status_code=202)
@@ -565,7 +572,14 @@ def _verify_and_resolve(
         db.close()
 
 
-def _serialize_finding(f: FindingCanonical, a: AssetCanonical | None) -> dict:
+def _finding_asset_state(db: Session, f: FindingCanonical):
+    """The one projected `asset_state` row behind a single finding, for the
+    single-finding endpoints (planning#144 L3c-3). The list endpoint must
+    NOT use this — it batch-loads instead."""
+    return projector.load_states(db, [f.asset_canonical_id]).get(f.asset_canonical_id)
+
+
+def _serialize_finding(f: FindingCanonical, a: AssetCanonical | None, state=None) -> dict:
     return {
         "id": str(f.id),
         "asset_value": a.value if a else None,
@@ -626,5 +640,5 @@ def _serialize_finding(f: FindingCanonical, a: AssetCanonical | None) -> dict:
         "last_seen_at": f.last_seen_at.isoformat() if f.last_seen_at else None,
         "resolved_at": f.resolved_at.isoformat() if f.resolved_at else None,
         # BOD-26-04 remediation SLA lens (compliance deadline, separate from Risk Score)
-        "bod_sla": bod_sla.compute_sla(f, a),
+        "bod_sla": bod_sla.compute_sla(f, a, state),
     }

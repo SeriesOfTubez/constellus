@@ -29,6 +29,7 @@ CLAIM_TYPES: frozenset[str] = frozenset({
     "eol_status",
     "cloud_inventory",
     "observation",
+    "cdn_boundary",
 })
 
 

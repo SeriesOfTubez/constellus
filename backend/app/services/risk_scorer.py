@@ -47,7 +47,9 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from app.models.asset_canonical import AssetCanonical
+from app.models.asset_state import AssetState
 from app.models.finding_canonical import FindingCanonical
+from app.services import projector
 from app.services.ssvc_derive import derive_automatable, derive_technical_impact
 
 log = logging.getLogger(__name__)
@@ -286,11 +288,16 @@ def score_scan_findings(
         return
 
     # Batch-load the owning assets for context (internet-facing / EOL).
+    # planning#144 L3c-3: the two context signals below (open_ports, EOL) come
+    # from the projected `asset_state` row, not `asset_metadata` — loaded in
+    # the same batched shape so this stays two queries regardless of finding
+    # count.
     asset_ids = {f.asset_canonical_id for f in findings}
     assets = {
         a.id: a
         for a in db.query(AssetCanonical).filter(AssetCanonical.id.in_(asset_ids)).all()
     }
+    states = projector.load_states(db, asset_ids)
 
     scored = 0
     for f in findings:
@@ -328,8 +335,8 @@ def score_scan_findings(
             ssvc_source=f.ssvc_source,
             category=f.category,
             severity=f.severity,
-            internet_facing=_internet_facing(asset),
-            eol=_is_eol(asset),
+            internet_facing=_internet_facing(asset, states.get(f.asset_canonical_id)),
+            eol=_is_eol(asset, states.get(f.asset_canonical_id)),
             exposure_confirmed=_exposure_confirmed(f),
         )
         f.risk_score, f.risk_band, f.building_velocity = score_finding(s)
@@ -344,23 +351,31 @@ def score_scan_findings(
 
 # ── asset/finding context helpers ───────────────────────────────────────────────
 
-def _internet_facing(asset: AssetCanonical | None) -> bool:
+def _internet_facing(asset: AssetCanonical | None, state: AssetState | None = None) -> bool:
+    """planning#144 L3c-3: the port inventory is `asset_state.open_ports`
+    (projected from port_observation claims), not `asset_metadata`. An asset
+    with no projected state row yet is treated as having no ports, exactly as
+    an absent metadata key was."""
     if asset is None:
         return False
     if asset.asset_type == "ip_address":
         return True
-    return bool((asset.asset_metadata or {}).get("open_ports"))
+    return bool(state is not None and state.open_ports)
 
 
-def _is_eol(asset: AssetCanonical | None) -> bool:
+def _is_eol(asset: AssetCanonical | None, state: AssetState | None = None) -> bool:
+    """planning#144 L3c-3: EOL records come from `asset_state.eol_summary`
+    (projected from eol_enrichment's `eol_status` claim), not
+    `asset_metadata["eol_services"]`. The `eol:` tag check is unchanged and
+    still short-circuits first."""
     if asset is None:
         return False
     if any(str(t).startswith("eol:") for t in (asset.tags or [])):
         return True
-    return any(
-        svc.get("is_eol")
-        for svc in (asset.asset_metadata or {}).get("eol_services", [])
-    )
+    eol_summary = state.eol_summary if state is not None else None
+    if not isinstance(eol_summary, list):
+        return False
+    return any(isinstance(svc, dict) and svc.get("is_eol") for svc in eol_summary)
 
 
 def _exposure_confirmed(f: FindingCanonical) -> bool:

@@ -1,37 +1,31 @@
 """Synchronous, incremental claims -> asset_state projector (planning#143, L2
 sub-slice C).
 
-Reads `asset_claims` (path 1, the new grounding layer) + the still-
-authoritative `asset_metadata` on `assets_canonical` (path 2, not converted
-this slice) and folds them into one projected row per asset in `asset_state`.
-Hybrid dual-source by design:
+Reads `asset_claims` + `assets_canonical`'s own columns and folds them into
+one projected row per asset in `asset_state`. As of planning#144 L3c-3 this
+module no longer reads `assets_canonical.metadata` at all — every source is
+either a claim or a real column:
 
-  - `open_ports` is projected from `port_observation` claims — proving the
-    claim path actually carries the data readers need.
-  - `hosting` (from a `hosting_class` claim) and `estate` (from an
-    `affinity_confirmation` claim's `verdict`) are also read from
-    `asset_claims` now (planning#144 L3a — hosting_classifier and
+  - `open_ports` <- `port_observation` claims, folded across observers.
+  - `hosting` <- a `hosting_class` claim; `estate` <- an
+    `affinity_confirmation` claim's `verdict` (L3a — hosting_classifier and
     shared_infra_verifier's asset_metadata TTL-caches moved to claims).
-  - `eol_summary` is still read straight through from `asset_metadata`,
-    because eol_enrichment hasn't been converted to emit claims yet — that
-    is a later slice, not this one. `provider_mx` (and the `no_probe` half
-    of `probe_class` that depends on it) is now RECOMPUTED here from the
-    `assets_canonical.record_type`/`.content` columns (planning#144 L3b-1
-    promoted those to columns; L3b-2 stops reading the transitional
-    `asset_metadata["provider_mx"]` mirror and derives it fresh instead).
+  - `eol_summary` <- the eol_enrichment observer's `eol_status` claim
+    (L3c-3 — converted this slice; it was the last path-2 read here).
+  - `attributes["cdn"]`/`["cdn_domain"]` <- a `cdn_boundary` claim (L3c-3 —
+    replaces L3b-2's stopgap passthrough of the same keys out of the
+    metadata column, which had no source surviving the L3c-4 drop).
+  - `attributes["provider_mx"]` (and the `no_probe` half of `probe_class`
+    that depends on it) is RECOMPUTED here from the
+    `assets_canonical.record_type`/`.content` columns (L3b-1 promoted those
+    to columns; L3b-2 stopped reading the transitional metadata mirror).
+  - `attributes["naabu_last_scan_at"]` <- the naabu `port_observation`
+    claim's `last_observed_at`, isoformatted — the same value used as the
+    prune cutoff.
 
-`attributes` on `asset_state` also carries three more derived/envelope
-keys as of L3b-2: `provider_mx` (recomputed, see above), `naabu_last_scan_at`
-(the naabu `port_observation` claim's `last_observed_at`, isoformatted —
-the same value used as the prune cutoff), and `cdn`/`cdn_domain` (a
-stopgap passthrough mirror of the still asset_metadata-authoritative CDN
-boundary judgment, so they survive the eventual `asset_metadata` column
-drop; #147 replaces this with the real CNAME->third-party edge).
-
-This module does NOT do the risky cutover: `asset_writer`'s merge loop stays
-in place and keeps authoring `asset_metadata` (the transitional compat
-mirror every existing reader still uses). This module only ADDS a
-projection into `asset_state`, a table nothing reads yet.
+`asset_writer`'s merge loop still authors `asset_metadata` for the readers
+L3c-3 has not reached, and L3c-4 removes that write along with the column.
+Nothing in THIS module depends on it either way.
 
 `_merge_open_ports` / `_prune_stale_ports` (plus their grace-period
 constants) used to live in `asset_writer.py`; they moved here verbatim as
@@ -165,6 +159,47 @@ def _merge_open_ports(existing: list, new: list) -> list:
     return sorted(by_port.values(), key=lambda p: p["port"])
 
 
+# ── asset_state read helpers (planning#144 L3c-3) ──────────────────────────
+#
+# Every backend reader repointed off `assets_canonical.metadata` in L3c-3
+# comes through one of these, so the batching lives in one place instead of
+# being re-derived (or forgotten) per caller.
+
+def load_states(db: Session, asset_ids) -> dict[uuid.UUID, AssetState]:
+    """Batch-load the `asset_state` row for each id in `asset_ids`, in one
+    query (planning#144 L3c-3).
+
+    The shared entry point for every backend reader that used to reach for
+    `assets_canonical.metadata`: `open_ports`, `eol_summary`, `hosting`,
+    `estate` and `attributes` all live here now. Ids with no projected row
+    yet are simply absent from the result, so callers treat a miss the same
+    way they used to treat an absent metadata key — `.get(id)` then fall
+    back to empty.
+
+    Read-only. Note this returns what the LAST `project()` call folded, so
+    a caller that needs to see claims written earlier in the same scan
+    pipeline must run after the projection pass that covers them — see the
+    ordering comments in scan_executor's post-scan block.
+    """
+    ids = list(asset_ids)
+    if not ids:
+        return {}
+    return {
+        row.asset_canonical_id: row
+        for row in db.query(AssetState).filter(AssetState.asset_canonical_id.in_(ids)).all()
+    }
+
+
+def open_ports_by_asset(db: Session, asset_ids) -> dict[uuid.UUID, list]:
+    """`load_states` narrowed to just `open_ports` — the shape most of the
+    repointed readers actually want. Ids with no state row (or an empty
+    port list) map to `[]`."""
+    return {
+        asset_id: (state.open_ports or [])
+        for asset_id, state in load_states(db, asset_ids).items()
+    }
+
+
 # ── standalone attributes upsert (planning#144 L3b-3) ──────────────────────
 
 def merge_state_attributes(db: Session, asset_id: uuid.UUID, patch: dict) -> None:
@@ -204,14 +239,19 @@ def merge_state_attributes(db: Session, asset_id: uuid.UUID, patch: dict) -> Non
 # ── projector ────────────────────────────────────────────────────────────
 
 def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
-    """Fold claims + path-2 asset_metadata into `asset_state`, one row per id.
+    """Fold claims + canonical columns into `asset_state`, one row per id.
 
     Read-only on `asset_claims` + `assets_canonical`; write-only on
     `asset_state`. Never writes `asset_metadata`. Idempotent — running twice
     over the same ids yields the same asset_state rows.
 
-    Skips any id with neither claims (port_observation, hosting_class,
-    affinity_confirmation) nor asset_metadata (nothing to project).
+    Projects every id that still resolves to an `assets_canonical` row —
+    skipping only ids that don't (deleted mid-scan). Before planning#144
+    L3c-3 this also skipped ids with no claims AND no asset_metadata; with
+    the metadata read gone that guard would have started dropping
+    identity-only DNS records, which carry no port claim but whose
+    `probe_class`/`provider_mx` are derived from their columns alone and so
+    always have something to project.
     """
     if not asset_ids:
         return
@@ -239,33 +279,59 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
     for asset_id, claim_value, last_observed_at, observer_name in claim_rows:
         claims_by_asset.setdefault(asset_id, []).append((observer_name, claim_value, last_observed_at))
 
-    # Single-value claims (planning#144 L3a): hosting_class (hosting_classifier
-    # observer) and affinity_confirmation (shared_infra_verifier observer),
-    # batch-loaded up front like port_observation above rather than a
-    # get_current_claim() call per asset in the loop below.
-    single_claim_observer_ids = {
-        name: observer_id
-        for observer_id, name in db.query(Observer.id, Observer.name)
-        .filter(Observer.name.in_(["hosting_classifier", "shared_infra_verifier"]))
-        .all()
+    # Single-value claims, batch-loaded up front like port_observation above
+    # rather than a get_current_claim() call per asset in the loop below.
+    #
+    # Three of the four are single-owner TTL caches or service outputs, so
+    # they are pinned to the observer that owns them (planning#144 L3a for
+    # hosting_class/affinity_confirmation, L3c-3 for eol_status) — a claim of
+    # that type from anyone else is not the value this projection means.
+    # cdn_boundary is deliberately NOT pinned: the CDN judgment is made by
+    # whichever discovery observer resolved the CNAME (dns_resolve today,
+    # dns_records or a future resolver tomorrow), so it is taken from any
+    # observer, most-recently-observed winning.
+    _OWNED_CLAIMS = {
+        "hosting_class": "hosting_classifier",
+        "affinity_confirmation": "shared_infra_verifier",
+        "eol_status": "eol_enrichment",
+    }
+    observer_name_by_id = {
+        observer_id: name for observer_id, name in db.query(Observer.id, Observer.name).all()
     }
     hosting_class_by_asset: dict[uuid.UUID, dict] = {}
     affinity_confirmation_by_asset: dict[uuid.UUID, dict] = {}
-    if single_claim_observer_ids:
-        single_claim_rows = (
-            db.query(AssetClaim.asset_canonical_id, AssetClaim.claim_type, AssetClaim.claim_value)
-            .filter(
-                AssetClaim.asset_canonical_id.in_(asset_ids),
-                AssetClaim.claim_type.in_(["hosting_class", "affinity_confirmation"]),
-                AssetClaim.observer_id.in_(single_claim_observer_ids.values()),
-            )
-            .all()
+    eol_status_by_asset: dict[uuid.UUID, dict] = {}
+    cdn_boundary_by_asset: dict[uuid.UUID, dict] = {}
+    _cdn_seen_at: dict[uuid.UUID, datetime] = {}
+    single_claim_rows = (
+        db.query(
+            AssetClaim.asset_canonical_id,
+            AssetClaim.claim_type,
+            AssetClaim.claim_value,
+            AssetClaim.observer_id,
+            AssetClaim.last_observed_at,
         )
-        for asset_id, claim_type, claim_value in single_claim_rows:
-            if claim_type == "hosting_class":
-                hosting_class_by_asset[asset_id] = claim_value
-            elif claim_type == "affinity_confirmation":
-                affinity_confirmation_by_asset[asset_id] = claim_value
+        .filter(
+            AssetClaim.asset_canonical_id.in_(asset_ids),
+            AssetClaim.claim_type.in_(list(_OWNED_CLAIMS) + ["cdn_boundary"]),
+        )
+        .all()
+    )
+    for asset_id, claim_type, claim_value, observer_id, last_observed_at in single_claim_rows:
+        if claim_type == "cdn_boundary":
+            previous = _cdn_seen_at.get(asset_id)
+            if previous is None or last_observed_at > previous:
+                _cdn_seen_at[asset_id] = last_observed_at
+                cdn_boundary_by_asset[asset_id] = claim_value
+            continue
+        if observer_name_by_id.get(observer_id) != _OWNED_CLAIMS[claim_type]:
+            continue
+        if claim_type == "hosting_class":
+            hosting_class_by_asset[asset_id] = claim_value
+        elif claim_type == "affinity_confirmation":
+            affinity_confirmation_by_asset[asset_id] = claim_value
+        elif claim_type == "eol_status":
+            eol_status_by_asset[asset_id] = claim_value
 
     # CIDR/IP-scoped ip_address ids, computed once for the whole batch —
     # target_scope._ip_scoped_asset_ids takes the full ip/cidr target list,
@@ -282,12 +348,13 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
     for asset_id in asset_ids:
         canonical = canonical_by_id.get(asset_id)
         asset_claims = claims_by_asset.get(asset_id, [])
-        metadata = (canonical.asset_metadata or {}) if canonical is not None else {}
         hosting_claim_value = hosting_class_by_asset.get(asset_id)
         affinity_claim_value = affinity_confirmation_by_asset.get(asset_id)
+        eol_claim_value = eol_status_by_asset.get(asset_id)
+        cdn_claim_value = cdn_boundary_by_asset.get(asset_id)
 
-        if not asset_claims and not metadata and hosting_claim_value is None and affinity_claim_value is None:
-            continue  # nothing to project for this id
+        if canonical is None:
+            continue  # id doesn't resolve to a row (deleted mid-scan)
 
         # ── open_ports: fold every observer's claim through _merge_open_ports,
         # restoring the observer identity the emitter stripped, then prune on
@@ -316,13 +383,13 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         # ── hosting_class / affinity_confirmation claims (planning#144 L3a) ──
         hosting = hosting_claim_value if isinstance(hosting_claim_value, dict) else {}
 
-        # ── path-2 reads (still-authoritative asset_metadata) ─────────────
-        # eol_services is a LIST of per-port EOL records (eol_enrichment.py),
-        # not a dict — despite the column name `eol_summary` (planning#144
-        # L3c-2 found this passthrough guard checking the wrong type, which
-        # silently discarded every real eol_services list into `{}`; fixed
-        # here since it blocks the L3c-2 serializer bridge's eol_services key).
-        eol_summary = metadata.get("eol_services")
+        # ── eol_summary: the eol_enrichment observer's `eol_status` claim
+        # (planning#144 L3c-3 — the last path-2 asset_metadata read in this
+        # module, now gone). The claim carries a LIST of per-port EOL
+        # records under `services`, despite the column being named
+        # eol_summary; L3c-2 found the old passthrough guard here checking
+        # isinstance(dict) and silently discarding every real list into {}.
+        eol_summary = eol_claim_value.get("services") if isinstance(eol_claim_value, dict) else None
         if not isinstance(eol_summary, list):
             eol_summary = []
 
@@ -365,13 +432,17 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         if naabu_last_observed_at is not None:
             attributes["naabu_last_scan_at"] = naabu_last_observed_at.isoformat()
 
-        # ── cdn / cdn_domain: stopgap passthrough mirror of the still
-        # asset_metadata-authoritative CDN boundary judgment (planning#144
-        # L3b-2 user decision) — do NOT recompute the judgment here.
-        if "cdn" in metadata:
-            attributes["cdn"] = metadata["cdn"]
-        if "cdn_domain" in metadata:
-            attributes["cdn_domain"] = metadata["cdn_domain"]
+        # ── cdn / cdn_domain: the discovery observer's `cdn_boundary` claim
+        # (planning#144 L3c-3). This replaces the L3b-2 stopgap, which
+        # mirrored the keys straight out of the asset_metadata column — a
+        # passthrough that would have had no source left once L3c-4 drops
+        # that column. Still NOT recomputed here: the boundary judgment
+        # belongs to dns_resolve, this only projects it. #147 replaces the
+        # whole annotation with a real CNAME -> third-party edge.
+        if isinstance(cdn_claim_value, dict):
+            for attr_key in ("cdn", "cdn_domain"):
+                if attr_key in cdn_claim_value:
+                    attributes[attr_key] = cdn_claim_value[attr_key]
 
         rows_to_upsert.append({
             "asset_canonical_id": asset_id,

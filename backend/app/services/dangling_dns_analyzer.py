@@ -75,9 +75,10 @@ only exists once an evaluation already fired):
      boundary), so leaving them eligible would let them permanently starve
      the budget (always "never stamped", always sorted first, forever).
      `dangling_probe_at` itself lives on `asset_state.attributes` (planning#144
-     L3b-3 — moved off `asset_metadata` via `projector.merge_state_attributes`;
-     the `cdn` read above stays on `asset_metadata`, that boundary judgment is
-     still asset_metadata-authoritative until #147/L3c).
+     L3b-3 — moved off `asset_metadata` via `projector.merge_state_attributes`),
+     and so does the `cdn` flag as of L3c-3 (projected from dns_resolve's
+     `cdn_boundary` claim; #147 later replaces the annotation entirely with a
+     real CNAME -> third-party edge).
 
 Also fixes a real, pre-existing bug independent of the widening: when the
 scanner-worker is unreachable, `domain_affinity.check_affinity` fails soft to
@@ -197,7 +198,11 @@ def analyze_dangling_dns(
         return set()
 
     owned_apexes = _owned_apexes(db)
-    gate_open_ids = _compute_gate_open_ids(db, records, touched_asset_ids)
+    # planning#144 L3c-3: one batched read of the CDN-boundary flag for the
+    # whole record set, shared by the budget gate and the per-record
+    # evaluation below (both used to read it off record.asset_metadata).
+    cdn_flags = _cdn_flags(db, [r.id for r in records])
+    gate_open_ids = _compute_gate_open_ids(db, records, touched_asset_ids, cdn_flags)
 
     findings: list[DiscoveredFinding] = []
     probed_clean_ids: set[uuid.UUID] = set()
@@ -205,7 +210,11 @@ def analyze_dangling_dns(
 
     for record in records:
         try:
-            outcome = _evaluate_record(db, record, since, owned_apexes, gate_open=record.id in gate_open_ids)
+            outcome = _evaluate_record(
+                db, record, since, owned_apexes,
+                gate_open=record.id in gate_open_ids,
+                is_cdn=cdn_flags.get(record.id, False),
+            )
         except Exception:
             log.exception(
                 "dangling_dns_analyzer: failed to evaluate record %s (%s) — skipping, not judged this run",
@@ -266,6 +275,7 @@ def _open_finding_asset_ids(db: Session, asset_ids: set[uuid.UUID]) -> set[uuid.
 
 def _compute_gate_open_ids(
     db: Session, records: list[AssetCanonical], touched_asset_ids: set[uuid.UUID],
+    cdn_flags: dict[uuid.UUID, bool] | None = None,
 ) -> set[uuid.UUID]:
     """Bucket every record by state (planning#114 — see module docstring):
     bucket 1 (touched) and bucket 2 (open finding) probe unconditionally;
@@ -277,14 +287,20 @@ def _compute_gate_open_ids(
     record_ids = {r.id for r in records}
     open_finding_ids = _open_finding_asset_ids(db, record_ids)
 
+    # planning#144 L3c-3: the CDN flag lives on asset_state.attributes now.
+    # analyze_dangling_dns passes its own batched load in (it needs the same
+    # flags for _evaluate_record); a caller that doesn't — the gate tests —
+    # gets one batched load here rather than a per-record lookup.
+    if cdn_flags is None:
+        cdn_flags = _cdn_flags(db, [r.id for r in records])
+
     gate_open_ids: set[uuid.UUID] = set()
     due_candidates: list[AssetCanonical] = []
     for record in records:
         if record.id in touched_asset_ids or record.id in open_finding_ids:
             gate_open_ids.add(record.id)
             continue
-        meta = record.asset_metadata or {}
-        if meta.get("cdn"):
+        if cdn_flags.get(record.id):
             continue  # never probeable, never occupies a budget slot
         due_candidates.append(record)
 
@@ -309,6 +325,18 @@ def _compute_gate_open_ids(
             budget_left -= 1
 
     return gate_open_ids
+
+
+def _cdn_flags(db: Session, record_ids) -> dict[uuid.UUID, bool]:
+    """Batch-read the CDN-boundary flag from `asset_state.attributes` for a
+    set of record ids (planning#144 L3c-3 — moved off `asset_metadata`; the
+    projector sources it from dns_resolve's `cdn_boundary` claim). A record
+    with no `asset_state` row, or no cdn key on it, is simply not CDN —
+    same as the absent metadata key it replaces."""
+    return {
+        asset_id: bool((state.attributes or {}).get("cdn"))
+        for asset_id, state in projector.load_states(db, record_ids).items()
+    }
 
 
 def _dangling_probe_stamps(db: Session, record_ids: set[uuid.UUID]) -> dict[uuid.UUID, str | None]:
@@ -353,6 +381,7 @@ def _owned_apexes(db: Session) -> set[str]:
 
 def _evaluate_record(
     db: Session, record: AssetCanonical, since: datetime, owned_apexes: set[str], gate_open: bool,
+    is_cdn: bool = False,
 ) -> RecordOutcome:
     """Return a three-way RecordOutcome (planning#114 — see module
     docstring): STATUS_HIT (a tier fired), STATUS_PROBED_CLEAN (a fresh
@@ -372,8 +401,7 @@ def _evaluate_record(
         # no fresh evidence attempted this call.
         return RecordOutcome(STATUS_SKIPPED)
 
-    meta = record.asset_metadata or {}
-    if meta.get("cdn"):
+    if is_cdn:
         # CDN-fronted, no takeover signature — absence of affinity on a
         # shared edge is normal; Layer 1 has no origin IP asset to probe
         # past the CDN boundary anyway (dns_resolve.py suppresses it). Never

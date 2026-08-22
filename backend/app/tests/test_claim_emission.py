@@ -247,12 +247,16 @@ def _cleanup_ip(value: str) -> None:
 
 
 def test_non_emitted_keys_produce_only_observation_claim():
-    """Identity keys (record_type/content), derived keys (provider_mx),
-    edge keys (cdn_domain), and path-2 keys (hosting_class) must NOT
-    produce any Table-1 asset_claims rows — but the asset-level observer
-    still resolves (sources=["dns_records"]), so the base-provenance
-    `observation` claim (L3c-2a, planning#144) IS emitted, carrying an
-    empty claim_value."""
+    """Identity keys (record_type/content), derived keys (provider_mx) and
+    path-2 keys (hosting_class) must NOT produce any Table-1 asset_claims
+    rows — but the asset-level observer still resolves
+    (sources=["dns_records"]), so the base-provenance `observation` claim
+    (L3c-2a, planning#144) IS emitted, carrying an empty claim_value.
+
+    `cdn_domain` is here for a sharper reason since L3c-3 made cdn a claim:
+    a bare `cdn_domain` with no `cdn` flag is NOT a boundary judgment and
+    must still emit nothing. `_accumulate_cdn_claim` keys off `cdn` alone
+    for exactly this case."""
     suffix = uuid.uuid4().hex[:10]
     value = f"claim-nonemit-{suffix}.example.com"
     db = SessionLocal()
@@ -283,6 +287,48 @@ def test_non_emitted_keys_produce_only_observation_claim():
     finally:
         db.close()
         _cleanup(f"claim-nonemit-{suffix}")
+
+
+def test_cdn_boundary_claim_emitted_for_cdn_annotated_cname():
+    """planning#144 L3c-3: dns_resolve's CDN-boundary judgment on a CNAME hop
+    it declined to follow becomes a `cdn_boundary` claim, so it survives the
+    L3c-4 asset_metadata drop. Before this it reached readers only via the
+    persisted column, which the projector mirrored back out as a stopgap —
+    a passthrough with no source once that column is gone."""
+    suffix = uuid.uuid4().hex[:10]
+    value = f"claim-cdn-{suffix}.example.com"
+    db = SessionLocal()
+    try:
+        write_assets(db, uuid.uuid4(), [DiscoveredAsset(
+            asset_type="dns_record", value=value, parent_value=None,
+            asset_metadata={
+                "sources": ["dns_resolve"],
+                "record_type": "CNAME",
+                "content": "d111.cloudfront.net",
+                "cdn": True,
+                "cdn_domain": "cloudfront.net",
+            },
+        )])
+
+        row = db.query(AssetCanonical).filter(AssetCanonical.value == value).one()
+        claims = {c.claim_type: c for c in _claims_for(db, row.id)}
+        assert "cdn_boundary" in claims, sorted(claims)
+        assert claims["cdn_boundary"].claim_value == {
+            "cdn": True, "cdn_domain": "cloudfront.net",
+        }, claims["cdn_boundary"].claim_value
+
+        # And it projects onto asset_state.attributes, which is what
+        # dangling_dns_analyzer's CDN exclusion reads.
+        from app.models.asset_state import AssetState
+        from app.services import projector
+        projector.project(db, {row.id}, datetime.now(timezone.utc))
+        db.commit()
+        state = db.query(AssetState).filter(AssetState.asset_canonical_id == row.id).one()
+        assert state.attributes.get("cdn") is True, state.attributes
+        assert state.attributes.get("cdn_domain") == "cloudfront.net", state.attributes
+    finally:
+        db.close()
+        _cleanup(f"claim-cdn-{suffix}")
 
 
 def test_identity_only_dns_record_emits_observation_claim():

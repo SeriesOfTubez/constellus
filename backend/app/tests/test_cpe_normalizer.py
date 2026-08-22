@@ -237,7 +237,14 @@ def test_enrich_cpe_claim_merges_with_naabu_into_projected_open_ports():
     cpe_normalizer claim carries {port: 22, software: [...]}; projector.project
     folds it onto the SAME open_ports entry naabu's own claim populated, so
     the projected entry carries BOTH naabu's fields (protocol, last_seen_at)
-    AND software. Also checks the asset_metadata mutation still happens."""
+    AND software.
+
+    planning#144 L3c-3: enrich_cpe's INPUT is asset_state.open_ports now, so
+    the naabu claim has to be projected before it runs — that first
+    projection is the scan pipeline's own mid-run pass, not test scaffolding.
+    Its output is the claim alone; the asset_metadata mutation L3c-1 kept
+    alongside it is gone (no readers left), so nothing is asserted about the
+    column here any more."""
     ip = f"203.0.113.{20 + (uuid.uuid4().int % 40)}"
     db = SessionLocal()
     try:
@@ -250,20 +257,20 @@ def test_enrich_cpe_claim_merges_with_naabu_into_projected_open_ports():
         asset = _make_ip_asset(db, ip, [dict(port_entry)])
         _add_naabu_port_claim(db, asset.id, [dict(port_entry)], now)
 
-        enrich_cpe(db, {asset.id})
+        # enrich_cpe reads asset_state.open_ports — project naabu's claim first.
+        projector.project(db, {asset.id}, now)
+        db.commit()
 
-        # asset_metadata mutation still happens (additive, kept for the API).
-        db.refresh(asset)
-        meta_entry = asset.asset_metadata["open_ports"][0]
-        assert meta_entry.get("software"), meta_entry
-        assert meta_entry["software"][0]["product"] == "openssh", meta_entry
+        enrich_cpe(db, {asset.id})
 
         # cpe_normalizer's own claim carries just {port, software}.
         claim = _cpe_claim(db, asset.id)
         assert claim is not None
-        assert claim.claim_value == {
-            "ports": [{"port": 22, "software": meta_entry["software"]}]
-        }, claim.claim_value
+        assert list(claim.claim_value) == ["ports"], claim.claim_value
+        assert len(claim.claim_value["ports"]) == 1, claim.claim_value
+        claimed = claim.claim_value["ports"][0]
+        assert claimed["port"] == 22, claimed
+        assert claimed["software"][0]["product"] == "openssh", claimed
 
         projector.project(db, {asset.id}, now)
         db.commit()
@@ -302,7 +309,10 @@ def test_enrich_cpe_software_removal_propagates_to_projected_state():
         asset = _make_ip_asset(db, ip, [dict(port_entry)])
         _add_naabu_port_claim(db, asset.id, [dict(port_entry)], now)
 
-        # First pass: software present.
+        # First pass: software present. enrich_cpe reads asset_state, so the
+        # naabu claim is projected before it runs and its own claim after.
+        projector.project(db, {asset.id}, now)
+        db.commit()
         enrich_cpe(db, {asset.id})
         projector.project(db, {asset.id}, now)
         db.commit()
@@ -310,28 +320,23 @@ def test_enrich_cpe_software_removal_propagates_to_projected_state():
         assert {p["port"]: p for p in state.open_ports}[22].get("software"), state.open_ports
 
         # Banner signal disappears (e.g. re-scanned host now returns a
-        # generic/unrecognized banner) — asset_metadata is the ongoing input
-        # enrich_cpe recomputes from each run, so mutate it directly, same as
-        # a fresh scan_executor pass would via the writer merge.
-        db.refresh(asset)
+        # generic/unrecognized banner). planning#144 L3c-3: enrich_cpe's
+        # ongoing input is the PROJECTED port list, so a later scan is
+        # simulated by re-seeding naabu's claim and re-projecting — which is
+        # exactly what a fresh scan_executor pass does.
         later = datetime.now(timezone.utc)
-        asset.asset_metadata["open_ports"][0]["service_version"] = "unknown/9.9"
-        asset.asset_metadata["open_ports"][0]["last_seen_at"] = later.isoformat()
-        flag_modified(asset, "asset_metadata")
-        db.commit()
         _add_naabu_port_claim(db, asset.id, [{
             "port": 22, "protocol": "tcp", "service": "ssh",
             "service_version": "unknown/9.9", "last_seen_at": later.isoformat(),
         }], later)
+        projector.project(db, {asset.id}, later)
+        db.commit()
 
         enrich_cpe(db, {asset.id})
 
         claim = _cpe_claim(db, asset.id)
         assert claim is not None
         assert claim.claim_value == {"ports": []}, claim.claim_value
-
-        db.refresh(asset)
-        assert "software" not in asset.asset_metadata["open_ports"][0], asset.asset_metadata
 
         projector.project(db, {asset.id}, later)
         db.commit()
