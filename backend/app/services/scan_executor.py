@@ -920,9 +920,26 @@ def _merge_metadata_into(target: dict, src: dict) -> None:
 
 
 def _extract_scan_targets(assets: list[DiscoveredAsset]) -> list[str]:
+    """Names/IPs this run will actively scan.
+
+    planning#147: third-party context nodes are excluded. dns_resolve
+    captures the CNAME boundary target so a WHOIS check or takeover
+    fingerprint has a node to attach to — capture is NOT scan eligibility,
+    and probing a vendor's infrastructure because a customer record happens
+    to point at it is exactly the unauthorised-scanning failure the boundary
+    rule exists to prevent.
+
+    This is the in-batch half of that rule; the projector sets
+    probe_class=no_probe on the same nodes for anything reading persisted
+    state. Target scope excludes them structurally besides — a boundary
+    target is by definition outside every declared domain, which is what
+    made it the boundary (see target_scope._name_scoped_asset_ids).
+    """
     seen: set[str] = set()
     targets: list[str] = []
     for a in assets:
+        if (a.asset_metadata or {}).get("third_party"):
+            continue
         if a.asset_type in ("dns_record", "ip_address") and a.value not in seen:
             seen.add(a.value)
             targets.append(a.value)

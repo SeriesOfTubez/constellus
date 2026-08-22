@@ -65,6 +65,13 @@ def resolve_names(
     terminal A/AAAA records and resolved IPs are suppressed.  The CNAME
     pointing at it is kept and annotated with cdn/cdn_domain metadata so
     web-app scanning still runs via the customer-owned hostname.
+
+    planning#147: the boundary TARGET itself is now captured as a context
+    node (see `_third_party_node`) instead of being discarded. Capture is not
+    scan eligibility — the node is recorded so a WHOIS check, takeover
+    fingerprint or vendor-incident query has something to attach to, and it
+    is excluded from active scanning and from target scope. Everything PAST
+    the boundary stays suppressed exactly as before.
     """
     from app.connectors.base import is_dns_policy_name
     name_list = sorted(
@@ -96,6 +103,40 @@ def resolve_names(
     return _emit_assets(name_records, source, apex, owned_domains)
 
 
+def _third_party_node(fqdn: str, source: str) -> DiscoveredAsset:
+    """The customer->third-party CNAME boundary target, as a context node
+    (planning#147, "stop destroying nodes").
+
+    Carries NO record_type/content: we deliberately do not resolve past the
+    boundary, so we know the name exists as a CNAME target and nothing more.
+    Claiming an A record we never looked up would be inventing an
+    observation. Its canonical key is therefore ("dns_record", fqdn, "", ""),
+    which is distinct from any real record for the same name should one ever
+    be resolved through an owned path.
+
+    `parent_value` is left None on purpose. Setting it to the vendor apex
+    would pull that apex in as a second captured node via belongs_to_apex —
+    #147 is scoped to the boundary node only, and a vendor's apex is not
+    something a CNAME to one of its subdomains tells us anything about.
+
+    `third_party` is what claim_emitter turns into a `third_party_dependency`
+    claim, which is in turn what makes the projector derive
+    estate=not_ours / probe_class=no_probe. It is also the marker
+    `_extract_scan_targets` filters on, so capture never becomes a scan.
+    """
+    return DiscoveredAsset(
+        asset_type=AssetType.DNS_RECORD,
+        value=fqdn,
+        parent_value=None,
+        asset_metadata={
+            "sources": [source],
+            "third_party": True,
+            "relationship": "dependency",
+            "discovered_via": "cname",
+        },
+    )
+
+
 def _is_owned(fqdn: str, owned_domains: frozenset[str]) -> bool:
     """True if fqdn is (or is a subdomain of) one of the org's declared target domains."""
     fqdn = fqdn.lower()
@@ -110,6 +151,10 @@ def _emit_assets(
 ) -> list[DiscoveredAsset]:
     assets: list[DiscoveredAsset] = []
     seen_ips: set[str] = set()
+    # Many owned records can CNAME to the SAME vendor boundary (every
+    # go.*.contoso.com pointing at go.pardot.com). Capture the node once per
+    # batch; each owned record still gets its own dependency edge to it.
+    seen_third_party: set[str] = set()
 
     def parent_of(n: str) -> str | None:
         return apex if apex and n != apex else None
@@ -173,9 +218,17 @@ def _emit_assets(
                     parent_value=parent_of(hop_owner),
                     asset_metadata=meta,
                 ))
+            # planning#147: capture the boundary target itself as a context
+            # node. Everything PAST it stays suppressed — this is one node,
+            # not a doorway into the vendor's estate.
+            boundary_target = chain[boundary_idx][1]
+            if boundary_target not in seen_third_party:
+                seen_third_party.add(boundary_target)
+                assets.append(_third_party_node(boundary_target, source))
             log.debug(
-                "dns_resolve: suppressed third-party chain from %s (not an owned domain) for %s",
-                chain[boundary_idx][1], query_name,
+                "dns_resolve: captured third-party boundary %s as context, suppressed the "
+                "chain past it (not an owned domain) for %s",
+                boundary_target, query_name,
             )
             continue
 
@@ -184,6 +237,10 @@ def _emit_assets(
         # isn't under any declared target — suppress it whole; there's no
         # customer record to annotate or scan.
         if not chain and not _is_owned(terminal, owned_domains):
+            # No customer record in front of it, so there is no dependency
+            # edge to draw and nothing owned to attach it to. Still
+            # suppressed whole — capturing it would add an orphan vendor node
+            # with no path back to the estate, which is not what #147 is for.
             log.debug("dns_resolve: suppressed direct non-owned name %s", terminal)
             continue
 

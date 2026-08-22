@@ -12,6 +12,13 @@ from app.core.database import Base
 # constraint in a follow-up migration AND adding it here.
 EDGE_TYPES: frozenset[str] = frozenset({
     "resolves_to",
+    # planning#147: the customer -> third-party CNAME boundary. Deliberately
+    # distinct from `resolves_to`, which is the DNS mechanic shared with
+    # A/AAAA — `cname` carries the attribution axis (its
+    # edge_type_relationships row, seeded in 0039, is `dependency`), and an
+    # A record pointing at our own IP must not read as a dependency. The
+    # boundary hop emits this INSTEAD of resolves_to, never both.
+    "cname",
     "runs_service",
     "has_finding",
     "registered_to",
