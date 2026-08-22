@@ -59,8 +59,9 @@ def start() -> None:
     _register_ct_refresher()
     _register_epss_refresher()
     _register_cpe_index_refresher()
-    _register_claim_history_maintenance()
+    _register_partition_maintenance()
     _register_hygiene_scoring()
+    _register_nightly_rescore()
 
 
 def _seed_default_connectors() -> None:
@@ -184,39 +185,48 @@ def _run_cpe_index_refresh() -> None:
         db.close()
 
 
-def _register_claim_history_maintenance() -> None:
-    """Register the claim_history partition-maintenance job (L2 sub-slice D,
-    planning#143). Daily is far more often than strictly needed (partitions
-    are monthly), but it's cheap and idempotent, and it means a partition
-    that failed to create on a prior run gets retried the same day rather
-    than waiting up to a month. First run fires ~60s after startup so a
-    fresh deploy provisions the next-month partition immediately instead of
-    waiting for the first 24h tick.
+def _register_partition_maintenance() -> None:
+    """Register the partitioned-table maintenance job (originally L2
+    sub-slice D, planning#143, `claim_history`-only; generalised to
+    `score_history`/`hygiene_history` in planning#131). Daily is far more
+    often than strictly needed (partitions are monthly), but it's cheap and
+    idempotent, and it means a partition that failed to create on a prior
+    run gets retried the same day rather than waiting up to a month. First
+    run fires ~60s after startup so a fresh deploy provisions the
+    next-month partition immediately instead of waiting for the first 24h
+    tick.
+
+    The job id changes from `claim_history_maintenance` to
+    `partition_maintenance` (this rename). The old id simply disappearing
+    is harmless: APScheduler here uses the default in-memory job store (no
+    `SQLAlchemyJobStore` is configured — see this module's own docstring),
+    so nothing about a job id persists across a process restart in the
+    first place.
     """
     if _scheduler is None:
         return
     _scheduler.add_job(
-        _run_claim_history_maintenance,
+        _run_partition_maintenance,
         trigger=IntervalTrigger(hours=24),
-        id="claim_history_maintenance",
-        name="claim_history partition maintenance",
+        id="partition_maintenance",
+        name="Partitioned-table maintenance",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
         next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
     )
-    log.info("Scheduled claim_history_maintenance (every 24h; first run ~60s after start)")
+    log.info("Scheduled partition_maintenance (every 24h; first run ~60s after start)")
 
 
-def _run_claim_history_maintenance() -> None:
-    from app.services import claim_history_maintenance
+def _run_partition_maintenance() -> None:
+    from app.services import partition_maintenance
 
     db = SessionLocal()
     try:
-        stats = claim_history_maintenance.run(db)
-        log.info("claim_history maintenance complete — %s", stats)
+        stats = partition_maintenance.run(db)
+        log.info("Partitioned-table maintenance complete — %s", stats)
     except Exception:
-        log.error("claim_history maintenance failed", exc_info=True)
+        log.error("Partitioned-table maintenance failed", exc_info=True)
     finally:
         db.close()
 
@@ -256,6 +266,46 @@ def _run_hygiene_scoring() -> None:
         log.info("Asset hygiene scoring complete — %s", stats)
     except Exception:
         log.error("Asset hygiene scoring failed", exc_info=True)
+    finally:
+        db.close()
+
+
+def _register_nightly_rescore() -> None:
+    """Register the nightly full-scope risk re-scoring job (planning#131,
+    temporal layer slice 1). `CronTrigger(hour=3, minute=0)` UTC, not an
+    interval — this job has to land at a predictable HOUR (an operator or
+    an on-call runbook reasoning about "did the re-score run last night"
+    needs a fixed time, not a drifting one), and it has to sit AFTER the
+    seeded default monitoring template's own 02:00 UTC daily scan
+    (`_seed_default_template` in this same module) so it re-scores a
+    settled post-scan state rather than racing that scan's own risk-scoring
+    pass — the two would otherwise both be free to write
+    risk_score/risk_band/building_velocity for the same findings inside the
+    same hour, and whichever finished last would silently win.
+    """
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        _run_nightly_rescore,
+        trigger=CronTrigger(hour=3, minute=0, timezone="UTC"),
+        id="nightly_rescore",
+        name="Nightly risk re-scoring",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    log.info("Scheduled nightly_rescore (daily at 03:00 UTC)")
+
+
+def _run_nightly_rescore() -> None:
+    from app.services import nightly_rescore
+
+    db = SessionLocal()
+    try:
+        stats = nightly_rescore.run(db)
+        log.info("Nightly risk re-scoring complete — %s", stats)
+    except Exception:
+        log.error("Nightly risk re-scoring failed", exc_info=True)
     finally:
         db.close()
 

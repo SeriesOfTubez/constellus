@@ -9,7 +9,7 @@ transaction. Nothing reads asset_claims yet — these tests assert on the
 table directly.
 
 Requires a live DB connection with migration 0039 applied — same style as
-test_claim_history_maintenance.py / test_writer_concurrency.py.
+test_partition_maintenance.py / test_writer_concurrency.py.
 
 Run with:  python -m app.tests.test_claim_emission
        or: pytest app/tests/test_claim_emission.py

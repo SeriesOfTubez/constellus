@@ -346,6 +346,20 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     except Exception:
         log.exception("Risk scoring failed for scan %s — scan still marked complete", scan_run_id)
 
+    # Score-history capture (planning#131, temporal layer slice 1). Must run
+    # AFTER risk scoring above, since capture only reads the
+    # risk_score/risk_band/building_velocity risk_scorer just wrote — it
+    # never scores anything itself. Promotions detected here are dispatched
+    # further down, alongside the new-finding notifications, so a finding
+    # that escalates mid-scan doesn't sit unreported until the next 03:00
+    # nightly_rescore pass.
+    promotions: list = []
+    try:
+        from app.services import score_history
+        promotions = score_history.capture(db, score_ids, datetime.now(timezone.utc))
+    except Exception:
+        log.exception("Score-history capture failed for scan %s — scan still marked complete", scan_run_id)
+
     # Populate counts so the Activity feed can show them without a join.
     # finding_count is the LOGICAL count — per-source rows that share an
     # (asset, cve_id) collapse to one, matching the read-time rollup the
@@ -371,6 +385,35 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
             notification_dispatcher.dispatch(new_finding_ids)
         except Exception:
             log.exception("notification_dispatcher.dispatch failed for run %s", scan_run_id)
+
+    # Fire promotion notifications for any band escalation this scan's own
+    # score_history.capture call detected above. Same EXCLUDED_VERIFICATIONS
+    # exclusion the new-finding dispatch and nightly_rescore both apply — a
+    # shared-infra-rejected finding must never page anyone.
+    #
+    # Because score_history.capture compares against the STORED prior
+    # history row (not an in-memory snapshot), tonight's nightly_rescore
+    # pass will recompute the same score, see no change against the row
+    # written here, and neither duplicate it nor re-notify — this dispatch
+    # and the nightly one are mutually exclusive by construction, not by
+    # any coordination between the two callers.
+    if promotions:
+        try:
+            from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
+            from app.services import notification_dispatcher
+
+            promo_ids = [p.finding_canonical_id for p in promotions]
+            excluded_ids = {
+                row[0] for row in
+                db.query(FindingCanonical.id)
+                .filter(FindingCanonical.id.in_(promo_ids), FindingCanonical.verification.in_(EXCLUDED_VERIFICATIONS))
+                .all()
+            }
+            dispatchable = [p for p in promotions if p.finding_canonical_id not in excluded_ids]
+            if dispatchable:
+                notification_dispatcher.dispatch_promotions(dispatchable)
+        except Exception:
+            log.exception("notification_dispatcher.dispatch_promotions failed for run %s", scan_run_id)
 
 
 def _resolve_dynamic_scope(db: Session, template: ScanTemplate) -> dict:

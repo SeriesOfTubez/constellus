@@ -8,7 +8,7 @@ Two layers of test here, deliberately kept apart:
     — so most of the tests below construct plain `AssetCanonical`/
     `AssetState`/`ClaimRow` objects directly (never added to a session,
     never committed) and call the scoring functions straight, no DB round-
-    trip at all. This mirrors `test_claim_history_maintenance.py` importing
+    trip at all. This mirrors `test_partition_maintenance.py` importing
     private helpers (`_add_months`, `_month_start`, ...) directly rather
     than only exercising the public `run()` entry point.
   * `run()` itself — the batching, the exclusion filter, the upsert, the
@@ -24,7 +24,7 @@ Run with:  python -m app.tests.test_hygiene_scorer
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import event
+from sqlalchemy import event, text
 
 from app.core.database import SessionLocal, engine
 from app.models.asset_canonical import AssetCanonical
@@ -550,6 +550,84 @@ def test_run_upserts_idempotently():
         _cleanup(values)
 
 
+def test_hygiene_history_records_a_compensating_dimension_swap():
+    """A dimension change that leaves the composite untouched must STILL
+    write a history row (planning#131).
+
+    Every dimension grades to one of five values (0/25/50/75/100) and the
+    composite is their unweighted mean over five dimensions, so two
+    dimensions moving in opposite directions by the same amount produce a
+    byte-identical `score` and `band`. `currency` excellent -> bad while
+    `exposure` goes bad -> excellent is exactly that case: the asset's
+    hygiene genuinely changed, and keying the change-only append on
+    `(score, band)` alone would write nothing at all — leaving the flip
+    invisible forever and the last stored `dimensions` blob describing an
+    asset it no longer describes. `dimensions` is therefore part of the
+    comparison key; this test is what holds that in place.
+
+    Exercises `_append_hygiene_history` directly with hand-built rows
+    rather than driving `run()`: constructing real claims that produce an
+    exactly-compensating swap would be an elaborate fixture proving less.
+    No `assets_canonical` row is created — `hygiene_history` deliberately
+    carries no FK (history outlives the entity), so an arbitrary id is a
+    valid subject here.
+    """
+    asset_id = uuid.uuid4()
+    computed_at = datetime.now(timezone.utc)
+
+    def _row(currency: str, exposure: str) -> dict:
+        # Same composite either way: GRADE_SCORES is symmetric about the
+        # swap, so the mean over the five dimensions is unchanged.
+        dims = {
+            "coverage": {"grade": "unknown", "score": GRADE_SCORES["unknown"], "reason_codes": [], "detail": ""},
+            "health": {"grade": "good", "score": GRADE_SCORES["good"], "reason_codes": [], "detail": ""},
+            "currency": {"grade": currency, "score": GRADE_SCORES[currency], "reason_codes": [], "detail": ""},
+            "exposure": {"grade": exposure, "score": GRADE_SCORES[exposure], "reason_codes": [], "detail": ""},
+            "ownership": {"grade": "fair", "score": GRADE_SCORES["fair"], "reason_codes": [], "detail": ""},
+        }
+        composite = round(sum(d["score"] for d in dims.values()) / len(dims))
+        return {
+            "asset_canonical_id": asset_id,
+            "score": composite,
+            "band": hygiene_scorer._band_for_score(composite),
+            "dimensions": dims,
+        }
+
+    before = _row(currency="excellent", exposure="bad")
+    after = _row(currency="bad", exposure="excellent")
+    assert (before["score"], before["band"]) == (after["score"], after["band"]), (
+        "test precondition: the swap must leave score/band identical, "
+        "otherwise this proves nothing"
+    )
+    assert before["dimensions"] != after["dimensions"]
+
+    db = SessionLocal()
+    try:
+        assert hygiene_scorer._append_hygiene_history(db, computed_at, [before]) == 1, "baseline row"
+        # Re-appending the identical row must stay a no-op — the change-only
+        # rule still holds; this test widens the key, it doesn't remove it.
+        assert hygiene_scorer._append_hygiene_history(db, computed_at, [before]) == 0
+
+        written = hygiene_scorer._append_hygiene_history(db, computed_at, [after])
+        assert written == 1, "a compensating dimension swap must still be recorded"
+
+        rows = db.execute(
+            text(
+                "SELECT score, band, dimensions FROM hygiene_history "
+                "WHERE asset_canonical_id = :aid ORDER BY computed_at, id"
+            ),
+            {"aid": asset_id},
+        ).fetchall()
+        assert len(rows) == 2
+        assert rows[0].dimensions["currency"]["grade"] == "excellent"
+        assert rows[1].dimensions["currency"]["grade"] == "bad"
+        assert rows[0].score == rows[1].score, "the composite genuinely did not move"
+    finally:
+        db.execute(text("DELETE FROM hygiene_history WHERE asset_canonical_id = :aid"), {"aid": asset_id})
+        db.commit()
+        db.close()
+
+
 def _run():
     tests = [
         test_unknown_ranks_below_bad,
@@ -570,6 +648,7 @@ def _run():
         test_name_only_asset_stays_in_scope,
         test_run_is_batched,
         test_run_upserts_idempotently,
+        test_hygiene_history_records_a_compensating_dimension_swap,
     ]
     for fn in tests:
         fn()

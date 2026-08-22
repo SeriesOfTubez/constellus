@@ -271,11 +271,17 @@ def _building_velocity(s: ScoreInputs) -> bool:
 
 def score_scan_findings(
     db: Session,
-    scan_run_id: uuid.UUID,
+    scan_run_id: uuid.UUID | None,
     canonical_ids: set[uuid.UUID] | None = None,
 ) -> None:
     """Compute and persist risk_score / risk_band / building_velocity for every
-    finding touched by this run."""
+    finding touched by this run.
+
+    `scan_run_id` is used ONLY by the summary log line at the bottom of
+    this function — nothing else in this module reads it. That makes it
+    safe for `nightly_rescore.py` (planning#131) to pass `None` for its
+    full-scope nightly re-score rather than inventing a synthetic
+    ScanRun just to have an id to log."""
     if not canonical_ids:
         return
 
@@ -344,8 +350,9 @@ def score_scan_findings(
 
     db.commit()
     log.info(
-        "Risk scoring complete for scan %s — %d findings scored, %d Building Velocity",
-        scan_run_id, scored, sum(1 for f in findings if f.building_velocity),
+        "Risk scoring complete for %s — %d findings scored, %d Building Velocity",
+        f"scan {scan_run_id}" if scan_run_id is not None else "nightly re-score",
+        scored, sum(1 for f in findings if f.building_velocity),
     )
 
 
