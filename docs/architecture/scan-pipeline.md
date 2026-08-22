@@ -41,7 +41,15 @@ Runs for every domain in scope. Built-in tools run first, then connector-based d
 
 #### Third-party infrastructure boundary
 
-When passive resolution (`app/services/discovery/dns_resolve.py`) follows a CNAME chain, it only creates a `dns_record` asset for a hostname that falls under one of your **declared target domains**. The first hop whose target *isn't* a subdomain of anything you've added as a Target is treated as the customer/third-party boundary: everything up to and including that hop is kept (the CNAME pointing at the boundary is retained and annotated so web-app scanning still runs against your own hostname via its correct SNI), and everything past it — the third-party name and its IP — is suppressed rather than attributed to you.
+When passive resolution (`app/services/discovery/dns_resolve.py`) follows a CNAME chain, it only creates a scannable `dns_record` asset for a hostname that falls under one of your **declared target domains**. The first hop whose target *isn't* a subdomain of anything you've added as a Target is treated as the customer/third-party boundary: everything up to and including that hop is kept (the CNAME pointing at the boundary is retained and annotated so web-app scanning still runs against your own hostname via its correct SNI), and everything past it is suppressed rather than attributed to you.
+
+The boundary **target itself** — the vendor or CDN hostname your record points at — is captured as a *context node*: recorded with a `cname` edge (relationship `dependency`) from your record, classified `estate = not_ours` and `probe_class = no_probe`. That node exists so a WHOIS check, takeover fingerprint or vendor-incident query has something to attach to; without it a CNAME to a lapsed third-party domain is just a string, and third-party attribution has nothing to reason about.
+
+!!! warning "Capture is not scan eligibility"
+
+    A captured third-party node is **never actively scanned**. It is excluded from the scan target list, projected `no_probe`, and — most durably — falls outside target scope by construction, because being outside every declared domain is exactly what made it the boundary in the first place. Vendor infrastructure is represented, not probed.
+
+    These nodes are also hidden from the default asset list (`show_third_party` surfaces them), so recording a dependency doesn't inflate the inventory you read as *your* assets.
 
 This is an **allowlist**, not a curated denylist of known CDN/SaaS suffixes — any shared-hosting provider (a CDN, a CMS platform, a page-builder's shared proxy) is suppressed automatically the first time you scan, whether or not Constellus has ever seen that provider before. A CNAME hop that lands on a *different* domain you've also declared as a target is correctly **not** treated as a boundary — the allowlist covers every target you own, not just the apex being resolved.
 
