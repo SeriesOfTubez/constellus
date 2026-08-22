@@ -24,6 +24,12 @@ Use for any outbound fetch where the URL came from a user (SAML IdP
 metadata, connector favicons, etc.). Hardcoded API endpoints don't need
 it.
 
+Note that CodeQL cannot model this as a sanitizer, so every call site is
+likely to raise `py/full-ssrf`. Triage against
+`docs/development/codeql-triage.md` rather than dismissing on the grounds
+that this module exists — that file records what was actually verified,
+and why "it's guarded" is not sufficient grounds.
+
 The second class of bypass this guards against is ENCODING rather than
 timing: an internal IPv4 address can be spelled as an IPv6 address, and a
 naive blocklist misses it because an IPv6Address is never `in` an IPv4
