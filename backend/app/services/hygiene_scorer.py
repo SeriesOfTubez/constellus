@@ -91,7 +91,7 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.asset_hygiene_score import AssetHygieneScore
 from app.models.asset_state import AssetState
 from app.models.claim import AssetClaim
-from app.services import claims_query, projector
+from app.services import claim_emitter, claims_query, projector
 
 log = logging.getLogger(__name__)
 
@@ -650,3 +650,78 @@ def _delete_stale_scores(db: Session) -> int:
     if deleted:
         db.commit()
     return deleted
+
+
+# ── read-side batched helpers (planning#130, L2 — the frontend surface) ────
+#
+# `run()` above is the only writer. Everything below is read-only, batched
+# the same no-N+1 way as `claims_query.surface_by_asset` /
+# `projector.load_states`, and exists so `api/assets.py`'s serializer can
+# carry hygiene onto the Assets list/detail payload without a per-row query.
+
+def scores_by_asset(db: Session, asset_ids) -> dict[uuid.UUID, AssetHygieneScore]:
+    """Batch-load the `asset_hygiene_score` row for each id in `asset_ids`,
+    in one query — the read-side counterpart to `run()`'s batched write.
+
+    Same discipline as `claims_query.surface_by_asset` / `projector.load_states`:
+    one `IN (...)` query regardless of how many ids are requested, empty
+    input returns `{}` without querying. Ids with no score row are simply
+    absent from the result — `run()` only ever upserts a row for an asset
+    that was actually in scope and got scored, so "no row" already means
+    exactly "not yet scored" (or excluded), and callers must read it that
+    way: a missing entry means `null`, never a 0.
+    """
+    ids = list(asset_ids)
+    if not ids:
+        return {}
+    return {
+        row.asset_canonical_id: row
+        for row in db.query(AssetHygieneScore).filter(AssetHygieneScore.asset_canonical_id.in_(ids)).all()
+    }
+
+
+def scanned_by_asset(db: Session, asset_ids) -> dict[uuid.UUID, bool]:
+    """Batch "has anything substantive ever been observed about this asset"
+    — the signal planning#100's Assets-list Risk-column fix needs to tell a
+    genuinely clean asset apart from one nothing has looked at yet.
+
+    True iff the asset carries at least one `asset_claims` row whose
+    `claim_type != "observation"`. `observation` is the bare, value-less
+    identity/traceability claim `claim_emitter` writes for every resolved
+    observer (see `_accumulate_observation_claim`) — every asset that has
+    ever been touched by any observer gets one, so by itself it proves only
+    that the asset exists, never that anything looked at it. Any OTHER
+    claim type (ports, DNS, TLS, hosting, CT, EOL, ...) means a real
+    producer substantively assessed the asset.
+
+    Judgment call / known limitation (flagged per planning#130 L2 spec):
+    this is a deliberately GENERAL cross-asset-type proxy for "assessed",
+    not a scan-history lookup — it cannot answer "when was this last
+    scanned" or "which scanner touched it", only "has anything beyond bare
+    identity ever been recorded". A plain DNS record that only ever
+    resolved (e.g. an MX/TXT record with no port surface to observe, so it
+    accumulates nothing but its `observation` claim) reads as unscanned —
+    which is the correct answer for the Risk column's Clean-vs-Unscanned
+    distinction this exists to serve, but would want refining into a real
+    per-asset scan-history signal if one is ever built for a different
+    purpose.
+
+    Every id in `asset_ids` appears in the result (`True` or `False`) — an
+    id with no claims at all correctly comes back `False`, never absent
+    from the dict, so callers never need `.get(id, False)`. One batched
+    query, no N+1.
+    """
+    ids = list(asset_ids)
+    if not ids:
+        return {}
+    substantive_ids = {
+        row[0] for row in
+        db.query(AssetClaim.asset_canonical_id)
+        .filter(
+            AssetClaim.asset_canonical_id.in_(ids),
+            AssetClaim.claim_type != claim_emitter._OBSERVATION_CLAIM_TYPE,
+        )
+        .distinct()
+        .all()
+    }
+    return {asset_id: asset_id in substantive_ids for asset_id in ids}
