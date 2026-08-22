@@ -299,6 +299,46 @@ def test_currency_approaching_eol_grades_fair():
     assert reason_codes == ["currency_approaching_eol"]
 
 
+def test_currency_elapsed_eol_date_beats_stale_is_eol_flag():
+    """A claim written BEFORE the product's EOL date stores `is_eol: False`
+    forever, because `eol_enrichment._parse_eol` freezes that flag against
+    `date.today()` at WRITE time and the claim outlives that day. Once the
+    date passes, the asset is EOL whether or not enrichment has re-run.
+
+    Regression guard: this used to grade `fair` with the reason
+    "approaching EOL" for a date already 52 days in the past — a stale
+    observation reading as healthier than reality, the exact inversion
+    failure this feature exists to prevent.
+    """
+    past_date = (_NOW.date() - timedelta(days=52)).isoformat()
+    claims = [ClaimRow("eol_status", {"services": [
+        {"product": "example-runtime", "is_eol": False, "eol_date": past_date},
+    ]}, _NOW - timedelta(days=200))]
+    grade, reason_codes, detail = _dim_currency(claims, _NOW)
+    assert grade == "bad", (grade, detail)
+    assert reason_codes == ["currency_eol_product"]
+    assert "example-runtime" in detail
+
+
+def test_currency_unnamed_eol_record_still_grades_bad():
+    """An `is_eol: True` record with no product name must still grade
+    `bad`. Regression guard: the EOL filter used to require a truthy
+    `product` in the same comprehension that detected EOL-ness, so an
+    unnamed EOL record was dropped entirely and the asset graded `good`
+    with the detail "No EOL or approaching-EOL products identified" —
+    asserting the opposite of the truth. Detection must not depend on
+    having a name to print.
+    """
+    for missing in (None, ""):
+        claims = [ClaimRow("eol_status", {"services": [
+            {"product": missing, "is_eol": True, "eol_date": None},
+        ]}, _NOW)]
+        grade, reason_codes, detail = _dim_currency(claims, _NOW)
+        assert grade == "bad", (missing, grade, detail)
+        assert reason_codes == ["currency_eol_product"]
+        assert "1 unnamed product(s)" in detail
+
+
 # ── exposure ─────────────────────────────────────────────────────────────
 
 def test_exposure_never_scanned_vs_nothing_open():
@@ -519,6 +559,8 @@ def _run():
         test_currency_empty_services_is_unknown_not_good,
         test_currency_is_eol_grades_bad,
         test_currency_approaching_eol_grades_fair,
+        test_currency_elapsed_eol_date_beats_stale_is_eol_flag,
+        test_currency_unnamed_eol_record_still_grades_bad,
         test_exposure_never_scanned_vs_nothing_open,
         test_exposure_no_projection_and_not_directly_probeable,
         test_exposure_high_risk_port_and_many_ports,
