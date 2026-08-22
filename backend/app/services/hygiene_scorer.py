@@ -254,6 +254,40 @@ def _latest_claim_value(claims: list[ClaimRow], claim_type: str) -> dict | None:
     return max(matches, key=lambda c: c.last_observed_at).claim_value
 
 
+def _parse_eol_date(eol_date_str) -> date | None:
+    """`eol_date` (an ISO date string, per eol_enrichment's record shape)
+    as a `date`, or None if absent/unparseable. Never raises."""
+    if not eol_date_str or not isinstance(eol_date_str, str):
+        return None
+    try:
+        return date.fromisoformat(eol_date_str)
+    except ValueError:
+        return None
+
+
+def _eol_date_passed(eol_date_str, today: date) -> bool:
+    """True if this record's EOL date is in the past as of `today`.
+
+    Deliberately recomputed here rather than trusting the record's stored
+    `is_eol` flag alone. `eol_enrichment._parse_eol` freezes `is_eol` at
+    WRITE time (`delta = (date.today() - eol_date).days` on the day the
+    claim was emitted), and an `eol_status` claim long outlives the day it
+    was written — `upsert_single_claim` only rewrites it when enrichment
+    re-runs for that asset. So a product whose EOL date passed *since* the
+    last enrichment run still carries `is_eol: False` in the stored claim.
+
+    Trusting the flag alone graded exactly that asset `fair` with the
+    reason "approaching EOL" for a date already weeks in the past — a
+    stale observation reading as healthier than reality, which is the
+    precise failure mode this entire feature exists to invert. The stored
+    flag is still honoured (it covers the `eol: true`-with-no-date case
+    eol_enrichment also emits); it is simply no longer the ONLY route to
+    the `bad` branch.
+    """
+    eol_date = _parse_eol_date(eol_date_str)
+    return eol_date is not None and eol_date < today
+
+
 def _dim_currency(claims: list[ClaimRow], now: datetime) -> tuple[str, list[str], str]:
     """EOL exposure, from the `eol_status` claim's `services` list
     (`eol_enrichment.py` ~line 205 for the record shape: `product`,
@@ -281,26 +315,37 @@ def _dim_currency(claims: list[ClaimRow], now: datetime) -> tuple[str, list[str]
             "observation gap in our own fingerprinting, not a clean bill of health.",
         )
 
-    eol_products = sorted({
-        s.get("product") for s in services
-        if isinstance(s, dict) and s.get("is_eol") and s.get("product")
-    })
-    if eol_products:
-        return "bad", ["currency_eol_product"], f"EOL product(s) in use: {', '.join(eol_products)}."
+    today = now.date()
+    eol_records = [
+        s for s in services
+        if isinstance(s, dict) and (s.get("is_eol") or _eol_date_passed(s.get("eol_date"), today))
+    ]
+    if eol_records:
+        # Name the products we have names for, but NEVER let a missing
+        # product name drop a record from the finding. The original filter
+        # here was `... and s.get("product")`, which conflated "this record
+        # is EOL" with "this record has a name to print" — one unnamed EOL
+        # record made the whole asset fall through to `good` ("No EOL or
+        # approaching-EOL products identified"), i.e. the detail string
+        # asserted the exact opposite of the truth.
+        named = sorted({s.get("product") for s in eol_records if s.get("product")})
+        label = ", ".join(named) if named else f"{len(eol_records)} unnamed product(s)"
+        return "bad", ["currency_eol_product"], f"EOL product(s) in use: {label}."
 
     approaching: set[str] = set()
     for s in services:
         if not isinstance(s, dict):
             continue
-        eol_date_str = s.get("eol_date")
-        if not eol_date_str:
+        eol_date = _parse_eol_date(s.get("eol_date"))
+        if eol_date is None:
             continue
-        try:
-            eol_date = date.fromisoformat(eol_date_str)
-        except ValueError:
-            continue
-        if (eol_date - now.date()).days <= CURRENCY_APPROACHING_DAYS:
-            approaching.add(s.get("product") or eol_date_str)
+        # Lower bound of 0 is not redundant: a past date is already caught
+        # by the `bad` branch above, and this makes it structurally
+        # impossible for an elapsed date to be reported as "approaching"
+        # again if that branch is ever edited.
+        days_remaining = (eol_date - today).days
+        if 0 <= days_remaining <= CURRENCY_APPROACHING_DAYS:
+            approaching.add(s.get("product") or eol_date.isoformat())
     if approaching:
         return (
             "fair",
