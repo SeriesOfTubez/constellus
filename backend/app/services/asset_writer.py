@@ -11,17 +11,6 @@ from app.models.asset_edge import AssetEdge
 from app.models.tag_rule import TagRule
 from app.models.target_asset_link import TargetAssetLink
 from app.services import projector
-# _merge_open_ports / _prune_stale_ports (+ their grace-period constants)
-# moved to projector.py (planning#143 L2 sub-slice C) — re-exported here so
-# this module's own merge loop below, and existing external importers
-# (scan_executor._hydrate_asset_ports, app.tests.test_prune_stale_ports),
-# keep working unchanged against a single definition.
-from app.services.projector import (  # noqa: F401
-    _CONFIRMED_PORT_GRACE_DAYS,
-    _SHODAN_PORT_GRACE_DAYS,
-    _merge_open_ports,
-    _prune_stale_ports,
-)
 from app.services.tag_service import apply_rules_preloaded, merge_tags
 
 
@@ -62,19 +51,21 @@ def write_assets(
     # ── 3. Emit edges between in-batch assets ─────────────────────────────────
     _emit_edges_for_batch(db, assets, canonical_map, now)
 
-    # ── 4. Emit claims in parallel with the asset_metadata merge above
-    # (planning#143 L2 sub-slice A — strangler-fig additive, nothing reads
-    # claims yet). Local import: claim_emitter imports `_canonical_key` back
+    # ── 4. Emit claims — as of planning#144 L3c-4 this is the ONLY place a
+    # batch's observations are recorded (the asset_metadata merge that used
+    # to run alongside it is gone with its column). Local import:
+    # claim_emitter imports `_canonical_key` back
     # from this module, so importing it at module load time here would be a
     # circular import; by the time write_assets() actually runs this module
     # is fully loaded, so a local import is safe.
     from app.services.claim_emitter import emit_claims
     emit_claims(db, assets, canonical_map, now)
 
-    # ── 5. Project claims + still-authoritative asset_metadata into
-    # asset_state (planning#143 L2 sub-slice C). Same transaction as the
-    # claim emission and canonical/edge writes above, so the projection is
-    # atomic with the write it reflects.
+    # ── 5. Project claims into asset_state (planning#143 L2 sub-slice C).
+    # Same transaction as the claim emission and canonical/edge writes
+    # above, so the projection is atomic with the write it reflects — and
+    # since L3c-4 that projection is the only current-state view there is,
+    # which makes this step load-bearing rather than additive.
     projector.project(db, canonical_ids, now)
 
     db.commit()
@@ -110,8 +101,11 @@ def _upsert_canonical_batch(
     # full canonical key in Python — Postgres can't index on the full 4-tuple
     # in a way that's nice to query. FOR UPDATE serializes (blocks, doesn't
     # fail) any concurrent writer touching the same rows — planning#86: two
-    # concurrent scans reading-then-writing the same asset_metadata JSONB
-    # otherwise last-write-wins clobbers whichever wrote second.
+    # concurrent scans reading-then-writing the same asset row otherwise
+    # last-write-wins clobbers whichever wrote second. Still needed after
+    # planning#144 L3c-4 removed the JSONB merge that first motivated it:
+    # claim_emitter documents that it relies on this same FOR UPDATE to
+    # serialize concurrent claim upserts on the touched assets.
     type_value_pairs = {(k[0], k[1]) for k in unique.keys()}
     existing_rows = (
         db.query(AssetCanonical)
@@ -146,7 +140,6 @@ def _upsert_canonical_batch(
             parent_value=asset.parent_value,
             first_seen_at=now,
             last_seen_at=now,
-            asset_metadata=asset.asset_metadata or {},
             record_type=(asset.asset_metadata or {}).get("record_type"),
             content=(asset.asset_metadata or {}).get("content"),
         )
@@ -188,40 +181,21 @@ def _upsert_canonical_batch(
         # parent_value: only fill if currently null — first observation wins
         if asset.parent_value and not row.parent_value:
             row.parent_value = asset.parent_value
-        # Shallow-merge metadata so later observations enrich without
-        # destroying earlier fields. `open_ports` is special-cased into a
-        # per-port merge so successive port scans (and future service
-        # enrichers like tlsx / httpx / banner-grab) can each contribute
-        # a slice to the same port entry instead of overwriting it.
-        if asset.asset_metadata:
-            merged = {**(row.asset_metadata or {})}
-            for mk, mv in asset.asset_metadata.items():
-                if mv in (None, "", [], {}):
-                    continue
-                if mk == "sources":
-                    existing_sources = merged.get("sources", [])
-                    merged["sources"] = list(dict.fromkeys(
-                        existing_sources + (mv if isinstance(mv, list) else [mv])
-                    ))
-                elif mk == "open_ports" and isinstance(mv, list):
-                    merged["open_ports"] = _merge_open_ports(
-                        merged.get("open_ports") or [], mv
-                    )
-                elif mk.endswith("_last_scan_at"):
-                    # Scan-time markers always advance — keep the newer ISO timestamp
-                    current = merged.get(mk)
-                    if not current or mv > current:
-                        merged[mk] = mv
-                elif mk not in merged or merged[mk] in (None, "", [], {}):
-                    merged[mk] = mv
-            # Prune ports not re-confirmed in the latest naabu scan so storage
-            # reflects current truth (no phantom accumulation). Keyed on the
-            # post-merge naabu_last_scan_at; fresh ports written this scan
-            # survive, stale phantoms are deleted (Shodan intel keeps its grace).
-            nls = merged.get("naabu_last_scan_at")
-            if nls and isinstance(merged.get("open_ports"), list):
-                merged["open_ports"] = _prune_stale_ports(merged["open_ports"], nls, now)
-            row.asset_metadata = merged
+        # planning#144 L3c-4: the shallow metadata merge that used to live
+        # here is GONE, along with the column it wrote. Every field it
+        # maintained now has a real home, reached by the claims path this
+        # function already drives (emit_claims -> project, above):
+        #   sources        -> distinct observers across the asset's claims
+        #   open_ports     -> port_observation claims, folded per-port by
+        #                     projector._merge_open_ports across observers
+        #   *_last_scan_at -> the naabu claim's last_observed_at
+        #   the prune      -> projector._prune_stale_ports, same functions,
+        #                     applied to the projection instead of the column
+        #   everything else-> its own claim type (Table 1 in claim_emitter)
+        # so the merge semantics were not dropped, they moved. The one
+        # behaviour that genuinely changed: claims replace per-observer
+        # rather than accumulate-and-never-clear, which is what lets a
+        # signal that disappears actually disappear.
         result[key] = row.id
 
     # Flush so subsequent edge inserts see the new canonical rows — the
@@ -305,7 +279,6 @@ def _asset_row_values(row: AssetCanonical) -> dict:
         "first_seen_at": row.first_seen_at,
         "last_seen_at": row.last_seen_at,
         "tags": row.tags or [],
-        "metadata": row.asset_metadata or {},
         "record_type": row.record_type,
         "content": row.content,
     }

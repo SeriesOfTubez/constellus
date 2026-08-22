@@ -25,6 +25,8 @@ from sqlalchemy import text
 from app.connectors.base import DiscoveredAsset
 from app.core.database import SessionLocal
 from app.models.asset_canonical import AssetCanonical
+from app.models.claim import AssetClaim
+from app.services import metadata_bridge
 from app.services.asset_writer import write_assets
 from app.services.shared_infra_verifier import _owned_hostnames_for_ip
 
@@ -105,7 +107,9 @@ def test_reobserving_identical_record_dedups_no_integrityerror():
                                               "sources": ["dns_records"]}),
         ])
         # Second, separate batch — same identity, different in-band data
-        # (ttl) so this also exercises the metadata-merge path alongside dedup.
+        # (ttl) so this also exercises the claim-emission path alongside
+        # dedup: the point is that the second batch's data reaches the
+        # DEDUPED row rather than creating a second one.
         write_assets(db, uuid.uuid4(), [
             DiscoveredAsset(asset_type="dns_record", value=host, parent_value=None,
                              asset_metadata={"record_type": "A", "content": "203.0.113.30",
@@ -115,7 +119,17 @@ def test_reobserving_identical_record_dedups_no_integrityerror():
         assert len(rows) == 1, f"expected 1 deduped row, got {len(rows)}"
         assert rows[0].record_type == "A"
         assert rows[0].content == "203.0.113.30"
-        assert rows[0].asset_metadata.get("ttl") == 300
+        # planning#144 L3c-4: ttl lives on the `dns_ttl` claim, not the
+        # dropped metadata column.
+        ttl_claim = (
+            db.query(AssetClaim.claim_value)
+            .filter(
+                AssetClaim.asset_canonical_id == rows[0].id,
+                AssetClaim.claim_type == "dns_ttl",
+            )
+            .one()
+        )
+        assert ttl_claim[0].get("ttl") == 300, ttl_claim[0]
     finally:
         db.close()
         _cleanup(host)
@@ -143,12 +157,18 @@ def test_reobserving_identical_record_in_same_batch_dedups():
         _cleanup(host)
 
 
-# ── columns + metadata agree ────────────────────────────────────────────────
+# ── columns + the API bridge agree ──────────────────────────────────────────
 
-def test_columns_and_metadata_agree_on_fresh_write():
-    """A freshly written dns_record must carry its identity in BOTH the
-    record_type/content COLUMNS (authority) and asset_metadata (still
-    written, still what the API serializes — L3c's job to remove)."""
+def test_columns_and_api_bridge_agree_on_fresh_write():
+    """A freshly written dns_record must carry its identity in the
+    record_type/content COLUMNS, and the API must still serve it.
+
+    This used to assert the columns and `asset_metadata` agreed, because
+    L3b-1 kept a copy in the JSONB blob for the frontend-via-API path.
+    planning#144 L3c-4 dropped that column, so the second half of the
+    agreement is now the reconstruction: `metadata_bridge` rebuilds
+    record_type/content FROM the columns, which is what the frontend
+    actually consumes. Same contract, one fewer copy of the truth."""
     suffix = uuid.uuid4().hex[:10]
     host = f"dns-ident-agree-{suffix}.example.com"
     db = SessionLocal()
@@ -160,65 +180,32 @@ def test_columns_and_metadata_agree_on_fresh_write():
         row = db.query(AssetCanonical).filter(AssetCanonical.value == host).one()
         assert row.record_type == "CNAME"
         assert row.content == "target.example.net"
-        assert row.asset_metadata.get("record_type") == "CNAME"
-        assert row.asset_metadata.get("content") == "target.example.net"
+
+        sources = metadata_bridge.load_bridge_sources(db, [row.id])[row.id]
+        bridged = metadata_bridge.bridge_metadata(row, sources.get("state"), sources)
+        assert bridged.get("record_type") == "CNAME", bridged
+        assert bridged.get("content") == "target.example.net", bridged
     finally:
         db.close()
         _cleanup(host)
 
 
 # ── backfill (migration 0040's UPDATE) ──────────────────────────────────────
-
-def test_backfill_populates_columns_from_metadata():
-    """Replicates migration 0040's backfill UPDATE against a row inserted
-    the way a pre-0040 row would have looked (metadata carries identity,
-    columns NULL) — proves the exact backfill statement (not just the ORM
-    write path) correctly derives record_type/content from JSONB.
-
-    Doesn't cycle the DB through a live alembic downgrade/upgrade (which
-    would perturb schema state for the rest of the suite); instead inserts
-    directly with raw SQL to leave the new columns NULL, matching what
-    alembic upgrade head's ADD COLUMN step produces for existing rows
-    before the backfill UPDATE runs, then executes that exact UPDATE.
-    """
-    suffix = uuid.uuid4().hex[:10]
-    host = f"dns-ident-backfill-{suffix}.example.com"
-    row_id = uuid.uuid4()
-    db = SessionLocal()
-    try:
-        db.execute(
-            text(
-                "INSERT INTO assets_canonical "
-                "(id, asset_type, value, first_seen_at, last_seen_at, metadata, tags) "
-                "VALUES (:id, 'dns_record', :value, now(), now(), "
-                "CAST(:metadata AS jsonb), '[]'::jsonb)"
-            ),
-            {"id": row_id, "value": host, "metadata": '{"record_type": "A", "content": "203.0.113.50"}'},
-        )
-        db.commit()
-
-        row = db.get(AssetCanonical, row_id)
-        assert row.record_type is None and row.content is None, "precondition: columns start NULL"
-
-        # The exact backfill statement from migration 0040's upgrade().
-        db.execute(
-            text(
-                "UPDATE assets_canonical "
-                "SET record_type = metadata->>'record_type', content = metadata->>'content' "
-                "WHERE asset_type = 'dns_record' AND id = :id"
-            ),
-            {"id": row_id},
-        )
-        db.commit()
-
-        db.expire_all()
-        row = db.get(AssetCanonical, row_id)
-        assert row.record_type == "A"
-        assert row.content == "203.0.113.50"
-    finally:
-        db.query(AssetCanonical).filter(AssetCanonical.id == row_id).delete(synchronize_session=False)
-        db.commit()
-        db.close()
+#
+# `test_backfill_populates_columns_from_metadata` lived here. It replicated
+# migration 0040's backfill UPDATE — `SET record_type = metadata->>'record_type'`
+# — against a hand-inserted pre-0040-shaped row, to prove the raw statement (not
+# just the ORM write path) derived the columns correctly from the JSONB blob.
+#
+# Removed at planning#144 L3c-4: migration 0043 DROPped `assets_canonical.metadata`,
+# so that UPDATE can no longer execute against any schema at or past head, and the
+# only way to keep the test would be to fabricate the dropped column first. That
+# would test nothing about the running system — 0040 is historical, already applied
+# wherever it matters, and its backfill is unreachable by construction now.
+#
+# The property it was really guarding — identity lands in the columns, correctly —
+# is still covered, by every dedup test above plus
+# test_columns_and_api_bridge_agree_on_fresh_write.
 
 
 # ── shared_infra_verifier reads the columns ─────────────────────────────────
@@ -256,8 +243,7 @@ def _run():
         test_a_aaaa_mx_same_fqdn_stay_three_rows,
         test_reobserving_identical_record_dedups_no_integrityerror,
         test_reobserving_identical_record_in_same_batch_dedups,
-        test_columns_and_metadata_agree_on_fresh_write,
-        test_backfill_populates_columns_from_metadata,
+        test_columns_and_api_bridge_agree_on_fresh_write,
         test_shared_infra_verifier_selects_by_column,
     ]
     for fn in tests:

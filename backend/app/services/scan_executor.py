@@ -957,7 +957,7 @@ def _hydrate_asset_ports(asset, persisted_meta: dict) -> None:
 
     Pure function (no DB): testable with any object that has .asset_metadata.
     """
-    from app.services.asset_writer import _merge_open_ports
+    from app.services.projector import _merge_open_ports
 
     meta = dict(asset.asset_metadata or {})
 

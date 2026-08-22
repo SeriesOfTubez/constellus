@@ -21,10 +21,17 @@ class AssetCanonical(Base):
         on the JSONB blob.
       - All other asset types: (asset_type, value).
 
-    `record_type`/`content` are the dedup/identity AUTHORITY for
-    dns_record rows. `asset_metadata` still carries copies of both (kept
-    in sync by asset_writer) — that's what the API serializes for the
-    frontend; dropping them from metadata is a later slice (L3c).
+    `record_type`/`content` are the dedup/identity authority for dns_record
+    rows, and since planning#144 L3c-4 they are its only source: the
+    `metadata` JSONB column that used to carry copies of them (and of every
+    other observed attribute) is DROPPED — migration 0043.
+
+    Current-state attributes live in `asset_state` (projected) and
+    `asset_claims` (per-observer grounding) instead. Nothing here mirrors
+    them. The API still serves an `asset_metadata` key, but it is
+    RECONSTRUCTED per request by `app.services.metadata_bridge` from those
+    two tables plus the columns on this one — the frontend contract
+    outlived the column, which is the whole point of the bridge.
     """
 
     __tablename__ = "assets_canonical"
@@ -37,7 +44,6 @@ class AssetCanonical(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
     ignored: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default=text("'[]'"))
-    asset_metadata: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict, server_default=text("'{}'"))
     # dns_record identity — see class docstring. Nullable because every
     # other asset_type leaves these NULL (no per-column index of their
     # own; membership is via the partial unique index above).

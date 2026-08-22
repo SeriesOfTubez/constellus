@@ -34,17 +34,21 @@ def _observer_id(db, name: str) -> uuid.UUID:
 
 
 def _make_asset(
-    db, asset_type: str, value: str, metadata: dict | None = None,
+    db, asset_type: str, value: str,
     record_type: str | None = None, content: str | None = None,
 ) -> AssetCanonical:
     """planning#144 L3b-1 promoted dns_record identity (record_type/content)
-    to real assets_canonical columns; L3b-2's provider_mx recompute reads
-    those columns, not asset_metadata — pass record_type/content explicitly
-    for dns_record test rows that need them."""
+    to real assets_canonical columns and L3b-2's provider_mx recompute reads
+    those columns — pass record_type/content explicitly for dns_record test
+    rows that need them.
+
+    The `metadata` parameter this used to take is gone with L3c-4: the
+    column no longer exists, and every attribute a projector test needs is
+    seeded as a claim via `_add_claim` / `_add_port_claim` instead."""
     now = datetime.now(timezone.utc)
     row = AssetCanonical(
         id=uuid.uuid4(), asset_type=asset_type, value=value, parent_value=None,
-        first_seen_at=now, last_seen_at=now, asset_metadata=metadata or {},
+        first_seen_at=now, last_seen_at=now,
         record_type=record_type, content=content,
     )
     db.add(row)
@@ -132,7 +136,7 @@ def test_open_ports_merge_across_observers_with_restored_sources():
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
-        asset = _make_asset(db, "ip_address", ip, metadata={"sources": ["naabu"]})
+        asset = _make_asset(db, "ip_address", ip)
 
         _add_port_claim(db, asset.id, "naabu", [
             {"port": 80, "protocol": "tcp", "last_seen_at": now.isoformat()},
@@ -178,7 +182,7 @@ def test_prune_stale_port_and_flap_guard_kept():
         old = now - timedelta(days=30)
         within_confirmed_grace = now - timedelta(days=2)
 
-        asset = _make_asset(db, "ip_address", ip, metadata={"sources": ["naabu"]})
+        asset = _make_asset(db, "ip_address", ip)
 
         # naabu's claim envelope (last_observed_at) is fresh — "now" — i.e.
         # naabu did just run; but the 8080 entry inside its ports list wasn't
@@ -215,7 +219,7 @@ def test_no_naabu_claim_skips_prune_keeps_all():
     try:
         now = datetime.now(timezone.utc)
         old = now - timedelta(days=365)
-        asset = _make_asset(db, "ip_address", ip, metadata={"sources": ["shodan"]})
+        asset = _make_asset(db, "ip_address", ip)
 
         _add_port_claim(db, asset.id, "shodan", [
             {"port": 21, "protocol": "tcp", "last_seen_at": old.isoformat()},
@@ -254,7 +258,7 @@ def test_estate_mapping():
         # No ownership signal at all -> estate must stay NULL, not default to
         # any of the three known values (planning#129 is an open decision;
         # this projector must not invent one).
-        a_absent = _make_asset(db, "ip_address", ip_absent, metadata={"sources": ["dns_records"]})
+        a_absent = _make_asset(db, "ip_address", ip_absent)
         db.commit()
 
         projector.project(db, {a_confirmed.id, a_rejected.id, a_absent.id}, now)
@@ -287,7 +291,6 @@ def test_probe_class_rules():
 
         a_mx = _make_asset(
             db, "dns_record", host_name_mx,
-            metadata={"sources": ["dns_records"], "record_type": "MX", "content": "aspmx.l.google.com"},
             record_type="MX", content="aspmx.l.google.com",
         )
 
@@ -295,11 +298,10 @@ def test_probe_class_rules():
         target_id = uuid.uuid4()
         db.add(Target(id=target_id, type=TargetType.CIDR.value, value=cidr_value))
         db.commit()
-        a_cidr = _make_asset(db, "ip_address", ip_cidr, metadata={"sources": ["naabu"]})
+        a_cidr = _make_asset(db, "ip_address", ip_cidr)
 
         a_name = _make_asset(
             db, "dns_record", host_name,
-            metadata={"sources": ["dns_records"], "record_type": "A", "content": "192.0.2.250"},
             record_type="A", content="192.0.2.250",
         )
 
@@ -385,17 +387,14 @@ def test_provider_mx_recompute_from_columns():
         now = datetime.now(timezone.utc)
         a_managed = _make_asset(
             db, "dns_record", host_managed,
-            metadata={"record_type": "MX", "content": "aspmx.l.google.com"},
             record_type="MX", content="aspmx.l.google.com",
         )
         a_unmanaged = _make_asset(
             db, "dns_record", host_unmanaged,
-            metadata={"record_type": "MX", "content": "mail.custom-corp-example.com"},
             record_type="MX", content="mail.custom-corp-example.com",
         )
         a_non_mx = _make_asset(
             db, "dns_record", host_non_mx,
-            metadata={"record_type": "A", "content": "192.0.2.77"},
             record_type="A", content="192.0.2.77",
         )
 
@@ -421,7 +420,7 @@ def test_naabu_last_scan_at_derived_from_claim():
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
-        asset = _make_asset(db, "ip_address", ip, metadata={"sources": ["naabu"]})
+        asset = _make_asset(db, "ip_address", ip)
         _add_port_claim(db, asset.id, "naabu", [
             {"port": 443, "protocol": "tcp", "last_seen_at": now.isoformat()},
         ], now)
@@ -445,7 +444,7 @@ def test_no_naabu_claim_no_naabu_last_scan_at():
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
-        asset = _make_asset(db, "ip_address", ip, metadata={"sources": ["shodan"]})
+        asset = _make_asset(db, "ip_address", ip)
         _add_port_claim(db, asset.id, "shodan", [
             {"port": 21, "protocol": "tcp", "last_seen_at": now.isoformat()},
         ], now)
@@ -473,7 +472,6 @@ def test_cdn_and_cdn_domain_projected_from_cdn_boundary_claim():
         now = datetime.now(timezone.utc)
         asset = _make_asset(
             db, "dns_record", host_name,
-            metadata={"record_type": "CNAME", "content": "d123.cloudfront.net"},
             record_type="CNAME", content="d123.cloudfront.net",
         )
         db.commit()
@@ -503,7 +501,6 @@ def test_cdn_boundary_claim_from_any_discovery_observer_is_projected():
         now = datetime.now(timezone.utc)
         asset = _make_asset(
             db, "dns_record", host_name,
-            metadata={"record_type": "CNAME", "content": "x.fastly.net"},
             record_type="CNAME", content="x.fastly.net",
         )
         db.commit()
@@ -530,7 +527,7 @@ def test_eol_summary_projected_from_eol_status_claim():
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
-        asset = _make_asset(db, "ip_address", ip, metadata={})
+        asset = _make_asset(db, "ip_address", ip)
         db.commit()
         services = [{"port": 443, "product": "nginx", "version": "1.18", "is_eol": True}]
         _add_claim(db, asset.id, "eol_enrichment", "eol_status", {"services": services}, now)
@@ -558,7 +555,7 @@ def test_eol_status_claim_emptied_clears_eol_summary():
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
-        asset = _make_asset(db, "ip_address", ip, metadata={})
+        asset = _make_asset(db, "ip_address", ip)
         db.commit()
         _add_claim(db, asset.id, "eol_enrichment", "eol_status",
                    {"services": [{"port": 443, "product": "nginx", "version": "1.18", "is_eol": True}]}, now)
@@ -590,7 +587,7 @@ def test_eol_status_claim_from_another_observer_is_ignored():
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
-        asset = _make_asset(db, "ip_address", ip, metadata={})
+        asset = _make_asset(db, "ip_address", ip)
         db.commit()
         _add_claim(db, asset.id, "shodan", "eol_status",
                    {"services": [{"port": 1, "product": "bogus", "version": "0", "is_eol": True}]}, now)
@@ -613,7 +610,7 @@ def test_no_cdn_metadata_no_cdn_attributes():
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
-        asset = _make_asset(db, "ip_address", ip, metadata={"sources": ["naabu"]})
+        asset = _make_asset(db, "ip_address", ip)
         _add_port_claim(db, asset.id, "naabu", [
             {"port": 80, "protocol": "tcp", "last_seen_at": now.isoformat()},
         ], now)

@@ -10,7 +10,7 @@ Run with:  python -m app.tests.test_prune_stale_ports        (from /app)
 
 from datetime import datetime, timezone
 
-from app.services.asset_writer import _prune_stale_ports
+from app.services.projector import _prune_stale_ports
 
 _CUTOFF = "2026-06-19T00:00:00+00:00"          # naabu_last_scan_at
 _NOW = datetime(2026, 6, 19, 1, 0, 0, tzinfo=timezone.utc)

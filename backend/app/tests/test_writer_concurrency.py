@@ -28,6 +28,7 @@ import uuid
 from app.connectors.base import DiscoveredAsset, DiscoveredFinding
 from app.core.database import SessionLocal
 from app.models.asset_canonical import AssetCanonical
+from app.models.asset_state import AssetState
 from app.models.finding_canonical import FindingCanonical
 from app.services.asset_writer import write_assets
 from app.services.finding_writer import write_findings
@@ -48,20 +49,46 @@ def _cleanup(value_prefix: str, fingerprint_prefix: str) -> None:
 def test_concurrent_new_asset_insert_merges_both_writes():
     """Two threads race to insert the SAME brand-new dns_record key with
     different open_ports slices. Neither should raise; the surviving row
-    must carry both threads' ports (not just whichever committed last)."""
+    must carry both threads' ports (not just whichever committed last).
+
+    planning#144 L3c-4: the ports are read from `asset_state.open_ports`
+    (projected from each thread's port_observation claim) rather than the
+    dropped asset_metadata column, and the two threads are attributed to
+    DIFFERENT observers.
+
+    That second change is not cosmetic. The claims layer is keyed
+    (asset, observer, claim_type), so a port list is now per-observer and
+    re-observation REPLACES it — two concurrent writes from the SAME
+    observer are deliberately last-write-wins, because "naabu's current
+    view of this asset's ports" is a single value and that is exactly what
+    lets a closed port disappear. Cross-observer merge is the guarantee
+    that actually matters here (and the realistic case: concurrent scans
+    run different probers), so that is what this pins. The threads used to
+    share a fake `sources: ["test"]` observer, which the claims path drops
+    outright as unknown — a real seeded observer is required now.
+    """
     suffix = uuid.uuid4().hex[:10]
     value = f"concurrency-asset-{suffix}.example.com"
     errors: list[Exception] = []
 
-    def _write(port: int):
+    def _write(observer: str, port: int):
         db = SessionLocal()
         try:
             write_assets(db, uuid.uuid4(), [
                 DiscoveredAsset(
                     asset_type="dns_record", value=value, parent_value=None,
                     asset_metadata={
+                        "sources": [observer],
                         "record_type": "A", "content": "203.0.113.10",
-                        "open_ports": [{"port": port, "sources": ["test"], "last_seen_at": "2026-07-03T00:00:00+00:00"}],
+                        # No last_seen_at on purpose: the projector prunes
+                        # ports older than the naabu claim's own
+                        # last_observed_at, and any timestamp written here
+                        # is stale relative to the `now` write_assets stamps
+                        # afterwards. An entry with no timestamp is kept
+                        # unconditionally, which keeps this test about
+                        # concurrency rather than about pruning (same
+                        # reasoning as test_serializer_bridge's seed).
+                        "open_ports": [{"port": port, "sources": [observer]}],
                     },
                 ),
             ])
@@ -72,12 +99,12 @@ def test_concurrent_new_asset_insert_merges_both_writes():
 
     barrier = threading.Barrier(2)
 
-    def _synced_write(port: int):
+    def _synced_write(observer: str, port: int):
         barrier.wait(timeout=5)
-        _write(port)
+        _write(observer, port)
 
-    t1 = threading.Thread(target=_synced_write, args=(8080,))
-    t2 = threading.Thread(target=_synced_write, args=(8443,))
+    t1 = threading.Thread(target=_synced_write, args=("naabu", 8080))
+    t2 = threading.Thread(target=_synced_write, args=("tlsx", 8443))
     t1.start()
     t2.start()
     t1.join(timeout=10)
@@ -90,7 +117,13 @@ def test_concurrent_new_asset_insert_merges_both_writes():
         try:
             rows = db.query(AssetCanonical).filter(AssetCanonical.value == value).all()
             assert len(rows) == 1, f"expected exactly 1 row, got {len(rows)}"
-            ports = {p["port"] for p in (rows[0].asset_metadata.get("open_ports") or [])}
+            state = (
+                db.query(AssetState)
+                .filter(AssetState.asset_canonical_id == rows[0].id)
+                .one_or_none()
+            )
+            assert state is not None, "expected a projected asset_state row"
+            ports = {p["port"] for p in (state.open_ports or [])}
             assert ports == {8080, 8443}, f"expected both threads' ports merged, got {ports}"
         finally:
             db.close()

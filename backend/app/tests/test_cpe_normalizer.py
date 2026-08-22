@@ -168,7 +168,6 @@ def _make_ip_asset(db, ip: str, open_ports: list[dict]) -> AssetCanonical:
     row = AssetCanonical(
         id=uuid.uuid4(), asset_type="ip_address", value=ip, parent_value=None,
         first_seen_at=now, last_seen_at=now,
-        asset_metadata={"sources": ["naabu"], "open_ports": open_ports},
     )
     db.add(row)
     db.commit()

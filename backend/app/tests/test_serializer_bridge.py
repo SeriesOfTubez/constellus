@@ -1,12 +1,19 @@
-"""Tests for the asset_metadata claims-bridge in app.api.assets (L3c-2,
+"""Tests for the asset_metadata claims-bridge in app.api.assets (L3c-2/L3c-4,
 planning#144 — THE crux of the claims-migration cutover).
 
 `_serialize_asset` used to return `row.asset_metadata` (the column) verbatim.
-`_bridge_metadata` now reconstructs the same dict from asset_claims +
-asset_state + the record_type/content columns instead — the exact inverse of
-claim_emitter.emit_claims' Table 1 mapping. The column still exists and the
-merge loop still writes it (this slice doesn't touch either); the bridge just
-stops the serializer from READING the column.
+`_bridge_metadata` reconstructs the same dict from asset_claims + asset_state
++ the record_type/content columns instead — the exact inverse of
+claim_emitter.emit_claims' Table 1 mapping.
+
+**The gate changed shape at L3c-4.** While the column still existed this
+compared bridged == row.asset_metadata: the column was the baseline the
+reconstruction had to reproduce. Migration 0043 dropped it, so that baseline
+is gone and there is nothing left to diff against — the bridge is now the
+sole producer of the API's asset_metadata payload. The comparison therefore
+moves from "matches the old column" to "matches what was SEEDED", which is
+the stronger contract anyway: it pins the payload to intent rather than to
+another implementation of the same thing.
 
 Seeds representative assets through the REAL write path — write_assets()
 (-> claim_emitter.emit_claims -> projector.project, all invoked internally),
@@ -16,18 +23,18 @@ network calls stubbed out (upsert_single_claim / _fetch_eol respectively are
 the real persistence functions; only the HTTP fetch is faked, to keep this
 hermetic).
 
-HARD GATE (must pass): bridged == row.asset_metadata (semantic: order-
-insensitive on lists, ports compared by port number) for the FUNCTIONAL
-keys: record_type, content, open_ports, sources, eol_services,
-shodan_org/asn/isp/country/os/tags/hostnames/ports.
+HARD GATE (must pass): for every seeded asset, the bridged payload carries
+the values that were written, semantically compared (order-insensitive on
+lists, ports by port number): record_type, content, open_ports, sources,
+eol_services, provider_mx, shodan_org/asn/isp/country/os/tags/hostnames/ports.
 
-SOFT GATE (report only): a full-dict diff of bridged vs row.asset_metadata
-for every seeded asset, printed so every key delta can be judged by a human
-— not just the functional subset the hard gate checks.
+REPORT (not a gate): the full bridged payload for every seeded asset is
+printed. It IS the API response now, so it stays worth eyeballing after any
+change to Table 1 or the projector.
 
 Run with:  python -m app.tests.test_serializer_bridge
        or: pytest -s app/tests/test_serializer_bridge.py   (-s to see the
-           soft-gate diff printout; pytest captures stdout by default)
+           payload printout; pytest captures stdout by default)
 """
 
 import json
@@ -60,23 +67,6 @@ def _normalize(value):
     return value
 
 
-def _soft_diff(bridged: dict, metadata: dict) -> dict:
-    """Full-dict diff: keys only in one side, plus value mismatches for keys
-    in both (order-insensitive on list values)."""
-    only_bridged = sorted(set(bridged) - set(metadata))
-    only_metadata = sorted(set(metadata) - set(bridged))
-    mismatches = {}
-    for k in sorted(set(bridged) & set(metadata)):
-        bv, mv = _normalize(bridged[k]), _normalize(metadata[k])
-        if bv != mv:
-            mismatches[k] = {"bridged": bridged[k], "metadata": metadata[k]}
-    return {
-        "only_in_bridged": only_bridged,
-        "only_in_metadata": only_metadata,
-        "value_mismatches": mismatches,
-    }
-
-
 def _ports_by_number(open_ports) -> dict:
     return {e["port"]: e for e in (open_ports or []) if isinstance(e, dict) and isinstance(e.get("port"), int)}
 
@@ -89,15 +79,6 @@ def _bridge_for(db, row: AssetCanonical) -> dict:
     if row.asset_type == "ip_address":
         bridged = _filter_stale_ports(bridged)
     return bridged
-
-
-def _expected_for(row: AssetCanonical) -> dict:
-    """What the OLD serializer would have returned for this row — the
-    baseline the bridge must reproduce."""
-    metadata = row.asset_metadata or {}
-    if row.asset_type == "ip_address":
-        metadata = _filter_stale_ports(metadata)
-    return metadata
 
 
 def _cleanup(values: list[str]) -> None:
@@ -115,7 +96,7 @@ def _cleanup(values: list[str]) -> None:
 
 # ── the test ─────────────────────────────────────────────────────────────
 
-def test_bridge_metadata_matches_asset_metadata_for_seeded_assets(monkeypatch):
+def test_bridge_metadata_reconstructs_seeded_assets(monkeypatch):
     suffix = uuid.uuid4().hex[:10]
     apex = f"bridge-{suffix}.example.com"
     cname_value = f"cdn.bridge-{suffix}.example.com"
@@ -296,74 +277,78 @@ def test_bridge_metadata_matches_asset_metadata_for_seeded_assets(monkeypatch):
         project(db, {ip_row.id}, datetime.now(timezone.utc))
         db.commit()
 
-        # ── Bridge every seeded asset and compare against the column ──────
+        # -- Bridge every seeded asset --------------------------------------
         # A, MX(managed), MX(unmanaged), TXT/SPF (all value=apex) + CNAME
         # (value=cname_value) + ip_address (value=ip) = 6 distinct canonical
-        # rows — the two-observer merges (A+cloudflare, CNAME+cert_transparency,
+        # rows -- the two-observer merges (A+cloudflare, CNAME+cert_transparency,
         # naabu+tlsx+shodan) fold into their existing row, not new ones.
         rows = db.query(AssetCanonical).filter(AssetCanonical.value.in_(all_values)).all()
         assert len(rows) == 6, f"expected 6 canonical rows, got {len(rows)}"
 
-        diffs: dict[str, dict] = {}
-        for row in rows:
-            bridged = _bridge_for(db, row)
-            expected = _expected_for(row)
-            diffs[f"{row.asset_type}:{row.value}:{row.record_type}:{row.content}"] = _soft_diff(bridged, expected)
+        payloads = {
+            f"{row.asset_type}:{row.value}:{row.record_type}:{row.content}": _bridge_for(db, row)
+            for row in rows
+        }
 
-        # ── SOFT GATE: print the full-dict diff for every seeded asset ────
-        print("\n=== SOFT GATE: bridged vs row.asset_metadata, full-dict diff ===")
-        print(json.dumps(diffs, indent=2, default=str, sort_keys=True))
-        print("=== end soft gate ===\n")
+        # -- REPORT: the bridged payload IS the API response now -------------
+        print("\n=== bridged asset_metadata payload, per seeded asset ===")
+        print(json.dumps(payloads, indent=2, default=str, sort_keys=True))
+        print("=== end payloads ===\n")
 
-        # ── HARD GATE: functional-key semantic equality ───────────────────
+        # -- HARD GATE: the payload carries what was seeded ------------------
         ip_bridged = _bridge_for(db, ip_row)
-        ip_expected = _expected_for(ip_row)
 
-        assert ip_bridged.get("record_type") == ip_expected.get("record_type")
-        assert ip_bridged.get("content") == ip_expected.get("content")
+        # ip_address rows carry no DNS identity.
+        assert ip_bridged.get("record_type") is None, ip_bridged
+        assert ip_bridged.get("content") is None, ip_bridged
 
-        assert set(_ports_by_number(ip_bridged.get("open_ports"))) == set(_ports_by_number(ip_expected.get("open_ports"))), (
-            f"open_ports port-number mismatch: bridged={sorted(_ports_by_number(ip_bridged.get('open_ports')))} "
-            f"expected={sorted(_ports_by_number(ip_expected.get('open_ports')))}"
+        # open_ports: naabu's 22 + tlsx's 443 + shodan's 8080, merged across
+        # the three observers' port_observation claims by the projector.
+        assert set(_ports_by_number(ip_bridged.get("open_ports"))) == {22, 443, 8080}, (
+            f"open_ports mismatch: {sorted(_ports_by_number(ip_bridged.get('open_ports')))}"
         )
+        # ...and each observer's own fields survive onto its entry.
+        by_port = _ports_by_number(ip_bridged.get("open_ports"))
+        assert by_port[22].get("service_version") == "OpenSSH_8.9", by_port[22]
+        assert by_port[443].get("l7_confirmed") is True, by_port[443]
+        assert by_port[443].get("service_version") == "nginx/1.18", by_port[443]
 
-        assert set(ip_bridged.get("sources") or []) == set(ip_expected.get("sources") or []), (
-            f"sources mismatch: bridged={ip_bridged.get('sources')} expected={ip_expected.get('sources')}"
+        assert set(ip_bridged.get("sources") or []) == {"naabu", "tlsx", "shodan"}, (
+            f"sources mismatch: {ip_bridged.get('sources')}"
         )
 
         def _eol_key(rec):
             return (rec.get("port"), rec.get("product"), rec.get("version"), rec.get("is_eol"))
 
-        # eol_services can no longer be gated against the column: planning#144
-        # L3c-3 converted eol_enrichment to an `eol_status` claim and deleted
-        # its asset_metadata write, so the column is empty here BY DESIGN and
-        # `_expected_for` has nothing to compare against. This is the first
-        # key to fall out of the bridged==column premise; the rest follow at
-        # L3c-4 when the merge loop stops writing entirely. Gate it against
-        # the real source instead — the projected asset_state, which is what
-        # the bridge reads.
+        # eol_services: seeded indirectly -- enrich_eol parsed the tlsx port-443
+        # nginx/1.18 banner against the canned endoflife response above. Gated
+        # against both the seed's intent and the projection the bridge reads.
         bridged_eol = {_eol_key(r) for r in (ip_bridged.get("eol_services") or [])}
+        assert bridged_eol == {(443, "nginx", "1.18", True)}, bridged_eol
         state = db.query(AssetState).filter(AssetState.asset_canonical_id == ip_row.id).one()
-        projected_eol = {_eol_key(r) for r in (state.eol_summary or [])}
-        assert bridged_eol == projected_eol, (
-            f"eol_services mismatch: bridged={bridged_eol} projected={projected_eol}"
-        )
-        assert bridged_eol, "expected at least one eol_services record from the seeded nginx/1.18 port"
-        assert not (ip_expected.get("eol_services") or []), (
-            "asset_metadata still carries eol_services — L3c-3 removed that write, "
-            f"got {ip_expected.get('eol_services')!r}"
-        )
+        assert {_eol_key(r) for r in (state.eol_summary or [])} == bridged_eol
 
-        for key in (
-            "shodan_org", "shodan_asn", "shodan_isp", "shodan_country", "shodan_os",
+        for key, expected_value in (
+            ("shodan_org", "Example Hosting Co"),
+            ("shodan_os", "Linux"),
+            ("shodan_country", "US"),
+            ("shodan_isp", "Example ISP"),
+            ("shodan_asn", "AS64500"),
         ):
-            assert ip_bridged.get(key) == ip_expected.get(key), (
-                f"{key} mismatch: bridged={ip_bridged.get(key)!r} expected={ip_expected.get(key)!r}"
+            assert ip_bridged.get(key) == expected_value, (
+                f"{key} mismatch: bridged={ip_bridged.get(key)!r} seeded={expected_value!r}"
             )
 
-        for key in ("shodan_tags", "shodan_hostnames", "shodan_ports"):
-            assert set(ip_bridged.get(key) or []) == set(ip_expected.get(key) or []), (
-                f"{key} mismatch: bridged={ip_bridged.get(key)} expected={ip_expected.get(key)}"
+        for key, expected_set in (
+            ("shodan_tags", {"cloud"}),
+            ("shodan_hostnames", {"host.example.net"}),
+            # bare shodan_ports ints fold into the shodan observer's own port
+            # claim alongside its richer 8080 entry -- see
+            # claim_emitter._accumulate_port_observation.
+            ("shodan_ports", {22, 443, 8080}),
+        ):
+            assert set(ip_bridged.get(key) or []) == expected_set, (
+                f"{key} mismatch: bridged={ip_bridged.get(key)} seeded={sorted(expected_set)}"
             )
 
         # A/MX(managed)/MX(unmanaged)/CNAME record_type + content sanity
@@ -371,9 +356,12 @@ def test_bridge_metadata_matches_asset_metadata_for_seeded_assets(monkeypatch):
             AssetCanonical.value == apex, AssetCanonical.record_type == "A"
         ).one()
         a_bridged = _bridge_for(db, a_row)
-        a_expected = _expected_for(a_row)
-        assert a_bridged.get("record_type") == a_expected.get("record_type") == "A"
-        assert a_bridged.get("content") == a_expected.get("content") == ip
+        assert a_bridged.get("record_type") == "A"
+        assert a_bridged.get("content") == ip
+        assert a_bridged.get("ttl") == 300, a_bridged
+        # cloudflare's own keys landed on the same row via its separate write.
+        assert a_bridged.get("proxied") is True, a_bridged
+        assert a_bridged.get("zone_id") == "zone-abc123", a_bridged
         assert set(a_bridged.get("sources") or []) == {"dns_records", "cloudflare"}
 
         mx_managed = db.query(AssetCanonical).filter(
@@ -382,43 +370,51 @@ def test_bridge_metadata_matches_asset_metadata_for_seeded_assets(monkeypatch):
         mx_unmanaged = db.query(AssetCanonical).filter(
             AssetCanonical.value == apex, AssetCanonical.content == "mail.unmanaged-mx.example.net"
         ).one()
-        for mx_row, expect_provider_mx in ((mx_managed, True), (mx_unmanaged, False)):
+        for mx_row, expected_pref, expect_provider_mx in (
+            (mx_managed, 10, True), (mx_unmanaged, 20, False),
+        ):
             mx_bridged = _bridge_for(db, mx_row)
-            mx_expected = _expected_for(mx_row)
-            assert mx_bridged.get("record_type") == mx_expected.get("record_type") == "MX"
-            assert mx_bridged.get("content") == mx_expected.get("content")
+            assert mx_bridged.get("record_type") == "MX"
+            assert mx_bridged.get("content") == mx_row.content
+            assert mx_bridged.get("mx_preference") == expected_pref, mx_bridged
+            # provider_mx is RECOMPUTED by the projector from the content
+            # column (is_provider_managed_mx), never echoed from the seed --
+            # the unmanaged MX must not carry the key at all.
             if expect_provider_mx:
-                assert mx_bridged.get("provider_mx") is True
+                assert mx_bridged.get("provider_mx") is True, mx_bridged
             else:
-                assert "provider_mx" not in mx_bridged
-                assert "provider_mx" not in mx_expected
+                assert "provider_mx" not in mx_bridged, mx_bridged
+
+        txt_row = db.query(AssetCanonical).filter(
+            AssetCanonical.value == apex, AssetCanonical.record_type == "TXT"
+        ).one()
+        txt_bridged = _bridge_for(db, txt_row)
+        assert (txt_bridged.get("spf") or {}).get("policy") == "-all", txt_bridged
+        assert (txt_bridged.get("spf") or {}).get("ip4") == ["203.0.113.0/24"], txt_bridged
 
         cname_row = db.query(AssetCanonical).filter(
             AssetCanonical.value == cname_value, AssetCanonical.record_type == "CNAME"
         ).one()
         cname_bridged = _bridge_for(db, cname_row)
-        cname_expected = _expected_for(cname_row)
-        assert cname_bridged.get("record_type") == cname_expected.get("record_type") == "CNAME"
-        assert cname_bridged.get("content") == cname_expected.get("content") == "target.example.net"
+        assert cname_bridged.get("record_type") == "CNAME"
+        assert cname_bridged.get("content") == "target.example.net"
+        # cert_transparency's issuance fields landed on the same row.
+        assert cname_bridged.get("issuer") == "Let's Encrypt", cname_bridged
         # Previously a KNOWN GAP: "dns_records" used to be dropped from
         # cname_bridged["sources"] because its DiscoveredAsset write for this
         # CNAME carried ONLY identity fields (record_type/content, no ttl/
-        # spf/mx_preference/etc) — the real, common shape dns_resolve.py
-        # writes for A/AAAA/CNAME hops — and claim_emitter used to emit no
+        # spf/mx_preference/etc) -- the real, common shape dns_resolve.py
+        # writes for A/AAAA/CNAME hops -- and claim_emitter used to emit no
         # claim at all for identity-only metadata. Fixed by the `observation`
         # claim type (0041, L3c-2a, planning#144): emit_claims now always
         # records a base-provenance claim for the asset-level observer, so
         # even an identity-only write leaves a trace for `sources` to
-        # recover. Both observers now survive the bridge round-trip.
-        assert set(cname_expected.get("sources") or []) == {"dns_records", "cert_transparency"}, (
-            "seed sanity: the original metadata should have both observers"
-        )
+        # recover. Both observers survive the bridge round-trip.
         assert set(cname_bridged.get("sources") or []) == {"dns_records", "cert_transparency"}, (
-            f"expected both observers to survive in bridged sources now that identity-only "
-            f"writes emit an observation claim, got {cname_bridged.get('sources')}"
+            f"expected both observers in bridged sources, got {cname_bridged.get('sources')}"
         )
 
-        print("HARD GATE: all functional-key assertions passed.")
+        print("HARD GATE: all seeded-value assertions passed.")
     finally:
         db.close()
         _cleanup(all_values)
@@ -439,8 +435,8 @@ if __name__ == "__main__":
 
     mp = _FakeMonkeypatch()
     try:
-        test_bridge_metadata_matches_asset_metadata_for_seeded_assets(mp)
-        print("ok  test_bridge_metadata_matches_asset_metadata_for_seeded_assets")
+        test_bridge_metadata_reconstructs_seeded_assets(mp)
+        print("ok  test_bridge_metadata_reconstructs_seeded_assets")
         print("all passed")
     finally:
         mp.undo()

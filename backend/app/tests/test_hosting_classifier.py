@@ -29,7 +29,7 @@ def _make_ip_asset(db, ip: str) -> AssetCanonical:
     now = datetime.now(timezone.utc)
     row = AssetCanonical(
         id=uuid.uuid4(), asset_type="ip_address", value=ip, parent_value=None,
-        first_seen_at=now, last_seen_at=now, asset_metadata={},
+        first_seen_at=now, last_seen_at=now,
     )
     db.add(row)
     db.commit()

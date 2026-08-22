@@ -164,7 +164,7 @@ def _seed_ip_with_reverse_hostname_claim(db, ip: str, hostnames):
     now = datetime.now(timezone.utc)
     row = AssetCanonical(
         id=uuid.uuid4(), asset_type="ip_address", value=ip, parent_value=None,
-        first_seen_at=now, last_seen_at=now, asset_metadata={"sources": ["shodan"]},
+        first_seen_at=now, last_seen_at=now,
     )
     db.add(row); db.commit(); db.refresh(row)
     if hostnames is not None:

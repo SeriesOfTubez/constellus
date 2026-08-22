@@ -47,7 +47,6 @@ def _syn_record(db, *, cdn: str | None = None) -> AssetCanonical:
     row = AssetCanonical(
         id=uuid.uuid4(), asset_type="dns_record", value=f"syn-{uuid.uuid4().hex[:8]}.example.com",
         parent_value=None, first_seen_at=now, last_seen_at=now,
-        asset_metadata={"record_type": "A", "content": "203.0.113.9"},
         record_type="A", content="203.0.113.9",
     )
     db.add(row)
