@@ -20,6 +20,12 @@ build/
 node_modules/
 .next/
 
+# TypeScript incremental build cache — machine-local derived state,
+# rewritten by every `tsc -b` (the typecheck gate). Was tracked until
+# 2026-08-22, which left it permanently dirty: end-of-file-fixer adds a
+# trailing newline on commit and tsc regenerates the file without one.
+*.tsbuildinfo
+
 # IDE
 .vscode/
 .idea/
