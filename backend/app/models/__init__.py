@@ -24,6 +24,7 @@ from app.models.claim import AssetClaim, ClaimHistory, CLAIM_TYPES
 from app.models.asset_state import AssetState, ESTATE_VALUES
 from app.models.edge_relationship import EdgeTypeRelationship, EDGE_RELATIONSHIPS
 from app.models.authorisation_decision import AuthorisationDecision
+from app.models.asset_hygiene_score import AssetHygieneScore, GRADE_VALUES, BAND_VALUES
 
 __all__ = [
     "User", "UserRole",
@@ -61,4 +62,7 @@ __all__ = [
     "EdgeTypeRelationship",
     "EDGE_RELATIONSHIPS",
     "AuthorisationDecision",
+    "AssetHygieneScore",
+    "GRADE_VALUES",
+    "BAND_VALUES",
 ]

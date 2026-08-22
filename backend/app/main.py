@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from app.api import connectors, scans, findings, assets, auth, users, saml, targets, logs, tags
 from app.api import claims
 from app.api import edges
+from app.api import hygiene
 from app.api import monitoring
 from app.api import notifications
 from app.api import scan_templates
@@ -111,6 +112,7 @@ app.include_router(monitoring.router, prefix="/api/monitoring", tags=["monitorin
 app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
 app.include_router(edges.router, prefix="/api/edges", tags=["edges"])
 app.include_router(claims.router, prefix="/api/claims", tags=["claims"])
+app.include_router(hygiene.router, prefix="/api/hygiene", tags=["hygiene"])
 
 
 @app.get("/api/health")

@@ -60,6 +60,7 @@ def start() -> None:
     _register_epss_refresher()
     _register_cpe_index_refresher()
     _register_claim_history_maintenance()
+    _register_hygiene_scoring()
 
 
 def _seed_default_connectors() -> None:
@@ -216,6 +217,45 @@ def _run_claim_history_maintenance() -> None:
         log.info("claim_history maintenance complete — %s", stats)
     except Exception:
         log.error("claim_history maintenance failed", exc_info=True)
+    finally:
+        db.close()
+
+
+def _register_hygiene_scoring() -> None:
+    """Register the asset hygiene scorer as a daily job (planning#130, L1).
+
+    First run fires ~90s after startup — not 60s like its siblings above.
+    Every other daily job in this scheduler fires at +60s, and hygiene
+    scoring reads `asset_state` (the projector's output) and
+    `asset_claims`, so it should never race a fresh deploy's own startup
+    work for the same tables. 90s staggers it a full 30s behind the pack
+    on purpose, so a fresh deploy doesn't pile every daily job onto the
+    same instant.
+    """
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        _run_hygiene_scoring,
+        trigger=IntervalTrigger(hours=24),
+        id="hygiene_scoring",
+        name="Asset hygiene scoring",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=90),
+    )
+    log.info("Scheduled hygiene_scoring (every 24h; first run ~90s after start)")
+
+
+def _run_hygiene_scoring() -> None:
+    from app.services import hygiene_scorer
+
+    db = SessionLocal()
+    try:
+        stats = hygiene_scorer.run(db)
+        log.info("Asset hygiene scoring complete — %s", stats)
+    except Exception:
+        log.error("Asset hygiene scoring failed", exc_info=True)
     finally:
         db.close()
 
