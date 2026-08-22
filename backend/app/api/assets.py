@@ -11,12 +11,11 @@ from app.api.deps import get_current_user, require_role
 from app.api.findings import _NOT_EXCLUDED_FROM_MAIN
 from app.core.database import get_db
 from app.models.asset_canonical import AssetCanonical
-from app.models.asset_state import AssetState
 from app.models.finding_canonical import FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.target_asset_link import TargetAssetLink
 from app.models.user import UserRole
-from app.services import metadata_bridge, scan_executor, whois_service
+from app.services import claims_query, metadata_bridge, scan_executor, whois_service
 from app.services.asset_chain import chain_target_ids
 
 # ── Severity helpers ──────────────────────────────────────────────────────────
@@ -25,17 +24,18 @@ _SEV_RANK: dict[str, int] = {"critical": 5, "high": 4, "medium": 3, "low": 2, "i
 
 
 def _third_party_asset_ids(db: Session):
-    """Subquery of asset ids projected `estate = not_ours` (planning#147).
+    """Subquery of asset ids whose `surface` (planning#145 L4) is `not_ours`
+    (planning#147).
 
-    Reads the projected estate rather than the claim directly, so anything
-    else that ever lands an asset in not_ours is hidden by the same rule —
-    the predicate is "not our estate", not "captured by dns_resolve".
+    Reads the projected estate — via `claims_query.asset_ids_with_surface`,
+    not an inline query — so anything else that ever lands an asset in
+    not_ours is hidden by the same rule. The predicate is "not our estate",
+    not "captured by dns_resolve"; this is now the shipped primitive
+    `planning#144`'s "exclusions re-keyed off the estate tri-state" reuse
+    point pointed at, so an inline copy here would just be a duplicate of
+    it.
     """
-    return (
-        db.query(AssetState.asset_canonical_id)
-        .filter(AssetState.estate == "not_ours")
-        .scalar_subquery()
-    )
+    return claims_query.asset_ids_with_surface(db, "not_ours")
 
 
 def _compute_asset_risk(db: Session, assets: list[AssetCanonical]) -> dict:
@@ -299,7 +299,11 @@ def list_assets(
     assets = q.order_by(AssetCanonical.last_seen_at.desc()).limit(1000).all()
     risk = _compute_asset_risk(db, assets)
     bridge_sources = load_bridge_sources(db, [a.id for a in assets])
-    return [_serialize_asset(a, risk.get(a.id), bridge_sources.get(a.id)) for a in assets]
+    surfaces = claims_query.surface_by_asset(db, [a.id for a in assets])
+    return [
+        _serialize_asset(a, risk.get(a.id), bridge_sources.get(a.id), surfaces.get(a.id))
+        for a in assets
+    ]
 
 
 @router.delete("/bulk", status_code=200)
@@ -345,7 +349,8 @@ def get_asset(
         raise HTTPException(status_code=404, detail="Asset not found")
     risk = _compute_asset_risk(db, [asset])
     bridge_sources = load_bridge_sources(db, [asset.id])
-    return _serialize_asset(asset, risk.get(asset.id), bridge_sources.get(asset.id))
+    surface = claims_query.surface_by_asset(db, [asset.id])
+    return _serialize_asset(asset, risk.get(asset.id), bridge_sources.get(asset.id), surface.get(asset.id))
 
 
 @router.patch("/{asset_id}/ignore", status_code=200)
@@ -542,7 +547,12 @@ _EMPTY_BRIDGE_SOURCES = metadata_bridge.EMPTY_BRIDGE_SOURCES
 _bridge_metadata = metadata_bridge.bridge_metadata
 load_bridge_sources = metadata_bridge.load_bridge_sources
 
-def _serialize_asset(row: AssetCanonical, risk: dict | None = None, bridge_sources: dict | None = None) -> dict:
+def _serialize_asset(
+    row: AssetCanonical,
+    risk: dict | None = None,
+    bridge_sources: dict | None = None,
+    surface: str | None = None,
+) -> dict:
     risk = risk or {}
     claims = bridge_sources if bridge_sources is not None else _EMPTY_BRIDGE_SOURCES
     metadata = _bridge_metadata(row, claims.get("state"), claims)
@@ -561,4 +571,11 @@ def _serialize_asset(row: AssetCanonical, risk: dict | None = None, bridge_sourc
         "worst_severity": risk.get("worst_severity"),
         "risk_score": risk.get("risk_score"),
         "risk_band": risk.get("risk_band"),
+        # planning#145 L4: the estate tri-state (+ "unknown"), top-level only
+        # — this must NOT be folded into `asset_metadata` above, which is a
+        # byte-compatible bridge to the dropped column shape
+        # (metadata_bridge.py) that test_serializer_bridge.py pins against a
+        # SEEDED payload. `surface` is a query-layer read of asset_state,
+        # not a bridged claim, so it doesn't belong in that reconstruction.
+        "surface": surface if surface is not None else claims_query.SURFACE_UNKNOWN,
     }

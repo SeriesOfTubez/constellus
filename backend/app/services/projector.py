@@ -22,6 +22,10 @@ either a claim or a real column:
   - `attributes["naabu_last_scan_at"]` <- the naabu `port_observation`
     claim's `last_observed_at`, isoformatted — the same value used as the
     prune cutoff.
+  - `estate = "proven_ours"` <- a `cloud_inventory` claim with
+    `claim_value.get("confirmed") is True` (planning#145 L4 — the epic's
+    missing promotion path; see the precedence comment at the estate
+    derivation below).
 
 `asset_writer`'s merge loop still authors `asset_metadata` for the readers
 L3c-3 has not reached, and L3c-4 removes that write along with the column.
@@ -303,7 +307,9 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
     eol_status_by_asset: dict[uuid.UUID, dict] = {}
     cdn_boundary_by_asset: dict[uuid.UUID, dict] = {}
     third_party_by_asset: dict[uuid.UUID, dict] = {}
+    cloud_inventory_by_asset: dict[uuid.UUID, dict] = {}
     _cdn_seen_at: dict[uuid.UUID, datetime] = {}
+    _cloud_inventory_seen_at: dict[uuid.UUID, datetime] = {}
     single_claim_rows = (
         db.query(
             AssetClaim.asset_canonical_id,
@@ -315,7 +321,7 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         .filter(
             AssetClaim.asset_canonical_id.in_(asset_ids),
             AssetClaim.claim_type.in_(
-                list(_OWNED_CLAIMS) + ["cdn_boundary", "third_party_dependency"]
+                list(_OWNED_CLAIMS) + ["cdn_boundary", "third_party_dependency", "cloud_inventory"]
             ),
         )
         .all()
@@ -331,6 +337,23 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
             if previous is None or last_observed_at > previous:
                 _cdn_seen_at[asset_id] = last_observed_at
                 cdn_boundary_by_asset[asset_id] = claim_value
+            continue
+        if claim_type == "cloud_inventory":
+            # planning#145 L4: NOT observer-pinned, unlike hosting_class/
+            # affinity_confirmation/eol_status above. cloud_inventory is
+            # *defined* as credentialed proof of ownership (planning#142
+            # D1), and more than one credentialed producer can legitimately
+            # emit it — Wiz, cloudlist, a future cloud connector
+            # (planning#141/#118) — so this folds every observer's claim,
+            # most-recently-observed winning, same as cdn_boundary just
+            # above. Whether a given producer is ENTITLED to emit
+            # cloud_inventory at all is enforced at emission time (which
+            # observers are seeded/authorised to write it), not
+            # re-litigated here at projection time.
+            previous = _cloud_inventory_seen_at.get(asset_id)
+            if previous is None or last_observed_at > previous:
+                _cloud_inventory_seen_at[asset_id] = last_observed_at
+                cloud_inventory_by_asset[asset_id] = claim_value
             continue
         if observer_name_by_id.get(observer_id) != _OWNED_CLAIMS[claim_type]:
             continue
@@ -361,6 +384,7 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         eol_claim_value = eol_status_by_asset.get(asset_id)
         cdn_claim_value = cdn_boundary_by_asset.get(asset_id)
         third_party_claim_value = third_party_by_asset.get(asset_id)
+        cloud_inventory_claim_value = cloud_inventory_by_asset.get(asset_id)
 
         if canonical is None:
             continue  # id doesn't resolve to a row (deleted mid-scan)
@@ -403,7 +427,29 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
             eol_summary = []
 
         verdict = affinity_claim_value.get("verdict") if isinstance(affinity_claim_value, dict) else None
-        if third_party_claim_value is not None:
+        cloud_inventory_confirmed = (
+            isinstance(cloud_inventory_claim_value, dict)
+            and cloud_inventory_claim_value.get("confirmed") is True
+        )
+        if cloud_inventory_confirmed:
+            # planning#145 L4: proven_ours — the promotion path the epic was
+            # missing. Estate precedence, most-to-least authoritative:
+            #   cloud_inventory.confirmed -> proven_ours
+            #   else third_party_dependency present -> not_ours
+            #   else verdict == confirmed_ours -> claimed_ours
+            #   else verdict == rejected_shared_infra -> not_ours
+            #   else None (no ownership signal)
+            # cloud_inventory outranks EVERYTHING, including
+            # third_party_dependency: that claim is a name-scoping
+            # INFERENCE (dns_resolve saw the CNAME target fall outside
+            # every declared target domain), whereas cloud_inventory is
+            # credentialed PROOF of ownership from a connector with API
+            # access to the org's own cloud account. An org's own cloud
+            # hostname can legitimately sit outside its declared target
+            # domains — proof of ownership beats an inference of
+            # non-ownership, not the other way round.
+            estate = "proven_ours"
+        elif third_party_claim_value is not None:
             # planning#147: a captured CNAME boundary target. Not ours by
             # observation — dns_resolve saw it fall outside every declared
             # target domain — and it outranks any affinity verdict, because
@@ -416,8 +462,9 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
             estate = "not_ours"
         else:
             # No ownership signal (absent, unverified, ownership_unverifiable,
-            # …) -> NULL. Do not invent an estate-unknown default here; it's
-            # an open decision (planning#129).
+            # …) -> NULL. Do not invent an estate-unknown default here — per
+            # planning#145's settled decision, "unknown" is mapped in the
+            # query layer (app.services.claims_query.surface), never stored.
             estate = None
 
         # ── provider_mx (recomputed from the L3b-1 record_type/content
@@ -433,6 +480,11 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         else:
             provider_mx = False
 
+        # planning#145 L4: the estate precedence above (cloud_inventory.confirmed
+        # outranking third_party_dependency) deliberately does NOT propagate to
+        # probe_class — this if/elif chain is unchanged by this slice. Probe
+        # eligibility is the cross-epic authorisation gate's business
+        # (planning#128/#132), out of scope here.
         if third_party_claim_value is not None:
             # Capture is not scan eligibility (planning#147). This is the
             # projected half of that rule; `_extract_scan_targets` enforces
