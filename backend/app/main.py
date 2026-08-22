@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from app.api import connectors, scans, findings, assets, auth, users, saml, targets, logs, tags
+from app.api import claims
 from app.api import edges
 from app.api import monitoring
 from app.api import notifications
@@ -109,6 +110,7 @@ app.include_router(system.router, prefix="/api/system", tags=["system"])
 app.include_router(monitoring.router, prefix="/api/monitoring", tags=["monitoring"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
 app.include_router(edges.router, prefix="/api/edges", tags=["edges"])
+app.include_router(claims.router, prefix="/api/claims", tags=["claims"])
 
 
 @app.get("/api/health")
