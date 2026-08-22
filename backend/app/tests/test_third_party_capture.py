@@ -63,10 +63,14 @@ def test_captured_node_is_not_a_scan_target():
         ]},
         "dns_resolve", "example.com", frozenset({"example.com"}),
     )
-    targets = _extract_scan_targets(assets)
-    assert "app.example.com" in targets, targets
-    assert "edge.vendor-example.net" not in targets, (
-        f"captured third-party node leaked into the scan target list: {targets}"
+    # Exact set, not membership: this asserts the vendor host is absent AND
+    # that nothing else leaked in. (Comparing sets also keeps CodeQL's
+    # py/incomplete-url-substring-sanitization heuristic out of it — `x in
+    # targets` is list membership here, but the rule cannot tell that from
+    # the substring check it is really looking for.)
+    targets = set(_extract_scan_targets(assets))
+    assert targets == {"app.example.com"}, (
+        f"expected only the owned record to be scannable, got {sorted(targets)}"
     )
 
 
@@ -77,8 +81,10 @@ def test_owned_assets_still_reach_the_scan_list():
         {"mail.example.com": [{"type": "A", "content": "203.0.113.9"}]},
         "dns_resolve", "example.com", frozenset({"example.com"}),
     )
-    targets = _extract_scan_targets(assets)
-    assert "mail.example.com" in targets and "203.0.113.9" in targets, targets
+    targets = set(_extract_scan_targets(assets))
+    assert targets == {"mail.example.com", "203.0.113.9"}, (
+        f"ordinary records must still be scannable, got {sorted(targets)}"
+    )
 
 
 # ── one node per boundary, however many records point at it ────────────────
