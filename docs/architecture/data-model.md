@@ -7,7 +7,7 @@ Constellus separates **what something is** (durable identity) from **when we saw
 | Entity | Identity (durable) | Observation log |
 |---|---|---|
 | Scans | `scan_templates` — scope, options, schedule, owner | `scan_runs` — one execution per fire with started_at / completed_at / status / kind / asset_count / finding_count |
-| Assets | `assets_canonical` — one row per (asset_type, value); first_seen_at, last_seen_at, ignored, tags | (none — `last_seen_at` only) |
+| Assets | `assets_canonical` — one row per (asset_type, value), and per (asset_type, value, record_type, content) for `dns_record`; first_seen_at, last_seen_at, ignored, tags | `asset_claims` — per-observer current values, with `claim_history` as the append-only change log |
 | Findings | `findings_canonical` — one row per (asset_canonical_id, finding_type, source, fingerprint); state, suppressed_until, first_seen_at, last_seen_at | (none — `last_seen_at` only) |
 
 ## Key tables
@@ -20,6 +20,12 @@ Constellus separates **what something is** (durable identity) from **when we saw
 | `findings_canonical` | Standard | One row per (asset, type, source, fingerprint); durable identity |
 | `target_asset_links` | Standard | N-to-N join between `targets` and `assets_canonical` with refcount semantics |
 | `asset_edges` | Standard | Typed directed edges between graph nodes (polymorphic FK) |
+| `asset_claims` | Standard | **Current-state store.** One row per (asset, observer, claim_type) — what a given producer currently asserts about an asset |
+| `asset_state` | Standard | Projection of `asset_claims` down to one row per asset: `open_ports`, `estate`, `hosting`, `eol_summary`, `attributes` |
+| `claim_history` | Partitioned | Append-only log of claim *changes*, range-partitioned monthly on `changed_at` (24-month retention) |
+| `claim_types` | Reference | Claim vocabulary + per-type authorisation/reporting TTL policy |
+| `observers` | Reference | Registry of claim producers with their kind / trust / addressing taxonomy |
+| `edge_type_relationships` | Reference | Maps an `edge_type` to its attribution relationship (`dependency`, `recipient`) |
 | `targets` | Standard | Domains, IPs, and CIDRs in scope (with `source_type` + `auto_managed`) |
 | `audit_logs` | Hypertable | Immutable audit trail partitioned by `occurred_at` |
 | `connector_configs` | Standard | Encrypted connector credentials |
@@ -84,6 +90,24 @@ suppressed → open    (suppression expires or analyst reopens)
 
 State transitions are logged with `acknowledged_by_id` and `acknowledged_at`. Bulk state updates are available via `POST /api/findings/bulk/state`.
 
+## Claims layer
+
+Asset attributes used to live in a single untyped `metadata` JSONB blob on `assets_canonical`, shallow-merged by every producer. That had no per-observer attribution (a value could never be traced, aged, or retired), no schema, and accumulate-only semantics — a signal that disappeared never cleared. It was replaced by the claims layer and dropped in migration 0043.
+
+| Concept | Table | What it answers |
+|---|---|---|
+| **Who says what, now** | `asset_claims` | One row per (asset, observer, claim_type). naabu's port list and Shodan's port list are separate rows — conflicting values are preserved, not merged away |
+| **What changed, when** | `claim_history` | Append-only. A re-observation of an *unchanged* value bumps `last_observed_at` and writes nothing here; only a changed value appends |
+| **The current view** | `asset_state` | One row per asset, projected from its claims: `open_ports`, `estate`, `hosting`, `eol_summary`, `attributes` |
+| **Who is allowed to say it** | `observers` | Each producer's kind (scan / discovery / connector / verify / enrich), trust, and addressing mode |
+
+Two properties this buys that the blob could not:
+
+- **Absence is queryable.** "An internet-visible asset with no EDR claim and no device-management claim" is a real query now. Against a flat dict, a missing key and an unobserved fact were indistinguishable.
+- **Estate is derived, not asserted.** `asset_state.estate` (`proven_ours` / `claimed_ours` / `not_ours`) comes from claims with observers and timestamps behind them, which is what makes it safe to *reject* a finding rather than merely flag it.
+
+The API still serves an `asset_metadata` object, but it is **reconstructed per request** by `app/services/metadata_bridge.py` from claims + `asset_state` + columns — the frontend contract outlived the column.
+
 ## Graph edges
 
 `asset_edges` connects any two graph nodes using a **polymorphic FK** pattern:
@@ -99,17 +123,31 @@ State transitions are logged with `acknowledged_by_id` and `acknowledged_at`. Bu
 
 A trigger function (`asset_edges_validate_endpoints`) enforces app-level FK integrity by checking the referenced row exists in the right table on insert/update. Text + CHECK was chosen over Postgres enum because adding new edge types is just a migration that loosens the constraint, no `ALTER TYPE` dance.
 
-**Edge vocabulary (initial):**
+**Edge vocabulary:**
 
 | `edge_type` | Source → Target | Purpose |
 |---|---|---|
-| `resolves_to` | `dns_record` → `ip_address` | DNS resolution chain |
-| `has_open_port` | `ip_address` → port asset | Reachable service |
-| `runs_service` | port → service asset | What's listening |
+| `resolves_to` | `dns_record` → `ip_address` / `dns_record` | DNS resolution chain (A / AAAA, and CNAME hops between owned names) |
+| `cname` | `dns_record` → `dns_record` | The customer → third-party CNAME boundary specifically |
+| `runs_service` | `ip_address` → service asset | What's listening |
 | `has_finding` | `asset_canonical` → `finding_canonical` | Asset is affected by a finding |
 | `registered_to` | `asset_canonical` → `whois_org` | WHOIS / RDAP ownership |
 | `discovered_in_target` | `asset_canonical` → `target` | Provenance — which target surfaced this asset |
 | `belongs_to_apex` | subdomain → apex `dns_record` | Domain hierarchy |
+
+!!! note "Why `cname` is separate from `resolves_to`"
+
+    `resolves_to` is DNS mechanics, shared with A/AAAA records. `cname` carries
+    the **attribution** axis — its `edge_type_relationships` row is
+    `dependency`, and it is only emitted for the hop that crosses from
+    customer-owned infrastructure to a third party. Tagging `resolves_to` as a
+    dependency instead would make an A record pointing at the org's *own* IP
+    read as a third-party dependency. The boundary hop emits `cname` **instead
+    of** `resolves_to`, never both.
+
+    Ports stopped being first-class asset nodes in migration 0029, so the old
+    `has_open_port` edge no longer exists — ports live on
+    `asset_state.open_ports`.
 
 `target_asset_links` parallels the `discovered_in_target` edges but is a denormalized fast-path table optimized for "give me all assets for target X." It also carries refcount semantics: an asset is garbage-collected when its link count reaches zero.
 
