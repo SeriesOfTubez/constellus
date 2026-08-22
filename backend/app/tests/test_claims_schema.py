@@ -81,13 +81,13 @@ def test_observers_seeded_with_18_rows_and_correct_addressing():
     assert "cloud_inventory" not in by_name
 
 
-def test_claim_types_seeded_with_17_rows_and_exactly_two_authorisation_ttls():
+def test_claim_types_seeded_with_18_rows_and_exactly_two_authorisation_ttls():
     db = SessionLocal()
     try:
         rows = db.execute(text("SELECT claim_type, authorisation_ttl FROM claim_types")).all()
     finally:
         db.close()
-    assert len(rows) == 17, f"expected 17 seeded claim types, got {len(rows)}"
+    assert len(rows) == 18, f"expected 18 seeded claim types, got {len(rows)}"
     with_ttl = {claim_type for claim_type, ttl in rows if ttl is not None}
     assert with_ttl == {"affinity_confirmation", "cloud_inventory"}, with_ttl
     by_type = dict(rows)
@@ -95,6 +95,12 @@ def test_claim_types_seeded_with_17_rows_and_exactly_two_authorisation_ttls():
     assert by_type["observation"] is None, "observation carries no authorisation_ttl"
     assert "cdn_boundary" in by_type, "cdn_boundary claim type (0042, L3c-3) must be seeded"
     assert by_type["cdn_boundary"] is None, "cdn_boundary carries no authorisation_ttl"
+    assert "third_party_dependency" in by_type, (
+        "third_party_dependency claim type (0044, planning#147) must be seeded"
+    )
+    assert by_type["third_party_dependency"] is None, (
+        "third_party_dependency is an observation, not a probe authorisation — no TTL"
+    )
 
 
 def test_claim_types_frozenset_matches_the_seeded_table():
@@ -273,7 +279,7 @@ def _run():
     tests = [
         test_all_seven_claims_layer_tables_exist,
         test_observers_seeded_with_18_rows_and_correct_addressing,
-        test_claim_types_seeded_with_17_rows_and_exactly_two_authorisation_ttls,
+        test_claim_types_seeded_with_18_rows_and_exactly_two_authorisation_ttls,
         test_claim_types_frozenset_matches_the_seeded_table,
         test_edge_type_relationships_seeded_with_7_rows,
         test_claim_history_is_natively_partitioned_with_at_least_3_partitions,

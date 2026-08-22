@@ -321,9 +321,18 @@ def _emit_edges_for_batch(
 ) -> None:
     """Emit asset_edges for in-batch graph relationships.
 
-    Three edge kinds:
+    Four edge kinds:
       • resolves_to (dns_record → ip_address) — A / AAAA records
-      • resolves_to (dns_record → dns_record) — CNAME hops
+      • resolves_to (dns_record → dns_record) — owned CNAME hops
+      • cname (dns_record → dns_record) — the customer → third-party CNAME
+        boundary hop specifically (planning#147). Emitted INSTEAD of
+        resolves_to for that one hop, never alongside it: `resolves_to` is
+        the DNS mechanic shared with A/AAAA, while `cname` carries the
+        attribution axis (relationship = dependency, per the
+        edge_type_relationships row seeded in migration 0039). The boundary
+        is identified by the source record's own cdn/cdn_domain annotation,
+        which dns_resolve writes on the last owned hop — so this works
+        whether or not the third-party target was captured in this batch.
       • belongs_to_apex (dns_record → dns_record) — child → apex
 
     CNAME and apex targets are looked up by name only — a target FQDN may
@@ -346,7 +355,7 @@ def _emit_edges_for_batch(
 
     edges: list[dict] = []
     pending_apex_lookups: dict[str, list[uuid.UUID]] = {}
-    pending_cname_lookups: dict[str, list[uuid.UUID]] = {}
+    pending_cname_lookups: dict[str, list[tuple[uuid.UUID, str]]] = {}
     pending_a_lookups: dict[str, list[tuple[uuid.UUID, str]]] = {}
 
     for a in assets:
@@ -371,11 +380,14 @@ def _emit_edges_for_batch(
             else:
                 pending_a_lookups.setdefault(content, []).append((src_id, rtype))
         elif rtype == "CNAME" and content:
+            # planning#147: the boundary hop's target is third-party infra,
+            # so this edge is a dependency, not a plain resolution step.
+            edge_type = "cname" if (meta.get("cdn") and content == meta.get("cdn_domain")) else "resolves_to"
             target_id = canonical_by_name.get(content)
             if target_id:
-                edges.append(_edge(src_id, target_id, "resolves_to", now, {"record_type": "CNAME"}))
+                edges.append(_edge(src_id, target_id, edge_type, now, {"record_type": "CNAME"}))
             else:
-                pending_cname_lookups.setdefault(content, []).append(src_id)
+                pending_cname_lookups.setdefault(content, []).append((src_id, edge_type))
 
         # belongs_to_apex: child dns_record → apex dns_record
         if a.parent_value and a.parent_value != a.value:
@@ -409,12 +421,12 @@ def _emit_edges_for_batch(
         target_by_name: dict[str, uuid.UUID] = {}
         for v, i in rows:
             target_by_name.setdefault(v, i)
-        for target_value, src_ids in pending_cname_lookups.items():
+        for target_value, pending in pending_cname_lookups.items():
             tid = target_by_name.get(target_value)
             if not tid:
                 continue
-            for sid in src_ids:
-                edges.append(_edge(sid, tid, "resolves_to", now, {"record_type": "CNAME"}))
+            for sid, edge_type in pending:
+                edges.append(_edge(sid, tid, edge_type, now, {"record_type": "CNAME"}))
 
     if pending_a_lookups:
         rows = db.query(AssetCanonical.value, AssetCanonical.id).filter(

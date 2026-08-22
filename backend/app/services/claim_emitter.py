@@ -106,6 +106,16 @@ _SHODAN_HOST_CLAIM_TYPE = "shodan_host"
 _CDN_KEYS: dict[str, str] = {"cdn": "cdn", "cdn_domain": "cdn_domain"}
 _CDN_CLAIM_TYPE = "cdn_boundary"
 
+# third_party: the customer->third-party CNAME boundary TARGET, captured as a
+# context node by dns_resolve._third_party_node (planning#147). Distinct from
+# _CDN_KEYS above, which annotates the owned record on the near side of the
+# same boundary — this one is the far side. The claim is what lets the
+# projector derive estate=not_ours / probe_class=no_probe from an observation
+# with an observer and a timestamp, rather than asserting it at read time.
+_THIRD_PARTY_METADATA_KEY = "third_party"
+_THIRD_PARTY_CLAIM_TYPE = "third_party_dependency"
+_THIRD_PARTY_VALUE_KEYS = ("relationship", "discovered_via")
+
 _PORT_OBSERVATION_CLAIM_TYPE = "port_observation"
 # Per-entry keys that are envelope data, not part of the stored port claim value.
 _PORT_ENTRY_ENVELOPE_KEYS = ("sources", "naabu_tier")
@@ -175,6 +185,7 @@ def emit_claims(
                 _accumulate_ct_claim(targets, canonical_id, observer_id, meta)
                 _accumulate_shodan_host_claim(targets, canonical_id, observer_id, meta)
                 _accumulate_cdn_claim(targets, canonical_id, observer_id, meta)
+                _accumulate_third_party_claim(targets, canonical_id, observer_id, meta)
 
         # port_observation: attributed per-entry by each port's own `sources`,
         # independent of (and possibly broader than) the asset-level observer
@@ -294,6 +305,22 @@ def _accumulate_cdn_claim(
         if meta.get(meta_key) is not None
     }
     _merge_target(targets, (canonical_id, observer_id, _CDN_CLAIM_TYPE), value, {})
+
+
+def _accumulate_third_party_claim(
+    targets: dict[_TargetKey, dict],
+    canonical_id: uuid.UUID,
+    observer_id: uuid.UUID,
+    meta: dict,
+) -> None:
+    """Third-party dependency node (planning#147). Keyed off a truthy
+    `third_party` flag; the descriptive keys ride along in claim_value when
+    present so the relationship axis is recorded with the observation rather
+    than re-derived later."""
+    if not meta.get(_THIRD_PARTY_METADATA_KEY):
+        return
+    value = {k: meta[k] for k in _THIRD_PARTY_VALUE_KEYS if meta.get(k) is not None}
+    _merge_target(targets, (canonical_id, observer_id, _THIRD_PARTY_CLAIM_TYPE), value, {})
 
 
 def _accumulate_port_observation(

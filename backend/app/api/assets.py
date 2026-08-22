@@ -11,6 +11,7 @@ from app.api.deps import get_current_user, require_role
 from app.api.findings import _NOT_EXCLUDED_FROM_MAIN
 from app.core.database import get_db
 from app.models.asset_canonical import AssetCanonical
+from app.models.asset_state import AssetState
 from app.models.finding_canonical import FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.target_asset_link import TargetAssetLink
@@ -21,6 +22,20 @@ from app.services.asset_chain import chain_target_ids
 # ── Severity helpers ──────────────────────────────────────────────────────────
 
 _SEV_RANK: dict[str, int] = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
+
+
+def _third_party_asset_ids(db: Session):
+    """Subquery of asset ids projected `estate = not_ours` (planning#147).
+
+    Reads the projected estate rather than the claim directly, so anything
+    else that ever lands an asset in not_ours is hidden by the same rule —
+    the predicate is "not our estate", not "captured by dns_resolve".
+    """
+    return (
+        db.query(AssetState.asset_canonical_id)
+        .filter(AssetState.estate == "not_ours")
+        .scalar_subquery()
+    )
 
 
 def _compute_asset_risk(db: Session, assets: list[AssetCanonical]) -> dict:
@@ -259,16 +274,28 @@ def delete_assets_by_apex(
 def list_assets(
     asset_type: str | None = None,
     show_ignored: bool = False,
+    show_third_party: bool = False,
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
     """List canonical assets. Returns durable identity rows — one per
-    (asset_type, value) — not observation rows."""
+    (asset_type, value) — not observation rows.
+
+    `show_third_party` (planning#147) surfaces captured third-party context
+    nodes — CNAME boundary targets like a vendor or CDN hostname an owned
+    record depends on. Hidden by default: they are recorded so dependency,
+    WHOIS and takeover queries have a node to attach to, not because the org
+    owns them, and letting vendor infrastructure inflate the inventory an
+    operator reads as "our assets" is the self-inflicted noise this capture
+    model is meant to avoid. Same shape as `show_ignored`.
+    """
     q = db.query(AssetCanonical)
     if asset_type:
         q = q.filter(AssetCanonical.asset_type == asset_type)
     if not show_ignored:
         q = q.filter(AssetCanonical.ignored == False)  # noqa: E712
+    if not show_third_party:
+        q = q.filter(~AssetCanonical.id.in_(_third_party_asset_ids(db)))
     assets = q.order_by(AssetCanonical.last_seen_at.desc()).limit(1000).all()
     risk = _compute_asset_risk(db, assets)
     bridge_sources = load_bridge_sources(db, [a.id for a in assets])

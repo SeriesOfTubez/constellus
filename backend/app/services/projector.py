@@ -302,6 +302,7 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
     affinity_confirmation_by_asset: dict[uuid.UUID, dict] = {}
     eol_status_by_asset: dict[uuid.UUID, dict] = {}
     cdn_boundary_by_asset: dict[uuid.UUID, dict] = {}
+    third_party_by_asset: dict[uuid.UUID, dict] = {}
     _cdn_seen_at: dict[uuid.UUID, datetime] = {}
     single_claim_rows = (
         db.query(
@@ -313,11 +314,18 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         )
         .filter(
             AssetClaim.asset_canonical_id.in_(asset_ids),
-            AssetClaim.claim_type.in_(list(_OWNED_CLAIMS) + ["cdn_boundary"]),
+            AssetClaim.claim_type.in_(
+                list(_OWNED_CLAIMS) + ["cdn_boundary", "third_party_dependency"]
+            ),
         )
         .all()
     )
     for asset_id, claim_type, claim_value, observer_id, last_observed_at in single_claim_rows:
+        if claim_type == "third_party_dependency":
+            # Not observer-pinned, same reasoning as cdn_boundary: whichever
+            # discovery observer crossed the boundary is entitled to say so.
+            third_party_by_asset[asset_id] = claim_value
+            continue
         if claim_type == "cdn_boundary":
             previous = _cdn_seen_at.get(asset_id)
             if previous is None or last_observed_at > previous:
@@ -352,6 +360,7 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         affinity_claim_value = affinity_confirmation_by_asset.get(asset_id)
         eol_claim_value = eol_status_by_asset.get(asset_id)
         cdn_claim_value = cdn_boundary_by_asset.get(asset_id)
+        third_party_claim_value = third_party_by_asset.get(asset_id)
 
         if canonical is None:
             continue  # id doesn't resolve to a row (deleted mid-scan)
@@ -394,7 +403,14 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
             eol_summary = []
 
         verdict = affinity_claim_value.get("verdict") if isinstance(affinity_claim_value, dict) else None
-        if verdict == "confirmed_ours":
+        if third_party_claim_value is not None:
+            # planning#147: a captured CNAME boundary target. Not ours by
+            # observation — dns_resolve saw it fall outside every declared
+            # target domain — and it outranks any affinity verdict, because
+            # we never probed it and never will, so an affinity claim on it
+            # could only be stale or mistaken.
+            estate = "not_ours"
+        elif verdict == "confirmed_ours":
             estate = "claimed_ours"
         elif verdict == "rejected_shared_infra":
             estate = "not_ours"
@@ -417,7 +433,12 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         else:
             provider_mx = False
 
-        if provider_mx:
+        if third_party_claim_value is not None:
+            # Capture is not scan eligibility (planning#147). This is the
+            # projected half of that rule; `_extract_scan_targets` enforces
+            # the in-batch half.
+            probe_class = "no_probe"
+        elif provider_mx:
             probe_class = "no_probe"
         elif asset_type == "ip_address" and (
             asset_id in cidr_scoped_ids
