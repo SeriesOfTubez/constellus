@@ -46,112 +46,22 @@ from typing import Iterable
 
 import httpx
 
-# Match the SAML legacy blocklist plus a couple of broadcast/multicast nets.
-# Adjust here — every SSRF-protected fetch in the app inherits this list.
-DEFAULT_BLOCKED_NETWORKS: tuple = (
-    ipaddress.ip_network("0.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("100.64.0.0/10"),    # RFC 6598 CGNAT
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),   # link-local / AWS IMDS
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.0.0.0/24"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("198.18.0.0/15"),    # benchmarking
-    ipaddress.ip_network("224.0.0.0/4"),      # multicast
-    ipaddress.ip_network("240.0.0.0/4"),      # reserved
-    ipaddress.ip_network("255.255.255.255/32"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),         # IPv6 unique local
-    ipaddress.ip_network("fe80::/10"),        # IPv6 link-local
-    ipaddress.ip_network("ff00::/8"),         # IPv6 multicast
-    # RFC 8215 local-use NAT64. Unlike the well-known 64:ff9b::/96 prefix,
-    # the embedded-IPv4 offset here depends on a translator prefix length we
-    # can't know (RFC 6052 allows /32../96), so there is nothing reliable to
-    # unwrap — and no legitimate reason for a user-supplied URL to point into
-    # a network-specific translation range. Blocked wholesale.
-    ipaddress.ip_network("64:ff9b:1::/48"),
+# The blocklist, the IPv4-in-IPv6 unwrapping and the classification rule all
+# live in `ip_blocklist` — a stdlib-only leaf module that is byte-identical to
+# `scanner-worker/ip_blocklist.py`. They were duplicated prose-to-prose before,
+# with a comment asking the next maintainer to keep them in sync; they did not
+# stay in sync, and the worker (the component that actually opens sockets) was
+# the copy left behind. See that module's docstring for the verified bypasses
+# and for why a build-topology constraint forces two files but not two
+# behaviours. `test_blocklist_parity.py` fails if the copies diverge.
+from app.core.ip_blocklist import (  # noqa: F401  (re-exported — see below)
+    DEFAULT_BLOCKED_NETWORKS,
+    embedded_ipv4 as _embedded_ipv4,
+    is_blocked,
 )
-
-# IPv6 prefixes that carry an IPv4 address in a known position. Everything
-# here is unwrapped by `_embedded_ipv4` and re-classified as that IPv4
-# address, so `::ffff:10.0.0.1` is blocked while `::ffff:8.8.8.8` is not —
-# the encoding isn't what's dangerous, the destination is.
-_NAT64_WELL_KNOWN = ipaddress.ip_network("64:ff9b::/96")
-_IPV4_COMPATIBLE = ipaddress.ip_network("::/96")
-
 
 class SSRFBlockedError(httpx.RequestError):
     """Raised when a request's resolved address is on the blocklist."""
-
-
-def _embedded_ipv4(ip) -> ipaddress.IPv4Address | None:
-    """Return the IPv4 address an IPv6 address embeds, or None.
-
-    Covers every standard IPv4-in-IPv6 encoding:
-
-      * `::ffff:a.b.c.d`  IPv4-mapped (`::ffff:0:0/96`) — the important one.
-        Connects straight to the IPv4 address on a dual-stack socket.
-      * `::a.b.c.d`       IPv4-compatible (`::/96`) — deprecated by RFC 4291
-        but still parsed, and still missed by every IPv4-network check.
-      * `2002:...`        6to4 (RFC 3056) — the embedded IPv4 is the relay.
-      * `2001:0:...`      Teredo (RFC 4380) — server and client IPv4.
-      * `64:ff9b::a.b.c.d` NAT64 well-known prefix (RFC 6052) — /96, so the
-        IPv4 is unambiguously the low 32 bits.
-
-    Python exposes `.ipv4_mapped` / `.sixtofour` / `.teredo` directly; the
-    other two are matched by prefix here. Teredo returns (server, client)
-    and the SERVER is what the packet is actually sent to, so that is what
-    gets classified — the obfuscated client address is a payload, not a
-    destination.
-    """
-    if not isinstance(ip, ipaddress.IPv6Address):
-        return None
-    if ip.ipv4_mapped is not None:
-        return ip.ipv4_mapped
-    if ip.sixtofour is not None:
-        return ip.sixtofour
-    if ip.teredo is not None:
-        return ip.teredo[0]
-    if ip in _NAT64_WELL_KNOWN:
-        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
-    # `::` and `::1` fall inside ::/96 but are the unspecified and loopback
-    # addresses, not IPv4-compatible ones (RFC 4291 defines the form as
-    # ::a.b.c.d over a global IPv4 address). Both are already classified
-    # above, so excluding them changes no verdict — it just stops this
-    # helper claiming loopback embeds an IPv4 address, which it does not.
-    if ip in _IPV4_COMPATIBLE and int(ip) > 1:
-        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
-    return None
-
-
-def is_blocked(
-    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
-    blocked: Iterable = DEFAULT_BLOCKED_NETWORKS,
-) -> bool:
-    """Return True if `ip` is on the SSRF blocklist.
-
-    Exposed publicly so static validators (e.g. SAML metadata URL
-    validation) can reject IP-literal hosts without re-implementing the
-    classification rules used at request time.
-
-    An IPv6 address that embeds an IPv4 address is classified by the
-    address it actually reaches, not by its spelling — without that, the
-    IPv4 networks listed above are trivially sidestepped, since an
-    IPv6Address is never `in` an IPv4 network. Note this is not a blanket
-    rejection of those encodings: `::ffff:8.8.8.8` still resolves to a
-    public address and is still allowed.
-    """
-    if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
-        return True
-    if isinstance(ip, ipaddress.IPv4Address) and ip.is_reserved:
-        return True
-    if any(ip in net for net in blocked):
-        return True
-    embedded = _embedded_ipv4(ip)
-    if embedded is not None and is_blocked(embedded, blocked):
-        return True
-    return False
 
 
 class SSRFGuardTransport(httpx.HTTPTransport):
