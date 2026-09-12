@@ -42,6 +42,7 @@ from app.models.scan_template import ScanTemplate
 from app.services import aggressiveness
 from app.services import app_settings as settings_svc
 from app.services import nuclei_tag_filter
+from app.services import probe_authorisation
 from app.services import projector
 from app.services.asset_writer import write_assets
 from app.services.finding_writer import write_findings
@@ -769,6 +770,18 @@ def _run_pipeline(
     # 1's `index_lookup`. The connector still inherits from ScanningConnector
     # for taxonomy purposes, and its `scan()` is a no-op so Phase 3 stays
     # cheap to call.
+    #
+    # planning#148 — every candidate below is passed through
+    # probe_authorisation.authorise_probes() before it sees a single asset.
+    # The candidate set here is still built from `hasattr(c, "port_scan")`
+    # alone (unchanged) rather than also requiring a declared `observer`
+    # attribute: a connector is only a FULLY legitimate Phase 1.5 probe once
+    # it has both `port_scan` and `observer`, but a connector with
+    # `port_scan` and no (or an unresolvable) `observer` must still reach
+    # the gate and be denied there — loudly, with a decision row — instead
+    # of being quietly filtered out of this list. Filtering it out here
+    # would silently reopen the exact hasattr-only hole this issue closes;
+    # the gate is what now enforces the "both" requirement.
     if all_assets:
         # Copy persisted passive port hints (Shodan host ports from a prior
         # enrichment) onto the in-batch IP assets so naabu can fold them into
@@ -792,9 +805,16 @@ def _run_pipeline(
             if port_scan is None:
                 continue
             try:
+                gate = probe_authorisation.authorise_probes(
+                    db, connector_id=cid, connector=connector, assets=all_assets,
+                    scope=chunk_scope, scan_run_id=scan_run_id,
+                )
+                if not gate.permitted:
+                    log.info("Probe gate: no assets authorised for %s", cid)
+                    continue
                 config = _get_connector_config(db, cid)
                 config = {**config, "_aggressiveness": aggressiveness.profile(tier), "_tier": tier}
-                result = port_scan(all_assets, config)
+                result = port_scan(gate.permitted, config)
                 if result.assets:
                     asset_ids = write_assets(db, scan_run_id, result.assets)
                     if touched_asset_ids is not None:
@@ -831,6 +851,17 @@ def _run_pipeline(
                 log.exception("Enrichment connector %s failed", cid)
 
     # ── Phase 3: Scanning ─────────────────────────────────────────────────────
+    # planning#148 — deliberately UNCHANGED by the probe-authorisation gate.
+    # This is the interim scope enforcement for Phase 3 scanning connectors
+    # (nuclei today); it is not routed through probe_authorisation because
+    # (a) the `nuclei` observer is not in the migration-0039 OBSERVER_SEED
+    # roster, so a deny-undeclared gate would deny nuclei outright and kill
+    # Phase 3 scanning entirely, and (b) this filter is the current real
+    # scope enforcement — removing it while the gate's own scope cap is
+    # still a permissive stub (planning#128 fills it) would be a safety
+    # REGRESSION, not a cleanup. Planning#128 is expected to fold this
+    # is_scan_authorised/apex_domain check into the gate's scope cap; until
+    # then, this stays exactly as it was.
     targets = _extract_scan_targets(all_assets)
     authorised_targets = [t for t in targets if is_scan_authorised(db, apex_domain(t), auth_mode)]
     skipped = len(targets) - len(authorised_targets)

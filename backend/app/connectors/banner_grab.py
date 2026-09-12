@@ -72,6 +72,12 @@ class BannerGrabConnector(ScanningConnector):
     )
     core = True
 
+    # planning#148 — this connector's identity handle for the probe-
+    # authorisation gate (app.services.probe_authorisation). Must match a
+    # seeded `observers.name` row exactly; the gate denies outright (with a
+    # logged decision row) any Phase 1.5 connector missing this attribute.
+    observer = "banner_grab"
+
     # Runs AFTER naabu (default 100) in the Phase 1.5 loop. Asset writer
     # merges per-port, so naabu's open_ports[] patches must be present in
     # `all_assets` before this connector iterates them.
