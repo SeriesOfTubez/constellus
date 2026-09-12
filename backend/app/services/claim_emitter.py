@@ -116,6 +116,33 @@ _THIRD_PARTY_METADATA_KEY = "third_party"
 _THIRD_PARTY_CLAIM_TYPE = "third_party_dependency"
 _THIRD_PARTY_VALUE_KEYS = ("relationship", "discovered_via")
 
+# cloud_inventory: credentialed proof the address belongs to a resource in a
+# cloud account we control (planning#118a, connectors/wiz.py). The connector
+# hands over a fully-formed claim value under one key rather than scattering
+# its parts across metadata keys for this module to reassemble — the claim's
+# shape is defined by planning#142 D1 (`confirmed` / `authorised_names` /
+# `evidence_ref`), not by a metadata vocabulary, and every other producer of
+# this claim type (cloudlist, a future cloud connector) has to satisfy that
+# same contract. So this accumulator validates rather than constructs.
+#
+# Note the asymmetry with the other accumulators here: the only value this
+# claim type may carry is an affirmative one. A `confirmed` that is not
+# exactly True emits NOTHING, rather than a claim recording a negative —
+# because a cloud inventory that has not heard of an address has not thereby
+# established the address is not ours (see wiz._claim_from_nodes). The
+# absence layer (planning#145) represents "looked, found nothing", and it
+# does so by reading a claim's ABSENCE. Writing a row here would defeat it.
+_CLOUD_INVENTORY_METADATA_KEY = "cloud_inventory"
+_CLOUD_INVENTORY_CLAIM_TYPE = "cloud_inventory"
+# Keys that move to the evidence column instead of riding in claim_value.
+# Both are churny in a way ownership is not: `evidence_ref` carries the Wiz
+# exposure ids that matched, and `exposure_count` how many — a firewall rule
+# added or removed changes both while the answer to "is this address ours"
+# stays exactly the same. Left in claim_value they would make every such
+# edit look like a value change to `_upsert_claims`' JSON-equality check and
+# append a claim_history row saying ownership changed, which it did not.
+_CLOUD_INVENTORY_EVIDENCE_KEYS: tuple[str, ...] = ("evidence_ref", "exposure_count")
+
 _PORT_OBSERVATION_CLAIM_TYPE = "port_observation"
 # Per-entry keys that are envelope data, not part of the stored port claim value.
 _PORT_ENTRY_ENVELOPE_KEYS = ("sources", "naabu_tier")
@@ -186,6 +213,7 @@ def emit_claims(
                 _accumulate_shodan_host_claim(targets, canonical_id, observer_id, meta)
                 _accumulate_cdn_claim(targets, canonical_id, observer_id, meta)
                 _accumulate_third_party_claim(targets, canonical_id, observer_id, meta)
+                _accumulate_cloud_inventory_claim(targets, canonical_id, observer_id, meta)
 
         # port_observation: attributed per-entry by each port's own `sources`,
         # independent of (and possibly broader than) the asset-level observer
@@ -321,6 +349,41 @@ def _accumulate_third_party_claim(
         return
     value = {k: meta[k] for k in _THIRD_PARTY_VALUE_KEYS if meta.get(k) is not None}
     _merge_target(targets, (canonical_id, observer_id, _THIRD_PARTY_CLAIM_TYPE), value, {})
+
+
+def _accumulate_cloud_inventory_claim(
+    targets: dict[_TargetKey, dict],
+    canonical_id: uuid.UUID,
+    observer_id: uuid.UUID,
+    meta: dict,
+) -> None:
+    """Credentialed cloud-inventory ownership proof (planning#118a).
+
+    Unlike the accumulators above, this one does not assemble a claim value
+    out of metadata keys — the producer supplies the whole D1 envelope under
+    a single key and this validates it. Two rules, both load-bearing:
+
+      * `confirmed` must be exactly `True`. Anything else — False, absent,
+        a truthy non-True value — emits nothing at all. `cloud_inventory`
+        promotes an asset to `estate = "proven_ours"`, which outranks EVERY
+        other estate rule in the projector, so the bar for writing one is a
+        producer that affirmatively says yes, not one that merely failed to
+        say no.
+      * `evidence` is split out of the claim value and stored in the
+        evidence column, where the rest of the layer keeps provenance,
+        rather than being left inline in `claim_value` where the projector's
+        JSON-equality change detection would treat a re-observation with new
+        exposure ids as a value CHANGE and append a spurious history row.
+    """
+    payload = meta.get(_CLOUD_INVENTORY_METADATA_KEY)
+    if not isinstance(payload, dict):
+        return
+    if payload.get("confirmed") is not True:
+        return
+
+    value = {k: v for k, v in payload.items() if k not in _CLOUD_INVENTORY_EVIDENCE_KEYS}
+    evidence = {k: payload[k] for k in _CLOUD_INVENTORY_EVIDENCE_KEYS if k in payload}
+    _merge_target(targets, (canonical_id, observer_id, _CLOUD_INVENTORY_CLAIM_TYPE), value, evidence)
 
 
 def _accumulate_port_observation(

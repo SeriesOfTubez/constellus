@@ -1,6 +1,12 @@
 import os
 from typing import Optional
 
+# Imported for its side effect: populates os.environ from the repo-root
+# `.env`, which is where connector credentials live. `secrets` is
+# importable without `config`, so this module has to load it too rather
+# than relying on config having been imported first (planning#157).
+from app.core import env as _env  # noqa: F401
+
 _db_overrides: dict[str, str] = {}
 
 

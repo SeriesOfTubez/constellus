@@ -115,7 +115,7 @@ All connectors are optional and independently togglable via **Admin → Connecto
 | Cloudflare | Discovery | DNS records, WAF proxy status |
 | Shodan | Discovery + Enrichment | Passive subdomain index (/dns/domain); per-IP open ports, services, banners, known CVEs |
 | Tenable | Enrichment | Asset inventory, patch status, vulnerabilities |
-| Wiz | Enrichment | Cloud resource identity, existing Wiz findings |
+| Wiz | Enrichment | Credentialed proof a public IP belongs to a cloud resource you control (Wiz findings not yet ingested) |
 | FortiManager | Enrichment | Asset and policy data |
 | Nuclei | Scanning | CVEs, misconfigs, exposed panels, default credentials |
 | Mailtrap | Notification | Email alerts (sandbox + live) |
