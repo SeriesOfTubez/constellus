@@ -62,6 +62,14 @@ class HttpxConnector(ScanningConnector):
     )
     core = True
 
+    # planning#148 — this connector's identity handle for the probe-
+    # authorisation gate (app.services.probe_authorisation). Must match a
+    # seeded `observers.name` row exactly — note this is "httpx", NOT
+    # "httpx_probe" (the REGISTRY/connector-module id); the gate denies
+    # outright (with a logged decision row) any Phase 1.5 connector missing
+    # this attribute.
+    observer = "httpx"
+
     # Runs AFTER banner_grab (200) — its scheme/Server-header data supersedes
     # the banner_grab stub for HTTP(S) ports.
     port_scan_order = 300

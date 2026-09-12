@@ -30,6 +30,7 @@ from app.services import domain_affinity
 from app.services import hosting_classifier
 from app.services import notification_dispatcher
 from app.services import origin_corroboration
+from app.services import probe_authorisation
 from app.services import shared_infra_verifier
 from app.services import takeover_fingerprint
 
@@ -38,6 +39,7 @@ _GUARDED_MODULES = [
     hosting_classifier,
     notification_dispatcher,
     origin_corroboration,
+    probe_authorisation,
     shared_infra_verifier,
     takeover_fingerprint,
 ]
