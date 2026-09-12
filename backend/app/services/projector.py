@@ -480,11 +480,33 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         else:
             provider_mx = False
 
-        # planning#145 L4: the estate precedence above (cloud_inventory.confirmed
-        # outranking third_party_dependency) deliberately does NOT propagate to
-        # probe_class — this if/elif chain is unchanged by this slice. Probe
-        # eligibility is the cross-epic authorisation gate's business
-        # (planning#128/#132), out of scope here.
+        # planning#128: `cloud_inventory.confirmed` now reaches probe_class,
+        # closing the seam planning#145 L4 deliberately left open (its comment
+        # here said probe eligibility was the authorisation gate's business —
+        # this IS that issue, so the seam closes rather than persists).
+        #
+        # Until it did, the evidence hierarchy was inverted: an address we
+        # hold CREDENTIALED INVENTORY PROOF for projected as `name_only`,
+        # while an address that merely looked like a datacenter IP with a
+        # heuristic affinity verdict earned `direct_addressable`. The weaker
+        # evidence licensed more probing than the stronger evidence.
+        #
+        # Ordering is load-bearing: this sits BELOW the two `no_probe`
+        # branches. A third-party boundary still wins, even over proof of
+        # ownership — those two are not in tension, they answer different
+        # questions. `cloud_inventory` says "this address is in our cloud
+        # account"; `third_party_dependency` says "we resolved through here
+        # to somebody else's service". An address can be both (our account,
+        # fronting a vendor's endpoint), and in that case not probing is the
+        # safe reading. Estate precedence runs the other way — see the
+        # comment on the estate chain above — because "is this ours" and
+        # "may we send it traffic" are genuinely different questions and
+        # this codebase answers them separately on purpose.
+        #
+        # Freshness is handled by the claim, not here: `cloud_inventory`
+        # carries `authorisation_ttl = 1 day` (migration 0039), so a missed
+        # connector sync lapses probe eligibility back to `name_only` rather
+        # than letting a stale proof keep licensing bare-IP probes.
         if third_party_claim_value is not None:
             # Capture is not scan eligibility (planning#147). This is the
             # projected half of that rule; `_extract_scan_targets` enforces
@@ -492,6 +514,8 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
             probe_class = "no_probe"
         elif provider_mx:
             probe_class = "no_probe"
+        elif cloud_inventory_confirmed:
+            probe_class = "direct_addressable"
         elif asset_type == "ip_address" and (
             asset_id in cidr_scoped_ids
             or (hosting.get("is_datacenter") is True and verdict == "confirmed_ours")
