@@ -61,14 +61,14 @@ def test_all_seven_claims_layer_tables_exist():
     assert not missing, f"Missing claims-layer tables: {sorted(missing)}"
 
 
-def test_observers_seeded_with_18_rows_and_correct_addressing():
+def test_observers_seeded_with_19_rows_and_correct_addressing():
     db = SessionLocal()
     try:
         rows = db.execute(text("SELECT name, addressing FROM observers")).all()
     finally:
         db.close()
     by_name = dict(rows)
-    assert len(by_name) == 18, f"expected 18 seeded observers, got {len(by_name)}: {sorted(by_name)}"
+    assert len(by_name) == 19, f"expected 19 seeded observers, got {len(by_name)}: {sorted(by_name)}"
     assert by_name["naabu"] == "ip"
     assert by_name["banner_grab"] == "ip"
     assert by_name["tlsx"] == "name"
@@ -77,8 +77,14 @@ def test_observers_seeded_with_18_rows_and_correct_addressing():
     assert by_name["dns_resolve"] == "none"
     assert by_name["shodan"] == "none"
     assert by_name["cloudflare"] == "none"
-    # cloud_inventory observer arrives with #118 — must NOT be seeded yet.
-    assert "cloud_inventory" not in by_name
+    # The cloud_inventory producer, seeded by migration 0048 (planning#118a).
+    # It is named for the PRODUCER (`wiz`), not the claim type it emits —
+    # this slot previously asserted `"cloud_inventory" not in by_name`, which
+    # would have passed whatever got seeded. `addressing = "none"` is the
+    # load-bearing part: Wiz answers from its own graph and never addresses
+    # the target, so the probe-authorisation gate must refuse it AS A PROBER
+    # even while its claims authorise other connectors' probes.
+    assert by_name["wiz"] == "none"
 
 
 def test_claim_types_seeded_with_18_rows_and_exactly_two_authorisation_ttls():

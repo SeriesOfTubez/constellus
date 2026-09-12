@@ -1,5 +1,10 @@
 from pydantic_settings import BaseSettings
 
+# Imported for its side effect: populates os.environ from the repo-root
+# `.env` so Settings can read its own keys per-field, without ingesting the
+# connector credentials that share that file (planning#157 — see env.py).
+from app.core import env as _env  # noqa: F401
+
 DEFAULT_SECRET_KEY = "change-me-in-production"
 
 
@@ -10,9 +15,6 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://constellus:constellus@localhost:5432/constellus"
     secrets_provider: str = "env"
     secret_key: str = DEFAULT_SECRET_KEY
-
-    class Config:
-        env_file = ".env"
 
 
 settings = Settings()
