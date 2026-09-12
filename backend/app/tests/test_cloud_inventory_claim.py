@@ -115,6 +115,62 @@ def test_confirmed_payload_becomes_a_claim_and_projects_to_proven_ours():
         _cleanup(ip)
 
 
+def test_confirmed_claim_also_promotes_probe_class_to_direct_addressable():
+    """planning#128. Until this branch existed the evidence hierarchy was
+    inverted: an address with credentialed inventory proof projected as
+    `name_only`, while an address that merely looked like a datacenter IP
+    with a heuristic affinity verdict earned `direct_addressable` — weaker
+    evidence licensing more probing than stronger evidence."""
+    ip = f"{_IP_PREFIX}{uuid.uuid4().int % 200 + 10}"
+    db = SessionLocal()
+    try:
+        row = _write(db, ip, _claim_payload())
+        projector.project(db, {row.id}, datetime.now(timezone.utc))
+        db.commit()
+        state = db.query(AssetState).filter(AssetState.asset_canonical_id == row.id).one()
+        assert state.estate == "proven_ours", state.estate
+        assert state.attributes.get("probe_class") == "direct_addressable", state.attributes
+    finally:
+        db.close()
+        _cleanup(ip)
+
+
+def test_third_party_boundary_still_outranks_ownership_proof_for_probing():
+    """Ordering check. Estate precedence puts cloud_inventory ABOVE
+    third_party_dependency; probe_class deliberately runs the other way.
+    They answer different questions — "is this ours" vs "may we send it
+    traffic" — and an address that is both our account AND fronting a
+    vendor endpoint must not be probed."""
+    ip = f"{_IP_PREFIX}{uuid.uuid4().int % 200 + 10}"
+    db = SessionLocal()
+    try:
+        write_assets(db, uuid.uuid4(), [DiscoveredAsset(
+            asset_type="ip_address", value=ip, parent_value=None,
+            observer="wiz",
+            asset_metadata={"sources": ["wiz"], "cloud_inventory": _claim_payload()},
+        )])
+        row = db.query(AssetCanonical).filter(AssetCanonical.value == ip).one()
+        # A second observer captures the same address as a third-party boundary.
+        write_assets(db, uuid.uuid4(), [DiscoveredAsset(
+            asset_type="ip_address", value=ip, parent_value=None,
+            observer="dns_resolve",
+            asset_metadata={
+                "sources": ["dns_resolve"],
+                "third_party": True,
+                "relationship": "dependency",
+                "discovered_via": "cname",
+            },
+        )])
+        projector.project(db, {row.id}, datetime.now(timezone.utc))
+        db.commit()
+        state = db.query(AssetState).filter(AssetState.asset_canonical_id == row.id).one()
+        assert state.estate == "proven_ours", state.estate
+        assert state.attributes.get("probe_class") == "no_probe", state.attributes
+    finally:
+        db.close()
+        _cleanup(ip)
+
+
 def test_evidence_is_split_out_so_churn_is_not_an_ownership_change():
     """Exposure ids and their count live in the evidence column, not in
     claim_value. A firewall rule added or removed changes both while the

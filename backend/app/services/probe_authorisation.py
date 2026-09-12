@@ -28,27 +28,29 @@ name-addressed probe fire at an unauthorised hostname in the first place.
 Each cap is owned by a different issue and lands on a different schedule:
 
   - **scope** (planning#128) — is this address inside declared/authorised
-    scope at all. **Permissive stub in this slice** — see `_scope_cap`'s
-    docstring for why it must NOT be implemented by calling
-    `is_scan_authorised`/`apex_domain` (that pairing has a real bug, and is
-    itself planning#128's subject matter — wiring this gate to it would
-    make the composed gate inherit that bug at its foundation instead of
-    fixing it).
+    scope at all. **Real body**, using `target_scope`'s IP/CIDR containment
+    and domain-suffix matching. It must NOT be implemented by calling
+    `is_scan_authorised`/`apex_domain`: that pairing has a real bug (an IP
+    never matches a `Target` row by string equality, and an IP inside a
+    declared CIDR fails the same equality check against the CIDR's own
+    string value), and wiring this gate to it would inherit that bug at the
+    foundation of the thing meant to fix it. See `_scope_cap`.
   - **probe_class** (planning#129 + #143) — is this specific asset's
     projected reachability class (`no_probe` / `name_only` /
     `direct_addressable`, `app.services.projector`) one that permits active
-    probing at all. **The only cap with a real body in this slice** — see
-    `_probe_class_cap`.
+    probing at all. See `_probe_class_cap`.
   - **posture** (planning#132) — engagement posture (pre-close diligence
-    vs. post-close monitoring, etc.). **Permissive stub in this slice.**
+    vs. post-close monitoring, etc.). **Still a permissive stub.**
 
-Scope and posture are deliberately present-and-permissive rather than
-omitted. The whole reason this issue is split from #128/#132 in the first
-place is so the *shape* of the composition (three independent, composable
-caps, tightest wins) ships now and is never re-litigated later — a cap
-that's absent today and "added" in a future PR is a signature change (and
-a review-review of every call site); a cap that's present-and-permissive
-today and tightened later is a body change. Shipping the narrower version
+Posture is deliberately present-and-permissive rather than omitted. The
+whole reason this issue was split from #128/#132 in the first place is so
+the *shape* of the composition (three independent, composable caps,
+tightest wins) shipped first and is never re-litigated later — a cap that's
+absent today and "added" in a future PR is a signature change (and a
+re-review of every call site); a cap that's present-and-permissive today
+and tightened later is a body change. That bet paid off: filling in scope
+(planning#128) touched this function's body and `authorise_probes`'
+batch-precompute block, and nothing else. Shipping the narrower version
 first and bolting the axis on later is precisely the mistake this
 issue-split exists to prevent (see the accompanying planning notes on
 #141/#142/#143/#148's design chain).
@@ -130,8 +132,10 @@ from sqlalchemy.orm import Session
 from app.models.asset_canonical import AssetCanonical
 from app.models.authorisation_decision import AuthorisationDecision
 from app.models.observer import Observer
+from app.models.target import Target
 from app.services import app_settings as settings_svc
 from app.services import projector
+from app.services import target_scope
 
 log = logging.getLogger(__name__)
 
@@ -215,39 +219,138 @@ class GateResult:
 # other two run their real bodies unchanged — the acceptance test this
 # issue is itself built around (see test_probe_authorisation.py).
 
-def _scope_cap(db: Session, *, scope: dict, asset_ref, canonical: AssetCanonical | None) -> Cap:
-    """Scope cap — planning#128's subject matter. Slice 1: **permissive**.
+def _scope_cap(
+    db: Session,
+    *,
+    scope: dict,
+    asset_ref,
+    canonical: AssetCanonical | None,
+    scoped_ids: frozenset[uuid.UUID],
+    auth_mode: str,
+) -> Cap:
+    """Scope cap — planning#128. Real body as of this slice.
 
-    Deliberately NOT implemented by calling
+    Answers one question: is this asset inside declared, authorised scope?
+
+    ## What it must not do, and why
+
+    It is still NOT implemented by calling
     `target_service.is_scan_authorised(db, apex_domain(value), auth_mode)`.
     That pairing has a real, verified defect: `apex_domain()` returns a
     bare IP unchanged (there's no apex to extract), so an IP address never
     matches a `Target` row by string equality, and an IP *inside* a
     declared CIDR target fails the same equality check against the CIDR's
     own string value — the CIDR row's value is e.g. "203.0.113.0/24", never
-    equal to any single address inside it. Wiring this gate's scope cap to
-    that function would therefore compose a "safety" gate whose scope axis
-    silently denies (or, depending on mode, silently mis-scopes) most real
-    IP targets from day one — inheriting planning#128's bug at the very
-    foundation of the thing meant to fix it. This function's *shape* (a
-    scope cap exists, is independently composable, and is called with the
-    resolved `scope`/`asset_ref`/`canonical` it will need) is this issue's
-    responsibility; what it actually *computes* is planning#128's, once
-    that issue has fixed the underlying IP-vs-apex mismatch.
+    equal to any single address inside it. That is precisely the bug this
+    issue exists to fix; wiring the gate to it would inherit the bug at the
+    foundation of the thing meant to fix it.
 
-    The interim scope enforcement for Phase 3 scanning connectors —
-    `_extract_scan_targets` + `is_scan_authorised`/`apex_domain` at
-    `scan_executor.py`'s Phase 3 block — is untouched by this slice and
-    keeps doing its job exactly as before (see the comment planted there).
-    Planning#128 is expected to fold that enforcement into this cap's real
-    body, at which point the Phase 3 interim filter can be retired.
+    Instead it uses `target_scope.target_scoped_asset_ids`, which already
+    does correct IP/CIDR containment and domain-suffix matching, and which
+    `dangling_dns_analyzer` and `shared_infra_verifier` already rely on.
+    Membership is by canonical asset id, resolved once per batch — see
+    `authorise_probes`, which precomputes `scoped_ids` the same way it
+    precomputes `states` for `_probe_class_cap`. Computing it per asset
+    would mean a full `ip_address` table scan per asset, because there is
+    no CIDR-containment operator over a text column.
 
-    `scope`/`asset_ref`/`canonical` are accepted now, unused, purely so
-    planning#128's implementation is a body change to this function, not a
-    signature change to every call site.
+    ## How `auth_mode` composes with containment
+
+    The two are orthogonal and both are honoured. Containment answers "is
+    this asset inside the declared scope"; `scan_authorisation_mode`
+    answers "which declared scope entries count as authorised at all":
+
+      - `disabled` — no scope gate. Permissive, matching the setting's
+        documented meaning ("the act of adding a target IS the
+        authorisation") and today's default, so this slice changes no
+        deployed behaviour on its own.
+      - `acknowledge` — the target must exist. Every entry in `scope`
+        counts, and the asset must be contained by one of them.
+      - `strict` — as `acknowledge`, but only *verified* targets count.
+        Narrowing happens on the scope entries before containment is
+        computed, not after: a verified CIDR still licenses every address
+        inside it, which string equality could never express.
+
+    ## Failure direction
+
+    An asset with no canonical row is DENIED under `acknowledge`/`strict`
+    (`scope:unresolved_asset`), not waved through. Containment is defined
+    over canonical ids, so an unresolved asset cannot be shown to be in
+    scope — and "cannot be shown to be in scope" must not read as "is in
+    scope" in a gate whose whole purpose is deny-by-default. It is a
+    distinct rule from `scope:out_of_scope` because the remedies differ:
+    one is an identity-resolution miss, the other a genuine policy denial,
+    and the log-only rollout is read to tell them apart.
+
+    ## Still outstanding (planning#128, second slice)
+
+    The interim Phase 3 enforcement — `_extract_scan_targets` +
+    `is_scan_authorised`/`apex_domain` in `scan_executor.py` — is STILL IN
+    PLACE and still doing its job. It is NOT retired by this slice, and it
+    must not be retired until Phase 3 actually routes through this gate:
+    removing it first would leave Phase 3 scanning ungated entirely.
+
+    Folding it in is not a small edit, which is why it is separated.
+    `nuclei` has no `observers` row and `NucleiConnector` has no `observer`
+    attribute, so the always-enforced connector-declaration check would
+    refuse it outright and kill Phase 3 scanning; and Phase 3 operates on
+    flat target STRINGS while this gate takes assets and returns per-asset
+    descriptors, so the phase has to be reshaped, not merely rerouted.
+
+    Phase 1.5 port discovery, by contrast, is gated on scope for the first
+    time as of this slice — that was the larger hole.
     """
-    _ = (scope, asset_ref, canonical)  # unused this slice — see docstring; kept for #128's signature stability
-    return Cap(allowed=True, modes=None, names=None, rule="scope:permissive")
+    _ = asset_ref  # containment is by canonical id; the in-batch ref adds nothing
+
+    if auth_mode == "disabled":
+        return Cap(allowed=True, modes=None, names=None, rule="scope:disabled")
+
+    if canonical is None:
+        return Cap(allowed=False, modes=frozenset(), names=None, rule="scope:unresolved_asset")
+
+    if canonical.id in scoped_ids:
+        return Cap(allowed=True, modes=None, names=None, rule=f"scope:in_scope:{auth_mode}")
+
+    return Cap(allowed=False, modes=frozenset(), names=None, rule=f"scope:out_of_scope:{auth_mode}")
+
+
+def _resolve_scoped_ids(db: Session, scope: dict, auth_mode: str) -> frozenset[uuid.UUID]:
+    """The canonical asset ids inside `scope`, narrowed by `auth_mode`.
+
+    Computed once per `authorise_probes` call. Returns an empty set under
+    `disabled` without touching the database — `_scope_cap` short-circuits
+    on that mode before ever reading this, so paying for a full scan to
+    build a set nobody consults would be waste.
+
+    Under `strict`, the scope entries are filtered down to verified targets
+    BEFORE containment runs. Doing it in this order is what makes a
+    verified CIDR license the addresses inside it; filtering afterwards
+    would be the string-equality bug wearing a different hat.
+    """
+    if auth_mode == "disabled":
+        return frozenset()
+
+    domains = list(scope.get("domains") or [])
+    ip_ranges = list(scope.get("ip_ranges") or [])
+
+    if auth_mode not in ("acknowledge", "disabled"):
+        # "strict" (and any unrecognised mode, which target_service treats
+        # as strict — fail closed, and stay consistent with it).
+        declared = domains + ip_ranges
+        if not declared:
+            return frozenset()
+        verified = {
+            r[0] for r in db.query(Target.value)
+            .filter(Target.value.in_(declared), Target.verified == True)  # noqa: E712
+            .all()
+        }
+        domains = [d for d in domains if d in verified]
+        ip_ranges = [r for r in ip_ranges if r in verified]
+
+    return frozenset(target_scope.target_scoped_asset_ids(db, {
+        "domains": domains,
+        "ip_ranges": ip_ranges,
+    }))
 
 
 def _probe_class_cap(db: Session, *, asset_ref, canonical: AssetCanonical | None, state) -> Cap:
@@ -719,6 +822,13 @@ def authorise_probes(
     # this point — safe to read observer_row.name/.addressing directly.
     canonical_ids = {c.id for c in canonical_by_key.values()}
     states = projector.load_states(db, canonical_ids)
+    # Batch-resolved once, like `states` above and for the same reason: the
+    # scope cap's containment check is set membership, but BUILDING the set
+    # costs a full ip_address scan when a real CIDR is in scope (there is no
+    # CIDR-containment operator over a text column). Per-asset resolution
+    # would repeat that scan for every asset in the batch.
+    auth_mode = settings_svc.get(db, "scan_authorisation_mode") or "strict"
+    scoped_ids = _resolve_scoped_ids(db, scope, auth_mode)
 
     permitted: list = []
     permissions = {}
@@ -729,7 +839,10 @@ def authorise_probes(
         state = states.get(canonical.id) if canonical is not None else None
 
         caps = (
-            _scope_cap(db, scope=scope, asset_ref=asset, canonical=canonical),
+            _scope_cap(
+                db, scope=scope, asset_ref=asset, canonical=canonical,
+                scoped_ids=scoped_ids, auth_mode=auth_mode,
+            ),
             _probe_class_cap(db, asset_ref=asset, canonical=canonical, state=state),
             _posture_cap(db, scope=scope, asset_ref=asset, canonical=canonical),
         )
