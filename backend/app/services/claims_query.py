@@ -203,7 +203,8 @@ def assets_missing_claim(
     baking a policy into it — planning#130's "unmanaged" query is exactly
     `surface_value` excluded-`not_ours` AND missing an EDR claim, composed
     by the caller from these two primitives rather than encoded here.
-    Excludes `ignored` assets unless `include_ignored=True`. Ordered by
+    Excludes *currently suppressed* assets unless `include_ignored=True`
+    — an asset whose `ignore_expires_at` has passed is NOT excluded. Ordered by
     `last_seen_at DESC`, matching `list_assets`, and capped at `limit`.
     `ValueError`s from `missing_claim_asset_ids` / `asset_ids_with_surface`
     (bad claim_type / observer_name / surface_value) propagate unchanged —
@@ -215,7 +216,10 @@ def assets_missing_claim(
     if asset_type is not None:
         q = q.filter(AssetCanonical.asset_type == asset_type)
     if not include_ignored:
-        q = q.filter(AssetCanonical.ignored == False)  # noqa: E712
+        # `suppressed`, not `ignored`: an ignore whose expiry has passed
+        # must reappear in the absence query — that is the point of
+        # having an expiry (migration 0047).
+        q = q.filter(~AssetCanonical.suppressed)
     if surface_value is not None:
         q = q.filter(AssetCanonical.id.in_(asset_ids_with_surface(db, surface_value)))
     return q.order_by(AssetCanonical.last_seen_at.desc()).limit(limit).all()

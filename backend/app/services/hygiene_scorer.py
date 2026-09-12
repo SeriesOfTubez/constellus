@@ -542,7 +542,10 @@ def run(db: Session) -> dict:
 
     all_ids = [
         row[0] for row in
-        db.query(AssetCanonical.id).filter(AssetCanonical.ignored == False).all()  # noqa: E712
+        # `suppressed`, not `ignored` — an expired ignore puts the asset
+        # back in the scoring population on the very next run, with no
+        # sweeper needed (migration 0047).
+        db.query(AssetCanonical.id).filter(~AssetCanonical.suppressed).all()
     ]
 
     scored = 0
@@ -703,7 +706,10 @@ def _append_hygiene_history(db: Session, computed_at: datetime, rows_to_upsert: 
 
 def _delete_stale_scores(db: Session) -> int:
     """Delete `asset_hygiene_score` rows for assets that are now excluded —
-    `ignored == True` or `surface == "not_ours"`. Bounded by the number of
+    currently suppressed (see `AssetCanonical.suppressed`) or
+    `surface == "not_ours"`. Uses `suppressed` rather than the raw
+    `ignored` flag so an asset whose ignore has EXPIRED is not evicted;
+    it flows back into the scoring population instead. Bounded by the number of
     EXISTING score rows (typically << the full assets_canonical table),
     batched the same way as the main scoring loop above. Runs
     unconditionally, independent of this run's candidate set, because an
@@ -721,7 +727,7 @@ def _delete_stale_scores(db: Session) -> int:
         ignored_ids = {
             row[0] for row in
             db.query(AssetCanonical.id)
-            .filter(AssetCanonical.id.in_(chunk), AssetCanonical.ignored == True)  # noqa: E712
+            .filter(AssetCanonical.id.in_(chunk), AssetCanonical.suppressed)
             .all()
         }
         surface_by_id = claims_query.surface_by_asset(db, chunk)

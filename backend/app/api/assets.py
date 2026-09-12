@@ -166,8 +166,25 @@ def _compute_asset_risk(db: Session, assets: list[AssetCanonical]) -> dict:
 router = APIRouter()
 
 
+IGNORE_REASONS = ("BY_DESIGN", "EXCEPTION", "FALSE_POSITIVE")
+
+
 class AssetIgnoreUpdate(BaseModel):
+    """Ignoring an asset requires saying WHY (migration 0047).
+
+    `reason` is optional in the type but enforced in the handler when
+    `ignored=True`, so un-ignoring stays a bare `{"ignored": false}` and
+    the existing frontend call for that path is unchanged. Vocabulary
+    is Wiz's `DiscoveredResourceIgnoreReason`, adopted verbatim.
+
+    `expires_at` omitted means indefinite — a deliberate choice the caller
+    makes alongside a reason, not a silent default nobody selected.
+    """
+
     ignored: bool
+    reason: str | None = None
+    reason_details: str | None = None
+    expires_at: datetime | None = None
 
 
 class DeleteByApexRequest(BaseModel):
@@ -294,7 +311,9 @@ def list_assets(
     if asset_type:
         q = q.filter(AssetCanonical.asset_type == asset_type)
     if not show_ignored:
-        q = q.filter(AssetCanonical.ignored == False)  # noqa: E712
+        # `suppressed`, not `ignored` — an expired ignore is visible again
+        # without the operator having to clear it (migration 0047).
+        q = q.filter(~AssetCanonical.suppressed)
     if not show_third_party:
         q = q.filter(~AssetCanonical.id.in_(_third_party_asset_ids(db)))
     assets = q.order_by(AssetCanonical.last_seen_at.desc()).limit(1000).all()
@@ -371,14 +390,45 @@ def set_asset_ignored(
     asset_id: uuid.UUID,
     data: AssetIgnoreUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
 ):
     asset = db.get(AssetCanonical, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
-    asset.ignored = data.ignored
+
+    if data.ignored:
+        if data.reason not in IGNORE_REASONS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"reason is required when ignoring and must be one of {list(IGNORE_REASONS)}",
+            )
+        if data.expires_at is not None and data.expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=422, detail="expires_at must be in the future")
+        asset.ignored = True
+        asset.ignore_reason = data.reason
+        asset.ignore_reason_details = data.reason_details
+        asset.ignore_expires_at = data.expires_at
+        asset.ignored_at = datetime.now(timezone.utc)
+        asset.ignored_by_id = current_user.id
+    else:
+        # Un-ignoring clears the whole record rather than leaving a stale
+        # reason behind — a future ignore must state its own case.
+        asset.ignored = False
+        asset.ignore_reason = None
+        asset.ignore_reason_details = None
+        asset.ignore_expires_at = None
+        asset.ignored_at = None
+        asset.ignored_by_id = None
+
     db.commit()
-    return {"id": str(asset_id), "ignored": asset.ignored}
+    return {
+        "id": str(asset_id),
+        "ignored": asset.ignored,
+        "suppressed": asset.suppressed,
+        "ignore_reason": asset.ignore_reason,
+        "ignore_reason_details": asset.ignore_reason_details,
+        "ignore_expires_at": asset.ignore_expires_at.isoformat() if asset.ignore_expires_at else None,
+    }
 
 
 @router.delete("/{asset_id}", status_code=204)
@@ -582,6 +632,14 @@ def _serialize_asset(
         "first_seen_at": row.first_seen_at.isoformat() if row.first_seen_at else None,
         "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
         "ignored": row.ignored,
+        # Effective state — `ignored` is the stored intent, `suppressed` is
+        # whether it applies right now. Both are served: the frontend's
+        # existing `ignored` contract is untouched, and `suppressed` is what
+        # any new filtering should read (migration 0047).
+        "suppressed": row.suppressed,
+        "ignore_reason": row.ignore_reason,
+        "ignore_reason_details": row.ignore_reason_details,
+        "ignore_expires_at": row.ignore_expires_at.isoformat() if row.ignore_expires_at else None,
         "tags": row.tags or [],
         "worst_severity": risk.get("worst_severity"),
         "risk_score": risk.get("risk_score"),

@@ -1,8 +1,9 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Text, func, text
+from sqlalchemy import Boolean, DateTime, Text, and_, func, or_, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -42,10 +43,57 @@ class AssetCanonical(Base):
     parent_value: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    # RAW STORED FLAG — do NOT filter the read path on this directly. An
+    # ignore can carry an expiry (`ignore_expires_at`), so `ignored is True`
+    # and "suppressed right now" are different questions. Use the
+    # `suppressed` hybrid below; see migration 0047.
     ignored: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # planning#148-adjacent suppression discipline, borrowed from Wiz's
+    # `DiscoveredResource` (Obsidian `Constellus — Wiz API Reference` §9.1):
+    # an ignore carries a reason, the detail behind it, an author, and a
+    # review date. NULL `ignore_expires_at` means indefinite — an explicit
+    # choice the API forces the caller to make, not a silent default.
+    ignore_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ignore_reason_details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ignore_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ignored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ignored_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default=text("'[]'"))
     # dns_record identity — see class docstring. Nullable because every
     # other asset_type leaves these NULL (no per-column index of their
     # own; membership is via the partial unique index above).
     record_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ── effective suppression ───────────────────────────────────────────────
+
+    @hybrid_property
+    def suppressed(self) -> bool:
+        """Is this asset suppressed **right now**?
+
+        `ignored` is the stored intent; this is the effective state. They
+        diverge the moment an ignore carries an expiry — which is the whole
+        point of migration 0047. Every read site that used to filter
+        `ignored == False` filters `~AssetCanonical.suppressed` instead, so
+        an expired ignore stops suppressing *on read*, with no sweeper job
+        to schedule, no row to rewrite, and therefore no window in which a
+        lapsed suppression is still silently hiding an asset because the
+        sweeper hasn't run yet.
+
+        Deliberately evaluated against `now()` at query time rather than
+        materialised into a column: a materialised flag is a cache, and a
+        cache of "has this moment passed" is a bug waiting for the job that
+        refreshes it to fail.
+        """
+        if not self.ignored:
+            return False
+        if self.ignore_expires_at is None:
+            return True
+        return self.ignore_expires_at > datetime.now(timezone.utc)
+
+    @suppressed.expression
+    def suppressed(cls):  # noqa: N805 - SQLAlchemy hybrid expression form
+        return and_(
+            cls.ignored.is_(True),
+            or_(cls.ignore_expires_at.is_(None), cls.ignore_expires_at > func.now()),
+        )
