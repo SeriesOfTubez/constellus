@@ -296,6 +296,15 @@ def test_probe_class_rules():
 
         cidr_value = f"{ip_cidr.rsplit('.', 1)[0]}.0/24"
         target_id = uuid.uuid4()
+        # planning#170: `cidr_value` is always the constant "192.0.2.0/24" — the
+        # same literal test_scope_cap.py seeds — and `Target.value` is globally
+        # UNIQUE (uq_targets_value). `_cleanup_target` deletes by *id*, so a row
+        # stranded by a run that died between scope_cap's seed and its teardown
+        # (a kill, a Ctrl-C, an unrelated crash) makes this INSERT fail on every
+        # later run until scope_cap happens to clear it. Delete-then-insert
+        # (planning#156) makes the seed idempotent, the way scope_cap's is.
+        db.query(Target).filter(Target.value == cidr_value).delete(synchronize_session=False)
+        db.commit()
         db.add(Target(id=target_id, type=TargetType.CIDR.value, value=cidr_value))
         db.commit()
         a_cidr = _make_asset(db, "ip_address", ip_cidr)
