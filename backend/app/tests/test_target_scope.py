@@ -21,18 +21,29 @@ from app.services.asset_writer import write_assets
 from app.services.target_scope import target_scoped_asset_ids
 
 
-def _mk_domain_target(db, value: str) -> Target:
-    target = Target(id=uuid.uuid4(), type=TargetType.DOMAIN, value=value, verified=True)
-    db.add(target)
+def _seed_target(db, value: str, target_type: str) -> Target:
+    """Delete-then-insert one Target (planning#170, planning#156).
+
+    `Target.value` is globally UNIQUE (uq_targets_value). Several values here
+    are constants ("198.51.100.0/28") and the rest are drawn from a 50-address
+    window, so a row stranded by a run that died before `_cleanup` makes the
+    matching INSERT fail on a later run. Deleting first makes the seed
+    idempotent, so a dirty exit costs the next run nothing.
+    """
+    db.query(Target).filter(Target.value == value).delete(synchronize_session=False)
     db.commit()
-    return target
-
-
-def _mk_ip_target(db, value: str, target_type: str = TargetType.IP) -> Target:
     target = Target(id=uuid.uuid4(), type=target_type, value=value, verified=True)
     db.add(target)
     db.commit()
     return target
+
+
+def _mk_domain_target(db, value: str) -> Target:
+    return _seed_target(db, value, TargetType.DOMAIN)
+
+
+def _mk_ip_target(db, value: str, target_type: str = TargetType.IP) -> Target:
+    return _seed_target(db, value, target_type)
 
 
 def _cleanup(db, *, domains: list[str] = (), ips: list[str] = (), target_ids: list[uuid.UUID] = ()):

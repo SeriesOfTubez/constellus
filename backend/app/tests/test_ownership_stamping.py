@@ -31,6 +31,7 @@ from app.services.asset_writer import write_assets
 from app.services.claim_emitter import get_current_claim, upsert_single_claim
 from app.services.finding_writer import write_findings
 from app.services.shared_infra_verifier import classify_ip_ownership, verify_findings
+from app.tests import _docaddr
 
 
 def _cleanup(db, ip: str, host: str | None, target_ids: list) -> None:
@@ -45,6 +46,35 @@ def _cleanup(db, ip: str, host: str | None, target_ids: list) -> None:
         db.query(Target).filter(Target.id.in_(target_ids)).delete(synchronize_session=False)
     db.commit()
 
+
+def _reset_address(db, ip: str, host: str | None) -> None:
+    """Delete-then-insert for one _docaddr-owned address (planning#170, #156).
+
+    `Target.value` is globally UNIQUE (uq_targets_value), so a Target row
+    stranded by an earlier crashed run makes every later draw of that address
+    fail deterministically on INSERT. The pool is finite, so one stranded row
+    is a permanent landmine rather than a transient blip — and `_cleanup`
+    (teardown) deletes Targets by *id*, which by construction cannot clear a
+    row left behind by a previous process. This clears by value instead.
+
+    Deleting by value is safe because the suite runs sequentially in one
+    process: no other test holds one of these addresses at the moment this
+    runs, so the only rows it can find are this module's own, or debris a
+    crashed run left behind — and removing those is the repair. (The pool is
+    *not* exclusively ours; see `_docaddr` — test_cloud_inventory_claim draws
+    a window that swallows it. That costs an occasional red, never a wrong
+    deletion.) `_cleanup`'s own by-id Target semantics are deliberately
+    unchanged.
+    """
+    values = [ip] + ([host] if host else [])
+    db.query(FindingCanonical).filter(
+        FindingCanonical.asset_canonical_id.in_(
+            db.query(AssetCanonical.id).filter(AssetCanonical.value.in_(values))
+        )
+    ).delete(synchronize_session=False)
+    db.query(AssetCanonical).filter(AssetCanonical.value.in_(values)).delete(synchronize_session=False)
+    db.query(Target).filter(Target.value == ip).delete(synchronize_session=False)
+    db.commit()
 
 def _make_ip_with_owned_host(db, ip: str, host: str):
     """A minimal shape _owned_hostnames_for_ip can find: a dns_record A
@@ -65,7 +95,7 @@ def test_widens_stamping_to_every_finding_type_and_source_on_the_ip():
     real Shodan CVE finding on the same IP — and a dangling_dns finding on
     that same IP must NOT be touched (NON_STAMPABLE_FINDING_TYPES)."""
     suffix = uuid.uuid4().hex[:6]
-    ip = f"192.0.2.{10 + int(suffix, 16) % 190}"
+    ip = _docaddr.alloc()
     host = f"owned-{suffix}.example.com"
 
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: da.AffinityResult(
@@ -75,6 +105,7 @@ def test_widens_stamping_to_every_finding_type_and_source_on_the_ip():
     db = SessionLocal()
     target_ids: list = []
     try:
+        _reset_address(db, ip, host)  # planning#170: delete-then-insert (planning#156)
         target = Target(id=uuid.uuid4(), type=TargetType.IP, value=ip, verified=True)
         db.add(target)
         db.commit()
@@ -128,7 +159,7 @@ def test_verify_once_contract_preserved():
     same IP with no prior verdict DOES get stamped, so this actually
     proves the pre-verified one was skipped, not that nothing ran at all."""
     suffix = uuid.uuid4().hex[:6]
-    ip = f"192.0.2.{210 + int(suffix, 16) % 40}"
+    ip = _docaddr.alloc()
     host = f"owned-{suffix}.example.com"
 
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: da.AffinityResult(
@@ -138,6 +169,7 @@ def test_verify_once_contract_preserved():
     db = SessionLocal()
     target_ids: list = []
     try:
+        _reset_address(db, ip, host)  # planning#170: delete-then-insert (planning#156)
         target = Target(id=uuid.uuid4(), type=TargetType.IP, value=ip, verified=True)
         db.add(target)
         db.commit()
@@ -183,7 +215,7 @@ def test_ip_target_with_no_touched_assets_still_gets_stamped():
     must still get classified via target_scoped_asset_ids, not silently
     skipped the way touched-only selection would have left it."""
     suffix = uuid.uuid4().hex[:6]
-    ip = f"192.0.2.{100 + int(suffix, 16) % 90}"
+    ip = _docaddr.alloc()
     host = f"owned-{suffix}.example.com"
 
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: da.AffinityResult(
@@ -193,6 +225,7 @@ def test_ip_target_with_no_touched_assets_still_gets_stamped():
     db = SessionLocal()
     target_ids: list = []
     try:
+        _reset_address(db, ip, host)  # planning#170: delete-then-insert (planning#156)
         target = Target(id=uuid.uuid4(), type=TargetType.IP, value=ip, verified=True)
         db.add(target)
         db.commit()
@@ -224,12 +257,12 @@ def test_plain_unverified_ip_leaves_findings_unstamped_and_still_eligible():
     owned hostnames resolves to a plain 'unverified' classification —
     verify_findings must leave every finding on it untouched (verification
     still NULL), not lock them out of ever being reconsidered."""
-    suffix = uuid.uuid4().hex[:6]
-    ip = f"192.0.2.{150 + int(suffix, 16) % 30}"
+    ip = _docaddr.alloc()
 
     db = SessionLocal()
     target_ids: list = []
     try:
+        _reset_address(db, ip, None)  # planning#170: delete-then-insert (planning#156)
         target = Target(id=uuid.uuid4(), type=TargetType.IP, value=ip, verified=True)
         db.add(target)
         db.commit()
@@ -273,7 +306,7 @@ def test_ownership_verdict_claim_cache_hit_and_ttl_refetch():
     /upsert_single_claim end to end (not the fake in-memory cache
     test_shared_infra_verifier.py uses to stay DB-free)."""
     suffix = uuid.uuid4().hex[:6]
-    ip = f"192.0.2.{10 + int(suffix, 16) % 190}"
+    ip = _docaddr.alloc()
     host = f"owned-{suffix}.example.com"
     calls = {"n": 0}
 
@@ -285,6 +318,7 @@ def test_ownership_verdict_claim_cache_hit_and_ttl_refetch():
     db = SessionLocal()
     target_ids: list = []
     try:
+        _reset_address(db, ip, host)  # planning#170: delete-then-insert (planning#156)
         target = Target(id=uuid.uuid4(), type=TargetType.IP, value=ip, verified=True)
         db.add(target)
         db.commit()
@@ -325,7 +359,7 @@ def test_force_reverify_restamps_an_already_verified_finding_end_to_end():
     force=True call (the manual Re-verify path) must still reach and
     re-stamp it, immediately, with no grace wait."""
     suffix = uuid.uuid4().hex[:6]
-    ip = f"192.0.2.{10 + int(suffix, 16) % 190}"
+    ip = _docaddr.alloc()
     host = f"owned-{suffix}.example.com"
 
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: da.AffinityResult(
@@ -335,6 +369,7 @@ def test_force_reverify_restamps_an_already_verified_finding_end_to_end():
     db = SessionLocal()
     target_ids: list = []
     try:
+        _reset_address(db, ip, host)  # planning#170: delete-then-insert (planning#156)
         target = Target(id=uuid.uuid4(), type=TargetType.IP, value=ip, verified=True)
         db.add(target)
         db.commit()
