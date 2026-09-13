@@ -44,6 +44,7 @@ from app.connectors.base import (
     ScanningConnector,
     TestResult,
 )
+from app.core.netaddr import is_public_ip as _is_public_ip
 from app.models.asset import AssetType
 
 log = logging.getLogger(__name__)
@@ -51,17 +52,6 @@ log = logging.getLogger(__name__)
 _SCANNER_URL = os.environ.get("SCANNER_URL", "http://scanner-worker:8001")
 _SCANNER_TOKEN = os.environ.get("SCANNER_INTERNAL_TOKEN", "")
 _HEADERS = {"X-Internal-Token": _SCANNER_TOKEN}
-
-
-def _is_public_ip(value: str) -> bool:
-    try:
-        addr = ipaddress.ip_address(value)
-    except ValueError:
-        return False
-    return not (
-        addr.is_private or addr.is_loopback or addr.is_multicast
-        or addr.is_link_local or addr.is_reserved or addr.is_unspecified
-    )
 
 
 class BannerGrabConnector(ScanningConnector):

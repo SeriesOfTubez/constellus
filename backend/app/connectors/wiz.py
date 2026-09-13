@@ -92,6 +92,7 @@ from app.connectors.base import (
     TestResult,
 )
 from app.connectors.http import connector_post
+from app.core.netaddr import is_public_ip as _is_public_ip
 from app.core.secrets import get_secret
 from app.models.asset import AssetType
 
@@ -156,40 +157,6 @@ _MAX_RESOURCES_PER_CLAIM = 20
 
 _token_lock = threading.Lock()
 _token_cache: dict[str, tuple[str, datetime]] = {}
-
-
-def _is_public_ip(value: str) -> bool:
-    """Globally routable, i.e. an address that could plausibly be a public
-    cloud resource's.
-
-    There are already six near-identical copies of this predicate
-    (shodan.py, naabu.py, tlsx.py, httpx_probe.py, banner_grab.py,
-    exposure_analyzer.py), all spelling it as a hand-rolled negation:
-
-        not (is_private or is_loopback or is_multicast
-             or is_link_local or is_reserved or is_unspecified)
-
-    This one deliberately does NOT copy that spelling, because the negation
-    has a hole: it accepts CGNAT space (100.64.0.0/10, RFC 6598), for which
-    `is_private` is False while `is_global` is also False. Writing the
-    known-incomplete version into new code to preserve symmetry would be
-    propagating a bug for tidiness.
-
-    `is_global` alone is not the fix either — it is True for multicast
-    (224.0.0.0/4, ff00::/8), which the six-clause negation does exclude. The
-    two predicates have complementary holes, so this pairs them. Verified
-    across RFC-1918, loopback, link-local, multicast, unspecified, CGNAT and
-    the RFC-5737/3849 documentation ranges (see
-    `test_public_ip_filter_excludes_*`).
-
-    The divergence is intentional and narrow; consolidating all seven call
-    sites onto this pairing belongs in its own change, not in this slice.
-    """
-    try:
-        addr = ipaddress.ip_address(value)
-    except ValueError:
-        return False
-    return addr.is_global and not addr.is_multicast
 
 
 def _now() -> datetime:

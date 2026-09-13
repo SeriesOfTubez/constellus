@@ -9,12 +9,12 @@ are cached in dedicated tables. IPs use a 30-day TTL; domains use a 7-day TTL
 because expiry-date changes matter.
 """
 
-import ipaddress
 import logging
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
+from app.core.netaddr import is_public_ip as _is_public
 from app.models.domain_whois_cache import DomainWhoisCache
 from app.models.whois_cache import WhoisCache
 
@@ -22,14 +22,6 @@ log = logging.getLogger(__name__)
 
 DEFAULT_TTL_DAYS = 30
 DOMAIN_TTL_DAYS = 7
-
-
-def _is_public(ip_str: str) -> bool:
-    try:
-        ip = ipaddress.ip_address(ip_str)
-    except ValueError:
-        return False
-    return not (ip.is_private or ip.is_loopback or ip.is_multicast or ip.is_link_local or ip.is_reserved or ip.is_unspecified)
 
 
 def _fresh_lookup(ip: str) -> dict:
