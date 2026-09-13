@@ -21,7 +21,9 @@ either a claim or a real column:
     to columns; L3b-2 stopped reading the transitional metadata mirror).
   - `attributes["naabu_last_scan_at"]` <- the naabu `port_observation`
     claim's `last_observed_at`, isoformatted — the same value used as the
-    prune cutoff.
+    prune cutoff. Only taken from a claim whose evidence does not say
+    `complete: False` (planning#169) — an incomplete sweep may not advance
+    this cutoff.
   - `estate = "proven_ours"` <- a `cloud_inventory` claim with
     `claim_value.get("confirmed") is True` (planning#145 L4 — the epic's
     missing promotion path; see the precedence comment at the estate
@@ -270,6 +272,7 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
             AssetClaim.asset_canonical_id,
             AssetClaim.claim_value,
             AssetClaim.last_observed_at,
+            AssetClaim.evidence,
             Observer.name,
         )
         .join(Observer, AssetClaim.observer_id == Observer.id)
@@ -279,9 +282,11 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         )
         .all()
     )
-    claims_by_asset: dict[uuid.UUID, list[tuple[str, dict, datetime]]] = {}
-    for asset_id, claim_value, last_observed_at, observer_name in claim_rows:
-        claims_by_asset.setdefault(asset_id, []).append((observer_name, claim_value, last_observed_at))
+    claims_by_asset: dict[uuid.UUID, list[tuple[str, dict, datetime, dict]]] = {}
+    for asset_id, claim_value, last_observed_at, evidence, observer_name in claim_rows:
+        claims_by_asset.setdefault(asset_id, []).append(
+            (observer_name, claim_value, last_observed_at, evidence)
+        )
 
     # Single-value claims, batch-loaded up front like port_observation above
     # rather than a get_current_claim() call per asset in the loop below.
@@ -394,7 +399,7 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         # the naabu observer's last_observed_at (no naabu claim -> keep all).
         merged_ports: list = []
         naabu_last_observed_at: datetime | None = None
-        for observer_name, claim_value, last_observed_at in asset_claims:
+        for observer_name, claim_value, last_observed_at, evidence in asset_claims:
             ports = claim_value.get("ports") if isinstance(claim_value, dict) else None
             if not isinstance(ports, list):
                 continue
@@ -407,7 +412,20 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
                 restored.append(entry)
             merged_ports = _merge_open_ports(merged_ports, restored)
             if observer_name == "naabu":
-                naabu_last_observed_at = last_observed_at
+                # planning#169 — only a pass that FINISHED licenses absence.
+                # An incomplete sweep's confirmed ports are real and are folded
+                # in above; what it may not do is advance the staleness cutoff,
+                # which both DELETES here (_prune_stale_ports) and drives the
+                # read-time hide via attributes["naabu_last_scan_at"] below.
+                # Leaving naabu_last_observed_at None withholds both for this
+                # cycle: the previous complete sweep's cutoff is deliberately
+                # NOT carried forward, so a genuine phantom is retired one scan
+                # later than it could be — and no real port is ever deleted.
+                # A claim with no `complete` key predates #169 (or came from a
+                # producer with no notion of an unfinished pass) and counts as
+                # complete, preserving the previous behaviour exactly.
+                if not (isinstance(evidence, dict) and evidence.get("complete") is False):
+                    naabu_last_observed_at = last_observed_at
 
         if naabu_last_observed_at is not None:
             cutoff_iso = naabu_last_observed_at.isoformat()

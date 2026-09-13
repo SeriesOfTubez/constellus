@@ -648,6 +648,11 @@ class NaabuConnector(ScanningConnector):
                 "open_ports": open_ports,
                 "naabu_tier": tier_name,
                 "tarpit_detected": ip in tarpit_ips,
+                # planning#169 — carry #160's completeness through to the CLAIM.
+                # D3 above stops the incomplete pass advancing asset_metadata's
+                # cutoff; this key stops it advancing the claim's, and stops the
+                # emitter replacing a full port claim with this pass's subset.
+                "naabu_sweep_complete": baseline_complete,
             }
             if baseline_complete:
                 metadata["naabu_last_scan_at"] = now
@@ -685,6 +690,7 @@ class NaabuConnector(ScanningConnector):
                         "naabu_last_scan_at": now,
                         "naabu_tier": tier_name,
                         "tarpit_detected": ip in tarpit_ips,
+                        "naabu_sweep_complete": True,
                     },
                 ))
 
