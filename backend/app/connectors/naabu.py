@@ -30,6 +30,7 @@ import ipaddress
 import logging
 import os
 import re
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -101,6 +102,19 @@ def _is_public_ip(value: str) -> bool:
         addr.is_private or addr.is_loopback or addr.is_multicast
         or addr.is_link_local or addr.is_reserved or addr.is_unspecified
     )
+
+
+@dataclass
+class WorkerResult:
+    """Rows the worker returned, plus whether the pass actually completed.
+
+    `completed=False` means the scan did not finish — the worker was
+    unreachable, errored, or was killed mid-run after a timeout. Rows may
+    still be present and are still real (a discovered port is a discovered
+    port); what is NOT safe is inferring ABSENCE from an incomplete pass.
+    """
+    rows: list[dict] = field(default_factory=list)
+    completed: bool = True
 
 
 class NaabuConnector(ScanningConnector):
@@ -211,7 +225,9 @@ class NaabuConnector(ScanningConnector):
             len(additional_ports), len(exclude_ports), len(ip_values),
         )
 
-        # Pass 1 — tier baseline via -top-ports
+        # Pass 1 — tier baseline via -top-ports. One call carries the whole
+        # estate (no chunking), so a single completed flag suffices to
+        # license — or refuse — absence claims downstream (planning#160 D2).
         baseline = self._invoke_worker(
             hosts=ip_values,
             top_ports=top_ports,
@@ -220,6 +236,11 @@ class NaabuConnector(ScanningConnector):
             rate=rate,
             concurrency=concurrency,
         )
+        # planning#160 D2 — only a completed baseline may license an absence
+        # claim. The cascade below needs no extra handling for the
+        # incomplete case: no rows means tarpit_ips stays empty, merged
+        # holds no naabu rows, and the nmap-verify pass runs on nothing.
+        baseline_complete = baseline.completed
 
         # Tarpit detection — a host returning an absurd number of ports from the
         # broad top-ports sweep is almost certainly behind SYN-flood / scan-
@@ -233,7 +254,7 @@ class NaabuConnector(ScanningConnector):
         # broad naabu flaps 2–134 phantoms run-to-run, but -verify reliably narrows
         # to the real ports, and gentle nmap then drops any phantom that survives.
         baseline_per_ip: dict[str, int] = {}
-        for r in baseline:
+        for r in baseline.rows:
             h = r.get("host", "")
             baseline_per_ip[h] = baseline_per_ip.get(h, 0) + 1
         tarpit_ips = {ip for ip, n in baseline_per_ip.items() if n >= _TARPIT_PORT_THRESHOLD}
@@ -250,6 +271,10 @@ class NaabuConnector(ScanningConnector):
             )
             seen_v: set[tuple[str, int]] = set()
             for _ in range(2):
+                # The -verify pass covers tarpit hosts only, never the whole
+                # estate, so its completed flag says nothing about
+                # estate-wide absence — consume its rows, ignore its flag
+                # (planning#160 D2).
                 for row in self._invoke_worker(
                     hosts=sorted(tarpit_ips),
                     top_ports=top_ports,
@@ -258,7 +283,7 @@ class NaabuConnector(ScanningConnector):
                     rate=rate,
                     concurrency=concurrency,
                     verify=True,
-                ):
+                ).rows:
                     k = (row.get("host", ""), int(row.get("port", 0)))
                     if k not in seen_v:
                         seen_v.add(k)
@@ -272,7 +297,7 @@ class NaabuConnector(ScanningConnector):
         # narrowed rows (their broad baseline is a phantom flood — dropped here);
         # non-tarpit hosts keep their fast baseline as-is.
         merged: dict[tuple[str, int], dict] = {}
-        for row in baseline:
+        for row in baseline.rows:
             if row.get("host", "") in tarpit_ips:
                 continue
             merged.setdefault((row.get("host", ""), int(row.get("port", 0))), row)
@@ -333,8 +358,15 @@ class NaabuConnector(ScanningConnector):
         merged = self._apply_nmap_verification(merged, nmap_data)
 
         log.info("Nmap confirmed %d open ports across %d IPs", len(merged), len(ip_values))
+        # planning#160 D3 — an incomplete baseline licenses no absence claim:
+        # pass no scanned_ips (zero-port fills are suppressed inside) and no
+        # fresh naabu_last_scan_at anywhere. Ports actually confirmed this
+        # run still flow through as per-IP patches — presence is safe.
         return self._build_phase_result(
-            merged.values(), tier_name, scanned_ips=set(ip_values), tarpit_ips=tarpit_ips,
+            merged.values(), tier_name,
+            scanned_ips=set(ip_values) if baseline_complete else set(),
+            tarpit_ips=tarpit_ips,
+            baseline_complete=baseline_complete,
         )
 
     # ── internals ────────────────────────────────────────────────────────
@@ -382,7 +414,7 @@ class NaabuConnector(ScanningConnector):
         rate: int,
         concurrency: int,
         verify: bool = False,
-    ) -> list[dict]:
+    ) -> WorkerResult:
         payload: dict[str, Any] = {
             "hosts": hosts,
             "exclude_ports": exclude_ports,
@@ -411,10 +443,14 @@ class NaabuConnector(ScanningConnector):
                     "Naabu worker call timed out for %d host(s) — %d result(s) recovered from partial "
                     "output before the subprocess was killed", len(hosts), len(results),
                 )
-            return results
+                # planning#160 D1 — a timed-out pass is an incomplete pass:
+                # the recovered rows are real, but absence must not be
+                # inferred from a pass that never finished.
+                return WorkerResult(rows=results, completed=False)
+            return WorkerResult(rows=results, completed=True)
         except httpx.HTTPError:
             log.exception("Naabu worker request failed (top_ports=%s, ports=%s)", top_ports, ports)
-            return []
+            return WorkerResult(rows=[], completed=False)
 
     def _invoke_nmap_verify(
         self,
@@ -540,6 +576,8 @@ class NaabuConnector(ScanningConnector):
         tier_name: str,
         scanned_ips: set[str] | None = None,
         tarpit_ips: set[str] | None = None,
+        *,
+        baseline_complete: bool = True,
     ) -> PhaseResult:
         from datetime import datetime, timezone
 
@@ -608,17 +646,26 @@ class NaabuConnector(ScanningConnector):
                         entry["service_version"] = sv
                 open_ports.append(entry)
 
+            # planning#160 D3 — an incomplete pass must not advance the staleness
+            # cutoff for ANY IP. Omit naabu_last_scan_at rather than writing
+            # an older value: the metadata merge leaves keys absent from a
+            # patch untouched, so the previous successful scan's cutoff
+            # persists and known ports keep their real age. The confirmed
+            # ports themselves are real observations and are still
+            # recorded — presence is safe, absence is not.
+            metadata: dict = {
+                "sources": ["naabu"],
+                "open_ports": open_ports,
+                "naabu_tier": tier_name,
+                "tarpit_detected": ip in tarpit_ips,
+            }
+            if baseline_complete:
+                metadata["naabu_last_scan_at"] = now
             patches.append(DiscoveredAsset(
                 asset_type=AssetType.IP_ADDRESS,
                 value=ip,
                 parent_value=None,
-                asset_metadata={
-                    "sources": ["naabu"],
-                    "open_ports": open_ports,
-                    "naabu_last_scan_at": now,
-                    "naabu_tier": tier_name,
-                    "tarpit_detected": ip in tarpit_ips,
-                },
+                asset_metadata=metadata,
             ))
 
         # IPs naabu scanned but nmap confirmed zero open ports still need a
@@ -627,23 +674,28 @@ class NaabuConnector(ScanningConnector):
         # the old ports remain visible. Writing an empty open_ports patch
         # updates the timestamp while the merge leaves existing port rows
         # untouched — the API filter then hides them as stale.
-        ips_with_patches = set(per_ip.keys())
-        for ip in (scanned_ips or set()) - ips_with_patches:
-            try:
-                ipaddress.ip_address(ip)
-            except ValueError:
-                continue
-            patches.append(DiscoveredAsset(
-                asset_type=AssetType.IP_ADDRESS,
-                value=ip,
-                parent_value=None,
-                asset_metadata={
-                    "sources": ["naabu"],
-                    "open_ports": [],
-                    "naabu_last_scan_at": now,
-                    "naabu_tier": tier_name,
-                    "tarpit_detected": ip in tarpit_ips,
-                },
-            ))
+        #
+        # planning#160 D3 — but only a completed baseline may make that
+        # claim. When it did not complete, the fill patches are precisely
+        # the absence claim we must not write, so emit none of them.
+        if baseline_complete:
+            ips_with_patches = set(per_ip.keys())
+            for ip in (scanned_ips or set()) - ips_with_patches:
+                try:
+                    ipaddress.ip_address(ip)
+                except ValueError:
+                    continue
+                patches.append(DiscoveredAsset(
+                    asset_type=AssetType.IP_ADDRESS,
+                    value=ip,
+                    parent_value=None,
+                    asset_metadata={
+                        "sources": ["naabu"],
+                        "open_ports": [],
+                        "naabu_last_scan_at": now,
+                        "naabu_tier": tier_name,
+                        "tarpit_detected": ip in tarpit_ips,
+                    },
+                ))
 
-        return PhaseResult(assets=patches)
+        return PhaseResult(assets=patches, complete=baseline_complete)

@@ -68,9 +68,15 @@ class DiscoveredFinding:
 
 @dataclass
 class PhaseResult:
-    """Unified result type returned by every connector phase."""
+    """Unified result type returned by every connector phase.
+
+    `complete=False` means this phase did not finish; callers must not
+    infer absence from it. Defaults to True — a phase that finished, or
+    that scanned nothing on purpose, never needs to set it.
+    """
     assets: list[DiscoveredAsset] = field(default_factory=list)
     findings: list[DiscoveredFinding] = field(default_factory=list)
+    complete: bool = True
 
 
 class BaseConnector(ABC):

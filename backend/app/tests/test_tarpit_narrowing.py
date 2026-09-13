@@ -11,7 +11,7 @@ Run with:  python -m app.tests.test_tarpit_narrowing        (from /app)
 
 import types
 
-from app.connectors.naabu import NaabuConnector, _TARPIT_PORT_THRESHOLD
+from app.connectors.naabu import NaabuConnector, WorkerResult, _TARPIT_PORT_THRESHOLD
 from app.models.asset import AssetType
 
 TARPIT = "1.2.3.4"   # public; broad sweep returns a phantom flood (> threshold)
@@ -44,11 +44,13 @@ def test_tarpit_rediscovered_with_verify_and_verified_gently():
     def fake_worker(*, hosts, top_ports, ports, exclude_ports, rate, concurrency, verify=False):
         calls.append({"hosts": list(hosts), "verify": verify})
         if verify:  # -verify narrows the flood to the real ports
-            return [{"host": TARPIT, "ip": TARPIT, "port": p} for p in (53, 80)]
+            return WorkerResult(
+                rows=[{"host": TARPIT, "ip": TARPIT, "port": p} for p in (53, 80)]
+            )
         rows = [{"host": TARPIT, "ip": TARPIT, "port": p} for p in flood]
         rows += [{"host": TARPIT, "ip": TARPIT, "port": p} for p in (53, 80)]
         rows += [{"host": NORMAL, "ip": NORMAL, "port": p} for p in (22, 443)]
-        return rows
+        return WorkerResult(rows=rows)
 
     def fake_nmap(merged, gentle_ips=None):
         captured["merged_keys"] = set(merged.keys())
@@ -85,7 +87,9 @@ def test_no_tarpit_skips_verify_and_gentle():
 
     def fake_worker(*, hosts, top_ports, ports, exclude_ports, rate, concurrency, verify=False):
         calls.append({"hosts": list(hosts), "verify": verify})
-        return [{"host": NORMAL, "ip": NORMAL, "port": p} for p in (22, 443)]
+        return WorkerResult(
+            rows=[{"host": NORMAL, "ip": NORMAL, "port": p} for p in (22, 443)]
+        )
 
     def fake_nmap(merged, gentle_ips=None):
         captured["gentle_ips"] = set(gentle_ips or ())
@@ -106,7 +110,8 @@ def test_prior_ports_folded_into_candidate_set():
     captured = {}
 
     def fake_worker(*, hosts, top_ports, ports, exclude_ports, rate, concurrency, verify=False):
-        return [{"host": NORMAL, "ip": NORMAL, "port": 443}]  # naabu found only 443
+        # naabu found only 443
+        return WorkerResult(rows=[{"host": NORMAL, "ip": NORMAL, "port": 443}])
 
     def fake_nmap(merged, gentle_ips=None):
         captured["merged_keys"] = set(merged.keys())
