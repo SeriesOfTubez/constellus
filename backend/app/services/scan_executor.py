@@ -144,6 +144,11 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     )
 
     connectors_used: list[str] = []
+    # planning#160 — per-connector degradation notes (worker outage / scan
+    # timeout), collected across chunks and recorded on the run's
+    # partial_failures just before COMPLETED. A degraded run still
+    # completes; what changes is that it now says so.
+    degraded: list[str] = []
     new_finding_ids: list[uuid.UUID] = []
     touched_asset_ids: set[uuid.UUID] = set()
     touched_finding_ids: set[uuid.UUID] = set()
@@ -163,6 +168,7 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
                 new_finding_ids=new_finding_ids,
                 touched_asset_ids=touched_asset_ids,
                 touched_finding_ids=touched_finding_ids,
+                degraded=degraded,
             )
         except Exception as exc:
             log.exception("Chunk %d/%d failed for run %s", chunk_idx + 1, len(chunks), scan_run_id)
@@ -369,6 +375,14 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     run.asset_count = len(touched_asset_ids)
     run.finding_count = _logical_finding_count(db, touched_finding_ids)
     db.commit()
+
+    # planning#160 — record collected degradation on the run. Appended here
+    # and not inside _run_pipeline because _append_partial_failure commits,
+    # and a mid-pipeline commit would break the executor's transaction
+    # discipline. dict.fromkeys de-duplicates while preserving order — the
+    # same idiom as connectors_used just below.
+    for message in dict.fromkeys(degraded):
+        _append_partial_failure(db, run, message)
 
     _set_status(
         db, run, ScanStatus.COMPLETED,
@@ -595,6 +609,7 @@ def _run_pipeline(
     new_finding_ids: list[uuid.UUID] | None = None,
     touched_asset_ids: set[uuid.UUID] | None = None,
     touched_finding_ids: set[uuid.UUID] | None = None,
+    degraded: list[str] | None = None,
 ) -> None:
     """Run Phase 1/2/3 against one chunk's scope."""
     domains: list[str] = chunk_scope.get("domains", [])
@@ -815,6 +830,14 @@ def _run_pipeline(
                 config = _get_connector_config(db, cid)
                 config = {**config, "_aggressiveness": aggressiveness.profile(tier), "_tier": tier}
                 result = port_scan(gate.permitted, config)
+                # planning#160 — record incompleteness before the assets
+                # check so a failed pass that yields no patches at all is
+                # still recorded, not read as a clean "found nothing".
+                if degraded is not None and not result.complete:
+                    degraded.append(
+                        f"{cid}: scan incomplete (worker unavailable or timed out) — "
+                        "existing results preserved, absence not inferred"
+                    )
                 if result.assets:
                     asset_ids = write_assets(db, scan_run_id, result.assets)
                     if touched_asset_ids is not None:
@@ -889,6 +912,13 @@ def _run_pipeline(
                 # other ScanningConnectors ignore unknown config keys.
                 config["_nuclei_include_tags"] = nuclei_tags
                 result = connector.scan(authorised_targets, config)
+                # planning#160 — same treatment as Phase 1.5: an incomplete
+                # vulnerability scan must not read as a clean one.
+                if degraded is not None and not result.complete:
+                    degraded.append(
+                        f"{cid}: scan incomplete (worker unavailable or timed out) — "
+                        "existing results preserved, absence not inferred"
+                    )
                 if result.findings:
                     finding_ids = write_findings(db, scan_run_id, result.findings, new_canonical_ids_out=new_finding_ids)
                     if touched_finding_ids is not None:
