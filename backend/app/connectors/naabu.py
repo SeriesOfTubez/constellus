@@ -41,6 +41,7 @@ from app.connectors.base import (
     ScanningConnector,
     TestResult,
 )
+from app.core.netaddr import is_public_ip as _is_public_ip
 from app.models.asset import AssetType
 from app.services import aggressiveness
 
@@ -91,17 +92,6 @@ def _parse_port_list(raw: Any) -> list[int]:
             seen.add(p)
             out.append(p)
     return out
-
-
-def _is_public_ip(value: str) -> bool:
-    try:
-        addr = ipaddress.ip_address(value)
-    except ValueError:
-        return False
-    return not (
-        addr.is_private or addr.is_loopback or addr.is_multicast
-        or addr.is_link_local or addr.is_reserved or addr.is_unspecified
-    )
 
 
 @dataclass
