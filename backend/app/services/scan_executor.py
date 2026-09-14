@@ -22,6 +22,7 @@ Run-level behavior:
     CANCELLED, the loop stops cleanly.
 """
 
+import ipaddress
 import logging
 import time
 import uuid
@@ -37,6 +38,7 @@ from app.connectors.base import (
     ScanningConnector,
 )
 from app.core.database import SessionLocal
+from app.core.netaddr import is_public_network
 from app.models.scan import ScanRun, ScanStatus
 from app.models.scan_template import ScanTemplate
 from app.services import aggressiveness
@@ -412,25 +414,56 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     for message in dict.fromkeys(degraded):
         _append_partial_failure(db, run, message)
 
-    # planning#161 — a CIDR target yields no port coverage by either route,
-    # and until now said so nowhere. The normal discovery path never reads
-    # `ip_ranges` at all (it loops domains only), so a CIDR contributes zero
-    # assets; the skip_discovery path does seed one, but as a CIDR string in
-    # an `ip_address` asset, which `is_public_ip` then silently rejects.
-    # Either way the run reached COMPLETED with nothing scanned and every
-    # signal an operator can see saying it worked — the same
-    # failure-becomes-a-reassuring-state family as planning#160/#163.
-    #
-    # This is the interim guard, not the fix: it makes the gap visible while
-    # the real CIDR->naabu sweep is built. Delete it when that lands and a
-    # CIDR genuinely produces assets.
+    # planning#161 — the CIDR sweep is now real: naabu.port_scan reads
+    # config["_ip_ranges"] (injected in _run_pipeline, per chunk) and sweeps
+    # every range that is public/global and within its size cap, turning any
+    # responding host into a new ip_address asset. This guard used to fire
+    # for every CIDR target unconditionally — that was correct while the
+    # sweep didn't exist, but would now misreport a CIDR that swept cleanly
+    # and simply found nothing as a failure. It fires only for a CIDR that
+    # was NOT actually attempted this run: non-public, over the size cap, or
+    # naabu disabled (at every tier the value appeared in) or unavailable.
+    from app.connectors.naabu import MAX_SWEEP_ADDRESSES
+    from app.services.connector_config import get_all as get_all_configs
+
+    naabu_config = _get_connector_config(db, "naabu")
+    max_sweep = int(naabu_config.get("max_sweep_addresses") or MAX_SWEEP_ADDRESSES)
+    naabu_connector_enabled = "naabu" in {
+        r.connector_id for r in get_all_configs(db) if r.enabled
+    }
+    # A worker outage/timeout this run is already recorded generically by
+    # the Phase 1.5 loop in _run_pipeline (`degraded`, planning#160) as
+    # "naabu: scan incomplete ...". Reuse that signal here rather than
+    # inventing a second channel that says the same thing a different way.
+    naabu_worker_unavailable = any(
+        msg.startswith("naabu: scan incomplete") for msg in degraded
+    )
+
     for value in dict.fromkeys(ip_ranges):
+        if not is_public_network(value):
+            reason = "it is not a public/global range"
+        elif ipaddress.ip_network(value, strict=False).num_addresses > max_sweep:
+            reason = f"it exceeds the {max_sweep}-address sweep cap"
+        elif not naabu_connector_enabled:
+            reason = "the naabu connector is disabled"
+        elif not any(
+            (aggressiveness.profile(sub_tier).get("naabu") or {}).get("enabled", False)
+            for sub_tier, sub_scope in scope_by_tier.items()
+            if value in sub_scope.get("ip_ranges", [])
+        ):
+            reason = "naabu is disabled at this target's aggressiveness tier"
+        elif naabu_worker_unavailable:
+            reason = "the naabu worker was unavailable or timed out this run"
+        else:
+            # Genuinely swept this run. A clean pass that found nothing is a
+            # real result, not a failure — nothing to report.
+            continue
+
         _append_partial_failure(
             db, run,
-            f"CIDR target {value} was not scanned: CIDR sweeping is not yet "
-            f"implemented (planning#161). Addresses inside it are still "
-            f"authorised if discovered by other means, but this run probed "
-            f"none of them.",
+            f"CIDR target {value} was not scanned this run: {reason} "
+            f"(planning#161). Addresses inside it are still authorised if "
+            f"discovered by other means, but this run probed none of them.",
         )
 
     _set_status(
@@ -828,6 +861,25 @@ def _run_pipeline(
                 touched_asset_ids.update(asset_ids)
             all_assets.extend(phase_assets)
 
+    # planning#161 — a CIDR range needs a stand-in ip_address asset in
+    # all_assets before Phase 1.5, or two things silently swallow it: the
+    # `if all_assets:` gate just below would skip Phase 1.5 entirely for a
+    # scope that is CIDRs-only (the normal discovery loop above only ever
+    # walks `domains`), and even if it didn't, `probe_authorisation.
+    # authorise_probes` short-circuits an EMPTY asset list straight to
+    # `permitted=[]` — bypassing even its own connector-declaration check —
+    # before the port_scan call below ever runs. The `skip_discovery`
+    # branch already seeds exactly this placeholder (above); this is the
+    # same idiom for the path that branch doesn't cover. The placeholder
+    # itself is never persisted (write_assets only ever sees `result.assets`,
+    # each connector's OUTPUT, never this input list) and naabu's own
+    # per-asset loop filters non-IP values out of it the same way it
+    # already filters the skip_discovery seed — the actual sweep happens
+    # via config["_ip_ranges"] below, not through this asset.
+    if ip_ranges and not skip_discovery:
+        for value in ip_ranges:
+            all_assets.append(DiscoveredAsset(asset_type="ip_address", value=value))
+
     # ── Phase 1.5: Port discovery ─────────────────────────────────────────────
     # Active port scanning (currently Naabu) is its own pre-enrichment pass so
     # that downstream Phase 2/3 tools (and the asset detail UI) have an open-
@@ -879,7 +931,18 @@ def _run_pipeline(
                     log.info("Probe gate: no assets authorised for %s", cid)
                     continue
                 config = _get_connector_config(db, cid)
-                config = {**config, "_aggressiveness": aggressiveness.profile(tier), "_tier": tier}
+                config = {
+                    **config,
+                    "_aggressiveness": aggressiveness.profile(tier),
+                    "_tier": tier,
+                    # planning#161 — the CIDR-sweep seam. Every port_scan
+                    # connector gets the chunk's declared ranges through
+                    # config rather than a signature change (this hook is
+                    # duck-typed across naabu/banner_grab/httpx/tlsx); only
+                    # naabu currently reads `_ip_ranges` (app/connectors/
+                    # naabu.py), everything else ignores the key.
+                    "_ip_ranges": list(ip_ranges),
+                }
                 result = port_scan(gate.permitted, config)
                 # planning#160 — record incompleteness before the assets
                 # check so a failed pass that yields no patches at all is
