@@ -39,6 +39,29 @@ The README and documentation reflect the current state of the software, not the 
 ### No security theatre
 Every security control exists because it catches real things or prevents real incidents — not for compliance checkbox purposes. Controls that create noise without value get removed.
 
+### Transaction ownership
+SQLAlchemy sessions have one owner and one boundary. Decided in planning#163,
+because it had never been decided and that ambiguity was its own bug class.
+
+1. **The session's owner commits; helpers flush.** Whoever opened the session —
+   `get_db` for a request, `SessionLocal()` in a background job — owns the
+   boundary. A service handed a `Session` it did not open calls `db.flush()` to
+   make its writes visible inside the transaction, never `db.commit()`.
+2. **Every `except` that intends to continue must `db.rollback()` first.**
+   SQLAlchemy does not auto-rollback a failed flush/execute. A handler that logs
+   and carries on without rolling back leaves the transaction aborted, so the
+   *next* unrelated statement raises `PendingRollbackError` — and the failure
+   surfaces far from its cause, typically inside the handler meant to record it.
+3. **A fail-soft step is its own unit of work.** Where one step may fail without
+   failing the whole job, each step gets
+   `try: step(); db.commit()` / `except: db.rollback(); record()`. Without the
+   explicit commit, a step that writes but does not commit has its work silently
+   discarded by the *next* step's rollback.
+
+Migration is incomplete and new instances should not be added: several analyzer
+helpers still commit sessions they do not own, and `core/logging.py`'s
+`DBLogHandler` commits once per log record in the scan hot path.
+
 ---
 
 ## Getting started
