@@ -746,12 +746,12 @@ def _run_pipeline(
         # happen in the background via app.services.ct_refresher.
 
         apex = apex_domain(domain)
-        domain_authorised = is_scan_authorised(db, apex, auth_mode)
+        domain_authorised = is_scan_authorised(db, domain, auth_mode)
 
         if not domain_authorised:
             log.info(
-                "Skipping active discovery tools for %s — apex domain %s not authorised (mode: %s)",
-                domain, apex, auth_mode,
+                "Skipping active discovery tools for %s — not in authorised scope (mode: %s)",
+                domain, auth_mode,
             )
 
         if options.get("subfinder", True) and domain_authorised:
@@ -992,18 +992,23 @@ def _run_pipeline(
     # This is the interim scope enforcement for Phase 3 scanning connectors
     # (nuclei today); it is not routed through probe_authorisation because
     # (a) the `nuclei` observer is not in the migration-0039 OBSERVER_SEED
-    # roster, so a deny-undeclared gate would deny nuclei outright and kill
-    # Phase 3 scanning entirely, and (b) this filter is the current real
-    # scope enforcement — removing it while the gate's own scope cap is
-    # still a permissive stub (planning#128 fills it) would be a safety
-    # REGRESSION, not a cleanup. Planning#128 is expected to fold this
-    # is_scan_authorised/apex_domain check into the gate's scope cap; until
-    # then, this stays exactly as it was.
+    # roster and `NucleiConnector` has no `observer` class attribute, so a
+    # deny-undeclared gate would refuse nuclei outright and kill Phase 3
+    # scanning entirely, and (b) Phase 3 operates on flat target strings
+    # while the gate takes assets and returns per-asset descriptors, so the
+    # phase would need to be reshaped, not merely rerouted, to sit behind it.
+    # As of planning#128 step 1 this interim filter performs real
+    # containment via `is_scan_authorised` → `target_scope.value_in_target_scope`
+    # (`_scope_cap` has had a real containment body since `26aef86`, so this
+    # is no longer the weaker of the two mechanisms) — but it is still a
+    # SEPARATE mechanism, and retiring it before Phase 3 routes through the
+    # gate would leave Phase 3 ungated. Folding it into the gate's scope cap
+    # remains planning#148's outstanding Phase 3 acceptance criterion.
     targets = _extract_scan_targets(all_assets)
-    authorised_targets = [t for t in targets if is_scan_authorised(db, apex_domain(t), auth_mode)]
+    authorised_targets = [t for t in targets if is_scan_authorised(db, t, auth_mode)]
     skipped = len(targets) - len(authorised_targets)
     if skipped:
-        log.info("Skipping %d scan targets — apex domain not authorised (mode: %s)", skipped, auth_mode)
+        log.info("Skipping %d scan targets — not in authorised scope (mode: %s)", skipped, auth_mode)
 
     if authorised_targets:
         # Scan-wide tag union for nuclei's -tags filter — computed once from
