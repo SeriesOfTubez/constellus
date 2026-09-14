@@ -19,6 +19,7 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.target import Target, TargetType
 from app.services.asset_writer import write_assets
 from app.services.target_scope import target_scoped_asset_ids
+from app.services.target_service import is_scan_authorised
 
 
 def _seed_target(db, value: str, target_type: str) -> Target:
@@ -203,6 +204,153 @@ def test_empty_scope_returns_empty_set():
         db.close()
 
 
+def test_is_scan_authorised_ip_resolved_from_a_declared_domain_under_acknowledge():
+    """Leg 2 of value_in_target_scope: an ip_address AssetCanonical whose
+    parent_value is a subdomain of a declared domain target authorises the
+    IP under acknowledge, even though the IP itself is never a declared
+    target value (planning#128 step 1)."""
+    suffix = uuid.uuid4().hex[:10]
+    domain = f"target-scope-{suffix}.example.com"
+    host = f"www.{domain}"
+    ip = "203.0.113.13"
+
+    db = SessionLocal()
+    try:
+        _mk_domain_target(db, domain)
+        db.add(AssetCanonical(id=uuid.uuid4(), asset_type="ip_address", value=ip, parent_value=host))
+        db.commit()
+
+        assert is_scan_authorised(db, ip, "acknowledge") is True
+    finally:
+        _cleanup(db, domains=[domain], ips=[ip])
+        db.close()
+
+
+def test_is_scan_authorised_ip_inside_a_declared_cidr_under_acknowledge():
+    """Leg 3 (arithmetic containment) — no asset row needed, the CIDR
+    target alone is enough to authorise every address inside it."""
+    cidr = "198.51.100.0/28"
+    inside_ip = "198.51.100.5"
+
+    db = SessionLocal()
+    try:
+        _mk_ip_target(db, cidr, TargetType.CIDR)
+        assert is_scan_authorised(db, inside_ip, "acknowledge") is True
+    finally:
+        _cleanup(db, ips=[cidr])
+        db.close()
+
+
+def test_is_scan_authorised_subdomain_of_a_declared_apex_under_acknowledge():
+    suffix = uuid.uuid4().hex[:10]
+    domain = f"target-scope-{suffix}.example.com"
+
+    db = SessionLocal()
+    try:
+        _mk_domain_target(db, domain)
+        assert is_scan_authorised(db, f"api.{domain}", "acknowledge") is True
+    finally:
+        _cleanup(db, domains=[domain])
+        db.close()
+
+
+def test_is_scan_authorised_value_outside_all_scope_is_denied_under_acknowledge():
+    suffix = uuid.uuid4().hex[:10]
+    domain = f"target-scope-{suffix}.example.com"
+    cidr = "198.51.100.0/28"
+    outside_ip = "198.51.100.99"
+    outside_name = f"outside-{suffix}.example.com"
+
+    db = SessionLocal()
+    try:
+        _mk_domain_target(db, domain)
+        _mk_ip_target(db, cidr, TargetType.CIDR)
+        assert is_scan_authorised(db, outside_ip, "acknowledge") is False
+        assert is_scan_authorised(db, outside_name, "acknowledge") is False
+    finally:
+        _cleanup(db, domains=[domain], ips=[cidr])
+        db.close()
+
+
+def test_is_scan_authorised_disabled_is_permissive():
+    """`disabled` must short-circuit before any query — passing `None` as
+    `db` proves it never touches the session."""
+    assert is_scan_authorised(None, "anything.example.com", "disabled") is True
+
+
+def test_is_scan_authorised_strict_requires_verification():
+    cidr = "198.51.100.0/28"
+    inside_ip = "198.51.100.5"
+
+    db = SessionLocal()
+    try:
+        target = _mk_ip_target(db, cidr, TargetType.CIDR)
+        target.verified = False
+        db.commit()
+
+        assert is_scan_authorised(db, inside_ip, "strict") is False
+        assert is_scan_authorised(db, inside_ip, "acknowledge") is True
+    finally:
+        _cleanup(db, ips=[cidr])
+        db.close()
+
+
+def test_is_scan_authorised_strict_licenses_every_address_inside_a_verified_cidr():
+    cidr = "198.51.100.0/28"
+    inside_ip = "198.51.100.6"
+
+    db = SessionLocal()
+    try:
+        _mk_ip_target(db, cidr, TargetType.CIDR)  # _seed_target: verified=True
+        assert is_scan_authorised(db, inside_ip, "strict") is True
+    finally:
+        _cleanup(db, ips=[cidr])
+        db.close()
+
+
+def test_is_scan_authorised_unrecognised_mode_fails_closed_like_strict():
+    cidr = "198.51.100.0/28"
+    inside_ip = "198.51.100.7"
+
+    db = SessionLocal()
+    try:
+        target = _mk_ip_target(db, cidr, TargetType.CIDR)
+        target.verified = False
+        db.commit()
+        assert is_scan_authorised(db, inside_ip, "banana") is False
+
+        target.verified = True
+        db.commit()
+        assert is_scan_authorised(db, inside_ip, "banana") is True
+    finally:
+        _cleanup(db, ips=[cidr])
+        db.close()
+
+
+def test_is_scan_authorised_normalises_case_and_trailing_dot():
+    """Dropping the `apex_domain()` wrapper at the call sites also dropped
+    the case-folding and trailing-dot stripping it did on the way past.
+    `value_in_target_scope` reproduces it deliberately — both of these
+    authorised under the old path and must keep authorising, or the fix
+    would have traded one silent skip for another (planning#128 step 1)."""
+    suffix = uuid.uuid4().hex[:10]
+    domain = f"target-scope-{suffix}.example.com"
+
+    db = SessionLocal()
+    try:
+        _mk_domain_target(db, domain)
+        assert is_scan_authorised(db, f"API.{domain.upper()}", "acknowledge") is True
+        assert is_scan_authorised(db, f"api.{domain}.", "acknowledge") is True
+        assert is_scan_authorised(db, f"  api.{domain}  ", "acknowledge") is True
+        # The declared value itself, mixed case.
+        assert is_scan_authorised(db, domain.upper(), "acknowledge") is True
+        # Normalisation must not turn an out-of-scope name into an in-scope one.
+        assert is_scan_authorised(db, f"NOT{domain}", "acknowledge") is False
+    finally:
+        _cleanup(db, domains=[domain])
+        db.close()
+
+
 def _run():
     tests = [
         test_leg1_target_asset_link_covers_domain_and_its_resolved_ip,
@@ -211,6 +359,15 @@ def _run():
         test_leg3_bare_ip_target_has_no_target_asset_link_but_is_still_covered,
         test_leg3_cidr_containment,
         test_empty_scope_returns_empty_set,
+        test_is_scan_authorised_ip_resolved_from_a_declared_domain_under_acknowledge,
+        test_is_scan_authorised_ip_inside_a_declared_cidr_under_acknowledge,
+        test_is_scan_authorised_subdomain_of_a_declared_apex_under_acknowledge,
+        test_is_scan_authorised_value_outside_all_scope_is_denied_under_acknowledge,
+        test_is_scan_authorised_disabled_is_permissive,
+        test_is_scan_authorised_strict_requires_verification,
+        test_is_scan_authorised_strict_licenses_every_address_inside_a_verified_cidr,
+        test_is_scan_authorised_unrecognised_mode_fails_closed_like_strict,
+        test_is_scan_authorised_normalises_case_and_trailing_dot,
     ]
     for fn in tests:
         try:
