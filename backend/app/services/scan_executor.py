@@ -412,6 +412,27 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     for message in dict.fromkeys(degraded):
         _append_partial_failure(db, run, message)
 
+    # planning#161 — a CIDR target yields no port coverage by either route,
+    # and until now said so nowhere. The normal discovery path never reads
+    # `ip_ranges` at all (it loops domains only), so a CIDR contributes zero
+    # assets; the skip_discovery path does seed one, but as a CIDR string in
+    # an `ip_address` asset, which `is_public_ip` then silently rejects.
+    # Either way the run reached COMPLETED with nothing scanned and every
+    # signal an operator can see saying it worked — the same
+    # failure-becomes-a-reassuring-state family as planning#160/#163.
+    #
+    # This is the interim guard, not the fix: it makes the gap visible while
+    # the real CIDR->naabu sweep is built. Delete it when that lands and a
+    # CIDR genuinely produces assets.
+    for value in dict.fromkeys(ip_ranges):
+        _append_partial_failure(
+            db, run,
+            f"CIDR target {value} was not scanned: CIDR sweeping is not yet "
+            f"implemented (planning#161). Addresses inside it are still "
+            f"authorised if discovered by other means, but this run probed "
+            f"none of them.",
+        )
+
     _set_status(
         db, run, ScanStatus.COMPLETED,
         completed_at=datetime.now(timezone.utc),
