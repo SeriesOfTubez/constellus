@@ -62,6 +62,7 @@ def start() -> None:
     _register_partition_maintenance()
     _register_hygiene_scoring()
     _register_nightly_rescore()
+    _register_run_reaper()
 
 
 def _seed_default_connectors() -> None:
@@ -306,6 +307,65 @@ def _run_nightly_rescore() -> None:
         log.info("Nightly risk re-scoring complete — %s", stats)
     except Exception:
         log.error("Nightly risk re-scoring failed", exc_info=True)
+    finally:
+        db.close()
+
+
+_reaper_started = False
+
+
+def _register_run_reaper() -> None:
+    """Register the stranded scan-run reaper (planning#163).
+
+    `IntervalTrigger(hours=1)`, first fire at +15s — not 60/90s like its
+    siblings above. The startup sweep (`run_reaper.reap_at_startup`) is the
+    whole point of this job: it must land before a user can open the
+    Activity feed and see a phantom RUNNING scan left over from the backend
+    restart that's happening right now.
+    """
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        _run_run_reaper,
+        trigger=IntervalTrigger(hours=1),
+        id="run_reaper",
+        name="Stranded scan-run reaper",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=15),
+    )
+    log.info("Scheduled run_reaper (every 1h; first run ~15s after start)")
+
+
+def _run_run_reaper() -> None:
+    from app.services import run_reaper
+
+    global _reaper_started
+
+    db = SessionLocal()
+    try:
+        # Module-level flag, not a DB flag or lease: the job is
+        # max_instances=1 on a single-threaded APScheduler, so there is no
+        # race between the flag check and the first run actually executing.
+        #
+        # The flag is set BEFORE the call, deliberately, so a failed startup
+        # sweep is never retried on the next tick. `reap_at_startup` fails
+        # every unfinished run unconditionally — that is only sound in the
+        # first seconds of a process, when no run can legitimately be in
+        # flight. An hour later it would reap scans that started *since*
+        # boot. Do not "fix" this by moving the assignment after the call:
+        # a missed startup sweep is harmless (reap_stale catches the same
+        # rows once they age out), whereas a retried one destroys live runs.
+        if not _reaper_started:
+            _reaper_started = True
+            n = run_reaper.reap_at_startup(db)
+            log.info("Startup stranded-run sweep reaped %d run(s)", n)
+        else:
+            n = run_reaper.reap_stale(db)
+            log.info("Stale-run sweep reaped %d run(s)", n)
+    except Exception:
+        log.error("Stranded scan-run reaper failed", exc_info=True)
     finally:
         db.close()
 

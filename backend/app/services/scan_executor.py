@@ -198,8 +198,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
             new_canonical_ids_out=new_finding_ids,
         )
         touched_finding_ids.update(exposure_ids)
-    except Exception:
-        log.exception("Exposure analysis failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Exposure analysis", exc)
 
     # Dangling-DNS detection (planning#104/#105, epic#81 Phase B; widened by
     # planning#114, epic#81 Phase D follow-up L2) — promotes the
@@ -216,8 +218,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
             new_canonical_ids_out=new_finding_ids,
         )
         touched_finding_ids.update(dangling_ids)
-    except Exception:
-        log.exception("Dangling-DNS analysis failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Dangling-DNS analysis", exc)
 
     # CPE normalization — turn each touched IP asset's banner/Shodan service
     # data into structured software intel (vendor/product/full-version/CPE 2.3)
@@ -227,16 +231,20 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     try:
         from app.services.cpe_normalizer import enrich_cpe
         enrich_cpe(db, touched_asset_ids)
-    except Exception:
-        log.exception("CPE normalization failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "CPE normalization", exc)
 
     # EOL enrichment — check service versions against endoflife.date for each
     # IP asset touched by this run; writes eol_services metadata + eol: tags.
     try:
         from app.services.eol_enrichment import enrich_eol
         enrich_eol(db, touched_asset_ids)
-    except Exception:
-        log.exception("EOL enrichment failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "EOL enrichment", exc)
 
     # Mid-pipeline projection pass (planning#144 L3c-3). enrich_cpe and
     # enrich_eol now publish their results as claims (port_observation
@@ -249,8 +257,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     # idempotent — the final pass further down still runs.
     try:
         projector.project(db, touched_asset_ids, datetime.now(timezone.utc))
-    except Exception:
-        log.exception("Post-enrichment projection failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Post-enrichment projection", exc)
 
     # Native version→CVE matching — match each touched asset's installed software
     # (open_ports[].software[] from CPE normalization) against the local CPE→CVE
@@ -266,8 +276,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
             new_canonical_ids_out=new_finding_ids,
         )
         touched_finding_ids.update(version_ids)
-    except Exception:
-        log.exception("Version matching failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Version matching", exc)
 
     # Shared-infra ownership verification (planning#77 MVP / planning#103,
     # epic#81 Phase A; widened by planning#113, epic#81 Phase D follow-up
@@ -285,8 +297,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     try:
         from app.services.shared_infra_verifier import verify_findings
         verify_findings(db, scope, touched_asset_ids, force=force_reverify)
-    except Exception:
-        log.exception("Shared-infra verification failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Shared-infra verification", exc)
 
     # Final projection pass (planning#143 L2 sub-slice C) — re-project this
     # run's touched assets now that enrichment/verification has run, so
@@ -301,8 +315,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     # projection failure must not fail the scan.
     try:
         projector.project(db, touched_asset_ids, datetime.now(timezone.utc))
-    except Exception:
-        log.exception("Final projection failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Final projection", exc)
 
     # Post-scan CVE enrichment — runs once across all canonical findings
     # touched by this run. EPSS (FIRST.org), CISA KEV, NVD CVSS (capped fallback).
@@ -316,16 +332,20 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     try:
         from app.services.cve_enrichment import enrich_scan_findings
         score_ids |= enrich_scan_findings(db, scan_run_id, canonical_ids=touched_finding_ids)
-    except Exception:
-        log.exception("CVE enrichment failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "CVE enrichment", exc)
 
     # VulnCheck enrichment — primary CVE intelligence (NVD2 CVSS gap-fill +
     # KEV/XDB/ransomware/canary signals). Fail-soft without VULNCHECK_API_KEY.
     try:
         from app.services.vulncheck_enrichment import enrich_scan_findings as enrich_vulncheck
         score_ids |= enrich_vulncheck(db, scan_run_id, canonical_ids=touched_finding_ids)
-    except Exception:
-        log.exception("VulnCheck enrichment failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "VulnCheck enrichment", exc)
 
     # SSVC enrichment — CISA Vulnrichment decision points (Automatable / Technical
     # Impact / Exploitation) from the CVE.org CISA-ADP block; also merges
@@ -334,15 +354,19 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     try:
         from app.services.ssvc_enrichment import enrich_scan_findings as enrich_ssvc
         score_ids |= enrich_ssvc(db, scan_run_id, canonical_ids=touched_finding_ids)
-    except Exception:
-        log.exception("SSVC enrichment failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "SSVC enrichment", exc)
 
     # vulnx / PDCP enrichment — secondary (is_template / is_poc) for candidate CVEs only.
     try:
         from app.services.vulnx_enrichment import enrich_scan_findings as enrich_vulnx
         score_ids |= enrich_vulnx(db, scan_run_id, canonical_ids=touched_finding_ids)
-    except Exception:
-        log.exception("vulnx enrichment failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "vulnx enrichment", exc)
 
     # Constellus Risk Score — pure computation over the signals above; writes
     # risk_score / risk_band / building_velocity. Runs last in the chain, over
@@ -350,8 +374,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     try:
         from app.services.risk_scorer import score_scan_findings
         score_scan_findings(db, scan_run_id, canonical_ids=score_ids)
-    except Exception:
-        log.exception("Risk scoring failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Risk scoring", exc)
 
     # Score-history capture (planning#131, temporal layer slice 1). Must run
     # AFTER risk scoring above, since capture only reads the
@@ -364,8 +390,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     try:
         from app.services import score_history
         promotions = score_history.capture(db, score_ids, datetime.now(timezone.utc))
-    except Exception:
-        log.exception("Score-history capture failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Score-history capture", exc)
 
     # Populate counts so the Activity feed can show them without a join.
     # finding_count is the LOGICAL count — per-source rows that share an
@@ -399,6 +427,7 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
             from app.services import notification_dispatcher
             notification_dispatcher.dispatch(new_finding_ids)
         except Exception:
+            db.rollback()
             log.exception("notification_dispatcher.dispatch failed for run %s", scan_run_id)
 
     # Fire promotion notifications for any band escalation this scan's own
@@ -428,6 +457,7 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
             if dispatchable:
                 notification_dispatcher.dispatch_promotions(dispatchable)
         except Exception:
+            db.rollback()
             log.exception("notification_dispatcher.dispatch_promotions failed for run %s", scan_run_id)
 
 
@@ -1245,6 +1275,31 @@ def _append_partial_failure(db: Session, run: ScanRun, message: str) -> None:
     db.commit()
 
 
+def _record_post_scan_failure(
+    db: Session, run: ScanRun, label: str, exc: BaseException
+) -> None:
+    """Record a fail-soft post-scan step failure on the run row.
+
+    MUST be called after `db.rollback()` — see the "Transaction ownership"
+    convention in CONTRIBUTING.md. The post-scan chain deliberately lets a
+    step die without failing the run, but before planning#163 that failure
+    left no trace anywhere: a dead risk-scorer produced a COMPLETED run with
+    unscored findings and a clean-looking row. `partial_failures` is the
+    existing mechanism for exactly this (planning#160 uses it for degraded
+    workers), so post-scan failures land there too rather than inventing a
+    second channel.
+    """
+    log.exception("%s failed for scan %s — scan still marked complete", label, run.id)
+    try:
+        _append_partial_failure(db, run, f"{label}: {exc}")
+    except Exception:
+        # Last-resort: recording the failure must never itself fail the run.
+        db.rollback()
+        log.exception(
+            "Could not record post-scan failure (%s) on run %s", label, run.id
+        )
+
+
 def _set_status(
     db: Session,
     run: ScanRun,
@@ -1264,6 +1319,18 @@ def _set_status(
 
 
 def _fail(db: Session, scan_run_id: uuid.UUID, error: str) -> None:
+    # This is the LAST handler standing: launch() calls it from its except
+    # block, so whatever aborted the run has usually already aborted the
+    # session's transaction. SQLAlchemy doesn't auto-rollback on a failed
+    # flush/execute (same reasoning as the chunk loop above), so without this
+    # the db.get() below raises PendingRollbackError *inside the failure
+    # handler* and the run is never marked FAILED — it sits in RUNNING
+    # forever, indistinguishable in the UI from a scan still in progress.
+    #
+    # Deliberately NOT wrapped in try/except: if this still fails, the run
+    # must stay visibly broken for the stranded-run sweep in scheduler.py to
+    # reap. Swallowing here would hide a wedged run from both.
+    db.rollback()
     run = db.get(ScanRun, scan_run_id)
     if run:
         run.status = ScanStatus.FAILED
