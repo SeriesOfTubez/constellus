@@ -67,6 +67,45 @@ def test_rejects_malformed_input():
         assert netaddr.is_public_ip(bad) is False
 
 
+def test_network_rejects_documentation_and_private_ranges():
+    # planning#161 — the CIDR-sweep predicate. RFC-5737/3849 documentation
+    # ranges and RFC-1918 private space are non-routable by definition, same
+    # as the single-address cases above.
+    for net in (
+        "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "2001:db8::/32",
+        "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12",
+    ):
+        assert netaddr.is_public_network(net) is False
+
+
+def test_network_rejects_multicast():
+    assert netaddr.is_public_network("224.0.0.0/4") is False
+    assert netaddr.is_public_network("ff00::/8") is False
+
+
+def test_network_rejects_malformed_input():
+    for bad in ("", "not-a-network", "999.999.999.999/24", "203.0.113.0/33"):
+        assert netaddr.is_public_network(bad) is False
+
+
+def test_network_accepts_globally_routable():
+    # Reuses the exact public-resolver literals this module already
+    # sanctions above (see the module docstring) rather than introducing
+    # new routable ranges: the surrounding /24s are real address space
+    # belonging to real operators, and the repo's secret-scanning hook
+    # rejects them on sight. A /32 still exercises the network path —
+    # ip_network parsing plus is_global on a network object — and the
+    # host-bits case below covers a genuinely multi-address range.
+    assert netaddr.is_public_network("8.8.8.8/32") is True
+    assert netaddr.is_public_network("1.1.1.1/32") is True
+
+
+def test_network_accepts_host_bits_set_non_strict():
+    # strict=False: a "network" with host bits still set describes a
+    # sweep range, not a canonical network address — must not raise.
+    assert netaddr.is_public_network("8.8.8.8/24") is True
+
+
 def test_every_call_site_shares_one_implementation():
     # Every module's bound name must BE the shared helper — this is what
     # stops a ninth copy being introduced later. The bindings keep their
@@ -90,6 +129,11 @@ if __name__ == "__main__":
         test_rejects_documentation_ranges,
         test_accepts_globally_routable,
         test_rejects_malformed_input,
+        test_network_rejects_documentation_and_private_ranges,
+        test_network_rejects_multicast,
+        test_network_rejects_malformed_input,
+        test_network_accepts_globally_routable,
+        test_network_accepts_host_bits_set_non_strict,
         test_every_call_site_shares_one_implementation,
     ]
     for _t in _tests:
