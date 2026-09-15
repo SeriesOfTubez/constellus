@@ -71,6 +71,12 @@ class NucleiConnector(ScanningConnector):
     description = "Risk detection — CVEs, misconfigs, exposed files, default credentials, EOL software"
     core = True
 
+    # planning#148 — this connector's identity handle for the probe-
+    # authorisation gate (app.services.probe_authorisation). Must match a
+    # seeded `observers.name` row exactly; the gate denies outright (with a
+    # logged decision row) any active-probe connector missing this attribute.
+    observer = "nuclei"
+
     def get_config_schema(self) -> dict:
         return {
             "severity_filter": {

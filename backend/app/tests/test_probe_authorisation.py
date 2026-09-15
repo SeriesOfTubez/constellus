@@ -125,7 +125,7 @@ class _StubConnector:
 
 
 # Real seeded observer names (migration 0039 OBSERVER_SEED) — see
-# test_claims_schema.test_observers_seeded_with_18_rows_and_correct_addressing
+# test_claims_schema.test_observers_seeded_with_20_rows_and_correct_addressing
 # for the pinned addressing values these stubs rely on.
 _IP_CONNECTOR = _StubConnector("naabu")  # addressing == "ip"
 _NAME_CONNECTOR = _StubConnector("tlsx")  # addressing == "name"

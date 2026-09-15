@@ -1,8 +1,10 @@
 """Composed probe-authorisation gate (planning#148, slice 1 — the chassis).
 
-This is the single choke point every Phase 1.5 active-probe connector
-(naabu, banner_grab, httpx_probe, tlsx today; anything added later) MUST
-pass through before it is handed any asset to send traffic at. A second
+This is the single choke point every active-probe connector MUST pass
+through before it is handed any asset to send traffic at — Phase 1.5 port
+discovery (naabu, banner_grab, httpx_probe, tlsx) and Phase 3 scanning
+(nuclei) alike, plus anything added later. As of planning#148 step 2 there
+is no active-probe path that bypasses it. A second
 inline copy of this decision anywhere else in the codebase — a connector
 that reads `asset_state.attributes["probe_class"]` itself and decides,
 a script that re-derives "is this ours" ad hoc — is a bug, not a
@@ -59,7 +61,7 @@ issue-split exists to prevent (see the accompanying planning notes on
 
 Independent of the three caps above, a connector must declare which
 `observers` row is its identity (`connector.observer`, a class attribute —
-see the four Phase 1.5 connector files) and that row must address
+see the five connector files that declare one) and that row must address
 *something* (`addressing != "none"`). A connector with no declaration, an
 unrecognised one, or one that claims to emit traffic while addressing
 nothing is refused outright — this is what closes the old
@@ -282,23 +284,33 @@ def _scope_cap(
     one is an identity-resolution miss, the other a genuine policy denial,
     and the log-only rollout is read to tell them apart.
 
-    ## Still outstanding (planning#128, second slice)
+    ## Phase 3 (RESOLVED — planning#148 step 2)
 
-    The interim Phase 3 enforcement — `_extract_scan_targets` +
-    `is_scan_authorised`/`apex_domain` in `scan_executor.py` — is STILL IN
-    PLACE and still doing its job. It is NOT retired by this slice, and it
-    must not be retired until Phase 3 actually routes through this gate:
-    removing it first would leave Phase 3 scanning ungated entirely.
+    This section previously recorded the interim Phase 3 enforcement —
+    `_extract_scan_targets` + `is_scan_authorised`/`apex_domain` in
+    `scan_executor.py` — as still in place, and listed the two things
+    blocking its retirement. Both are now done and the interim filter is
+    DELETED: `nuclei` has a seeded `observers` row (migration 0049,
+    `addressing="name"`, following 0039's tlsx/httpx precedent) and
+    `NucleiConnector` carries a matching `observer` attribute, so it clears
+    the always-enforced connector-declaration check.
 
-    Folding it in is not a small edit, which is why it is separated.
-    `nuclei` has no `observers` row and `NucleiConnector` has no `observer`
-    attribute, so the always-enforced connector-declaration check would
-    refuse it outright and kill Phase 3 scanning; and Phase 3 operates on
-    flat target STRINGS while this gate takes assets and returns per-asset
-    descriptors, so the phase has to be reshaped, not merely rerouted.
+    The second blocker dissolved rather than being solved, which is worth
+    keeping: Phase 3 was assumed to need reshaping from flat target STRINGS
+    to per-asset descriptors. It did not. That string list was always
+    DERIVED from assets by `_extract_scan_targets`, so that function is
+    itself the adapter, and the entire change was to run it over
+    `gate.permitted` instead of over `all_assets`. Under the default
+    `log_only` mode `gate.permitted` IS the unfiltered input, so the target
+    list is byte-identical to before and only the decision log is new.
 
-    Phase 1.5 port discovery, by contrast, is gated on scope for the first
-    time as of this slice — that was the larger hole.
+    So as of planning#148 step 2 this function is the only path to an
+    active probe — Phase 1.5 and Phase 3 alike. The one live caller of
+    `is_scan_authorised` left in `scan_executor.py` is the Phase 1
+    domain-discovery filter, which gates ENUMERATION, not probing.
+
+    Phase 1.5 port discovery was gated on scope for the first time as of
+    the slice that introduced this cap — that was the larger hole.
     """
     _ = asset_ref  # containment is by canonical id; the in-batch ref adds nothing
 
