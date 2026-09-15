@@ -988,31 +988,33 @@ def _run_pipeline(
                 log.exception("Enrichment connector %s failed", cid)
 
     # ── Phase 3: Scanning ─────────────────────────────────────────────────────
-    # planning#148 — deliberately UNCHANGED by the probe-authorisation gate.
-    # This is the interim scope enforcement for Phase 3 scanning connectors
-    # (nuclei today); it is not routed through probe_authorisation because
-    # (a) the `nuclei` observer is not in the migration-0039 OBSERVER_SEED
-    # roster and `NucleiConnector` has no `observer` class attribute, so a
-    # deny-undeclared gate would refuse nuclei outright and kill Phase 3
-    # scanning entirely, and (b) Phase 3 operates on flat target strings
-    # while the gate takes assets and returns per-asset descriptors, so the
-    # phase would need to be reshaped, not merely rerouted, to sit behind it.
-    # As of planning#128 step 1 this interim filter performs real
-    # containment via `is_scan_authorised` → `target_scope.value_in_target_scope`
-    # (`_scope_cap` has had a real containment body since `26aef86`, so this
-    # is no longer the weaker of the two mechanisms) — but it is still a
-    # SEPARATE mechanism, and retiring it before Phase 3 routes through the
-    # gate would leave Phase 3 ungated. Folding it into the gate's scope cap
-    # remains planning#148's outstanding Phase 3 acceptance criterion.
-    targets = _extract_scan_targets(all_assets)
-    authorised_targets = [t for t in targets if is_scan_authorised(db, t, auth_mode)]
-    skipped = len(targets) - len(authorised_targets)
-    if skipped:
-        log.info("Skipping %d scan targets — not in authorised scope (mode: %s)", skipped, auth_mode)
-
-    if authorised_targets:
+    # planning#148 step 2 — Phase 3 now routes through the same choke point as
+    # Phase 1.5. The interim `is_scan_authorised` filter that used to live here
+    # is GONE: it was a second, independently-maintained scope mechanism
+    # deciding whether to emit active traffic, which is precisely the
+    # duplication `probe_authorisation`'s module docstring exists to forbid.
+    #
+    # Why this could not be done until now: the gate's connector-declaration
+    # check is always-enforced (it is not subject to the log-only rollout), so
+    # until `nuclei` had both a seeded `observers` row (migration 0049) and an
+    # `observer` class attribute, routing Phase 3 through the gate would have
+    # denied it `unknown_observer` in both modes and killed Phase 3 entirely.
+    #
+    # The gate takes assets and returns assets; Phase 3's connectors take flat
+    # target strings. `_extract_scan_targets` is the adapter, and it now runs
+    # over `gate.permitted` rather than `all_assets` — so under the default
+    # `log_only` mode (where `gate.permitted` IS the unfiltered input) the
+    # target list is identical to what this phase produced before, while
+    # `authorisation_decisions` accumulates the real verdicts to be read
+    # before anyone flips the mode. Under `enforce` it is the narrowed subset.
+    # `_extract_scan_targets`' own third-party exclusion (planning#147) stays:
+    # it is an in-batch rule the gate's persisted `probe_class` mirrors rather
+    # than replaces.
+    if all_assets:
         # Scan-wide tag union for nuclei's -tags filter — computed once from
-        # all_assets (not per-connector, not per-host). See
+        # all_assets (not per-connector, not per-host, and deliberately NOT
+        # from the gated subset: it describes the estate's detected technology,
+        # it is not a list of things to probe). See
         # nuclei_tag_filter.compute_tag_union for the mapping rules.
         nuclei_tags = nuclei_tag_filter.compute_tag_union(all_assets)
 
@@ -1020,6 +1022,14 @@ def _run_pipeline(
             if cid not in enabled_ids or not isinstance(connector, ScanningConnector):
                 continue
             try:
+                gate = probe_authorisation.authorise_probes(
+                    db, connector_id=cid, connector=connector, assets=all_assets,
+                    scope=chunk_scope, scan_run_id=scan_run_id,
+                )
+                targets = _extract_scan_targets(gate.permitted)
+                if not targets:
+                    log.info("Probe gate: no scan targets authorised for %s", cid)
+                    continue
                 config = _get_connector_config(db, cid)
                 # Inject the resolved tier profile so the connector picks up
                 # rate_limit / concurrency / exclude_tags without having to
@@ -1030,7 +1040,7 @@ def _run_pipeline(
                 # filter. Reserved key — only NucleiConnector consumes it;
                 # other ScanningConnectors ignore unknown config keys.
                 config["_nuclei_include_tags"] = nuclei_tags
-                result = connector.scan(authorised_targets, config)
+                result = connector.scan(targets, config)
                 # planning#160 — same treatment as Phase 1.5: an incomplete
                 # vulnerability scan must not read as a clean one.
                 if degraded is not None and not result.complete:
