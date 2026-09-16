@@ -61,9 +61,13 @@ def test_classify_ip_hits_claim_cache_within_ttl_no_refetch():
     ip = f"203.0.113.{10 + (int(suffix[:2], 16) % 60)}"
     calls = {"n": 0}
 
+    # This is the parse contract: a response that actually carries
+    # `is_datacenter` (the flat free-tier shape, planning#177). Today's
+    # keyless free tier does NOT carry it — see
+    # test_classify_ip_free_tier_shape_is_unattempted_not_a_negative below.
     def _spy(url, params=None, timeout=None):
         calls["n"] += 1
-        return _fake_response({"is_datacenter": True, "company": {"name": "Acme Hosting"}, "asn": {"asn": 64500}})
+        return _fake_response({"is_datacenter": True, "company": "Acme Hosting", "asn": "AS64500 Acme Hosting Ltd."})
     hc.connector_get = _spy
 
     db = SessionLocal()
@@ -74,6 +78,7 @@ def test_classify_ip_hits_claim_cache_within_ttl_no_refetch():
         assert calls["n"] == 1
         assert first.is_datacenter is True
         assert first.company_name == "Acme Hosting"
+        assert first.asn == 64500
 
         second = hc.classify_ip(db, ip)
         assert calls["n"] == 1, "a fresh hosting_class claim within TTL must not refetch"
@@ -91,7 +96,7 @@ def test_classify_ip_refetches_past_ttl():
 
     def _spy(url, params=None, timeout=None):
         calls["n"] += 1
-        return _fake_response({"is_datacenter": False, "company": {"name": "Fresh Co"}, "asn": {"asn": 64501}})
+        return _fake_response({"is_datacenter": False, "company": "Fresh Co", "asn": "AS64501 Fresh Co"})
     hc.connector_get = _spy
 
     db = SessionLocal()
@@ -107,6 +112,7 @@ def test_classify_ip_refetches_past_ttl():
         result = hc.classify_ip(db, ip)
         assert calls["n"] == 1, "a hosting_class claim past its TTL must refetch"
         assert result.company_name == "Fresh Co"
+        assert result.asn == 64501
 
         claim = get_current_claim(db, asset.id, "hosting_classifier", "hosting_class")
         assert claim is not None
@@ -128,6 +134,79 @@ def test_classify_ip_no_ip_asset_does_not_write_a_claim():
         assert result.attempted is False
     finally:
         db.close()
+
+
+def test_classify_ip_free_tier_shape_is_unattempted_not_a_negative():
+    """planning#177 — the keyless free tier dropped `is_datacenter`. Absent
+    must read as "couldn't check", not "checked, not a datacenter", because
+    the caller (shared_infra_verifier.py) keys cache eligibility off
+    `attempted` (planning#113 finding 2)."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"203.0.113.{140 + (int(suffix[:2], 16) % 60)}"
+
+    def _spy(url, params=None, timeout=None):
+        return _fake_response({
+            "ip": ip, "is_bogon": False,
+            "company": "Linode",
+            "asn": "AS63949 Akamai Technologies, Inc.",
+            "city": "Fremont", "region": "California", "country": "US",
+            "lat": 1.0, "lon": 2.0, "timezone": "America/Los_Angeles",
+            "docs": "https://ipapi.is/free-tier.html",
+        })
+    hc.connector_get = _spy
+
+    db = SessionLocal()
+    try:
+        asset = _make_ip_asset(db, ip)
+
+        result = hc.classify_ip(db, ip)
+        assert result.attempted is False
+        assert result.is_datacenter is False
+
+        claim = get_current_claim(db, asset.id, "hosting_classifier", "hosting_class")
+        assert claim is None, "an unusable response must never be cached"
+    finally:
+        db.close()
+        _cleanup(ip)
+
+
+def test_classify_ip_unusable_schema_leaves_stale_claim_intact():
+    """A broken dependency must not overwrite or poison what is already
+    cached — the stale claim survives untouched for the next attempt."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"203.0.113.{200 + (int(suffix[:2], 16) % 50)}"
+
+    def _spy(url, params=None, timeout=None):
+        return _fake_response({
+            "ip": ip, "is_bogon": False,
+            "company": "Linode",
+            "asn": "AS63949 Akamai Technologies, Inc.",
+            "city": "Fremont", "region": "California", "country": "US",
+            "lat": 1.0, "lon": 2.0, "timezone": "America/Los_Angeles",
+            "docs": "https://ipapi.is/free-tier.html",
+        })
+    hc.connector_get = _spy
+
+    db = SessionLocal()
+    try:
+        asset = _make_ip_asset(db, ip)
+        stale = datetime.now(timezone.utc) - hc._HOSTING_CLASS_TTL - timedelta(days=1)
+        upsert_single_claim(
+            db, asset.id, "hosting_classifier", "hosting_class",
+            {"is_datacenter": True, "company_name": "Stale Co", "asn": 1}, stale,
+        )
+        db.commit()
+
+        result = hc.classify_ip(db, ip)
+        assert result.attempted is False
+
+        claim = get_current_claim(db, asset.id, "hosting_classifier", "hosting_class")
+        assert claim is not None
+        assert claim.claim_value["company_name"] == "Stale Co"
+        assert claim.last_observed_at == stale
+    finally:
+        db.close()
+        _cleanup(ip)
 
 
 # ── reverse_ip_domains / reverse_ip claim ───────────────────────────────────
@@ -192,6 +271,8 @@ def _run():
         test_classify_ip_hits_claim_cache_within_ttl_no_refetch,
         test_classify_ip_refetches_past_ttl,
         test_classify_ip_no_ip_asset_does_not_write_a_claim,
+        test_classify_ip_free_tier_shape_is_unattempted_not_a_negative,
+        test_classify_ip_unusable_schema_leaves_stale_claim_intact,
         test_reverse_ip_domains_hits_claim_cache_within_ttl_no_refetch,
         test_reverse_ip_domains_refetches_past_ttl,
     ]
