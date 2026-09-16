@@ -36,18 +36,29 @@ Change-detection, per (asset, observer, claim_type):
     + INSERT claim_history.
   - existing, value identical -> UPDATE asset_claims.last_observed_at only.
 
-Concurrency: called from write_assets() in the same transaction as
-_upsert_canonical_batch, after it. That function already takes a
-`FOR UPDATE` lock on the touched assets_canonical rows, which serializes
-any concurrent writer touching the same asset before it reaches this
-function too — so no separate locking is taken here.
+Concurrency — the two entry points here are protected differently, and the
+difference is the whole point (planning#173):
+
+`emit_claims` / `_upsert_claims` (the batch path) is called from
+write_assets() in the same transaction as _upsert_canonical_batch, after it.
+That function takes a `FOR UPDATE` lock on the touched assets_canonical rows,
+and for a row it is creating rather than locking, the unique index serializes
+the insert and it re-fetches the winner's row locked. Either way a concurrent
+writer touching the same asset is serialized before it reaches this function,
+so no separate locking is taken here. **That safety is an invariant held by
+the caller, not by this function** — calling `emit_claims` from anywhere other
+than write_assets reintroduces the race. Verified empirically under
+planning#173: two concurrent write_assets() for the same new asset produce one
+asset row and one claim, with no IntegrityError, across repeated runs.
 
 `get_current_claim` / `upsert_single_claim` (bottom of this module) are a
-separate, unrelated entry point: a single-claim analogue of the same
-change-detection rule, for services (hosting_classifier,
-shared_infra_verifier) that read-modify-write one (asset, observer,
-claim_type) claim as a TTL cache on an already-persisted asset row, outside
-this batch path entirely.
+separate entry point: a single-claim analogue of the same change-detection
+rule, for services (hosting_classifier, shared_infra_verifier, cpe_normalizer,
+eol_enrichment) that read-modify-write one (asset, observer, claim_type) claim
+as a TTL cache on an already-persisted asset row, outside this batch path
+entirely — and therefore with **no asset-row lock above them**. They take
+their own locking, because nothing else does it for them. See
+`upsert_single_claim`.
 """
 
 import json
@@ -55,6 +66,7 @@ import logging
 import uuid
 from datetime import datetime
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.connectors.base import DiscoveredAsset
@@ -680,18 +692,24 @@ def upsert_single_claim(
         return None
 
     evidence = evidence or {}
-    existing = (
-        db.query(AssetClaim)
-        .filter(
-            AssetClaim.asset_canonical_id == asset_canonical_id,
-            AssetClaim.observer_id == observer_id,
-            AssetClaim.claim_type == claim_type,
-        )
-        .first()
-    )
 
-    if existing is None:
-        claim = AssetClaim(
+    # planning#173. This path has no asset-row lock above it — unlike the batch
+    # path, whose callers come through write_assets and are serialized by
+    # _upsert_canonical_batch's FOR UPDATE (see the module docstring). A plain
+    # SELECT-then-INSERT here is therefore a real race: two enrichers
+    # classifying the same IP concurrently both miss the SELECT, both INSERT,
+    # and the loser takes an IntegrityError on
+    # uq_asset_claims_asset_observer_type that aborts its caller's WHOLE
+    # transaction — losing that pass's claim write, which planning#169 shows is
+    # not cosmetic.
+    #
+    # So: attempt the insert atomically first and let the unique index arbitrate.
+    # Same idiom as asset_writer._upsert_canonical_batch — ON CONFLICT DO
+    # NOTHING + RETURNING, where a returned id means we are the one that
+    # created the row.
+    inserted_id = db.execute(
+        pg_insert(AssetClaim.__table__)
+        .values(
             asset_canonical_id=asset_canonical_id,
             observer_id=observer_id,
             claim_type=claim_type,
@@ -700,7 +718,11 @@ def upsert_single_claim(
             first_observed_at=now,
             last_observed_at=now,
         )
-        db.add(claim)
+        .on_conflict_do_nothing(constraint="uq_asset_claims_asset_observer_type")
+        .returning(AssetClaim.id)
+    ).scalar()
+
+    if inserted_id is not None:
         db.add(ClaimHistory(
             asset_canonical_id=asset_canonical_id,
             observer_id=observer_id,
@@ -710,7 +732,34 @@ def upsert_single_claim(
             changed_at=now,
         ))
         db.flush()
-        return claim
+        return db.get(AssetClaim, inserted_id)
+
+    # Conflict: the row exists — either it already did, or a concurrent writer
+    # created it while we were inserting. Re-read it under FOR UPDATE so the
+    # read-modify-write below is serialized against any other writer, and with
+    # populate_existing() so a copy already in this session's identity map is
+    # refreshed from the row we just locked rather than reused stale.
+    existing = (
+        db.query(AssetClaim)
+        .filter(
+            AssetClaim.asset_canonical_id == asset_canonical_id,
+            AssetClaim.observer_id == observer_id,
+            AssetClaim.claim_type == claim_type,
+        )
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+
+    if existing is None:
+        # Only reachable if the conflicting row was deleted between the insert
+        # and the lock. Nothing to update, and retrying would just re-race.
+        log.warning(
+            "claim_emitter: claim row vanished between insert and lock "
+            "(asset=%s, observer=%s, claim_type=%s) — skipping",
+            asset_canonical_id, observer_name, claim_type,
+        )
+        return None
 
     if _json_equal(existing.claim_value, claim_value):
         existing.last_observed_at = now
