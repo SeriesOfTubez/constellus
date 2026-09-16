@@ -27,7 +27,7 @@ positive evidence, never on bare inconclusiveness — widening the trigger
 to any 'unverified' case would reintroduce the exact false-rejection risk
 the unanimity rule above exists to prevent. Gated behind a cheap
 hosting_classifier.is_datacenter pre-filter so the rate-limited
-HackerTarget reverse-IP lookup (services/hosting_classifier.py) is only
+mnemonic passive-DNS lookup (services/hosting_classifier.py) is only
 spent on plausible shared-hosting IPs.
 
 planning#115 (epic#81 Phase D follow-up L3) adds re-verification: before it,
@@ -47,7 +47,7 @@ blanket re-stamp:
     verdict -> grace-guarded. The first contrary classification is recorded
     (`verification_evidence["_pending_reversal"]`) but not applied; only once
     the SAME contrary verdict has persisted for `_OWNERSHIP_UNSEGREGATE_GRACE_DAYS`
-    does it actually flip. A flaky single-run HackerTarget/SNI-probe failure
+    does it actually flip. A flaky single-run reverse-IP/SNI-probe failure
     must not churn a finding in and out of the excluded list (which
     re-notifies) or silently downgrade `confirmed_ours`. This single rule
     covers both of the issue's named cases (an excluded finding returning to
@@ -68,7 +68,7 @@ positive-evidence-only ownership_unverifiable) is unchanged:
   - Before #113: the rule ran once PER FINDING (the old verify_finding),
     scoped to Shodan-sourced findings (VERIFIABLE_SOURCES) newly-touched
     this scan run. An IP with 4 Shodan CVE findings ran the full probe —
-    including the rate-limited HackerTarget reverse-IP lookup — FOUR
+    including the rate-limited reverse-IP lookup — FOUR
     separate times, once per finding sharing that IP.
   - After #113: the rule runs once PER IP (classify_ip_ownership), cached
     on the ip_address asset (mirroring hosting_classifier's TTL-cache
@@ -234,7 +234,7 @@ def classify_ip_ownership(db: Session, ip_asset: AssetCanonical, force: bool = F
     if verdict == "unverified":
         hosting = hosting_classifier.classify_ip(db, ip_asset.value)
         if not hosting.attempted:
-            # Same budget-starvation shape as the HackerTarget guard below,
+            # Same budget-starvation shape as the reverse-IP guard below,
             # caught in review (planning#113 Fable review, finding 2): a
             # failed/quota-exhausted ipapi.is lookup fails soft to
             # is_datacenter=False (hosting_classifier.py) — indistinguishable
@@ -252,10 +252,10 @@ def classify_ip_ownership(db: Session, ip_asset: AssetCanonical, force: bool = F
                 # Budget-starvation guard (planning#113 Fable review,
                 # regression 2, epic#81 Phase D vault doc §9.2):
                 # corroborate_liveness came up empty because
-                # hosting_classifier's ~15/day HackerTarget budget was
-                # already spent this call, not because there's genuinely
+                # hosting_classifier's reverse-IP budget was already
+                # spent this call, not because there's genuinely
                 # nothing to corroborate against. Caching THIS result at
-                # the full TTL would burn the day's budget on ~15 IPs and
+                # the full TTL would burn the day's budget and
                 # then pin every other IP at unverified for the whole TTL
                 # window — leave the cache untouched instead, so the next
                 # call (this run's next IP, or tomorrow's run) tries fresh.
@@ -400,7 +400,7 @@ def _contrary_signal_past_grace(finding: FindingCanonical, new_verdict: str, now
     _OWNERSHIP_UNSEGREGATE_GRACE_DAYS; False (and records this as the first
     contrary observation) otherwise. A contrary verdict that differs from
     whatever was previously pending restarts the clock — only a sustained,
-    consistent signal counts, so a single flaky HackerTarget/SNI-probe
+    consistent signal counts, so a single flaky reverse-IP/SNI-probe
     failure can't churn a finding in and out of the excluded list."""
     evidence = finding.verification_evidence or {}
     pending = evidence.get("_pending_reversal") or {}

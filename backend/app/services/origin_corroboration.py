@@ -49,8 +49,9 @@ from app.services.target_service import apex_domain
 log = logging.getLogger(__name__)
 
 # Bumped from the original 3 (Shodan-hostnames-only) now that candidates can
-# also come from HackerTarget's reverse-IP density list (epic#81 Phase D,
-# planning#107) — hundreds of candidates there, not a handful. A larger
+# also come from the passive-DNS reverse-IP density list (epic#81 Phase D,
+# planning#107; mnemonic since planning#180) — hundreds of candidates there,
+# not a handful. A larger
 # selection cap is cheap because probing batches with early-exit (below)
 # keeps actual probe volume low in the common case; a real dry run found a
 # strong hit within the first 15 of 407 candidates.
@@ -95,14 +96,16 @@ def corroborate_liveness(
     """Best-effort: does origin_ip serve real content for any hostname
     OTHER than subject_value? `attempted=False` is the graceful-degradation
     path — it covers Shodan not configured, this IP unknown to Shodan and
-    HackerTarget, or enrichment never having run, all in one check: the
+    to passive DNS, or enrichment never having run, all in one check: the
     *absence* of any candidate from either source IS the availability
     signal, no separate connector-config lookup needed.
 
     Candidates come from two sources, unioned before selection: Shodan's
     `hostnames` (free during ordinary IP enrichment, effectively live/
-    current) and HackerTarget's reverse-IP density list (planning#107 —
-    historical/cumulative, much larger, no last-seen date). Probed in
+    current) and the passive-DNS reverse-IP density list (planning#107;
+    mnemonic since planning#180 — historical/cumulative and much larger, but
+    now carrying per-record first/last-seen dates, so the `reverse_ip` claim
+    can say whether that sharing is current or merely historical). Probed in
     batches with early-exit on the first strong hit (matches scanner-
     worker's own per-call cap) — the batching means a big reverse-IP
     candidate pool doesn't turn into probing hundreds of hostnames; a real
