@@ -29,6 +29,7 @@ from app.core.database import SessionLocal
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.scan_template import ScanTemplate
 from app.services import ct_refresher
+from app.services import tenancy_enricher
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +60,10 @@ def start() -> None:
     _register_ct_refresher()
     _register_epss_refresher()
     _register_cpe_index_refresher()
+    # Refresher before enricher: a fresh deploy must load the cloud-ranges
+    # mirror before the tenancy drip starts reading it (planning#181).
+    _register_cloud_ranges_refresher()
+    _register_tenancy_enricher()
     _register_partition_maintenance()
     _register_hygiene_scoring()
     _register_nightly_rescore()
@@ -184,6 +189,58 @@ def _run_cpe_index_refresh() -> None:
         log.error("CPE index refresh failed", exc_info=True)
     finally:
         db.close()
+
+
+def _register_cloud_ranges_refresher() -> None:
+    """Refresh the local `cloud_ranges` mirror of constellus-binaries'
+    published dataset daily (planning#181, Tier 0). First run fires ~90s
+    after startup so a fresh deploy has ranges loaded before
+    tenancy_enricher's first tick can find anything to look up.
+    """
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        _run_cloud_ranges_refresh,
+        trigger=IntervalTrigger(hours=24),
+        id="cloud_ranges_refresher",
+        name="Cloud provider range mirror daily refresh",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=90),
+    )
+    log.info("Scheduled cloud_ranges_refresher (every 24h; first run ~90s after start)")
+
+
+def _run_cloud_ranges_refresh() -> None:
+    from app.services import cloud_ranges
+
+    db = SessionLocal()
+    try:
+        result = cloud_ranges.refresh(db)
+        log.info("Cloud ranges refresh complete — %s", result)
+    except Exception:
+        log.error("Cloud ranges refresh failed", exc_info=True)
+    finally:
+        db.close()
+
+
+def _register_tenancy_enricher() -> None:
+    """Register the Tier 0 tenancy enricher as a recurring interval job
+    (planning#181). Drips a `tenancy` claim per asset off the local
+    `cloud_ranges` mirror; never calls out itself."""
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        tenancy_enricher.tick,
+        trigger=IntervalTrigger(seconds=tenancy_enricher.TICK_INTERVAL_SECONDS),
+        id="tenancy_enricher",
+        name="Tier 0 tenancy enricher",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    log.info("Scheduled tenancy_enricher (every %ds)", tenancy_enricher.TICK_INTERVAL_SECONDS)
 
 
 def _register_partition_maintenance() -> None:
