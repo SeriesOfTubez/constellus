@@ -27,6 +27,7 @@ from app.models.authorisation_decision import AuthorisationDecision
 from app.models.asset_hygiene_score import AssetHygieneScore, GRADE_VALUES, BAND_VALUES
 from app.models.score_history import ScoreHistory
 from app.models.hygiene_history import HygieneHistory
+from app.models.cloud_range import CloudRange, CloudRangeMeta
 
 __all__ = [
     "User", "UserRole",
@@ -69,4 +70,6 @@ __all__ = [
     "BAND_VALUES",
     "ScoreHistory",
     "HygieneHistory",
+    "CloudRange",
+    "CloudRangeMeta",
 ]
