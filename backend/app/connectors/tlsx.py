@@ -62,6 +62,12 @@ class TlsxConnector(ScanningConnector):
     )
     core = True
 
+    # planning#148 — this connector's identity handle for the probe-
+    # authorisation gate (app.services.probe_authorisation). Must match a
+    # seeded `observers.name` row exactly; the gate denies outright (with a
+    # logged decision row) any Phase 1.5 connector missing this attribute.
+    observer = "tlsx"
+
     # Runs after httpx (300) — disjoint output fields, ordering is cosmetic.
     port_scan_order = 310
 
