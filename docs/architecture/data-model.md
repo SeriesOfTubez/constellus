@@ -108,6 +108,18 @@ Two properties this buys that the blob could not:
 
 The API still serves an `asset_metadata` object, but it is **reconstructed per request** by `app/services/metadata_bridge.py` from claims + `asset_state` + columns — the frontend contract outlived the column.
 
+### Querying the claims layer
+
+`app/services/claims_query.py` is the query surface every consumer of the claims layer reads through — the epic's mechanical predicates are `surface(asset)` and the absence primitive below, not an ad hoc re-query of `asset_claims`/`asset_state`.
+
+**`surface(asset)`** is the estate tri-state plus a fourth, query-layer-only value: `proven_ours`, `claimed_ours`, `not_ours`, or `unknown`. `asset_state.estate` itself stays nullable — the projector deliberately never invents a stored default when there is no ownership signal — so `unknown` is a *read-time mapping* over a `NULL` estate (or over an asset with no `asset_state` row at all), not a value anything ever writes. That mapping matters because `unknown` must rank *below* `not_ours`: a machine nothing reports on is a machine nobody is managing, which is a worse finding than one positively excluded as someone else's. `surface(asset) == "not_ours"` is the exclusion predicate the rest of the codebase keys off (`app/api/assets.py`'s third-party filter included) — never the IONIX operational-layer view, which is ontological and reporting-only.
+
+**The absence primitive** — "no claim of type T, optionally from observer O" — is what makes a claim's *absence* a first-class, queryable fact instead of indistinguishable from an unobserved one. `missing_claim_asset_ids` / `assets_missing_claim` express it as a NOT-IN/NOT-EXISTS over `asset_claims`, so an asset with zero claims of any kind is correctly returned, not silently excluded by an anti-join that assumes some other row exists. The worked example the epic is built around: **an internet-visible asset with no EDR claim and no device-management claim is an unmanaged asset** — the foundation for planning#130's Coverage/unmanaged hygiene dimension, where the same unknown-ranks-below-not_ours inversion applies: an asset nothing reports coverage for is worse than one confirmed out of scope, not better.
+
+**Reporting vs. authorisation TTL:** neither `surface()` nor the absence primitive applies any TTL — `claim_types.authorisation_ttl` is the freshness window the cross-epic probe-authorisation gate reads at authorisation time, while these are reporting-time consumers with no `reporting_ttl` policy seeded yet.
+
+**Endpoints** (`app/api/claims.py`): `GET /api/claims/surface/{asset_id}` returns `{asset_id, surface}`; `GET /api/claims/absence?claim_type=&observer=&asset_type=&surface=&include_ignored=&limit=` returns a list of `{asset_id, asset_type, value, last_seen_at, surface}`, with `claim_type` required and an unrecognised `claim_type` / `observer` / `surface` value rejected as 422 rather than silently matching everything.
+
 ## Graph edges
 
 `asset_edges` connects any two graph nodes using a **polymorphic FK** pattern:
