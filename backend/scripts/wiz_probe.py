@@ -158,11 +158,14 @@ def main() -> None:
     cmd = sys.argv[1]
 
     if cmd == "auth":
+        # Success is the whole signal. The endpoint host used to be echoed here
+        # as a "did I point at the right tenant" aid, but it reaches stdout from
+        # the secret store (CodeQL py/clear-text-logging-sensitive-data, high),
+        # and it names the customer's Wiz tenant. Whoever runs this already has
+        # WIZ_API_ENDPOINT and can read it directly, so printing it back adds
+        # nothing that is not already in their hands.
         get_token()
-        endpoint = get_secret("WIZ_API_ENDPOINT") or ""
-        # Host only — the endpoint identifies the tenant.
-        host = endpoint.split("//")[-1].split("/")[0]
-        print(f"auth OK (endpoint host: {host})")
+        print("auth OK")
         return
 
     token = get_token()
