@@ -34,8 +34,19 @@ def connector_get(
     params: dict | None = None,
     timeout: float = 15.0,
     max_retries: int = _DEFAULT_RETRIES,
+    follow_redirects: bool = False,
 ) -> httpx.Response:
-    return _request("GET", url, headers=headers, params=params, timeout=timeout, max_retries=max_retries)
+    """`follow_redirects` defaults to False — httpx's own default, and the
+    behaviour every caller here has always had. It is opt-in per call rather
+    than on globally because a redirect is an attacker-influencable hop for
+    any connector whose URL derives from asset data, which is the class of
+    thing app/core/ssrf.py exists to constrain. Turn it on only for a fixed,
+    hardcoded URL (see cloud_ranges.py, where GitHub release assets 302 to a
+    signed CDN host)."""
+    return _request(
+        "GET", url, headers=headers, params=params, timeout=timeout,
+        max_retries=max_retries, follow_redirects=follow_redirects,
+    )
 
 
 def connector_post(
@@ -63,6 +74,7 @@ def _request(
     data: Any = None,
     timeout: float,
     max_retries: int,
+    follow_redirects: bool = False,
 ) -> httpx.Response:
     last_exc: Exception | None = None
 
@@ -75,6 +87,7 @@ def _request(
                 json=json,
                 data=data,
                 timeout=timeout,
+                follow_redirects=follow_redirects,
             )
 
             if resp.status_code not in _RETRY_STATUSES:

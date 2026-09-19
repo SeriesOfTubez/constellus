@@ -26,6 +26,7 @@ needs adding it here.
 
 import pytest
 
+from app.services import cloud_ranges
 from app.services import domain_affinity
 from app.services import hosting_classifier
 from app.services import notification_dispatcher
@@ -33,8 +34,10 @@ from app.services import origin_corroboration
 from app.services import probe_authorisation
 from app.services import shared_infra_verifier
 from app.services import takeover_fingerprint
+from app.services import tenancy_enricher
 
 _GUARDED_MODULES = [
+    cloud_ranges,
     domain_affinity,
     hosting_classifier,
     notification_dispatcher,
@@ -42,6 +45,7 @@ _GUARDED_MODULES = [
     probe_authorisation,
     shared_infra_verifier,
     takeover_fingerprint,
+    tenancy_enricher,
 ]
 
 

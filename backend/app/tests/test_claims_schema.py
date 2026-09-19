@@ -14,6 +14,7 @@ Run with:  python -m app.tests.test_claims_schema
 """
 
 import uuid
+from datetime import timedelta
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -61,14 +62,14 @@ def test_all_seven_claims_layer_tables_exist():
     assert not missing, f"Missing claims-layer tables: {sorted(missing)}"
 
 
-def test_observers_seeded_with_20_rows_and_correct_addressing():
+def test_observers_seeded_with_21_rows_and_correct_addressing():
     db = SessionLocal()
     try:
         rows = db.execute(text("SELECT name, addressing FROM observers")).all()
     finally:
         db.close()
     by_name = dict(rows)
-    assert len(by_name) == 20, f"expected 20 seeded observers, got {len(by_name)}: {sorted(by_name)}"
+    assert len(by_name) == 21, f"expected 21 seeded observers, got {len(by_name)}: {sorted(by_name)}"
     assert by_name["naabu"] == "ip"
     assert by_name["banner_grab"] == "ip"
     assert by_name["tlsx"] == "name"
@@ -90,17 +91,23 @@ def test_observers_seeded_with_20_rows_and_correct_addressing():
     # follows 0039's tlsx/httpx precedent rather than splitting off a
     # second IP-addressed nuclei identity — see 0049's own docstring.
     assert by_name["nuclei"] == "name"
+    # The migration-0050 row (planning#181 Tier 0). `addressing = "none"` for
+    # the same reason as `wiz`: this is a claim PRODUCER that derives
+    # tenancy from a mirrored dataset — it never addresses the target, so
+    # the gate must refuse it as a prober even while its claims authorise
+    # other connectors' probes.
+    assert by_name["tenancy_enricher"] == "none"
 
 
-def test_claim_types_seeded_with_18_rows_and_exactly_two_authorisation_ttls():
+def test_claim_types_seeded_with_19_rows_and_exactly_three_authorisation_ttls():
     db = SessionLocal()
     try:
         rows = db.execute(text("SELECT claim_type, authorisation_ttl FROM claim_types")).all()
     finally:
         db.close()
-    assert len(rows) == 18, f"expected 18 seeded claim types, got {len(rows)}"
+    assert len(rows) == 19, f"expected 19 seeded claim types, got {len(rows)}"
     with_ttl = {claim_type for claim_type, ttl in rows if ttl is not None}
-    assert with_ttl == {"affinity_confirmation", "cloud_inventory"}, with_ttl
+    assert with_ttl == {"affinity_confirmation", "cloud_inventory", "tenancy"}, with_ttl
     by_type = dict(rows)
     assert "observation" in by_type, "observation claim type (0041, L3c-2a) must be seeded"
     assert by_type["observation"] is None, "observation carries no authorisation_ttl"
@@ -112,6 +119,11 @@ def test_claim_types_seeded_with_18_rows_and_exactly_two_authorisation_ttls():
     assert by_type["third_party_dependency"] is None, (
         "third_party_dependency is an observation, not a probe authorisation — no TTL"
     )
+    # planning#181 Tier 0 — composes with an ownership verdict in #182 to
+    # promote bare-IP probing, so its freshness is authorisation-grade like
+    # affinity_confirmation's, whose 7-day TTL it matches exactly.
+    assert "tenancy" in by_type, "tenancy claim type (0050, planning#181) must be seeded"
+    assert by_type["tenancy"] == timedelta(days=7), "tenancy authorisation_ttl must be 7 days"
 
 
 def test_claim_types_frozenset_matches_the_seeded_table():
@@ -289,8 +301,8 @@ def test_asset_claims_claim_type_check_rejects_bad_vocabulary():
 def _run():
     tests = [
         test_all_seven_claims_layer_tables_exist,
-        test_observers_seeded_with_20_rows_and_correct_addressing,
-        test_claim_types_seeded_with_18_rows_and_exactly_two_authorisation_ttls,
+        test_observers_seeded_with_21_rows_and_correct_addressing,
+        test_claim_types_seeded_with_19_rows_and_exactly_three_authorisation_ttls,
         test_claim_types_frozenset_matches_the_seeded_table,
         test_edge_type_relationships_seeded_with_7_rows,
         test_claim_history_is_natively_partitioned_with_at_least_3_partitions,
