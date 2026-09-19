@@ -84,6 +84,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
 
+from sqlalchemy import insert, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -91,6 +92,7 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.asset_hygiene_score import AssetHygieneScore
 from app.models.asset_state import AssetState
 from app.models.claim import AssetClaim
+from app.models.hygiene_history import HygieneHistory
 from app.services import claim_emitter, claims_query, projector
 
 log = logging.getLogger(__name__)
@@ -502,7 +504,7 @@ def _chunks(seq: list, size: int):
 
 
 def run(db: Session) -> dict:
-    """The nightly driver, signature matching `claim_history_maintenance.run(db)`.
+    """The nightly driver, signature matching `partition_maintenance.run(db)`.
 
     Candidate assets: `ignored == False` AND
     `claims_query.surface(asset) != "not_ours"` (settled rule 1 — never
@@ -526,8 +528,14 @@ def run(db: Session) -> dict:
     cleanup runs even for assets outside this run's candidate set (see
     `_delete_stale_scores`).
 
-    Returns `{"scored": n, "excluded": n, "deleted": n, "elapsed_ms": n}`
-    and logs exactly one summary line — no per-asset logging.
+    After each chunk's upsert, also appends change-only `hygiene_history`
+    rows for that chunk (planning#131, temporal layer slice 1) — see
+    `_append_hygiene_history`. NO notifications fire for hygiene changes in
+    this slice; only `score_history`/finding-band promotions notify.
+
+    Returns `{"scored": n, "excluded": n, "deleted": n, "history_rows": n,
+    "elapsed_ms": n}` and logs exactly one summary line — no per-asset
+    logging.
     """
     start = time.monotonic()
     now = datetime.now(timezone.utc)
@@ -539,6 +547,7 @@ def run(db: Session) -> dict:
 
     scored = 0
     excluded = 0
+    history_rows = 0
 
     for chunk in _chunks(all_ids, BATCH_SIZE):
         surface_by_id = claims_query.surface_by_asset(db, chunk)
@@ -601,16 +610,95 @@ def run(db: Session) -> dict:
             )
             db.execute(stmt)
             db.commit()
+            history_rows += _append_hygiene_history(db, now, rows_to_upsert)
 
     deleted = _delete_stale_scores(db)
 
     elapsed_ms = int((time.monotonic() - start) * 1000)
-    stats = {"scored": scored, "excluded": excluded, "deleted": deleted, "elapsed_ms": elapsed_ms}
+    stats = {
+        "scored": scored, "excluded": excluded, "deleted": deleted,
+        "history_rows": history_rows, "elapsed_ms": elapsed_ms,
+    }
     log.info(
-        "Asset hygiene scoring complete — scored=%d excluded=%d deleted=%d elapsed_ms=%d",
-        scored, excluded, deleted, elapsed_ms,
+        "Asset hygiene scoring complete — scored=%d excluded=%d deleted=%d history_rows=%d elapsed_ms=%d",
+        scored, excluded, deleted, history_rows, elapsed_ms,
     )
     return stats
+
+
+def _append_hygiene_history(db: Session, computed_at: datetime, rows_to_upsert: list[dict]) -> int:
+    """Change-only append into `hygiene_history` for this chunk's freshly
+    (re)scored assets (planning#131, temporal layer slice 1) — mirrors
+    `app.services.score_history.capture`'s rule exactly: a baseline row
+    when no prior row exists, a new row only when `(score, band,
+    dimensions)` differs from the asset's own latest prior row. Compared
+    against the STORED prior row (one DISTINCT ON query), never an
+    in-memory pre/post snapshot — same idempotence reasoning
+    `score_history`'s module docstring covers at length: two consecutive
+    `run()` calls with no real change between them must write zero new
+    rows, not one per call.
+
+    `dimensions` IS part of that comparison key, and must stay part of it.
+    Keying on `(score, band)` alone loses real change: every dimension
+    grades to one of GRADE_SCORES' five values (0/25/50/75/100) and the
+    composite is their unweighted mean over exactly five dimensions, so two
+    dimensions moving in compensating directions — say `currency`
+    excellent -> bad while `exposure` goes bad -> excellent — produce an
+    IDENTICAL composite score and band. With a `(score, band)` key that
+    asset writes no row at all, the dimension flip becomes invisible
+    forever, and the `dimensions` blob on its last stored row silently
+    misdescribes the asset from then on. The whole point of storing
+    `dimensions` per row is that a historical row explains ITSELF; that
+    only holds if a change to what it stores is a change that gets stored.
+
+    Kept out of `score_asset` (which must stay pure, no DB queries inside —
+    see this module's own docstring) and called from `run()` right after
+    each chunk's `asset_hygiene_score` upsert commits, so the prior-row
+    query it issues never races that chunk's own just-written scores.
+
+    NO notifications fire from here — hygiene changes do not notify in
+    this slice (only finding-band promotions do, via `score_history`).
+    Returns the number of history rows actually written for this chunk.
+    """
+    if not rows_to_upsert:
+        return 0
+
+    asset_ids = [r["asset_canonical_id"] for r in rows_to_upsert]
+    prior_rows = db.execute(
+        text(
+            "SELECT DISTINCT ON (asset_canonical_id) "
+            "asset_canonical_id, score, band, dimensions "
+            "FROM hygiene_history "
+            "WHERE asset_canonical_id = ANY(:ids) "
+            "ORDER BY asset_canonical_id, computed_at DESC"
+        ),
+        {"ids": asset_ids},
+    ).fetchall()
+    # `dimensions` round-trips JSONB -> dict; dict equality is order-
+    # independent and the stored values are plain str/int/list scalars, so
+    # comparing the decoded dicts is a content comparison, not a textual one.
+    prior_by_asset = {
+        row.asset_canonical_id: (row.score, row.band, row.dimensions)
+        for row in prior_rows
+    }
+
+    history_rows: list[dict] = []
+    for r in rows_to_upsert:
+        prior = prior_by_asset.get(r["asset_canonical_id"])
+        if prior is not None and prior == (r["score"], r["band"], r["dimensions"]):
+            continue
+        history_rows.append({
+            "asset_canonical_id": r["asset_canonical_id"],
+            "computed_at": computed_at,
+            "score": r["score"],
+            "band": r["band"],
+            "dimensions": r["dimensions"],
+        })
+
+    if history_rows:
+        db.execute(insert(HygieneHistory.__table__), history_rows)
+        db.commit()
+    return len(history_rows)
 
 
 def _delete_stale_scores(db: Session) -> int:

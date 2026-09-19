@@ -25,6 +25,8 @@ from app.models.asset_state import AssetState, ESTATE_VALUES
 from app.models.edge_relationship import EdgeTypeRelationship, EDGE_RELATIONSHIPS
 from app.models.authorisation_decision import AuthorisationDecision
 from app.models.asset_hygiene_score import AssetHygieneScore, GRADE_VALUES, BAND_VALUES
+from app.models.score_history import ScoreHistory
+from app.models.hygiene_history import HygieneHistory
 
 __all__ = [
     "User", "UserRole",
@@ -65,4 +67,6 @@ __all__ = [
     "AssetHygieneScore",
     "GRADE_VALUES",
     "BAND_VALUES",
+    "ScoreHistory",
+    "HygieneHistory",
 ]
