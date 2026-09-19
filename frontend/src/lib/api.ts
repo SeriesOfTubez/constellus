@@ -152,6 +152,13 @@ export type DomainWhoisInfo = {
   looked_up_at: string | null
 }
 
+// planning#145 L4: the estate tri-state, plus the query-layer-only "unknown"
+// (no asset_state row, or an unresolved estate). Third-party assets
+// (surface === "not_ours") are excluded from hygiene scoring by design —
+// see HygieneBandBadge's caller in Assets.tsx for the one legitimate
+// dash-on-the-Hygiene-column case this drives.
+export type AssetSurface = "proven_ours" | "claimed_ours" | "not_ours" | "unknown"
+
 export type Asset = {
   id: string
   asset_type: string
@@ -166,7 +173,59 @@ export type Asset = {
   // Worst-driven Risk Score rollup — the asset's single worst open finding.
   risk_score: number | null
   risk_band: "imminent_compromise" | "high" | "elevated" | "low" | "secure" | null
+  surface: AssetSurface
+  // planning#130 L2: asset hygiene score/band. `null` when the asset has no
+  // `asset_hygiene_score` row (not yet scored by the nightly job, or
+  // excluded because surface === "not_ours") — 0 is a real, worst-possible
+  // score, so it is never used as a stand-in for "unscored". Never render
+  // the number on the Assets list (settled rule 1) — hygiene_band only,
+  // via HygieneBandBadge.
+  hygiene_score: number | null
+  hygiene_band: HygieneBand | null
+  // planning#100: has anything beyond the bare identity `observation` claim
+  // ever been recorded for this asset — see the backend
+  // `hygiene_scorer.scanned_by_asset` docstring for the exact rule and its
+  // known limitation. Drives the Risk column's Clean vs. Unscanned split.
+  scanned: boolean
 }
+
+// ── Asset hygiene (planning#130 L2) ─────────────────────────────────────────
+
+export type HygieneBand = "critical" | "poor" | "fair" | "good" | "excellent"
+
+// Per-dimension grade vocabulary — distinct from HygieneBand (the composite).
+// `unknown` sorts below `bad` in the backend scorer (see hygiene_scorer.py's
+// module docstring) and must read as a real, legible finding, never a gap.
+export type HygieneGrade = "unknown" | "bad" | "fair" | "good" | "excellent"
+
+export type HygieneDimension = {
+  grade: HygieneGrade
+  score: number
+  reason_codes: string[]
+  detail: string
+}
+
+// Fixed backend order: coverage, health, currency, exposure, ownership.
+export type HygieneDimensions = Record<string, HygieneDimension>
+
+// `GET /api/hygiene/{asset_id}` — a discriminated union on `scored` so the
+// caller is forced to handle the unscored branch. Unscored is a real,
+// expected response (third-party exclusion, or the nightly job hasn't
+// reached this asset yet), never an error — see AssetHygieneCard.
+export type HygieneDetail =
+  | {
+      scored: true
+      asset_id: string
+      score: number
+      band: HygieneBand
+      dimensions: HygieneDimensions
+      computed_at: string
+    }
+  | {
+      scored: false
+      asset_id: string
+      reason: "excluded_not_ours" | "not_yet_computed"
+    }
 
 export type SecurityScore = {
   score: number
