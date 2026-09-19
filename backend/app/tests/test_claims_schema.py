@@ -61,14 +61,14 @@ def test_all_seven_claims_layer_tables_exist():
     assert not missing, f"Missing claims-layer tables: {sorted(missing)}"
 
 
-def test_observers_seeded_with_19_rows_and_correct_addressing():
+def test_observers_seeded_with_20_rows_and_correct_addressing():
     db = SessionLocal()
     try:
         rows = db.execute(text("SELECT name, addressing FROM observers")).all()
     finally:
         db.close()
     by_name = dict(rows)
-    assert len(by_name) == 19, f"expected 19 seeded observers, got {len(by_name)}: {sorted(by_name)}"
+    assert len(by_name) == 20, f"expected 20 seeded observers, got {len(by_name)}: {sorted(by_name)}"
     assert by_name["naabu"] == "ip"
     assert by_name["banner_grab"] == "ip"
     assert by_name["tlsx"] == "name"
@@ -85,6 +85,11 @@ def test_observers_seeded_with_19_rows_and_correct_addressing():
     # the target, so the probe-authorisation gate must refuse it AS A PROBER
     # even while its claims authorise other connectors' probes.
     assert by_name["wiz"] == "none"
+    # The migration-0049 row (planning#148 step 2) that lets Phase 3 clear
+    # the gate's always-enforced connector-declaration check. `"name"`
+    # follows 0039's tlsx/httpx precedent rather than splitting off a
+    # second IP-addressed nuclei identity — see 0049's own docstring.
+    assert by_name["nuclei"] == "name"
 
 
 def test_claim_types_seeded_with_18_rows_and_exactly_two_authorisation_ttls():
@@ -284,7 +289,7 @@ def test_asset_claims_claim_type_check_rejects_bad_vocabulary():
 def _run():
     tests = [
         test_all_seven_claims_layer_tables_exist,
-        test_observers_seeded_with_18_rows_and_correct_addressing,
+        test_observers_seeded_with_20_rows_and_correct_addressing,
         test_claim_types_seeded_with_18_rows_and_exactly_two_authorisation_ttls,
         test_claim_types_frozenset_matches_the_seeded_table,
         test_edge_type_relationships_seeded_with_7_rows,
