@@ -358,17 +358,17 @@ def _select_assets_to_enrich(db: Session, limit: int) -> list[_AssetRef]:
     EXIST (not merely be absent) also means this rung never runs ahead of
     Tier 0 on a cold-start address.
     """
-    _tier0_undetermined = (
-        "AND EXISTS ("
-        "  SELECT 1 FROM asset_claims t0"
-        "  JOIN observers o0 ON o0.id = t0.observer_id"
-        "  WHERE t0.asset_canonical_id = ac.id"
-        "  AND o0.name = 'tenancy_enricher'"
-        "  AND t0.claim_type = 'tenancy'"
-        "  AND t0.claim_value->>'tenancy' = 'undetermined'"
-        ") "
-    )
-
+    # The Tier-0-undetermined EXISTS clause below is spelled out in BOTH
+    # queries rather than factored into a shared fragment and concatenated in.
+    # Semgrep's `avoid-sqlalchemy-text` (p/security-audit) exempts a text()
+    # whose argument is a single string literal and flags one built at runtime,
+    # and `+ fragment +` is the latter — an error-level finding that fails the
+    # Security Scan gate. There is no injection here (the fragment was a
+    # constant and every value is a bound parameter), but the rule is right in
+    # general and the honest fix is to stop assembling SQL at runtime rather
+    # than to suppress it. Python concatenates adjacent literals at compile
+    # time, so each text() below is one literal. **Keep the two copies in
+    # sync** — if this clause grows, change it in both places.
     never_enriched = db.execute(
         text(
             "SELECT ac.id, ac.value "
@@ -381,7 +381,14 @@ def _select_assets_to_enrich(db: Session, limit: int) -> list[_AssetRef]:
             "  AND o.name = :observer_name "
             "  AND cl.claim_type = :claim_type"
             ") "
-            + _tier0_undetermined +
+            "AND EXISTS ("
+            "  SELECT 1 FROM asset_claims t0"
+            "  JOIN observers o0 ON o0.id = t0.observer_id"
+            "  WHERE t0.asset_canonical_id = ac.id"
+            "  AND o0.name = 'tenancy_enricher'"
+            "  AND t0.claim_type = 'tenancy'"
+            "  AND t0.claim_value->>'tenancy' = 'undetermined'"
+            ") "
             "ORDER BY ac.first_seen_at DESC "
             "LIMIT :limit"
         ),
@@ -406,7 +413,15 @@ def _select_assets_to_enrich(db: Session, limit: int) -> list[_AssetRef]:
             "  (cl.claim_value->>'tenancy' = 'undetermined' AND cl.last_observed_at < :undetermined_cutoff) "
             "  OR (cl.claim_value->>'tenancy' <> 'undetermined' AND cl.last_observed_at < :decided_cutoff)"
             ") "
-            + _tier0_undetermined +
+            # Second copy — see the note above the first query.
+            "AND EXISTS ("
+            "  SELECT 1 FROM asset_claims t0"
+            "  JOIN observers o0 ON o0.id = t0.observer_id"
+            "  WHERE t0.asset_canonical_id = ac.id"
+            "  AND o0.name = 'tenancy_enricher'"
+            "  AND t0.claim_type = 'tenancy'"
+            "  AND t0.claim_value->>'tenancy' = 'undetermined'"
+            ") "
             "ORDER BY cl.last_observed_at ASC "
             "LIMIT :limit"
         ),
