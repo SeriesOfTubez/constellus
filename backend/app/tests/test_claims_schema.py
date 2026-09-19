@@ -62,14 +62,14 @@ def test_all_seven_claims_layer_tables_exist():
     assert not missing, f"Missing claims-layer tables: {sorted(missing)}"
 
 
-def test_observers_seeded_with_21_rows_and_correct_addressing():
+def test_observers_seeded_with_23_rows_and_correct_addressing():
     db = SessionLocal()
     try:
         rows = db.execute(text("SELECT name, addressing FROM observers")).all()
     finally:
         db.close()
     by_name = dict(rows)
-    assert len(by_name) == 21, f"expected 21 seeded observers, got {len(by_name)}: {sorted(by_name)}"
+    assert len(by_name) == 23, f"expected 23 seeded observers, got {len(by_name)}: {sorted(by_name)}"
     assert by_name["naabu"] == "ip"
     assert by_name["banner_grab"] == "ip"
     assert by_name["tlsx"] == "name"
@@ -97,6 +97,12 @@ def test_observers_seeded_with_21_rows_and_correct_addressing():
     # the gate must refuse it as a prober even while its claims authorise
     # other connectors' probes.
     assert by_name["tenancy_enricher"] == "none"
+    # planning#181 Tier 1. The two halves are separate observers because the
+    # asset_claims uniqueness constraint is (asset, observer, claim_type) and
+    # because their gate status genuinely differs: a PTR lookup emits nothing
+    # to the target, a no-SNI TLS handshake does and must be authorised.
+    assert by_name["tenancy_ptr"] == "none"
+    assert by_name["tenancy_tls"] == "ip_handshake"
 
 
 def test_claim_types_seeded_with_19_rows_and_exactly_three_authorisation_ttls():
@@ -301,7 +307,7 @@ def test_asset_claims_claim_type_check_rejects_bad_vocabulary():
 def _run():
     tests = [
         test_all_seven_claims_layer_tables_exist,
-        test_observers_seeded_with_21_rows_and_correct_addressing,
+        test_observers_seeded_with_23_rows_and_correct_addressing,
         test_claim_types_seeded_with_19_rows_and_exactly_three_authorisation_ttls,
         test_claim_types_frozenset_matches_the_seeded_table,
         test_edge_type_relationships_seeded_with_7_rows,

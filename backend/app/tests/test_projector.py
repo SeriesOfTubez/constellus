@@ -772,12 +772,42 @@ def test_compose_tenancy_no_rungs_is_distinguishable_from_no_answer():
 def test_compose_tenancy_promoting_rung_alone_promotes():
     """Tier 0 `compute` (AWS EC2 / a pure-VPS range) is single-tenant by
     construction — one address, one ENI — so it carries a promotion on its
-    own. This is the only rung in `_PROMOTING_TIERS` today."""
+    own. Tier 1 later joined `_PROMOTING_TIERS` too, but on a separate,
+    explicitly weaker argument (see that frozenset's comment in
+    `projector.py`) — it is not admitted for the same reason Tier 0 is."""
     composed = projector._compose_tenancy([
         _op("single_tenant", tier=0, reason="provider_service_class_compute"),
     ])
     assert composed["tenancy"] == "single_tenant"
     assert composed["rule"] == "unanimous_with_promoting_rung"
+
+
+def test_compose_tenancy_tier1_promotes_alone():
+    """planning#181 §3. Azure, GCP and OCI publish zero Tier-0-promotable
+    prefixes, so on those estates Tier 1 is the only rung that votes. A
+    non-promoting Tier 1 would fall to `single_tenant_not_corroborated` and
+    deny — delivering nothing for the population it was built for. The
+    promotion is admitted on the argument written into `_PROMOTING_TIERS`:
+    it is ANDed with `confirmed_ours` at the probe_class rung, and Tier 2's
+    dissent still wins outright over it."""
+    assert 1 in projector._PROMOTING_TIERS
+    composed = projector._compose_tenancy([
+        _op("single_tenant", tier=1, observer="tenancy_tls", reason="r"),
+    ])
+    assert composed["tenancy"] == "single_tenant"
+    assert composed["rule"] == "unanimous_with_promoting_rung"
+
+
+def test_compose_tenancy_tier2_dissent_still_beats_a_tier1_promotion():
+    """The second guard named in `_PROMOTING_TIERS`' argument: a default
+    certificate is exactly what a shared host would present, and Tier 2 is
+    the rung specialised in detecting that. Rule 1 must still win."""
+    composed = projector._compose_tenancy([
+        _op("single_tenant", tier=1, observer="tenancy_tls", reason="r"),
+        projector._tier2_tenancy_opinion({"sharing": "shared"}),
+    ])
+    assert composed["tenancy"] == "not_single_tenant"
+    assert composed["rule"] == "dissent_wins_outright"
 
 
 def test_compose_tenancy_dissent_wins_outright_over_a_promoting_rung():
