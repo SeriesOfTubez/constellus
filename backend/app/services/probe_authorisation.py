@@ -80,8 +80,9 @@ ride through.
 ## Gate mode — why the default must not stop the product scanning
 
 `probe_class` is `direct_addressable` only for an `ip_address` that is
-either inside a declared CIDR target *or* (`hosting.is_datacenter` AND
-`estate == confirmed_ours`) — and `shared_infra_verifier` (which is what
+either inside a declared CIDR target *or* (composed tenancy ==
+`single_tenant` AND `estate == confirmed_ours`; planning#182 rung 3
+replaced `hosting.is_datacenter` here) — and `shared_infra_verifier` (which is what
 actually sets `confirmed_ours`) runs *after* Phase 1.5 in the scan
 pipeline. On a brand-new target's first run, literally no IP has had a
 chance to earn `direct_addressable` yet. Enforcing the probe_class cap by
@@ -375,10 +376,13 @@ def _probe_class_cap(db: Session, *, asset_ref, canonical: AssetCanonical | None
       - `"no_probe"` — third-party-boundary or provider-managed-MX asset;
         never probe it at all (empty modes).
       - `"name_only"` — not inside a declared CIDR and not a confirmed
-        datacenter IP; only name-addressed probing (SNI/Host-header) is
-        licensed, never a bare-IP connect.
-      - `"direct_addressable"` — inside a declared CIDR, or a datacenter IP
-        with a confirmed-ours affinity verdict; both modes licensed.
+        single-tenant address of ours; only name-addressed probing
+        (SNI/Host-header) is licensed, never a bare-IP connect. Note the
+        three reasons an address lands here are NOT separable from this
+        rule string — see the `tenancy` key in `_compose`'s evidence.
+      - `"direct_addressable"` — inside a declared CIDR, or a composed
+        `single_tenant` address with a confirmed-ours affinity verdict
+        (planning#182 rung 3); both modes licensed.
       - anything else — **deny**, under one of two DISTINCT rules, because
         they are different failures and the decision log is read to tell
         them apart:
@@ -689,6 +693,24 @@ def _compose(
         "observer": observer_slug,
         "observer_addressing": observer_addressing,
         "probe_class": (state.attributes or {}).get("probe_class") if state is not None else None,
+        # planning#182 / planning#177 acceptance criterion 3. `rule_fired`
+        # cannot separate the three ways an IP lands at `name_only` — never
+        # enriched, enriched but unanswerable, and a genuine "not a
+        # single-tenant address" — because all three project the same
+        # probe_class and an ip-addressing connector reports
+        # `addressing_not_permitted` for all of them. The composed verdict's
+        # own `rule` field does separate them (`no_rungs_reported` /
+        # `all_rungs_undetermined` / `dissent_wins_outright`, see
+        # `projector._compose_tenancy`), so it rides on the decision row at
+        # the TOP level rather than nested under `caps` — the #148 flip is
+        # decided by counting these rows, and the deny rate has to be one
+        # GROUP BY away, not a JSON path spelunk.
+        #
+        # Deliberately NOT recomputed here: this gate reads the projection,
+        # it does not re-derive it. A second copy of the composition rule in
+        # this module is exactly the duplication the module docstring calls a
+        # bug rather than a convenience.
+        "tenancy": (state.attributes or {}).get("tenancy") if state is not None else None,
         "gate_mode": mode,
         "scan_run_id": str(scan_run_id) if scan_run_id is not None else None,
         "caps": {
@@ -810,6 +832,12 @@ def authorise_probes(
                     "observer": getattr(connector, "observer", None),
                     "observer_addressing": observer_row.addressing if observer_row is not None else None,
                     "probe_class": None,
+                    # Same key as the composed path above, always present so a
+                    # count over `evidence_snapshot->'tenancy'` never has to
+                    # special-case which branch wrote the row. Null here is
+                    # correct and not a gap: the connector was refused on its
+                    # own declaration, before any asset state was consulted.
+                    "tenancy": None,
                     "gate_mode": mode,
                     "scan_run_id": str(scan_run_id) if scan_run_id is not None else None,
                     "caps": {},

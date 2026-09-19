@@ -489,7 +489,7 @@ def test_decision_log_row_written_and_reconstructs_decision():
         assert allowed_row.rule_fired
         assert set(allowed_row.evidence_snapshot) >= {
             "connector_id", "observer", "observer_addressing", "probe_class",
-            "gate_mode", "scan_run_id", "caps",
+            "tenancy", "gate_mode", "scan_run_id", "caps",
         }
         assert set(allowed_row.evidence_snapshot["caps"]) == {"scope", "probe_class", "posture"}
         assert allowed_row.evidence_snapshot["probe_class"] == "direct_addressable"
@@ -730,6 +730,131 @@ def test_registry_port_scan_connectors_all_declare_valid_observer():
     assert not offenders, f"port_scan connector(s) with no valid observer declaration: {offenders}"
 
 
+# ── 14. tenancy rides the decision row (planning#182 / planning#177) ───────
+
+def test_tenancy_verdict_separates_the_three_name_only_denials():
+    """planning#177's acceptance criterion 3, consumer half.
+
+    Three IPs land at `name_only` for three different reasons — never
+    enriched, enriched and unanswerable, and a genuine "not a single-tenant
+    address" — and an ip-addressing connector is denied on all three with the
+    IDENTICAL `rule_fired`. That is the failure #177 documented: the decision
+    log could not tell a broken dependency from a policy outcome, so a vendor
+    schema change read as a month of correct denials.
+
+    `evidence_snapshot["tenancy"]["rule"]` is what separates them, and it sits
+    at the TOP level of the snapshot on purpose: the #148 enforce flip is
+    decided by counting these rows, so the deny-reason breakdown has to be one
+    GROUP BY away rather than a JSON path spelunk.
+    """
+    suffix = uuid.uuid4().hex[:10]
+    v_unenriched = f"pa-tenancy-unenriched-{suffix}"
+    v_unanswerable = f"pa-tenancy-unanswerable-{suffix}"
+    v_negative = f"pa-tenancy-negative-{suffix}"
+    values = [v_unenriched, v_unanswerable, v_negative]
+    db = SessionLocal()
+    try:
+        by_value = {}
+        for value, tenancy in (
+            (v_unenriched, {"tenancy": "undetermined", "rule": "no_rungs_reported", "rungs": []}),
+            (v_unanswerable, {"tenancy": "undetermined", "rule": "all_rungs_undetermined",
+                              "rungs": [{"observer": "tenancy_enricher", "claim_type": "tenancy",
+                                         "tier": None, "tenancy": "undetermined",
+                                         "reason": "service_class_unknown"}]}),
+            (v_negative, {"tenancy": "not_single_tenant", "rule": "dissent_wins_outright",
+                          "rungs": [{"observer": "tenancy_enricher", "claim_type": "tenancy",
+                                     "tier": 0, "tenancy": "not_single_tenant",
+                                     "reason": "provider_service_class_edge"}]}),
+        ):
+            asset = _mk_ip_asset(db, value)
+            by_value[value] = asset.id
+            db.add(AssetState(
+                asset_canonical_id=asset.id,
+                attributes={"probe_class": "name_only", "tenancy": tenancy},
+                projected_at=datetime.now(timezone.utc),
+            ))
+        db.commit()
+
+        gate = pa.authorise_probes(
+            db, connector_id="test-ip", connector=_IP_CONNECTOR,
+            assets=[_da(v) for v in values], scope={}, scan_run_id=uuid.uuid4(),
+        )
+
+        rows = (
+            db.query(AuthorisationDecision)
+            .filter(AuthorisationDecision.asset_canonical_id.in_(list(by_value.values())))
+            .all()
+        )
+        by_asset = {r.asset_canonical_id: r for r in rows}
+        assert len(by_asset) == 3
+
+        # All three deny, and — this is the point — all three deny under the
+        # SAME rule string. `rule_fired` alone cannot carry the distinction.
+        for value in values:
+            assert gate.permissions[("ip_address", value)].allowed is False
+            assert by_asset[by_value[value]].rule_fired == "addressing_not_permitted"
+
+        seen = {
+            value: by_asset[by_value[value]].evidence_snapshot["tenancy"]["rule"]
+            for value in values
+        }
+        assert seen == {
+            v_unenriched: "no_rungs_reported",
+            v_unanswerable: "all_rungs_undetermined",
+            v_negative: "dissent_wins_outright",
+        }
+        assert len(set(seen.values())) == 3, "the three denials must stay distinguishable"
+
+        negative = by_asset[by_value[v_negative]].evidence_snapshot["tenancy"]
+        assert negative["tenancy"] == "not_single_tenant"
+        assert negative["rungs"][0]["reason"] == "provider_service_class_edge"
+    finally:
+        db.close()
+        _cleanup(values)
+
+
+def test_tenancy_key_present_even_when_the_projection_says_nothing():
+    """The key is always on the snapshot, so a count over
+    `evidence_snapshot->'tenancy'` never has to special-case which branch
+    wrote the row. Null is a legitimate value here — an unprojected asset, or
+    a connector refused on its own declaration before any state was read."""
+    suffix = uuid.uuid4().hex[:10]
+    v = f"pa-tenancy-unprojected-{suffix}"
+    db = SessionLocal()
+    try:
+        asset = _mk_ip_asset(db, v)  # no asset_state row at all
+        pa.authorise_probes(
+            db, connector_id="test-ip", connector=_IP_CONNECTOR,
+            assets=[_da(v)], scope={}, scan_run_id=uuid.uuid4(),
+        )
+        row = (
+            db.query(AuthorisationDecision)
+            .filter(AuthorisationDecision.asset_canonical_id == asset.id)
+            .one()
+        )
+        assert row.rule_fired == "probe_class:unprojected"
+        assert "tenancy" in row.evidence_snapshot
+        assert row.evidence_snapshot["tenancy"] is None
+
+        undeclared = pa.authorise_probes(
+            db, connector_id="test-undeclared", connector=_UNDECLARED_CONNECTOR,
+            assets=[_da(v)], scope={}, scan_run_id=uuid.uuid4(),
+        )
+        assert undeclared.permissions[("ip_address", v)].allowed is False
+        refused = (
+            db.query(AuthorisationDecision)
+            .filter(AuthorisationDecision.asset_canonical_id == asset.id)
+            .order_by(AuthorisationDecision.decided_at.desc())
+            .first()
+        )
+        assert "tenancy" in refused.evidence_snapshot
+        assert refused.evidence_snapshot["tenancy"] is None
+    finally:
+        db.close()
+        _cleanup([v])
+
+
+
 def _run():
     tests = [
         test_probe_permission_is_a_descriptor_not_a_boolean,
@@ -746,11 +871,14 @@ def _run():
         test_dns_record_authorised_names_and_identity_key,
         test_unresolved_asset_is_distinct_from_unprojected,
         test_registry_port_scan_connectors_all_declare_valid_observer,
+        test_tenancy_verdict_separates_the_three_name_only_denials,
+        test_tenancy_key_present_even_when_the_projection_says_nothing,
     ]
     for fn in tests:
         fn()
         print(f"ok  {fn.__name__}")
     print("all passed")
+
 
 
 if __name__ == "__main__":
