@@ -1005,6 +1005,21 @@ def test_is_datacenter_alone_no_longer_promotes():
         # `no_rungs_reported` this test is actually about. Dropping the bad
         # Vultr rows did NOT remove that race; only clearing the claim does.
         # Deleted by id, uncommitted, in the same transaction project() reads.
+        #
+        # KNOWN RESIDUAL, measured and accepted (2026-09-19, Jason). This
+        # clears only what has already COMMITTED. Postgres is READ COMMITTED,
+        # so a tick committing between this DELETE and project()'s
+        # `asset_claims` SELECT is still visible to that read. Measured window
+        # 3.3–6.7ms against a 60s tick: ~1 in 9,000 runs. If you are here
+        # because of
+        #     assert 'all_rungs_undetermined' == 'no_rungs_reported'
+        # that is what happened — rerun, nothing is broken. It cannot cause a
+        # false PASS: a stray tick only ever ADDS a rung, and the safety
+        # assertion below (`name_only`) holds either way. CI never hits it —
+        # the scheduler does not run under pytest and CI's `cloud_ranges` is
+        # empty, so `tick()` returns without writing. Closing it fully would
+        # take REPEATABLE READ on this transaction; deliberately not done,
+        # rather than have one test carry a custom isolation level.
         db.query(AssetClaim).filter(
             AssetClaim.asset_canonical_id == asset.id,
             AssetClaim.claim_type == "tenancy",
