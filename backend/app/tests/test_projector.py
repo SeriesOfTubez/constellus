@@ -25,11 +25,6 @@ from app.models.observer import Observer
 from app.models.target import Target, TargetType
 from app.services import projector
 from app.services.claim_emitter import upsert_single_claim
-# Imported, NOT copied: planning#183 deletes this helper once the published
-# dataset stops claiming RFC 5737 as `compute`, and its acceptance says the
-# workaround must not outlive its cause. A third copy is a third thing to
-# forget. See its docstring for why every tenancy test below needs it.
-from app.tests.test_tenancy_enricher import _masking_real_ranges
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -906,15 +901,17 @@ def test_compose_tenancy_carries_dataset_sha256_for_provenance():
 # ── tenancy rung 3, through the projector (planning#182) ──────────────────
 #
 # These run against the real dev DB with the live tenancy_enricher ticking
-# every 60s, so every one of them masks the real `cloud_ranges` rows covering
-# its IP (see `_masking_real_ranges`' docstring in test_tenancy_enricher.py:
-# Vultr publishes all three RFC 5737 documentation ranges as `compute`, and
-# the gitleaks non-reserved-public-ipv4 rule makes RFC 5737 the only IPv4
-# these tests may use). Without the mask, a tick landing mid-test stamps
-# `single_tenant` on the asset from the LIVE dataset and inverts every
-# assertion below that expects a denial. planning#183 removes the need for
-# the mask by filtering special-purpose space out of the published dataset;
-# when it does, these wrappers go with it.
+# every 60s. They used to mask the real `cloud_ranges` rows covering their IP,
+# because Vultr's feed published all three RFC 5737 documentation ranges as
+# `compute` and the gitleaks non-reserved-public-ipv4 rule makes RFC 5737 the
+# only IPv4 this suite may use — a tick landing mid-test stamped
+# `single_tenant` from the LIVE dataset and inverted every denial below.
+# planning#183 fixed that at the source: normalize.py now drops every
+# non-global prefix from every feed, so a tick on these addresses yields
+# `undetermined`/`no_matching_prefix` and cannot invert an assertion.
+#
+# A tick can still ADD an undetermined rung, which is a different problem and
+# only matters to test_is_datacenter_alone_no_longer_promotes — see there.
 
 
 def test_tenancy_and_ownership_are_separate_caps():
@@ -927,24 +924,23 @@ def test_tenancy_and_ownership_are_separate_caps():
     ip = f"203.0.113.{10 + (int(suffix[:2], 16) % 40)}"
     db = SessionLocal()
     try:
-        with _masking_real_ranges(db, [ip]):
-            now = datetime.now(timezone.utc)
-            asset = _make_asset(db, "ip_address", ip)
-            _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
-                "tenancy": "single_tenant", "decided_by_tier": 0,
-                "reason": "provider_service_class_compute", "dataset_sha256": "deadbeef",
-            }, now)
-            db.commit()
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip)
+        _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
+            "tenancy": "single_tenant", "decided_by_tier": 0,
+            "reason": "provider_service_class_compute", "dataset_sha256": "deadbeef",
+        }, now)
+        db.commit()
 
-            projector.project(db, {asset.id}, now)
-            db.commit()
-            db.expire_all()
+        projector.project(db, {asset.id}, now)
+        db.commit()
+        db.expire_all()
 
-            state = _state_for(db, asset.id)
-            assert state.attributes["tenancy"]["tenancy"] == "single_tenant"
-            assert state.attributes["probe_class"] == "name_only", (
-                "single tenancy alone must never license a bare-IP probe"
-            )
+        state = _state_for(db, asset.id)
+        assert state.attributes["tenancy"]["tenancy"] == "single_tenant"
+        assert state.attributes["probe_class"] == "name_only", (
+            "single tenancy alone must never license a bare-IP probe"
+        )
     finally:
         db.close()
         _cleanup_ip(ip)
@@ -957,25 +953,24 @@ def test_probe_class_direct_addressable_via_tenancy_and_confirmed_ours():
     ip = f"203.0.113.{60 + (int(suffix[:2], 16) % 40)}"
     db = SessionLocal()
     try:
-        with _masking_real_ranges(db, [ip]):
-            now = datetime.now(timezone.utc)
-            asset = _make_asset(db, "ip_address", ip)
-            _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
-                "tenancy": "single_tenant", "decided_by_tier": 0,
-                "reason": "provider_service_class_compute", "dataset_sha256": "deadbeef",
-            }, now)
-            _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
-                       {"verdict": "confirmed_ours"}, now)
-            db.commit()
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip)
+        _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
+            "tenancy": "single_tenant", "decided_by_tier": 0,
+            "reason": "provider_service_class_compute", "dataset_sha256": "deadbeef",
+        }, now)
+        _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
+                   {"verdict": "confirmed_ours"}, now)
+        db.commit()
 
-            projector.project(db, {asset.id}, now)
-            db.commit()
-            db.expire_all()
+        projector.project(db, {asset.id}, now)
+        db.commit()
+        db.expire_all()
 
-            state = _state_for(db, asset.id)
-            assert state.attributes["probe_class"] == "direct_addressable"
-            assert state.attributes["tenancy"]["rule"] == "unanimous_with_promoting_rung"
-            assert state.attributes["tenancy"]["dataset_sha256"] == "deadbeef"
+        state = _state_for(db, asset.id)
+        assert state.attributes["probe_class"] == "direct_addressable"
+        assert state.attributes["tenancy"]["rule"] == "unanimous_with_promoting_rung"
+        assert state.attributes["tenancy"]["dataset_sha256"] == "deadbeef"
     finally:
         db.close()
         _cleanup_ip(ip)
@@ -995,29 +990,36 @@ def test_is_datacenter_alone_no_longer_promotes():
     ip = f"203.0.113.{110 + (int(suffix[:2], 16) % 40)}"
     db = SessionLocal()
     try:
-        with _masking_real_ranges(db, [ip]):
-            now = datetime.now(timezone.utc)
-            asset = _make_asset(db, "ip_address", ip)
-            _add_claim(db, asset.id, "hosting_classifier", "hosting_class",
-                       {"is_datacenter": True, "company_name": "Acme Hosting"}, now)
-            _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
-                       {"verdict": "confirmed_ours"}, now)
-            db.commit()
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip)
+        _add_claim(db, asset.id, "hosting_classifier", "hosting_class",
+                   {"is_datacenter": True, "company_name": "Acme Hosting"}, now)
+        _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
+                   {"verdict": "confirmed_ours"}, now)
+        db.commit()
 
-            projector.project(db, {asset.id}, now)
-            db.commit()
-            db.expire_all()
+        # planning#183 §4: the live enricher ticks every 60s and, now that the
+        # dataset no longer claims RFC 5737, a tick on this address writes an
+        # `undetermined`/`no_matching_prefix` tenancy claim. That is a rung
+        # REPORTING, which composes to `all_rungs_undetermined` — not to the
+        # `no_rungs_reported` this test is actually about. Dropping the bad
+        # Vultr rows did NOT remove that race; only clearing the claim does.
+        # Deleted by id, uncommitted, in the same transaction project() reads.
+        db.query(AssetClaim).filter(
+            AssetClaim.asset_canonical_id == asset.id,
+            AssetClaim.claim_type == "tenancy",
+            AssetClaim.observer_id == _observer_id(db, "tenancy_enricher"),
+        ).delete(synchronize_session=False)
 
-            state = _state_for(db, asset.id)
-            assert state.attributes["probe_class"] == "name_only"
-            assert state.hosting == {"is_datacenter": True, "company_name": "Acme Hosting"}
-            # Unenriched, or enriched-and-unanswerable if a live tick landed
-            # mid-test — both deny, and both are recorded distinctly from the
-            # genuine negative below. Which of the two it is depends on the
-            # enricher's timing, not on anything this test controls.
-            assert state.attributes["tenancy"]["rule"] in (
-                "no_rungs_reported", "all_rungs_undetermined",
-            )
+        projector.project(db, {asset.id}, now)
+        db.commit()
+        db.expire_all()
+
+        state = _state_for(db, asset.id)
+        assert state.attributes["probe_class"] == "name_only"
+        assert state.hosting == {"is_datacenter": True, "company_name": "Acme Hosting"}
+        # No tenancy claim behind the hosting_class claim: nothing reports.
+        assert state.attributes["tenancy"]["rule"] == "no_rungs_reported"
     finally:
         db.close()
         _cleanup_ip(ip)
@@ -1033,26 +1035,25 @@ def test_not_single_tenant_denies_and_is_logged_distinctly_from_unknown():
     ip = f"203.0.113.{160 + (int(suffix[:2], 16) % 40)}"
     db = SessionLocal()
     try:
-        with _masking_real_ranges(db, [ip]):
-            now = datetime.now(timezone.utc)
-            asset = _make_asset(db, "ip_address", ip)
-            _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
-                "tenancy": "not_single_tenant", "decided_by_tier": 0,
-                "reason": "provider_service_class_edge", "dataset_sha256": "deadbeef",
-            }, now)
-            _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
-                       {"verdict": "confirmed_ours"}, now)
-            db.commit()
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip)
+        _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
+            "tenancy": "not_single_tenant", "decided_by_tier": 0,
+            "reason": "provider_service_class_edge", "dataset_sha256": "deadbeef",
+        }, now)
+        _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
+                   {"verdict": "confirmed_ours"}, now)
+        db.commit()
 
-            projector.project(db, {asset.id}, now)
-            db.commit()
-            db.expire_all()
+        projector.project(db, {asset.id}, now)
+        db.commit()
+        db.expire_all()
 
-            state = _state_for(db, asset.id)
-            assert state.attributes["probe_class"] == "name_only"
-            assert state.attributes["tenancy"]["tenancy"] == "not_single_tenant"
-            assert state.attributes["tenancy"]["rule"] == "dissent_wins_outright"
-            assert state.attributes["tenancy"]["rungs"][0]["reason"] == "provider_service_class_edge"
+        state = _state_for(db, asset.id)
+        assert state.attributes["probe_class"] == "name_only"
+        assert state.attributes["tenancy"]["tenancy"] == "not_single_tenant"
+        assert state.attributes["tenancy"]["rule"] == "dissent_wins_outright"
+        assert state.attributes["tenancy"]["rungs"][0]["reason"] == "provider_service_class_edge"
     finally:
         db.close()
         _cleanup_ip(ip)
@@ -1067,30 +1068,29 @@ def test_tier2_reverse_ip_sharing_denies_a_tier0_promotion():
     ip = f"192.0.2.{10 + (int(suffix[:2], 16) % 40)}"
     db = SessionLocal()
     try:
-        with _masking_real_ranges(db, [ip]):
-            now = datetime.now(timezone.utc)
-            asset = _make_asset(db, "ip_address", ip)
-            _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
-                "tenancy": "single_tenant", "decided_by_tier": 0,
-                "reason": "provider_service_class_compute", "dataset_sha256": "deadbeef",
-            }, now)
-            _add_claim(db, asset.id, "hosting_classifier", "reverse_ip",
-                       {"source": "mnemonic", "count": 332, "domains": [],
-                        "records": [], "active_count": 120, "truncated": True,
-                        "sharing": "shared"}, now)
-            _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
-                       {"verdict": "confirmed_ours"}, now)
-            db.commit()
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip)
+        _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
+            "tenancy": "single_tenant", "decided_by_tier": 0,
+            "reason": "provider_service_class_compute", "dataset_sha256": "deadbeef",
+        }, now)
+        _add_claim(db, asset.id, "hosting_classifier", "reverse_ip",
+                   {"source": "mnemonic", "count": 332, "domains": [],
+                    "records": [], "active_count": 120, "truncated": True,
+                    "sharing": "shared"}, now)
+        _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
+                   {"verdict": "confirmed_ours"}, now)
+        db.commit()
 
-            projector.project(db, {asset.id}, now)
-            db.commit()
-            db.expire_all()
+        projector.project(db, {asset.id}, now)
+        db.commit()
+        db.expire_all()
 
-            state = _state_for(db, asset.id)
-            assert state.attributes["probe_class"] == "name_only"
-            assert state.attributes["tenancy"]["rule"] == "dissent_wins_outright"
-            claim_types = {r["claim_type"] for r in state.attributes["tenancy"]["rungs"]}
-            assert claim_types == {"tenancy", "reverse_ip"}
+        state = _state_for(db, asset.id)
+        assert state.attributes["probe_class"] == "name_only"
+        assert state.attributes["tenancy"]["rule"] == "dissent_wins_outright"
+        claim_types = {r["claim_type"] for r in state.attributes["tenancy"]["rungs"]}
+        assert claim_types == {"tenancy", "reverse_ip"}
     finally:
         db.close()
         _cleanup_ip(ip)
@@ -1105,26 +1105,25 @@ def test_tenancy_claim_from_an_unlisted_observer_is_ignored():
     ip = f"192.0.2.{60 + (int(suffix[:2], 16) % 40)}"
     db = SessionLocal()
     try:
-        with _masking_real_ranges(db, [ip]):
-            now = datetime.now(timezone.utc)
-            asset = _make_asset(db, "ip_address", ip)
-            _add_claim(db, asset.id, "naabu", "tenancy", {
-                "tenancy": "single_tenant", "decided_by_tier": 0,
-                "reason": "provider_service_class_compute",
-            }, now)
-            _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
-                       {"verdict": "confirmed_ours"}, now)
-            db.commit()
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "ip_address", ip)
+        _add_claim(db, asset.id, "naabu", "tenancy", {
+            "tenancy": "single_tenant", "decided_by_tier": 0,
+            "reason": "provider_service_class_compute",
+        }, now)
+        _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
+                   {"verdict": "confirmed_ours"}, now)
+        db.commit()
 
-            projector.project(db, {asset.id}, now)
-            db.commit()
-            db.expire_all()
+        projector.project(db, {asset.id}, now)
+        db.commit()
+        db.expire_all()
 
-            state = _state_for(db, asset.id)
-            assert state.attributes["probe_class"] == "name_only"
-            assert all(
-                r["observer"] != "naabu" for r in state.attributes["tenancy"]["rungs"]
-            )
+        state = _state_for(db, asset.id)
+        assert state.attributes["probe_class"] == "name_only"
+        assert all(
+            r["observer"] != "naabu" for r in state.attributes["tenancy"]["rungs"]
+        )
     finally:
         db.close()
         _cleanup_ip(ip)
@@ -1142,32 +1141,31 @@ def test_cidr_route_is_untouched_by_tenancy():
     db = SessionLocal()
     target_id = None
     try:
-        with _masking_real_ranges(db, [ip]):
-            now = datetime.now(timezone.utc)
-            target_id = uuid.uuid4()
-            # Delete-then-insert: `Target.value` is globally UNIQUE and
-            # `_cleanup_target` deletes by id, so a row stranded by a killed
-            # run would otherwise fail this INSERT forever (planning#156,
-            # same reasoning as test_probe_class_rules').
-            db.query(Target).filter(Target.value == cidr_value).delete(synchronize_session=False)
-            db.commit()
-            db.add(Target(id=target_id, type=TargetType.CIDR.value, value=cidr_value))
-            db.commit()
+        now = datetime.now(timezone.utc)
+        target_id = uuid.uuid4()
+        # Delete-then-insert: `Target.value` is globally UNIQUE and
+        # `_cleanup_target` deletes by id, so a row stranded by a killed
+        # run would otherwise fail this INSERT forever (planning#156,
+        # same reasoning as test_probe_class_rules').
+        db.query(Target).filter(Target.value == cidr_value).delete(synchronize_session=False)
+        db.commit()
+        db.add(Target(id=target_id, type=TargetType.CIDR.value, value=cidr_value))
+        db.commit()
 
-            asset = _make_asset(db, "ip_address", ip)
-            _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
-                "tenancy": "not_single_tenant", "decided_by_tier": 0,
-                "reason": "provider_service_class_managed", "dataset_sha256": "deadbeef",
-            }, now)
-            db.commit()
+        asset = _make_asset(db, "ip_address", ip)
+        _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
+            "tenancy": "not_single_tenant", "decided_by_tier": 0,
+            "reason": "provider_service_class_managed", "dataset_sha256": "deadbeef",
+        }, now)
+        db.commit()
 
-            projector.project(db, {asset.id}, now)
-            db.commit()
-            db.expire_all()
+        projector.project(db, {asset.id}, now)
+        db.commit()
+        db.expire_all()
 
-            state = _state_for(db, asset.id)
-            assert state.attributes["probe_class"] == "direct_addressable"
-            assert state.attributes["tenancy"]["tenancy"] == "not_single_tenant"
+        state = _state_for(db, asset.id)
+        assert state.attributes["probe_class"] == "direct_addressable"
+        assert state.attributes["tenancy"]["tenancy"] == "not_single_tenant"
     finally:
         db.close()
         if target_id is not None:

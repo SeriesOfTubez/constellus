@@ -23,7 +23,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import bindparam, text
+from sqlalchemy import text
 
 from app.core.database import SessionLocal
 from app.models.cloud_range import CloudRange
@@ -96,57 +96,6 @@ def _isolated_meta(db):
         _restore_meta(db, snapshot)
 
 
-@contextmanager
-def _masking_real_ranges(db, ips: list[str]):
-    """Lift any REAL cloud_ranges row covering `ips`, for the block's duration.
-
-    The published dataset genuinely covers RFC 5737 documentation space:
-    Vultr's feed claims 192.0.2.0/24, 198.51.100.0/24 and 203.0.113.0/24 as
-    its own `compute` ranges (verified against the live dataset, 2026-09-16).
-    The repo's gitleaks non-reserved-public-ipv4 rule requires this suite to
-    use exactly those addresses, so without this the outcome of every lookup
-    here depends on whether anyone has run the refresher — the tests passed
-    only because the table happened to be empty.
-
-    So: snapshot the covering rows, delete them by id, and put them back
-    afterwards (planning#163 snapshot-and-restore — never a table-wide delete,
-    which would wipe a real loaded dataset).
-    """
-    db.rollback()
-    rows = db.execute(
-        text(
-            "SELECT id, prefix::text, ip_version, provider, service_raw, "
-            "service_class, region, source FROM cloud_ranges "
-            "WHERE prefix >>= ANY(CAST(:ips AS inet[]))"
-        ),
-        {"ips": ips},
-    ).all()
-    saved = [tuple(r) for r in rows]
-    if saved:
-        db.execute(
-            text("DELETE FROM cloud_ranges WHERE id IN :ids").bindparams(
-                bindparam("ids", expanding=True)
-            ),
-            {"ids": [r[0] for r in saved]},
-        )
-        db.commit()
-    try:
-        yield
-    finally:
-        db.rollback()
-        for r in saved:
-            db.execute(
-                text(
-                    "INSERT INTO cloud_ranges (id, prefix, ip_version, provider, "
-                    "service_raw, service_class, region, source) VALUES "
-                    "(:id, CAST(:prefix AS cidr), :ipv, :prov, :raw, :cls, :region, :src)"
-                ),
-                {"id": r[0], "prefix": r[1], "ipv": r[2], "prov": r[3],
-                 "raw": r[4], "cls": r[5], "region": r[6], "src": r[7]},
-            )
-        db.commit()
-
-
 def _write_gzip_ndjson(tmp_path: str, lines: list[dict]) -> bytes:
     content = ("\n".join(json.dumps(line) for line in lines) + "\n").encode("utf-8")
     with gzip.open(tmp_path, "wb") as f:
@@ -160,20 +109,19 @@ def test_lookup_longest_prefix_wins():
     db = SessionLocal()
     ids = []
     try:
-      with _masking_real_ranges(db, ["192.0.2.0", "198.51.100.0", "203.0.113.0"]):
-          r1 = _insert_range(db, "192.0.2.0/24", "azure", "unknown", service_raw="AzureCloud.eastus")
-          r2 = _insert_range(db, "192.0.2.128/25", "azure", "edge", service_raw="AzureFrontDoor.eastus")
-          ids = [r1.id, r2.id]
+        r1 = _insert_range(db, "192.0.2.0/24", "azure", "unknown", service_raw="AzureCloud.eastus")
+        r2 = _insert_range(db, "192.0.2.128/25", "azure", "edge", service_raw="AzureFrontDoor.eastus")
+        ids = [r1.id, r2.id]
 
-          specific = cr.lookup(db, "192.0.2.130")
-          assert specific is not None
-          assert specific.service_class == "edge"
-          assert specific.prefix == "192.0.2.128/25"
+        specific = cr.lookup(db, "192.0.2.130")
+        assert specific is not None
+        assert specific.service_class == "edge"
+        assert specific.prefix == "192.0.2.128/25"
 
-          broad = cr.lookup(db, "192.0.2.10")
-          assert broad is not None
-          assert broad.service_class == "unknown"
-          assert broad.prefix == "192.0.2.0/24"
+        broad = cr.lookup(db, "192.0.2.10")
+        assert broad is not None
+        assert broad.service_class == "unknown"
+        assert broad.prefix == "192.0.2.0/24"
     finally:
         _cleanup_ranges(db, ids)
         db.close()
@@ -183,14 +131,13 @@ def test_lookup_equal_length_prefers_non_unknown():
     db = SessionLocal()
     ids = []
     try:
-      with _masking_real_ranges(db, ["192.0.2.0", "198.51.100.0", "203.0.113.0"]):
-          r1 = _insert_range(db, "198.51.100.0/24", "gcp", "unknown", service_raw="all-google-cloud")
-          r2 = _insert_range(db, "198.51.100.0/24", "gcp", "compute", service_raw="Compute Engine")
-          ids = [r1.id, r2.id]
+        r1 = _insert_range(db, "198.51.100.0/24", "gcp", "unknown", service_raw="all-google-cloud")
+        r2 = _insert_range(db, "198.51.100.0/24", "gcp", "compute", service_raw="Compute Engine")
+        ids = [r1.id, r2.id]
 
-          match = cr.lookup(db, "198.51.100.5")
-          assert match is not None
-          assert match.service_class == "compute"
+        match = cr.lookup(db, "198.51.100.5")
+        assert match is not None
+        assert match.service_class == "compute"
     finally:
         _cleanup_ranges(db, ids)
         db.close()
@@ -200,10 +147,9 @@ def test_lookup_no_match_returns_none():
     db = SessionLocal()
     ids = []
     try:
-      with _masking_real_ranges(db, ["192.0.2.0", "198.51.100.0", "203.0.113.0"]):
-          r1 = _insert_range(db, "192.0.2.0/24", "aws", "compute", service_raw="EC2")
-          ids = [r1.id]
-          assert cr.lookup(db, "203.0.113.77") is None
+        r1 = _insert_range(db, "192.0.2.0/24", "aws", "compute", service_raw="EC2")
+        ids = [r1.id]
+        assert cr.lookup(db, "203.0.113.77") is None
     finally:
         _cleanup_ranges(db, ids)
         db.close()
