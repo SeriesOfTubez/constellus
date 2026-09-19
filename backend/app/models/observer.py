@@ -28,10 +28,15 @@ OBSERVER_TRUST: frozenset[str] = frozenset({
 # Addressing mode the observer used to reach the target, if any. Determines
 # which authorisation grant (ip vs name) a claim from this observer can
 # satisfy. 'none' = the observer never sent traffic to the target itself.
+# 'ip_handshake' = a single unauthenticated TLS handshake to a bare IP, no
+# payload and no port sweep — narrower than 'ip', and deliberately a distinct
+# mode so that name_only assets can be granted it without being granted full
+# 'ip' probing (planning#181 Tier 1b).
 OBSERVER_ADDRESSING: frozenset[str] = frozenset({
     "ip",
     "name",
     "none",
+    "ip_handshake",
 })
 
 

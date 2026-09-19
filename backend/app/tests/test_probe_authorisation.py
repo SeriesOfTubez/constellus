@@ -29,6 +29,7 @@ against the actual seeded addressing vocabulary).
 
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from app.connectors.base import DiscoveredAsset
 from app.core.database import SessionLocal
@@ -218,6 +219,46 @@ def test_name_only_permits_name_and_denies_ip():
         _cleanup([v])
 
 
+# ── 3b. `_probe_class_cap` called directly — planning#181 Tier 1 ───────────
+
+def test_name_only_licenses_ip_handshake_but_never_full_ip():
+    """planning#181 §4's carve-out. An address whose tenancy is undetermined
+    projects to `name_only`, and the Tier 1b rung that would resolve that
+    tenancy needs a bare-IP TLS handshake — denied by the very state the
+    evidence would clear. `ip_handshake` breaks that circle WITHOUT granting
+    `ip`: one handshake, no sweep, no payload."""
+    cap = pa._probe_class_cap(
+        None, asset_ref=None, canonical=object(),
+        state=SimpleNamespace(attributes={"probe_class": "name_only"}),
+    )
+    assert cap.allowed is True
+    assert cap.modes == frozenset({"name", "ip_handshake"})
+    assert "ip" not in cap.modes, "ip_handshake must not imply full ip probing"
+    assert cap.rule == "probe_class:name_only"
+
+
+def test_direct_addressable_stays_the_full_addressing_set():
+    """Load-bearing: `_compose` reports `unconstrained` only when nothing
+    narrowed `modes` below ADDRESSING_MODES, so a `direct_addressable` asset
+    that did not gain `ip_handshake` alongside the new mode would silently
+    start reporting a narrowing rule instead."""
+    cap = pa._probe_class_cap(
+        None, asset_ref=None, canonical=object(),
+        state=SimpleNamespace(attributes={"probe_class": "direct_addressable"}),
+    )
+    assert cap.modes == pa.ADDRESSING_MODES
+    assert cap.rule == "probe_class:direct_addressable"
+
+
+def test_no_probe_licenses_nothing_including_ip_handshake():
+    cap = pa._probe_class_cap(
+        None, asset_ref=None, canonical=object(),
+        state=SimpleNamespace(attributes={"probe_class": "no_probe"}),
+    )
+    assert cap.allowed is False
+    assert cap.modes == frozenset()
+
+
 # ── 4. each cap independently reduces; no cap can widen another ────────────
 
 def test_each_cap_independently_reduces_and_cannot_widen():
@@ -234,7 +275,7 @@ def test_each_cap_independently_reduces_and_cannot_widen():
     real_posture_cap = pa._posture_cap
     try:
         asset = _mk_ip_asset(db, v)
-        _set_state(db, asset.id, "direct_addressable")  # real cap: fully open, {"ip", "name"}
+        _set_state(db, asset.id, "direct_addressable")  # real cap: fully open, {"ip", "name", "ip_handshake"}
 
         # Baseline: everything real, fully permitted.
         baseline = pa.authorise_probes(
@@ -620,7 +661,10 @@ def test_dns_record_authorised_names_and_identity_key():
         permission = gate.permissions[("dns_record", host)]
         assert permission.allowed is True, permission.rule_fired
         assert permission.names == (host,), permission.names
-        assert permission.modes == frozenset({"name"})
+        # planning#181 Tier 1b: name_only's composed modes now also include
+        # ip_handshake (see probe_authorisation._probe_class_cap) — this
+        # asset didn't change, the vocabulary a name_only state licenses did.
+        assert permission.modes == frozenset({"name", "ip_handshake"})
 
         # A bare dns_record asset carries no record_type/content, so its
         # identity key can't match the typed row above. It must fail closed
@@ -860,6 +904,9 @@ def _run():
         test_probe_permission_is_a_descriptor_not_a_boolean,
         test_no_probe_denies,
         test_name_only_permits_name_and_denies_ip,
+        test_name_only_licenses_ip_handshake_but_never_full_ip,
+        test_direct_addressable_stays_the_full_addressing_set,
+        test_no_probe_licenses_nothing_including_ip_handshake,
         test_each_cap_independently_reduces_and_cannot_widen,
         test_undeclared_and_unknown_observer_denied_in_both_modes,
         test_observer_addressing_none_denied,

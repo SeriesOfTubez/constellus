@@ -30,6 +30,7 @@ from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.scan_template import ScanTemplate
 from app.services import ct_refresher
 from app.services import tenancy_enricher
+from app.services import tenancy_tls
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ def start() -> None:
     # mirror before the tenancy drip starts reading it (planning#181).
     _register_cloud_ranges_refresher()
     _register_tenancy_enricher()
+    _register_tenancy_tls()
     _register_partition_maintenance()
     _register_hygiene_scoring()
     _register_nightly_rescore()
@@ -241,6 +243,25 @@ def _register_tenancy_enricher() -> None:
         max_instances=1,
     )
     log.info("Scheduled tenancy_enricher (every %ds)", tenancy_enricher.TICK_INTERVAL_SECONDS)
+
+
+def _register_tenancy_tls() -> None:
+    """Register the Tier 1b tenancy rung as a recurring interval job
+    (planning#181). Runs after the Tier 0 enricher because it only selects
+    addresses Tier 0 left `undetermined` — it must never run ahead of
+    Tier 0 on a cold-start address."""
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        tenancy_tls.tick,
+        trigger=IntervalTrigger(seconds=tenancy_tls.TICK_INTERVAL_SECONDS),
+        id="tenancy_tls",
+        name="Tier 1b tenancy rung (no-SNI TLS certificate)",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    log.info("Scheduled tenancy_tls (every %ds)", tenancy_tls.TICK_INTERVAL_SECONDS)
 
 
 def _register_partition_maintenance() -> None:

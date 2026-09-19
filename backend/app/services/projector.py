@@ -294,11 +294,18 @@ _TENANCY_UNDETERMINED = "undetermined"
 # most-recently-observed-wins the way `cdn_boundary`/`cloud_inventory` do:
 # the whole point is that every live rung is read together.
 #
-# Tier 1 (the no-SNI TLS certificate from tlsx) is the rung still to be built
-# and adds its observer name here. Tier 2 needs no entry — it is derived from
-# the `reverse_ip` claim hosting_classifier already writes, see
-# `_tier2_tenancy_opinion`.
-_TENANCY_OBSERVERS = frozenset({"tenancy_enricher"})
+# Tier 1 is two observers, not one, because the two halves have different
+# gate status and `asset_claims`' uniqueness constraint is
+# (asset, observer, claim_type) — so one observer could only ever hold one
+# of them:
+#   - `tenancy_ptr` — reverse-DNS, a resolver query, emits no traffic to the
+#     target, `addressing = "none"`, never passes through the gate.
+#   - `tenancy_tls` — bare-IP no-SNI TLS handshake, emits traffic,
+#     `addressing = "ip_handshake"`, passes through the gate like any
+#     connector.
+# Tier 2 needs no entry — it is derived from the `reverse_ip` claim
+# hosting_classifier already writes, see `_tier2_tenancy_opinion`.
+_TENANCY_OBSERVERS = frozenset({"tenancy_enricher", "tenancy_ptr", "tenancy_tls"})
 
 # Which tiers may PROMOTE on their own. Deliberately an allowlist rather than
 # "any rung that decided": Tier 0's `compute` is single-tenant by
@@ -307,7 +314,29 @@ _TENANCY_OBSERVERS = frozenset({"tenancy_enricher"})
 # tenancy from not having seen anyone else. A future rung inherits no
 # promotion power merely by existing; it has to be added here on purpose,
 # with the argument written down.
-_PROMOTING_TIERS = frozenset({0})
+#
+# Tier 1 joined on 2026-09-19 (planning#181), on a separate, explicitly
+# weaker argument:
+#   - Tier 1 evidence (a provider-assigned reverse name, or the certificate
+#     a host presents to a no-SNI connection) is inference from what a host
+#     presents, not Tier 0's one-address-one-ENI construction. It is
+#     genuinely weaker evidence.
+#   - It is admitted anyway because the promotion never fires on tenancy
+#     alone: `probe_class` ANDs the composed `single_tenant` verdict with
+#     `estate == "confirmed_ours"` (see the disjunct below in this module),
+#     so a Tier 1 promotion also requires a positive affinity proof that one
+#     of our own hostnames serves from that address.
+#   - Rule 1 is the second guard: Tier 2 (`reverse_ip.sharing == "shared"`)
+#     is specialised in exactly the failure mode a default certificate would
+#     hide — a genuinely multi-tenant host carries many names in passive
+#     DNS — and its dissent wins outright over any Tier 1 promotion.
+#   - The residual exposure, stated so it is not discovered later: a shared
+#     host on which passive DNS is silent, where Tier 2 abstains and Tier 1
+#     promotes on a default certificate.
+#   - Azure, GCP and OCI publish zero Tier-0-promotable prefixes, so without
+#     this Tier 1 would yield `single_tenant_not_corroborated` and deny for
+#     the entire population it was built to serve.
+_PROMOTING_TIERS = frozenset({0, 1})
 
 
 def _tier2_tenancy_opinion(reverse_ip_claim_value) -> dict | None:

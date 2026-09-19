@@ -21,8 +21,8 @@ was built to prevent.
 `authorise_probes()` composes three independent caps —
 `min(scope, probe_class, posture)`, tightest wins, no cap can widen another
 — into one `ProbePermission` per (asset, connector): permitted addressing
-modes (`ip`/`name`) plus the concrete set of names authorised for
-name-addressed probing. It returns a descriptor, **never a boolean** —
+modes (`ip`/`name`/`ip_handshake`) plus the concrete set of names authorised
+for name-addressed probing. It returns a descriptor, **never a boolean** —
 "can we probe this" is not one bit, it's "with what addressing mode, at
 what name(s)", and collapsing that to a bool is exactly what let a
 name-addressed probe fire at an unauthorised hostname in the first place.
@@ -148,7 +148,11 @@ log = logging.getLogger(__name__)
 # discovery/enrichment/verify observers), which is not a probe mode at all,
 # it's the absence of one. An observer declaring "none" is refused by the
 # connector-declaration check below before this set is ever consulted.
-ADDRESSING_MODES: frozenset[str] = frozenset({"ip", "name"})
+# "ip_handshake" IS a probe mode — it sends traffic — but a strictly
+# narrower one than "ip" (a single unauthenticated TLS handshake to a bare
+# IP, no payload, no port sweep), which is why it is a separate member
+# rather than folded into "ip" (planning#181 Tier 1b).
+ADDRESSING_MODES: frozenset[str] = frozenset({"ip", "name", "ip_handshake"})
 
 
 @dataclass(frozen=True)
@@ -376,13 +380,28 @@ def _probe_class_cap(db: Session, *, asset_ref, canonical: AssetCanonical | None
       - `"no_probe"` — third-party-boundary or provider-managed-MX asset;
         never probe it at all (empty modes).
       - `"name_only"` — not inside a declared CIDR and not a confirmed
-        single-tenant address of ours; only name-addressed probing
-        (SNI/Host-header) is licensed, never a bare-IP connect. Note the
-        three reasons an address lands here are NOT separable from this
-        rule string — see the `tenancy` key in `_compose`'s evidence.
+        single-tenant address of ours; licenses `name` (SNI/Host-header
+        probing) **and** `ip_handshake` — one unauthenticated TLS handshake
+        to one port on the bare address: no port sweep, no payload, no
+        application-layer request. `ip_handshake` is licensed here because
+        an address whose tenancy is undetermined cannot otherwise produce
+        the certificate evidence that would resolve its tenancy — the rung
+        that needs the evidence is denied by the very state the evidence
+        would clear (planning#181 §4's circularity). It is a deliberate,
+        argued widening of the gate, not an oversight, and it is granted
+        per-asset through the normal cap composition so every use of it
+        lands in `authorisation_decisions` and is auditable and reversible.
+        The alternative — collecting the same evidence from a background
+        job declaring `addressing = "none"` — would route around the gate
+        silently and was rejected. Full `ip` probing (a bare-IP connect,
+        a port sweep) remains denied at `name_only`: `ip_handshake` does
+        NOT imply `ip`. Note the three reasons an address lands here are
+        NOT separable from this rule string — see the `tenancy` key in
+        `_compose`'s evidence.
       - `"direct_addressable"` — inside a declared CIDR, or a composed
         `single_tenant` address with a confirmed-ours affinity verdict
-        (planning#182 rung 3); both modes licensed.
+        (planning#182 rung 3); all three modes (`ip`, `name`,
+        `ip_handshake`) licensed.
       - anything else — **deny**, under one of two DISTINCT rules, because
         they are different failures and the decision log is read to tell
         them apart:
@@ -435,9 +454,9 @@ def _probe_class_cap(db: Session, *, asset_ref, canonical: AssetCanonical | None
     if probe_class == "no_probe":
         return Cap(False, frozenset(), None, "probe_class:no_probe")
     if probe_class == "name_only":
-        return Cap(True, frozenset({"name"}), None, "probe_class:name_only")
+        return Cap(True, frozenset({"name", "ip_handshake"}), None, "probe_class:name_only")
     if probe_class == "direct_addressable":
-        return Cap(True, frozenset({"ip", "name"}), None, "probe_class:direct_addressable")
+        return Cap(True, frozenset({"ip", "name", "ip_handshake"}), None, "probe_class:direct_addressable")
     return Cap(False, frozenset(), None, "probe_class:unprojected")
 
 
@@ -653,10 +672,11 @@ def _compose(
       - else (allowed), it's the `.rule` of the first cap that actually
         narrowed `modes` below `ADDRESSING_MODES`, or `"unconstrained"` if
         none did. Note `direct_addressable`'s own modes
-        (`{"ip", "name"}`) equal the full `ADDRESSING_MODES` set, so a
-        fully-open `direct_addressable` asset reports `"unconstrained"`
-        too — that's intentional: "unconstrained" describes the OUTCOME
-        (nothing is restricting this decision), not "no cap fired".
+        (`{"ip", "name", "ip_handshake"}`) equal the full `ADDRESSING_MODES`
+        set, so a fully-open `direct_addressable` asset reports
+        `"unconstrained"` too — that's intentional: "unconstrained"
+        describes the OUTCOME (nothing is restricting this decision), not
+        "no cap fired".
 
     `ProbePermission.modes` is forced to the empty set whenever the final
     outcome is denied (whatever the reason), so `modes` empty <=> not
@@ -858,8 +878,8 @@ def authorise_probes(
         )
         return GateResult(permitted=[], permissions=permissions, enforced=True)
 
-    # observer_row is resolved and addresses something (ip/name) beyond
-    # this point — safe to read observer_row.name/.addressing directly.
+    # observer_row is resolved and addresses something (ip/name/ip_handshake)
+    # beyond this point — safe to read observer_row.name/.addressing directly.
     canonical_ids = {c.id for c in canonical_by_key.values()}
     states = projector.load_states(db, canonical_ids)
     # Batch-resolved once, like `states` above and for the same reason: the

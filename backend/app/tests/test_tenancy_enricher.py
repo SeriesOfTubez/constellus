@@ -136,57 +136,6 @@ def _tick_isolated(own_values: list[str]) -> None:
         db.close()
 
 
-@contextmanager
-def _masking_real_ranges(db, ips: list[str]):
-    """Lift any REAL cloud_ranges row covering `ips`, for the block's duration.
-
-    The published dataset genuinely covers RFC 5737 documentation space:
-    Vultr's feed claims 192.0.2.0/24, 198.51.100.0/24 and 203.0.113.0/24 as
-    its own `compute` ranges (verified against the live dataset, 2026-09-16).
-    The repo's gitleaks non-reserved-public-ipv4 rule requires this suite to
-    use exactly those addresses, so without this the outcome of every lookup
-    here depends on whether anyone has run the refresher — the tests passed
-    only because the table happened to be empty.
-
-    So: snapshot the covering rows, delete them by id, and put them back
-    afterwards (planning#163 snapshot-and-restore — never a table-wide delete,
-    which would wipe a real loaded dataset).
-    """
-    db.rollback()
-    rows = db.execute(
-        text(
-            "SELECT id, prefix::text, ip_version, provider, service_raw, "
-            "service_class, region, source FROM cloud_ranges "
-            "WHERE prefix >>= ANY(CAST(:ips AS inet[]))"
-        ),
-        {"ips": ips},
-    ).all()
-    saved = [tuple(r) for r in rows]
-    if saved:
-        db.execute(
-            text("DELETE FROM cloud_ranges WHERE id IN :ids").bindparams(
-                bindparam("ids", expanding=True)
-            ),
-            {"ids": [r[0] for r in saved]},
-        )
-        db.commit()
-    try:
-        yield
-    finally:
-        db.rollback()
-        for r in saved:
-            db.execute(
-                text(
-                    "INSERT INTO cloud_ranges (id, prefix, ip_version, provider, "
-                    "service_raw, service_class, region, source) VALUES "
-                    "(:id, CAST(:prefix AS cidr), :ipv, :prov, :raw, :cls, :region, :src)"
-                ),
-                {"id": r[0], "prefix": r[1], "ipv": r[2], "prov": r[3],
-                 "raw": r[4], "cls": r[5], "region": r[6], "src": r[7]},
-            )
-        db.commit()
-
-
 def _snapshot_meta(db):
     db.rollback()
     return db.execute(text(
@@ -311,10 +260,11 @@ def test_unenriched_is_distinguishable_from_enriched_no_answer():
     db = SessionLocal()
     try:
         # This test asserts the no-answer half, so the IP must genuinely match
-        # nothing — and the real dataset covers RFC 5737 (Vultr publishes it as
-        # `compute`), which is the only address space the gitleaks rule lets
-        # this suite use. Mask the real rows for the duration.
-        with _seeded_meta(db), _masking_real_ranges(db, [ip]):
+        # nothing. It does: planning#183 dropped every non-global prefix from
+        # the published dataset, so RFC 5737 — the only address space the
+        # gitleaks rule lets this suite use — is no longer claimed by Vultr's
+        # feed as `compute`.
+        with _seeded_meta(db):
             asset = _make_ip_asset(db, ip)
 
             before = get_current_claim(db, asset.id, "tenancy_enricher", "tenancy")
