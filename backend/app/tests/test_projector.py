@@ -25,6 +25,11 @@ from app.models.observer import Observer
 from app.models.target import Target, TargetType
 from app.services import projector
 from app.services.claim_emitter import upsert_single_claim
+# Imported, NOT copied: planning#183 deletes this helper once the published
+# dataset stops claiming RFC 5737 as `compute`, and its acceptance says the
+# workaround must not outlive its cause. A third copy is a third thing to
+# forget. See its docstring for why every tenancy test below needs it.
+from app.tests.test_tenancy_enricher import _masking_real_ranges
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -329,30 +334,6 @@ def test_probe_class_rules():
         _cleanup_ip(ip_cidr)
         _cleanup_prefix(f"probe-class-{suffix}")
         _cleanup_prefix(f"probe-class-mx-{suffix}")
-
-
-def test_probe_class_direct_addressable_via_hosting_and_confirmed_ours():
-    """The other direct_addressable trigger, not CIDR-scoped: a datacenter
-    IP (hosting_class claim) with a confirmed_ours affinity_confirmation
-    claim. planning#144 L3a — both now claims, not asset_metadata."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"192.0.2.{190 + (int(suffix[:2], 16) % 40)}"
-    db = SessionLocal()
-    try:
-        now = datetime.now(timezone.utc)
-        asset = _make_asset(db, "ip_address", ip)
-        _add_claim(db, asset.id, "hosting_classifier", "hosting_class", {"is_datacenter": True}, now)
-        _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
-                   {"verdict": "confirmed_ours"}, now)
-        db.commit()
-
-        projector.project(db, {asset.id}, now)
-        db.commit()
-
-        assert _state_for(db, asset.id).attributes.get("probe_class") == "direct_addressable"
-    finally:
-        db.close()
-        _cleanup_ip(ip)
 
 
 def test_hosting_claim_only_asset_is_not_skipped():
@@ -749,6 +730,445 @@ def test_idempotent_double_projection():
     finally:
         db.close()
         _cleanup_ip(ip)
+
+
+
+# ── tenancy composition, rule only (planning#182 rung 3) ──────────────────
+#
+# `_compose_tenancy` is pure, so these pin the composition RULE itself with
+# no DB and no race against the live enricher. The projector tests below pin
+# the wiring; these pin the decision.
+
+
+def _op(tenancy, *, tier=0, observer="tenancy_enricher", reason="r", promoting=None):
+    return {
+        "observer": observer, "claim_type": "tenancy", "tier": tier,
+        "tenancy": tenancy, "reason": reason,
+        "promoting": (tier in projector._PROMOTING_TIERS) if promoting is None else promoting,
+    }
+
+
+def test_compose_tenancy_no_rungs_is_distinguishable_from_no_answer():
+    """planning#177 acceptance criterion 3, and the whole reason this is
+    composed rather than read off one claim: "we never looked" and "we looked
+    and nothing could answer" are different facts, both deny, and the
+    decision log has to tell them apart. `is_datacenter` could not — a
+    missing claim and a False one were the same falsy value."""
+    never_looked = projector._compose_tenancy([])
+    assert never_looked["tenancy"] == "undetermined"
+    assert never_looked["rule"] == "no_rungs_reported"
+    assert never_looked["rungs"] == []
+
+    looked_no_answer = projector._compose_tenancy([
+        _op("undetermined", tier=None, reason="service_class_unknown"),
+    ])
+    assert looked_no_answer["tenancy"] == "undetermined"
+    assert looked_no_answer["rule"] == "all_rungs_undetermined"
+    assert looked_no_answer["rungs"][0]["reason"] == "service_class_unknown"
+
+    assert never_looked["rule"] != looked_no_answer["rule"]
+
+
+def test_compose_tenancy_promoting_rung_alone_promotes():
+    """Tier 0 `compute` (AWS EC2 / a pure-VPS range) is single-tenant by
+    construction — one address, one ENI — so it carries a promotion on its
+    own. This is the only rung in `_PROMOTING_TIERS` today."""
+    composed = projector._compose_tenancy([
+        _op("single_tenant", tier=0, reason="provider_service_class_compute"),
+    ])
+    assert composed["tenancy"] == "single_tenant"
+    assert composed["rule"] == "unanimous_with_promoting_rung"
+
+
+def test_compose_tenancy_dissent_wins_outright_over_a_promoting_rung():
+    """The asymmetry, copied from `shared_infra_verifier`: one rung saying
+    `not_single_tenant` denies even against an authoritative promotion. A
+    CDN fronted out of an EC2 range is exactly this shape, and denial is the
+    cheap error — the expensive one points a port scanner at a shared host."""
+    composed = projector._compose_tenancy([
+        _op("single_tenant", tier=0, reason="provider_service_class_compute"),
+        projector._tier2_tenancy_opinion({"sharing": "shared"}),
+    ])
+    assert composed["tenancy"] == "not_single_tenant"
+    assert composed["rule"] == "dissent_wins_outright"
+
+
+def test_compose_tenancy_non_promoting_rung_cannot_promote_alone():
+    """Tier 2 `dedicated` is an argument from ABSENCE over a source with
+    incomplete coverage. It corroborates; it never carries a promotion by
+    itself — and the denial it produces is recorded as its own rule, not as
+    the "nothing could answer" one, because something did answer."""
+    alone = projector._compose_tenancy([projector._tier2_tenancy_opinion({"sharing": "dedicated"})])
+    assert alone["tenancy"] == "undetermined"
+    assert alone["rule"] == "single_tenant_not_corroborated"
+
+    with_tier0 = projector._compose_tenancy([
+        _op("single_tenant", tier=0, reason="provider_service_class_compute"),
+        projector._tier2_tenancy_opinion({"sharing": "dedicated"}),
+    ])
+    assert with_tier0["tenancy"] == "single_tenant"
+    assert with_tier0["rule"] == "unanimous_with_promoting_rung"
+
+
+def test_compose_tenancy_abstention_does_not_block_a_promotion():
+    """The one place this deliberately diverges from
+    `shared_infra_verifier`, whose unanimity treats `indeterminate` as
+    blocking. There each abstention is an unprobed vhost — real unexamined
+    risk on the address. Here every rung describes the SAME address and
+    `undetermined` means "my source has nothing to say", which is not
+    partial evidence of multi-tenancy. `reverse_ip` reports `unknown`
+    whenever passive DNS returns nothing at all, so treating abstention as a
+    veto would let a silent rung block every promotion."""
+    for silent in ({"sharing": "unknown"}, {"sharing": "historically_shared"}):
+        composed = projector._compose_tenancy([
+            _op("single_tenant", tier=0, reason="provider_service_class_compute"),
+            projector._tier2_tenancy_opinion(silent),
+        ])
+        assert composed["tenancy"] == "single_tenant", silent
+        assert composed["rule"] == "unanimous_with_promoting_rung", silent
+
+
+def test_tier2_never_extrapolates_historically_shared():
+    """planning#180's rule, carried forward by #182: `historically_shared`
+    says the sharing we can SEE is old. It is not a tenancy verdict in
+    either direction, and `_sharing_verdict` already refuses to emit it on a
+    truncated page, so its absence is not evidence either."""
+    assert projector._tier2_tenancy_opinion({"sharing": "historically_shared"})["tenancy"] == "undetermined"
+    assert projector._tier2_tenancy_opinion({"sharing": "shared"})["tenancy"] == "not_single_tenant"
+    assert projector._tier2_tenancy_opinion({"sharing": "dedicated"})["tenancy"] == "single_tenant"
+    assert projector._tier2_tenancy_opinion({"sharing": "dedicated"})["promoting"] is False
+    # Unrecognised / missing shapes abstain by returning no opinion at all —
+    # never a `no`. "Absent is not false" (planning#182).
+    assert projector._tier2_tenancy_opinion(None) is None
+    assert projector._tier2_tenancy_opinion({}) is None
+    assert projector._tier2_tenancy_opinion({"sharing": "something_new"}) is None
+
+
+def test_tenancy_opinion_from_claim_ignores_unrecognised_claim_shapes():
+    assert projector._tenancy_opinion_from_claim("tenancy_enricher", None) is None
+    assert projector._tenancy_opinion_from_claim("tenancy_enricher", {}) is None
+    assert projector._tenancy_opinion_from_claim("tenancy_enricher", {"tenancy": "maybe"}) is None
+    opinion = projector._tenancy_opinion_from_claim("tenancy_enricher", {
+        "tenancy": "single_tenant", "decided_by_tier": 0,
+        "reason": "provider_service_class_compute", "dataset_sha256": "9f125cb4",
+    })
+    assert opinion["promoting"] is True
+    assert opinion["dataset_sha256"] == "9f125cb4"
+
+
+def test_compose_tenancy_carries_dataset_sha256_for_provenance():
+    """SCHEMA.md asks a consumer to record the dataset digest alongside the
+    decision it informed. planning#181 already stamps it on the claim, so
+    carrying it through costs nothing and keeps a past authorisation
+    reconstructable against the exact dataset that produced it."""
+    composed = projector._compose_tenancy([
+        _op("single_tenant", tier=0) | {"dataset_sha256": "9f125cb4"},
+        projector._tier2_tenancy_opinion({"sharing": "dedicated"}),
+    ])
+    assert composed["dataset_sha256"] == "9f125cb4"
+    # A composition with no range-feed rung carries no digest rather than a
+    # null one — the key's presence means "a dataset informed this".
+    assert "dataset_sha256" not in projector._compose_tenancy(
+        [projector._tier2_tenancy_opinion({"sharing": "shared"})]
+    )
+
+
+# ── tenancy rung 3, through the projector (planning#182) ──────────────────
+#
+# These run against the real dev DB with the live tenancy_enricher ticking
+# every 60s, so every one of them masks the real `cloud_ranges` rows covering
+# its IP (see `_masking_real_ranges`' docstring in test_tenancy_enricher.py:
+# Vultr publishes all three RFC 5737 documentation ranges as `compute`, and
+# the gitleaks non-reserved-public-ipv4 rule makes RFC 5737 the only IPv4
+# these tests may use). Without the mask, a tick landing mid-test stamps
+# `single_tenant` on the asset from the LIVE dataset and inverts every
+# assertion below that expects a denial. planning#183 removes the need for
+# the mask by filtering special-purpose space out of the published dataset;
+# when it does, these wrappers go with it.
+
+
+def test_tenancy_and_ownership_are_separate_caps():
+    """THE test for planning#178's load-bearing constraint. A single-tenant
+    address with NO confirmed-ours verdict must not promote: single tenancy
+    says one tenant lives here, not that the tenant is us. Collapsed into one
+    signal, a recycled address in a pure-VPS range authorises scanning a
+    stranger's host."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"203.0.113.{10 + (int(suffix[:2], 16) % 40)}"
+    db = SessionLocal()
+    try:
+        with _masking_real_ranges(db, [ip]):
+            now = datetime.now(timezone.utc)
+            asset = _make_asset(db, "ip_address", ip)
+            _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
+                "tenancy": "single_tenant", "decided_by_tier": 0,
+                "reason": "provider_service_class_compute", "dataset_sha256": "deadbeef",
+            }, now)
+            db.commit()
+
+            projector.project(db, {asset.id}, now)
+            db.commit()
+            db.expire_all()
+
+            state = _state_for(db, asset.id)
+            assert state.attributes["tenancy"]["tenancy"] == "single_tenant"
+            assert state.attributes["probe_class"] == "name_only", (
+                "single tenancy alone must never license a bare-IP probe"
+            )
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+def test_probe_class_direct_addressable_via_tenancy_and_confirmed_ours():
+    """The rung planning#182 rewrote: composed `single_tenant` AND
+    `confirmed_ours`, ANDed as two independent caps."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"203.0.113.{60 + (int(suffix[:2], 16) % 40)}"
+    db = SessionLocal()
+    try:
+        with _masking_real_ranges(db, [ip]):
+            now = datetime.now(timezone.utc)
+            asset = _make_asset(db, "ip_address", ip)
+            _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
+                "tenancy": "single_tenant", "decided_by_tier": 0,
+                "reason": "provider_service_class_compute", "dataset_sha256": "deadbeef",
+            }, now)
+            _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
+                       {"verdict": "confirmed_ours"}, now)
+            db.commit()
+
+            projector.project(db, {asset.id}, now)
+            db.commit()
+            db.expire_all()
+
+            state = _state_for(db, asset.id)
+            assert state.attributes["probe_class"] == "direct_addressable"
+            assert state.attributes["tenancy"]["rule"] == "unanimous_with_promoting_rung"
+            assert state.attributes["tenancy"]["dataset_sha256"] == "deadbeef"
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+def test_is_datacenter_alone_no_longer_promotes():
+    """The regression planning#182 exists to fix. `is_datacenter` is true of
+    a CDN edge node and a managed load balancer as readily as a customer VM,
+    and it fails SOFT to False on a broken lookup (planning#177). It is out
+    of the rung entirely now — a hosting_class claim with no tenancy claim
+    behind it licenses nothing, however confident the ownership verdict.
+
+    `hosting` itself must still project, unchanged: the finding-attribution
+    path (epic#81 Phase D / planning#107) reads it, and that path is asking a
+    genuinely different question."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"203.0.113.{110 + (int(suffix[:2], 16) % 40)}"
+    db = SessionLocal()
+    try:
+        with _masking_real_ranges(db, [ip]):
+            now = datetime.now(timezone.utc)
+            asset = _make_asset(db, "ip_address", ip)
+            _add_claim(db, asset.id, "hosting_classifier", "hosting_class",
+                       {"is_datacenter": True, "company_name": "Acme Hosting"}, now)
+            _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
+                       {"verdict": "confirmed_ours"}, now)
+            db.commit()
+
+            projector.project(db, {asset.id}, now)
+            db.commit()
+            db.expire_all()
+
+            state = _state_for(db, asset.id)
+            assert state.attributes["probe_class"] == "name_only"
+            assert state.hosting == {"is_datacenter": True, "company_name": "Acme Hosting"}
+            # Unenriched, or enriched-and-unanswerable if a live tick landed
+            # mid-test — both deny, and both are recorded distinctly from the
+            # genuine negative below. Which of the two it is depends on the
+            # enricher's timing, not on anything this test controls.
+            assert state.attributes["tenancy"]["rule"] in (
+                "no_rungs_reported", "all_rungs_undetermined",
+            )
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+def test_not_single_tenant_denies_and_is_logged_distinctly_from_unknown():
+    """A CDN/managed range: the provider's own feed says no customer VM
+    lives here. Denies regardless of affinity, and lands on a rule that a
+    reader of `authorisation_decisions` can separate from "we could not
+    check" — which is planning#177's whole complaint and this issue's third
+    acceptance criterion."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"203.0.113.{160 + (int(suffix[:2], 16) % 40)}"
+    db = SessionLocal()
+    try:
+        with _masking_real_ranges(db, [ip]):
+            now = datetime.now(timezone.utc)
+            asset = _make_asset(db, "ip_address", ip)
+            _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
+                "tenancy": "not_single_tenant", "decided_by_tier": 0,
+                "reason": "provider_service_class_edge", "dataset_sha256": "deadbeef",
+            }, now)
+            _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
+                       {"verdict": "confirmed_ours"}, now)
+            db.commit()
+
+            projector.project(db, {asset.id}, now)
+            db.commit()
+            db.expire_all()
+
+            state = _state_for(db, asset.id)
+            assert state.attributes["probe_class"] == "name_only"
+            assert state.attributes["tenancy"]["tenancy"] == "not_single_tenant"
+            assert state.attributes["tenancy"]["rule"] == "dissent_wins_outright"
+            assert state.attributes["tenancy"]["rungs"][0]["reason"] == "provider_service_class_edge"
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+def test_tier2_reverse_ip_sharing_denies_a_tier0_promotion():
+    """Tier 2 rides on the `reverse_ip` claim hosting_classifier already
+    writes — no new claim type, no new observer, no mnemonic quota. A live
+    CDN address inside an EC2 range is the case: Tier 0 promotes, Tier 2 sees
+    300 currently-resolving domains, and dissent wins outright."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"192.0.2.{10 + (int(suffix[:2], 16) % 40)}"
+    db = SessionLocal()
+    try:
+        with _masking_real_ranges(db, [ip]):
+            now = datetime.now(timezone.utc)
+            asset = _make_asset(db, "ip_address", ip)
+            _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
+                "tenancy": "single_tenant", "decided_by_tier": 0,
+                "reason": "provider_service_class_compute", "dataset_sha256": "deadbeef",
+            }, now)
+            _add_claim(db, asset.id, "hosting_classifier", "reverse_ip",
+                       {"source": "mnemonic", "count": 332, "domains": [],
+                        "records": [], "active_count": 120, "truncated": True,
+                        "sharing": "shared"}, now)
+            _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
+                       {"verdict": "confirmed_ours"}, now)
+            db.commit()
+
+            projector.project(db, {asset.id}, now)
+            db.commit()
+            db.expire_all()
+
+            state = _state_for(db, asset.id)
+            assert state.attributes["probe_class"] == "name_only"
+            assert state.attributes["tenancy"]["rule"] == "dissent_wins_outright"
+            claim_types = {r["claim_type"] for r in state.attributes["tenancy"]["rungs"]}
+            assert claim_types == {"tenancy", "reverse_ip"}
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+def test_tenancy_claim_from_an_unlisted_observer_is_ignored():
+    """`tenancy` is read from a SET of observers, not from anyone. An
+    observer not in `_TENANCY_OBSERVERS` gets no vote — the set is the
+    entitlement check, the same way emission-time seeding is for
+    `cloud_inventory`."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"192.0.2.{60 + (int(suffix[:2], 16) % 40)}"
+    db = SessionLocal()
+    try:
+        with _masking_real_ranges(db, [ip]):
+            now = datetime.now(timezone.utc)
+            asset = _make_asset(db, "ip_address", ip)
+            _add_claim(db, asset.id, "naabu", "tenancy", {
+                "tenancy": "single_tenant", "decided_by_tier": 0,
+                "reason": "provider_service_class_compute",
+            }, now)
+            _add_claim(db, asset.id, "shared_infra_verifier", "affinity_confirmation",
+                       {"verdict": "confirmed_ours"}, now)
+            db.commit()
+
+            projector.project(db, {asset.id}, now)
+            db.commit()
+            db.expire_all()
+
+            state = _state_for(db, asset.id)
+            assert state.attributes["probe_class"] == "name_only"
+            assert all(
+                r["observer"] != "naabu" for r in state.attributes["tenancy"]["rungs"]
+            )
+    finally:
+        db.close()
+        _cleanup_ip(ip)
+
+
+def test_cidr_route_is_untouched_by_tenancy():
+    """The declared-CIDR disjunct is the strongest non-credentialed evidence
+    we have and planning#182 deliberately does not touch it: an address the
+    customer declared in scope stays `direct_addressable` even when a rung
+    calls the range multi-tenant. An operator declaring a CIDR is a stronger
+    authorisation than any inference about who else lives there."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"198.51.100.{100 + (int(suffix[:2], 16) % 40)}"
+    cidr_value = "198.51.100.0/24"
+    db = SessionLocal()
+    target_id = None
+    try:
+        with _masking_real_ranges(db, [ip]):
+            now = datetime.now(timezone.utc)
+            target_id = uuid.uuid4()
+            # Delete-then-insert: `Target.value` is globally UNIQUE and
+            # `_cleanup_target` deletes by id, so a row stranded by a killed
+            # run would otherwise fail this INSERT forever (planning#156,
+            # same reasoning as test_probe_class_rules').
+            db.query(Target).filter(Target.value == cidr_value).delete(synchronize_session=False)
+            db.commit()
+            db.add(Target(id=target_id, type=TargetType.CIDR.value, value=cidr_value))
+            db.commit()
+
+            asset = _make_asset(db, "ip_address", ip)
+            _add_claim(db, asset.id, "tenancy_enricher", "tenancy", {
+                "tenancy": "not_single_tenant", "decided_by_tier": 0,
+                "reason": "provider_service_class_managed", "dataset_sha256": "deadbeef",
+            }, now)
+            db.commit()
+
+            projector.project(db, {asset.id}, now)
+            db.commit()
+            db.expire_all()
+
+            state = _state_for(db, asset.id)
+            assert state.attributes["probe_class"] == "direct_addressable"
+            assert state.attributes["tenancy"]["tenancy"] == "not_single_tenant"
+    finally:
+        db.close()
+        if target_id is not None:
+            _cleanup_target(target_id)
+        _cleanup_ip(ip)
+
+
+def test_non_ip_assets_carry_no_tenancy_attribute():
+    """A hostname has no address for a rung to have an opinion about.
+    Writing `no_rungs_reported` onto every dns_record row would put a
+    meaningless key on most rows in the table — and, because `attributes` is
+    merged rather than replaced, one that never goes away."""
+    suffix = uuid.uuid4().hex[:10]
+    host = f"tenancy-nonip-{suffix}.example.com"
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        asset = _make_asset(db, "dns_record", host, record_type="A", content="203.0.113.9")
+        _add_port_claim(db, asset.id, "naabu", [
+            {"port": 443, "protocol": "tcp", "last_seen_at": now.isoformat()},
+        ], now)
+        db.commit()
+
+        projector.project(db, {asset.id}, now)
+        db.commit()
+        db.expire_all()
+
+        assert "tenancy" not in _state_for(db, asset.id).attributes
+    finally:
+        db.close()
+        _cleanup_prefix(f"tenancy-nonip-{suffix}")
 
 
 if __name__ == "__main__":

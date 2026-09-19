@@ -24,6 +24,13 @@ either a claim or a real column:
     prune cutoff. Only taken from a claim whose evidence does not say
     `complete: False` (planning#169) — an incomplete sweep may not advance
     this cutoff.
+  - `attributes["tenancy"]` <- every rung's `tenancy` claim (any observer in
+    `_TENANCY_OBSERVERS`) plus the Tier 2 opinion derived from the
+    `reverse_ip` claim, folded by `_compose_tenancy` (planning#182 rung 3).
+    This replaces `hosting.is_datacenter` in the `direct_addressable` rung;
+    `hosting` itself is untouched and still serves the finding-attribution
+    path (epic#81 Phase D / planning#107), where "is this shared infra whose
+    CVE is not ours" genuinely is the question being asked.
   - `estate = "proven_ours"` <- a `cloud_inventory` claim with
     `claim_value.get("confirmed") is True` (planning#145 L4 — the epic's
     missing promotion path; see the precedence comment at the estate
@@ -201,6 +208,236 @@ def _carry_forward_unclaimed_ports(merged: list, prior: list) -> list:
     return _merge_open_ports(merged, carried)
 
 
+# ── tenancy composition (planning#182, rung 3) ─────────────────────────────
+#
+# Tenancy is COMPOSED HERE, not produced as a verdict by any one source.
+# That is planning#182's 2026-09-17 design decision, and it supersedes the
+# issue body's original "replace the is_datacenter half with a tenancy
+# verdict": every rung of the tenancy ladder emits its own opinion under its
+# own observer, they are all read together, and no rung gets to be "the
+# tenancy answer" on its own.
+#
+# The reason is coverage, measured rather than assumed (planning#181's
+# hand-off, against the live 125k-row cloud_ranges dataset): Azure, GCP and
+# OCI publish ZERO `compute` records between them — Azure has no VM tag at
+# all, GCP carries one token across every prefix, OCI's tag spans customer
+# and Oracle-run space alike. A single verdict derived from the range feeds
+# alone would therefore pin every Azure/GCP/OCI estate at `undetermined`
+# forever, which is the same silent, non-self-healing denial planning#177
+# documented, just narrowed to three providers.
+#
+# ── the composition rule, and why it is asymmetric ─────────────────────────
+#
+# Copied from `shared_infra_verifier.classify_ip_ownership`, which composes a
+# multi-signal verdict over hostnames the same way: one direction wins
+# outright, the other requires unanimity. The principle being copied is "the
+# outright win goes to the verdict whose error is cheap; unanimity guards the
+# verdict whose error is expensive" — NOT the literal labels, because the
+# expensive direction is the other one here. There, a false rejection loses
+# us a real finding; here, a false `single_tenant` promotes an address to
+# `direct_addressable` and points a port scanner at what may be someone
+# else's host.
+#
+#   1. Any rung reporting `not_single_tenant` wins OUTRIGHT. Tier 0's
+#      `edge`/`storage`/`managed` is the provider's own published statement
+#      that no customer VM lives in that prefix, and Tier 2's `shared` is a
+#      positive observation of live multi-tenancy. Each is self-sufficient,
+#      and denial is the safe direction, so one is enough.
+#
+#   2. `single_tenant` requires UNANIMITY AMONG THE RUNGS THAT VOTED, plus at
+#      least one rung whose `single_tenant` is structural rather than
+#      inferred from absence (`_PROMOTING_TIERS`). Unanimity is rule 1
+#      running first: a single dissent has already denied by the time we get
+#      here.
+#
+#   3. Anything else is `undetermined`, which denies — and is recorded
+#      DISTINCTLY from rule 1, because planning#177's whole lesson is that
+#      "we could not check" and "we checked and the answer is no" are
+#      different facts the decision log has to be able to separate.
+#
+# ── abstention is not a vote, and that is where this deliberately differs ──
+#
+# shared_infra_verifier's unanimity counts an `indeterminate` hostname as
+# BLOCKING: "Only when indeterminate is entirely ABSENT and every hostname
+# voted not_affine do we reject." That is right there and wrong here, and the
+# difference is what the abstention means. There, each hostname is a
+# different potentially-vulnerable vhost, so a hostname we failed to probe is
+# unexamined risk sitting on the same address. Here every rung is talking
+# about the SAME address, and `undetermined` means "my data source has
+# nothing to say" — which is not partial evidence of multi-tenancy.
+#
+# Counting abstentions as blocking would also be self-defeating: `reverse_ip`
+# reports `unknown` whenever passive DNS returns nothing at all, so a merely
+# silent rung would veto every promotion an authoritative rung could make.
+# planning#182 states the rule directly — "No claim from a rung is that rung
+# abstaining, never that rung voting no."
+#
+# ── what this does NOT do ──────────────────────────────────────────────────
+#
+# It does not decide ownership. The composed verdict is ANDed with
+# `verdict == "confirmed_ours"` at the probe_class rung below, as two
+# independent caps — see planning#178, and `tenancy_enricher._claim_value`'s
+# docstring for the producer half of the same constraint. Collapsed into one
+# signal, a recycled address that happens to sit in a single-tenant range
+# authorises scanning a stranger's host.
+
+_SINGLE_TENANT = "single_tenant"
+_NOT_SINGLE_TENANT = "not_single_tenant"
+_TENANCY_UNDETERMINED = "undetermined"
+
+# Observers entitled to assert a `tenancy` claim. This is the one place
+# `_OWNED_CLAIMS`' claim-type -> single-observer pin becomes claim-type ->
+# SET of observers (planning#182's design decision): `asset_claims` is keyed
+# (asset, observer, claim_type) by `uq_asset_claims_asset_observer_type`, so
+# several rungs can assert `tenancy` about one IP and disagree — which is the
+# situation this ladder is in by construction. It must NOT collapse to
+# most-recently-observed-wins the way `cdn_boundary`/`cloud_inventory` do:
+# the whole point is that every live rung is read together.
+#
+# Tier 1 (the no-SNI TLS certificate from tlsx) is the rung still to be built
+# and adds its observer name here. Tier 2 needs no entry — it is derived from
+# the `reverse_ip` claim hosting_classifier already writes, see
+# `_tier2_tenancy_opinion`.
+_TENANCY_OBSERVERS = frozenset({"tenancy_enricher"})
+
+# Which tiers may PROMOTE on their own. Deliberately an allowlist rather than
+# "any rung that decided": Tier 0's `compute` is single-tenant by
+# construction (one address, one ENI — AWS `EC2` and the pure-VPS providers),
+# which is a different quality of evidence from a rung that infers single
+# tenancy from not having seen anyone else. A future rung inherits no
+# promotion power merely by existing; it has to be added here on purpose,
+# with the argument written down.
+_PROMOTING_TIERS = frozenset({0})
+
+
+def _tier2_tenancy_opinion(reverse_ip_claim_value) -> dict | None:
+    """Derive the Tier 2 (passive-DNS) tenancy opinion from the `reverse_ip`
+    claim `hosting_classifier` already writes (planning#180).
+
+    No new claim type, no new observer, and — the point — no mnemonic call:
+    the quota was already spent when that claim was written. planning#182's
+    design decision notes this rung falls out for free once tenancy is
+    composed at the gate rather than produced as a verdict.
+
+    `sharing` maps onto a tenancy opinion, NOT one-to-one:
+
+      - `shared` — many domains currently resolving here. A positive
+        observation of live multi-tenancy; denies outright under rule 1.
+      - `dedicated` — few enough domains to look like one tenant. An argument
+        from ABSENCE over a source with incomplete coverage, so it votes
+        `single_tenant` but is not in `_PROMOTING_TIERS`: it can corroborate
+        a promotion, never carry one alone.
+      - `historically_shared` — abstains. planning#180 and #182 both say this
+        value must not be extrapolated into a tenancy verdict: it asserts the
+        sharing we can see is old, which says nothing about whether the
+        address is single-tenant NOW. `_sharing_verdict` also refuses to emit
+        it on a truncated page, so its absence is not evidence either.
+      - `unknown` / anything unrecognised — abstains.
+    """
+    if not isinstance(reverse_ip_claim_value, dict):
+        return None
+    sharing = reverse_ip_claim_value.get("sharing")
+    if sharing == "shared":
+        tenancy, reason = _NOT_SINGLE_TENANT, "reverse_ip_sharing_shared"
+    elif sharing == "dedicated":
+        tenancy, reason = _SINGLE_TENANT, "reverse_ip_sharing_dedicated"
+    elif sharing in ("historically_shared", "unknown"):
+        tenancy, reason = _TENANCY_UNDETERMINED, f"reverse_ip_sharing_{sharing}"
+    else:
+        return None
+    return {
+        "observer": "hosting_classifier",
+        "claim_type": "reverse_ip",
+        "tier": 2,
+        "tenancy": tenancy,
+        "reason": reason,
+        "promoting": 2 in _PROMOTING_TIERS,
+    }
+
+
+def _tenancy_opinion_from_claim(observer_name: str, claim_value) -> dict | None:
+    """One rung's opinion, read off a `tenancy` claim (planning#181's claim
+    contract). Returns None for a claim whose shape we do not recognise —
+    which is an abstention, never a `no` (see the module rule above)."""
+    if not isinstance(claim_value, dict):
+        return None
+    tenancy = claim_value.get("tenancy")
+    if tenancy not in (_SINGLE_TENANT, _NOT_SINGLE_TENANT, _TENANCY_UNDETERMINED):
+        return None
+    tier = claim_value.get("decided_by_tier")
+    return {
+        "observer": observer_name,
+        "claim_type": "tenancy",
+        "tier": tier,
+        "tenancy": tenancy,
+        "reason": claim_value.get("reason"),
+        "promoting": tier in _PROMOTING_TIERS,
+        # Pinned so a past authorisation decision stays reconstructable
+        # against the exact dataset that informed it — SCHEMA.md asks
+        # consumers to record this digest alongside the decision it informed,
+        # and planning#181 already stamps it on the claim, so it is free.
+        "dataset_sha256": claim_value.get("dataset_sha256"),
+    }
+
+
+def _compose_tenancy(opinions: list[dict]) -> dict:
+    """Fold every rung's opinion into one composed tenancy verdict.
+
+    Pure — no DB, no I/O — so the rule itself is unit-testable without a
+    session. The module rationale above says WHY it is shaped this way; this
+    function is only its mechanics.
+
+    The returned dict is what lands in `asset_state.attributes["tenancy"]`
+    and, through it, in `authorisation_decisions.evidence_snapshot`. `rule` is
+    the field that makes planning#177's three collapsed cases separable in
+    the decision log:
+
+        no_rungs_reported              we never looked (unenriched)
+        all_rungs_undetermined         we looked; no source could answer
+        single_tenant_not_corroborated a non-promoting rung said single-tenant
+                                       and nothing authoritative backed it
+        dissent_wins_outright          a genuine negative
+        unanimous_with_promoting_rung  a genuine positive
+
+    Only the last promotes. The first three are all `undetermined`, and
+    keeping them apart is this issue's third acceptance criterion: a denial
+    that reads `no_rungs_reported` is a broken or lagging enricher and is
+    fixed by operators, while `dissent_wins_outright` is the gate working.
+    """
+    if not opinions:
+        return {"tenancy": _TENANCY_UNDETERMINED, "rule": "no_rungs_reported", "rungs": []}
+
+    rungs = [
+        {k: o[k] for k in ("observer", "claim_type", "tier", "tenancy", "reason")}
+        for o in opinions
+    ]
+    dataset_sha256 = next((o["dataset_sha256"] for o in opinions if o.get("dataset_sha256")), None)
+    composed: dict = {"tenancy": _TENANCY_UNDETERMINED, "rule": "", "rungs": rungs}
+    if dataset_sha256 is not None:
+        composed["dataset_sha256"] = dataset_sha256
+
+    # Rule 1 — any dissent wins outright, and runs FIRST so that rule 2's
+    # "unanimity among the rungs that voted" is already guaranteed below.
+    if any(o["tenancy"] == _NOT_SINGLE_TENANT for o in opinions):
+        composed["tenancy"] = _NOT_SINGLE_TENANT
+        composed["rule"] = "dissent_wins_outright"
+        return composed
+
+    # Rule 2 — unanimous single_tenant, with at least one promoting rung.
+    voted_single = [o for o in opinions if o["tenancy"] == _SINGLE_TENANT]
+    if voted_single:
+        if any(o.get("promoting") for o in voted_single):
+            composed["tenancy"] = _SINGLE_TENANT
+            composed["rule"] = "unanimous_with_promoting_rung"
+        else:
+            composed["rule"] = "single_tenant_not_corroborated"
+        return composed
+
+    # Rule 3 — rungs reported, none of them could answer.
+    composed["rule"] = "all_rungs_undetermined"
+    return composed
+
+
 # ── asset_state read helpers (planning#144 L3c-3) ──────────────────────────
 #
 # Every backend reader repointed off `assets_canonical.metadata` in L3c-3
@@ -352,6 +589,12 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         "hosting_class": "hosting_classifier",
         "affinity_confirmation": "shared_infra_verifier",
         "eol_status": "eol_enrichment",
+        # planning#182 Tier 2: the passive-DNS tenancy signal is DERIVED from
+        # this claim rather than produced as a second one — hosting_classifier
+        # already writes `sharing` here and already paid mnemonic's quota for
+        # it. Pinned like its `hosting_class` sibling, and for the same
+        # reason: it is that service's own TTL cache.
+        "reverse_ip": "hosting_classifier",
     }
     observer_name_by_id = {
         observer_id: name for observer_id, name in db.query(Observer.id, Observer.name).all()
@@ -359,6 +602,11 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
     hosting_class_by_asset: dict[uuid.UUID, dict] = {}
     affinity_confirmation_by_asset: dict[uuid.UUID, dict] = {}
     eol_status_by_asset: dict[uuid.UUID, dict] = {}
+    reverse_ip_by_asset: dict[uuid.UUID, dict] = {}
+    # planning#182: a LIST per asset, not a single value — `tenancy` is the
+    # one claim type read from a SET of observers with no most-recent-wins
+    # fold, because every live rung of the ladder is composed together.
+    tenancy_claims_by_asset: dict[uuid.UUID, list[tuple[str, dict]]] = {}
     cdn_boundary_by_asset: dict[uuid.UUID, dict] = {}
     third_party_by_asset: dict[uuid.UUID, dict] = {}
     cloud_inventory_by_asset: dict[uuid.UUID, dict] = {}
@@ -375,7 +623,8 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         .filter(
             AssetClaim.asset_canonical_id.in_(asset_ids),
             AssetClaim.claim_type.in_(
-                list(_OWNED_CLAIMS) + ["cdn_boundary", "third_party_dependency", "cloud_inventory"]
+                list(_OWNED_CLAIMS)
+                + ["cdn_boundary", "third_party_dependency", "cloud_inventory", "tenancy"]
             ),
         )
         .all()
@@ -391,6 +640,22 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
             if previous is None or last_observed_at > previous:
                 _cdn_seen_at[asset_id] = last_observed_at
                 cdn_boundary_by_asset[asset_id] = claim_value
+            continue
+        if claim_type == "tenancy":
+            # planning#182: observer-SCOPED but not observer-PINNED, and
+            # deliberately neither of the two existing patterns. Unlike
+            # hosting_class/affinity_confirmation/eol_status a single owner
+            # would be wrong (the ladder is several rungs by construction);
+            # unlike cdn_boundary/cloud_inventory a most-recently-observed
+            # fold would be wrong too, because that silently discards every
+            # rung but the freshest, and the composition rule's whole job is
+            # to read them together. `_TENANCY_OBSERVERS` still gates WHO may
+            # vote — an unlisted observer's `tenancy` claim is ignored here,
+            # not folded in.
+            if observer_name_by_id.get(observer_id) in _TENANCY_OBSERVERS:
+                tenancy_claims_by_asset.setdefault(asset_id, []).append(
+                    (observer_name_by_id[observer_id], claim_value)
+                )
             continue
         if claim_type == "cloud_inventory":
             # planning#145 L4: NOT observer-pinned, unlike hosting_class/
@@ -417,6 +682,8 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
             affinity_confirmation_by_asset[asset_id] = claim_value
         elif claim_type == "eol_status":
             eol_status_by_asset[asset_id] = claim_value
+        elif claim_type == "reverse_ip":
+            reverse_ip_by_asset[asset_id] = claim_value
 
     # CIDR/IP-scoped ip_address ids, computed once for the whole batch —
     # target_scope._ip_scoped_asset_ids takes the full ip/cidr target list,
@@ -439,6 +706,8 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         cdn_claim_value = cdn_boundary_by_asset.get(asset_id)
         third_party_claim_value = third_party_by_asset.get(asset_id)
         cloud_inventory_claim_value = cloud_inventory_by_asset.get(asset_id)
+        tenancy_rung_claims = tenancy_claims_by_asset.get(asset_id, [])
+        reverse_ip_claim_value = reverse_ip_by_asset.get(asset_id)
 
         if canonical is None:
             continue  # id doesn't resolve to a row (deleted mid-scan)
@@ -553,6 +822,23 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         else:
             provider_mx = False
 
+        # ── composed tenancy (planning#182 rung 3) ─────────────────────────
+        # Every rung's opinion, folded by the asymmetric rule documented at
+        # `_compose_tenancy`. Computed for ip_address assets only: no other
+        # asset type has an address for a rung to have an opinion about, and
+        # writing `no_rungs_reported` onto every hostname would put a
+        # meaningless key on most rows in the table.
+        if asset_type == "ip_address":
+            tenancy_opinions = [
+                o for o in (
+                    [_tenancy_opinion_from_claim(obs, cv) for obs, cv in tenancy_rung_claims]
+                    + [_tier2_tenancy_opinion(reverse_ip_claim_value)]
+                ) if o is not None
+            ]
+            composed_tenancy = _compose_tenancy(tenancy_opinions)
+        else:
+            composed_tenancy = {"tenancy": _TENANCY_UNDETERMINED, "rule": "not_an_address", "rungs": []}
+
         # planning#128: `cloud_inventory.confirmed` now reaches probe_class,
         # closing the seam planning#145 L4 deliberately left open (its comment
         # here said probe eligibility was the authorisation gate's business —
@@ -591,13 +877,45 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
             probe_class = "direct_addressable"
         elif asset_type == "ip_address" and (
             asset_id in cidr_scoped_ids
-            or (hosting.get("is_datacenter") is True and verdict == "confirmed_ours")
+            # planning#182 rung 3: `hosting.is_datacenter` is GONE from this
+            # disjunct, replaced by the composed tenancy verdict.
+            #
+            # is_datacenter was never the right question. It asked "does this
+            # address belong to a hosting provider", which is true of a CDN
+            # edge node, an object-storage front end and a managed load
+            # balancer alike — none of which is a customer VM we may point a
+            # port scanner at. Worse, planning#177: it fails SOFT to False on
+            # an unattempted or broken lookup, so a vendor schema change
+            # presented for a month as a policy outcome. The composed verdict
+            # cannot do that — an absent or unanswerable rung lands on
+            # `undetermined` and is recorded as such (see `_compose_tenancy`).
+            #
+            # The two caps stay SEPARATE and are ANDed, never collapsed
+            # (planning#178, restated on #181/#182 as the single most
+            # important line): tenancy says "one tenant lives at this
+            # address", ownership says "that tenant is us". A recycled
+            # address sitting in a pure-VPS range satisfies the first and
+            # not the second, and scanning it is scanning a stranger's host.
+            or (composed_tenancy["tenancy"] == _SINGLE_TENANT and verdict == "confirmed_ours")
         ):
             probe_class = "direct_addressable"
         else:
             probe_class = "name_only"
 
         attributes: dict = {"probe_class": probe_class, "provider_mx": provider_mx}
+        if asset_type == "ip_address":
+            # Carried onto the projection, and from there into
+            # `authorisation_decisions.evidence_snapshot` by
+            # `probe_authorisation._compose`, so a denial says WHICH of
+            # planning#177's three collapsed cases it was. `rule_fired` alone
+            # cannot: an IP at `name_only` probed by an ip-addressing
+            # connector reports `addressing_not_permitted` whether tenancy was
+            # unknown, unanswerable or a genuine negative. planning#182's
+            # acceptance criterion allows either a distinguishing `rule_fired`
+            # or evidence on the row; this is the evidence route, chosen
+            # because it leaves every existing rule string — which the #148
+            # log-only rollout is already being read by — untouched.
+            attributes["tenancy"] = composed_tenancy
 
         if naabu_last_observed_at is not None:
             attributes["naabu_last_scan_at"] = naabu_last_observed_at.isoformat()
