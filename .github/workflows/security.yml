@@ -4,7 +4,11 @@ on:
   push:
     branches: ["main", "dev"]
   pull_request:
-    branches: ["main", "dev"]
+    # "pr/**" so a STACKED pull request — one based on another pr/* branch
+    # rather than directly on dev — is still gated. Without it this workflow
+    # filters itself out for every PR but the bottom of a stack, which is a
+    # gate that runs where the work is not.
+    branches: ["main", "dev", "pr/**"]
 
 # security-events: write required for SARIF uploads to GitHub code scanning
 permissions:
