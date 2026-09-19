@@ -136,16 +136,26 @@ class NucleiConnector(ScanningConnector):
             )
             resp.raise_for_status()
             body = resp.json()
-            if body.get("timed_out"):
+            timed_out = bool(body.get("timed_out"))
+            if timed_out:
                 log.warning(
                     "Nuclei scan-worker call timed out for %d target(s) — %d finding(s) recovered from "
                     "partial output before the subprocess was killed",
                     len(targets), len(body.get("findings", [])),
                 )
-            return PhaseResult(findings=self._parse_findings(body.get("findings", [])))
+            # planning#160 D4 — a timed-out pass is an incomplete pass. The
+            # recovered findings are real observations and are kept, but
+            # absence must not be inferred from a pass that never finished.
+            return PhaseResult(
+                findings=self._parse_findings(body.get("findings", [])),
+                complete=not timed_out,
+            )
         except Exception:
             log.exception("Nuclei worker request failed for %d target(s)", len(targets))
-            return PhaseResult()
+            # planning#160 D4 — a failed scan must not read as a clean one;
+            # an empty PhaseResult here was indistinguishable from "no
+            # findings".
+            return PhaseResult(complete=False)
 
     def _parse_findings(self, items: list[dict]) -> list[DiscoveredFinding]:
         findings = []

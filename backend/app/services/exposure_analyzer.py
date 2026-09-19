@@ -34,7 +34,6 @@ Emit vs. resolve use two different signals:
     Shodan grace).
 """
 
-import ipaddress
 import logging
 import re
 import uuid
@@ -46,6 +45,7 @@ import yaml
 from sqlalchemy.orm import Session
 
 from app.connectors.base import DiscoveredFinding
+from app.core.netaddr import is_public_ip as _is_public_ip
 from app.models.asset_canonical import AssetCanonical
 from app.models.finding_canonical import FindingCanonical
 from app.services import projector
@@ -208,17 +208,6 @@ def _load_ruleset() -> _Ruleset:
     _cache = _Ruleset(rules=tuple(rules), port_to_rules=port_to_rules, service_to_rules=service_to_rules)
     _cache_mtime = current_mtime
     return _cache
-
-
-def _is_public_ip(value: str) -> bool:
-    try:
-        addr = ipaddress.ip_address(value)
-    except ValueError:
-        return False
-    return not (
-        addr.is_private or addr.is_loopback or addr.is_multicast
-        or addr.is_link_local or addr.is_reserved or addr.is_unspecified
-    )
 
 
 def _aware_utc(dt: datetime | None) -> datetime | None:

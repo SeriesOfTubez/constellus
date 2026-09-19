@@ -151,38 +151,23 @@ _NAABU_HOST_RE = re.compile(r"^[a-zA-Z0-9._\-]{1,253}$")
 # (the same failure mode as planning#90), which is worse than just skipping it.
 # ──────────────────────────────────────────────────────────────────────────────
 
-_BLOCKED_NETWORKS: tuple = (
-    ipaddress.ip_network("0.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("100.64.0.0/10"),    # RFC 6598 CGNAT
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),   # link-local / cloud metadata (169.254.169.254)
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.0.0.0/24"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("198.18.0.0/15"),    # benchmarking
-    ipaddress.ip_network("224.0.0.0/4"),      # multicast
-    ipaddress.ip_network("240.0.0.0/4"),      # reserved
-    ipaddress.ip_network("255.255.255.255/32"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),         # IPv6 unique local
-    ipaddress.ip_network("fe80::/10"),        # IPv6 link-local
-    ipaddress.ip_network("ff00::/8"),         # IPv6 multicast
-)
+# The blocklist, the IPv4-in-IPv6 unwrapping and the classification rule now
+# live in `ip_blocklist.py`, which is BYTE-IDENTICAL to
+# backend/app/core/ip_blocklist.py. Previously this file carried its own copy
+# and a comment asking the next maintainer to keep the two in sync. They did
+# not stay in sync: the backend gained IPv4-in-IPv6 unwrapping and this copy
+# never did, so `::ffff:10.0.0.1`, `::10.0.0.1`, `2002:0a00:0001::`,
+# `64:ff9b::a01:a01` and `64:ff9b::a9fe:a9fe` (the cloud metadata endpoint)
+# all passed the guard on the component that actually opens the sockets.
+# `tests/test_blocklist_parity.py` now fails if the two files diverge, so the
+# next drift is caught in CI instead of by whoever finds it in production.
+from ip_blocklist import is_blocked as _is_blocked_ip  # noqa: E402
 
 
 class EgressBlockedError(ValueError):
     """Raised when a target is (or resolves only to) a blocked/private/
     internal address. Callers catch this and drop the offending target
     rather than failing the whole batch."""
-
-
-def _is_blocked_ip(ip: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> bool:
-    if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
-        return True
-    if isinstance(ip, ipaddress.IPv4Address) and ip.is_reserved:
-        return True
-    return any(ip in net for net in _BLOCKED_NETWORKS)
 
 
 def _first_public_addr(addrinfo: list[tuple]) -> str | None:

@@ -59,6 +59,11 @@ COPY --from=zgrab2-bin /zgrab2 /usr/local/bin/zgrab2
 RUN chmod +x /usr/local/bin/zgrab2
 
 COPY --from=py-builder /install /usr/local
+# ip_blocklist.py is byte-identical to backend/app/core/ip_blocklist.py and
+# MUST be copied in — main.py imports it at module scope, so a missing copy
+# fails the container at startup rather than silently degrading the guard.
+# tests/test_blocklist_parity.py fails if the two trees' copies diverge.
+COPY ip_blocklist.py .
 COPY main.py .
 
 RUN python -m pip uninstall -y --root-user-action=ignore pip setuptools wheel

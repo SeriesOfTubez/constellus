@@ -39,6 +39,7 @@ from app.connectors.base import (
     is_provider_managed_mx,
 )
 from app.connectors.http import connector_get
+from app.core.netaddr import is_public_ip as _is_public_ip
 from app.core.secrets import get_secret
 from app.models.asset import AssetType
 
@@ -85,17 +86,6 @@ def _valid_hostname(value: str) -> bool:
 _FREE_DELAY = 1.0
 _PAID_DELAY = 0.1
 _FREE_PLANS: frozenset[str] = frozenset({"oss", "free", "dev"})
-
-
-def _is_public_ip(ip: str) -> bool:
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return False
-    return not (
-        addr.is_private or addr.is_loopback or addr.is_multicast
-        or addr.is_link_local or addr.is_reserved or addr.is_unspecified
-    )
 
 
 def _severity_from_cvss(cvss: float | None) -> str:

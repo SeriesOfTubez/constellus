@@ -47,9 +47,26 @@ def load_denylist() -> list[str]:
 
 
 def added_diff_text() -> str:
+    # `encoding` is explicit and `errors` is lenient ON PURPOSE. Bare
+    # `text=True` decodes with the platform's preferred encoding — cp1252 on
+    # Windows — and the staged diff is UTF-8. Any byte landing in one of
+    # cp1252's undefined slots (0x81, 0x8D, 0x8F, 0x90, 0x9D) then raises
+    # inside subprocess, `result.stdout` comes back None, and this guard dies
+    # with an AttributeError. A variation selector (U+FE0F, the second half
+    # of an emoji like ⚠️) is enough to do it.
+    #
+    # It failed CLOSED, which is the right direction — but a security control
+    # that blocks ordinary commits is one a maintainer eventually reaches for
+    # `--no-verify` to get past, and this is the control that exists because
+    # real customer data reached the repo once already. `errors="replace"`
+    # keeps it scanning even when a diff carries genuinely undecodable bytes:
+    # a mangled character cannot hide a denylisted value, because every
+    # denylist entry is ASCII, so replacement can only ever affect bytes that
+    # were never part of a match.
     result = subprocess.run(
         ["git", "diff", "--cached", "--unified=0", "--no-color"],
-        capture_output=True, text=True, check=True,
+        capture_output=True, check=True,
+        encoding="utf-8", errors="replace",
     )
     added_lines = [
         line[1:] for line in result.stdout.splitlines()
@@ -77,7 +94,10 @@ def main() -> None:
         if len(sys.argv) < 4:
             print("check_target_domains: commit-msg stage requires the message file path", file=sys.stderr)
             sys.exit(2)
-        text = Path(sys.argv[3]).read_text(encoding="utf-8")
+        # Same reasoning as added_diff_text(): a commit message is UTF-8 and
+        # may legitimately carry characters that are not decodable elsewhere.
+        # The guard must scan it, not die on it.
+        text = Path(sys.argv[3]).read_text(encoding="utf-8", errors="replace")
         source_desc = "commit message"
     else:
         text = added_diff_text()
