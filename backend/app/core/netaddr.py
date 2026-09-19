@@ -37,3 +37,26 @@ def is_public_ip(value: str) -> bool:
     except ValueError:
         return False
     return addr.is_global and not addr.is_multicast
+
+
+def is_public_network(value: str) -> bool:
+    """Same predicate as `is_public_ip`, but over a CIDR network rather than
+    a single address — for callers that sweep a declared range (naabu's
+    CIDR sweep, planning#161) instead of probing one known IP.
+
+    `ipaddress.ip_network` exposes the identical `is_global`/`is_multicast`
+    properties as `ip_address`, evaluated over the whole network rather than
+    one address, so the same pairing and the same reasoning in
+    `is_public_ip`'s docstring apply unchanged: `is_global` alone would admit
+    a multicast range, and the naive six-clause negation would admit CGNAT
+    space (100.64.0.0/10). `strict=False` accepts a network string that still
+    has host bits set (e.g. "203.0.113.5/24") rather than raising — the
+    caller is asking "is this range in-bounds", not asserting the value is
+    already a canonical network address. Malformed input returns False,
+    matching `is_public_ip`'s behaviour, rather than raising.
+    """
+    try:
+        net = ipaddress.ip_network(value, strict=False)
+    except ValueError:
+        return False
+    return net.is_global and not net.is_multicast

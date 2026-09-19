@@ -22,6 +22,7 @@ Run-level behavior:
     CANCELLED, the loop stops cleanly.
 """
 
+import ipaddress
 import logging
 import time
 import uuid
@@ -37,6 +38,7 @@ from app.connectors.base import (
     ScanningConnector,
 )
 from app.core.database import SessionLocal
+from app.core.netaddr import is_public_network
 from app.models.scan import ScanRun, ScanStatus
 from app.models.scan_template import ScanTemplate
 from app.services import aggressiveness
@@ -198,8 +200,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
             new_canonical_ids_out=new_finding_ids,
         )
         touched_finding_ids.update(exposure_ids)
-    except Exception:
-        log.exception("Exposure analysis failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Exposure analysis", exc)
 
     # Dangling-DNS detection (planning#104/#105, epic#81 Phase B; widened by
     # planning#114, epic#81 Phase D follow-up L2) — promotes the
@@ -216,8 +220,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
             new_canonical_ids_out=new_finding_ids,
         )
         touched_finding_ids.update(dangling_ids)
-    except Exception:
-        log.exception("Dangling-DNS analysis failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Dangling-DNS analysis", exc)
 
     # CPE normalization — turn each touched IP asset's banner/Shodan service
     # data into structured software intel (vendor/product/full-version/CPE 2.3)
@@ -227,16 +233,20 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     try:
         from app.services.cpe_normalizer import enrich_cpe
         enrich_cpe(db, touched_asset_ids)
-    except Exception:
-        log.exception("CPE normalization failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "CPE normalization", exc)
 
     # EOL enrichment — check service versions against endoflife.date for each
     # IP asset touched by this run; writes eol_services metadata + eol: tags.
     try:
         from app.services.eol_enrichment import enrich_eol
         enrich_eol(db, touched_asset_ids)
-    except Exception:
-        log.exception("EOL enrichment failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "EOL enrichment", exc)
 
     # Mid-pipeline projection pass (planning#144 L3c-3). enrich_cpe and
     # enrich_eol now publish their results as claims (port_observation
@@ -249,8 +259,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     # idempotent — the final pass further down still runs.
     try:
         projector.project(db, touched_asset_ids, datetime.now(timezone.utc))
-    except Exception:
-        log.exception("Post-enrichment projection failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Post-enrichment projection", exc)
 
     # Native version→CVE matching — match each touched asset's installed software
     # (open_ports[].software[] from CPE normalization) against the local CPE→CVE
@@ -266,8 +278,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
             new_canonical_ids_out=new_finding_ids,
         )
         touched_finding_ids.update(version_ids)
-    except Exception:
-        log.exception("Version matching failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Version matching", exc)
 
     # Shared-infra ownership verification (planning#77 MVP / planning#103,
     # epic#81 Phase A; widened by planning#113, epic#81 Phase D follow-up
@@ -285,8 +299,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     try:
         from app.services.shared_infra_verifier import verify_findings
         verify_findings(db, scope, touched_asset_ids, force=force_reverify)
-    except Exception:
-        log.exception("Shared-infra verification failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Shared-infra verification", exc)
 
     # Final projection pass (planning#143 L2 sub-slice C) — re-project this
     # run's touched assets now that enrichment/verification has run, so
@@ -301,8 +317,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     # projection failure must not fail the scan.
     try:
         projector.project(db, touched_asset_ids, datetime.now(timezone.utc))
-    except Exception:
-        log.exception("Final projection failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Final projection", exc)
 
     # Post-scan CVE enrichment — runs once across all canonical findings
     # touched by this run. EPSS (FIRST.org), CISA KEV, NVD CVSS (capped fallback).
@@ -316,16 +334,20 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     try:
         from app.services.cve_enrichment import enrich_scan_findings
         score_ids |= enrich_scan_findings(db, scan_run_id, canonical_ids=touched_finding_ids)
-    except Exception:
-        log.exception("CVE enrichment failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "CVE enrichment", exc)
 
     # VulnCheck enrichment — primary CVE intelligence (NVD2 CVSS gap-fill +
     # KEV/XDB/ransomware/canary signals). Fail-soft without VULNCHECK_API_KEY.
     try:
         from app.services.vulncheck_enrichment import enrich_scan_findings as enrich_vulncheck
         score_ids |= enrich_vulncheck(db, scan_run_id, canonical_ids=touched_finding_ids)
-    except Exception:
-        log.exception("VulnCheck enrichment failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "VulnCheck enrichment", exc)
 
     # SSVC enrichment — CISA Vulnrichment decision points (Automatable / Technical
     # Impact / Exploitation) from the CVE.org CISA-ADP block; also merges
@@ -334,15 +356,19 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     try:
         from app.services.ssvc_enrichment import enrich_scan_findings as enrich_ssvc
         score_ids |= enrich_ssvc(db, scan_run_id, canonical_ids=touched_finding_ids)
-    except Exception:
-        log.exception("SSVC enrichment failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "SSVC enrichment", exc)
 
     # vulnx / PDCP enrichment — secondary (is_template / is_poc) for candidate CVEs only.
     try:
         from app.services.vulnx_enrichment import enrich_scan_findings as enrich_vulnx
         score_ids |= enrich_vulnx(db, scan_run_id, canonical_ids=touched_finding_ids)
-    except Exception:
-        log.exception("vulnx enrichment failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "vulnx enrichment", exc)
 
     # Constellus Risk Score — pure computation over the signals above; writes
     # risk_score / risk_band / building_velocity. Runs last in the chain, over
@@ -350,8 +376,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     try:
         from app.services.risk_scorer import score_scan_findings
         score_scan_findings(db, scan_run_id, canonical_ids=score_ids)
-    except Exception:
-        log.exception("Risk scoring failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Risk scoring", exc)
 
     # Score-history capture (planning#131, temporal layer slice 1). Must run
     # AFTER risk scoring above, since capture only reads the
@@ -364,8 +392,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     try:
         from app.services import score_history
         promotions = score_history.capture(db, score_ids, datetime.now(timezone.utc))
-    except Exception:
-        log.exception("Score-history capture failed for scan %s — scan still marked complete", scan_run_id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_post_scan_failure(db, run, "Score-history capture", exc)
 
     # Populate counts so the Activity feed can show them without a join.
     # finding_count is the LOGICAL count — per-source rows that share an
@@ -384,6 +414,58 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     for message in dict.fromkeys(degraded):
         _append_partial_failure(db, run, message)
 
+    # planning#161 — the CIDR sweep is now real: naabu.port_scan reads
+    # config["_ip_ranges"] (injected in _run_pipeline, per chunk) and sweeps
+    # every range that is public/global and within its size cap, turning any
+    # responding host into a new ip_address asset. This guard used to fire
+    # for every CIDR target unconditionally — that was correct while the
+    # sweep didn't exist, but would now misreport a CIDR that swept cleanly
+    # and simply found nothing as a failure. It fires only for a CIDR that
+    # was NOT actually attempted this run: non-public, over the size cap, or
+    # naabu disabled (at every tier the value appeared in) or unavailable.
+    from app.connectors.naabu import MAX_SWEEP_ADDRESSES
+    from app.services.connector_config import get_all as get_all_configs
+
+    naabu_config = _get_connector_config(db, "naabu")
+    max_sweep = int(naabu_config.get("max_sweep_addresses") or MAX_SWEEP_ADDRESSES)
+    naabu_connector_enabled = "naabu" in {
+        r.connector_id for r in get_all_configs(db) if r.enabled
+    }
+    # A worker outage/timeout this run is already recorded generically by
+    # the Phase 1.5 loop in _run_pipeline (`degraded`, planning#160) as
+    # "naabu: scan incomplete ...". Reuse that signal here rather than
+    # inventing a second channel that says the same thing a different way.
+    naabu_worker_unavailable = any(
+        msg.startswith("naabu: scan incomplete") for msg in degraded
+    )
+
+    for value in dict.fromkeys(ip_ranges):
+        if not is_public_network(value):
+            reason = "it is not a public/global range"
+        elif ipaddress.ip_network(value, strict=False).num_addresses > max_sweep:
+            reason = f"it exceeds the {max_sweep}-address sweep cap"
+        elif not naabu_connector_enabled:
+            reason = "the naabu connector is disabled"
+        elif not any(
+            (aggressiveness.profile(sub_tier).get("naabu") or {}).get("enabled", False)
+            for sub_tier, sub_scope in scope_by_tier.items()
+            if value in sub_scope.get("ip_ranges", [])
+        ):
+            reason = "naabu is disabled at this target's aggressiveness tier"
+        elif naabu_worker_unavailable:
+            reason = "the naabu worker was unavailable or timed out this run"
+        else:
+            # Genuinely swept this run. A clean pass that found nothing is a
+            # real result, not a failure — nothing to report.
+            continue
+
+        _append_partial_failure(
+            db, run,
+            f"CIDR target {value} was not scanned this run: {reason} "
+            f"(planning#161). Addresses inside it are still authorised if "
+            f"discovered by other means, but this run probed none of them.",
+        )
+
     _set_status(
         db, run, ScanStatus.COMPLETED,
         completed_at=datetime.now(timezone.utc),
@@ -399,6 +481,7 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
             from app.services import notification_dispatcher
             notification_dispatcher.dispatch(new_finding_ids)
         except Exception:
+            db.rollback()
             log.exception("notification_dispatcher.dispatch failed for run %s", scan_run_id)
 
     # Fire promotion notifications for any band escalation this scan's own
@@ -428,6 +511,7 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
             if dispatchable:
                 notification_dispatcher.dispatch_promotions(dispatchable)
         except Exception:
+            db.rollback()
             log.exception("notification_dispatcher.dispatch_promotions failed for run %s", scan_run_id)
 
 
@@ -662,12 +746,12 @@ def _run_pipeline(
         # happen in the background via app.services.ct_refresher.
 
         apex = apex_domain(domain)
-        domain_authorised = is_scan_authorised(db, apex, auth_mode)
+        domain_authorised = is_scan_authorised(db, domain, auth_mode)
 
         if not domain_authorised:
             log.info(
-                "Skipping active discovery tools for %s — apex domain %s not authorised (mode: %s)",
-                domain, apex, auth_mode,
+                "Skipping active discovery tools for %s — not in authorised scope (mode: %s)",
+                domain, auth_mode,
             )
 
         if options.get("subfinder", True) and domain_authorised:
@@ -777,6 +861,25 @@ def _run_pipeline(
                 touched_asset_ids.update(asset_ids)
             all_assets.extend(phase_assets)
 
+    # planning#161 — a CIDR range needs a stand-in ip_address asset in
+    # all_assets before Phase 1.5, or two things silently swallow it: the
+    # `if all_assets:` gate just below would skip Phase 1.5 entirely for a
+    # scope that is CIDRs-only (the normal discovery loop above only ever
+    # walks `domains`), and even if it didn't, `probe_authorisation.
+    # authorise_probes` short-circuits an EMPTY asset list straight to
+    # `permitted=[]` — bypassing even its own connector-declaration check —
+    # before the port_scan call below ever runs. The `skip_discovery`
+    # branch already seeds exactly this placeholder (above); this is the
+    # same idiom for the path that branch doesn't cover. The placeholder
+    # itself is never persisted (write_assets only ever sees `result.assets`,
+    # each connector's OUTPUT, never this input list) and naabu's own
+    # per-asset loop filters non-IP values out of it the same way it
+    # already filters the skip_discovery seed — the actual sweep happens
+    # via config["_ip_ranges"] below, not through this asset.
+    if ip_ranges and not skip_discovery:
+        for value in ip_ranges:
+            all_assets.append(DiscoveredAsset(asset_type="ip_address", value=value))
+
     # ── Phase 1.5: Port discovery ─────────────────────────────────────────────
     # Active port scanning (currently Naabu) is its own pre-enrichment pass so
     # that downstream Phase 2/3 tools (and the asset detail UI) have an open-
@@ -828,7 +931,18 @@ def _run_pipeline(
                     log.info("Probe gate: no assets authorised for %s", cid)
                     continue
                 config = _get_connector_config(db, cid)
-                config = {**config, "_aggressiveness": aggressiveness.profile(tier), "_tier": tier}
+                config = {
+                    **config,
+                    "_aggressiveness": aggressiveness.profile(tier),
+                    "_tier": tier,
+                    # planning#161 — the CIDR-sweep seam. Every port_scan
+                    # connector gets the chunk's declared ranges through
+                    # config rather than a signature change (this hook is
+                    # duck-typed across naabu/banner_grab/httpx/tlsx); only
+                    # naabu currently reads `_ip_ranges` (app/connectors/
+                    # naabu.py), everything else ignores the key.
+                    "_ip_ranges": list(ip_ranges),
+                }
                 result = port_scan(gate.permitted, config)
                 # planning#160 — record incompleteness before the assets
                 # check so a failed pass that yields no patches at all is
@@ -878,18 +992,23 @@ def _run_pipeline(
     # This is the interim scope enforcement for Phase 3 scanning connectors
     # (nuclei today); it is not routed through probe_authorisation because
     # (a) the `nuclei` observer is not in the migration-0039 OBSERVER_SEED
-    # roster, so a deny-undeclared gate would deny nuclei outright and kill
-    # Phase 3 scanning entirely, and (b) this filter is the current real
-    # scope enforcement — removing it while the gate's own scope cap is
-    # still a permissive stub (planning#128 fills it) would be a safety
-    # REGRESSION, not a cleanup. Planning#128 is expected to fold this
-    # is_scan_authorised/apex_domain check into the gate's scope cap; until
-    # then, this stays exactly as it was.
+    # roster and `NucleiConnector` has no `observer` class attribute, so a
+    # deny-undeclared gate would refuse nuclei outright and kill Phase 3
+    # scanning entirely, and (b) Phase 3 operates on flat target strings
+    # while the gate takes assets and returns per-asset descriptors, so the
+    # phase would need to be reshaped, not merely rerouted, to sit behind it.
+    # As of planning#128 step 1 this interim filter performs real
+    # containment via `is_scan_authorised` → `target_scope.value_in_target_scope`
+    # (`_scope_cap` has had a real containment body since `26aef86`, so this
+    # is no longer the weaker of the two mechanisms) — but it is still a
+    # SEPARATE mechanism, and retiring it before Phase 3 routes through the
+    # gate would leave Phase 3 ungated. Folding it into the gate's scope cap
+    # remains planning#148's outstanding Phase 3 acceptance criterion.
     targets = _extract_scan_targets(all_assets)
-    authorised_targets = [t for t in targets if is_scan_authorised(db, apex_domain(t), auth_mode)]
+    authorised_targets = [t for t in targets if is_scan_authorised(db, t, auth_mode)]
     skipped = len(targets) - len(authorised_targets)
     if skipped:
-        log.info("Skipping %d scan targets — apex domain not authorised (mode: %s)", skipped, auth_mode)
+        log.info("Skipping %d scan targets — not in authorised scope (mode: %s)", skipped, auth_mode)
 
     if authorised_targets:
         # Scan-wide tag union for nuclei's -tags filter — computed once from
@@ -1245,6 +1364,31 @@ def _append_partial_failure(db: Session, run: ScanRun, message: str) -> None:
     db.commit()
 
 
+def _record_post_scan_failure(
+    db: Session, run: ScanRun, label: str, exc: BaseException
+) -> None:
+    """Record a fail-soft post-scan step failure on the run row.
+
+    MUST be called after `db.rollback()` — see the "Transaction ownership"
+    convention in CONTRIBUTING.md. The post-scan chain deliberately lets a
+    step die without failing the run, but before planning#163 that failure
+    left no trace anywhere: a dead risk-scorer produced a COMPLETED run with
+    unscored findings and a clean-looking row. `partial_failures` is the
+    existing mechanism for exactly this (planning#160 uses it for degraded
+    workers), so post-scan failures land there too rather than inventing a
+    second channel.
+    """
+    log.exception("%s failed for scan %s — scan still marked complete", label, run.id)
+    try:
+        _append_partial_failure(db, run, f"{label}: {exc}")
+    except Exception:
+        # Last-resort: recording the failure must never itself fail the run.
+        db.rollback()
+        log.exception(
+            "Could not record post-scan failure (%s) on run %s", label, run.id
+        )
+
+
 def _set_status(
     db: Session,
     run: ScanRun,
@@ -1264,6 +1408,18 @@ def _set_status(
 
 
 def _fail(db: Session, scan_run_id: uuid.UUID, error: str) -> None:
+    # This is the LAST handler standing: launch() calls it from its except
+    # block, so whatever aborted the run has usually already aborted the
+    # session's transaction. SQLAlchemy doesn't auto-rollback on a failed
+    # flush/execute (same reasoning as the chunk loop above), so without this
+    # the db.get() below raises PendingRollbackError *inside the failure
+    # handler* and the run is never marked FAILED — it sits in RUNNING
+    # forever, indistinguishable in the UI from a scan still in progress.
+    #
+    # Deliberately NOT wrapped in try/except: if this still fails, the run
+    # must stay visibly broken for the stranded-run sweep in scheduler.py to
+    # reap. Swallowing here would hide a wedged run from both.
+    db.rollback()
     run = db.get(ScanRun, scan_run_id)
     if run:
         run.status = ScanStatus.FAILED

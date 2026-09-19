@@ -42,6 +42,7 @@ from app.connectors.base import (
     TestResult,
 )
 from app.core.netaddr import is_public_ip as _is_public_ip
+from app.core.netaddr import is_public_network as _is_public_network
 from app.models.asset import AssetType
 from app.services import aggressiveness
 
@@ -66,6 +67,17 @@ _FAIL_OPEN_MAX_PORTS = 15
 # Sanitiser for user-supplied port-list config. Anything that isn't a
 # comma-separated list of integers gets rejected.
 _PORT_LIST_RE = re.compile(r"^\s*\d{1,5}(\s*,\s*\d{1,5})*\s*$")
+
+# Largest CIDR range this connector will sweep in one pass (planning#161) —
+# a /16. `_chunk_scope` (scan_executor.py) counts a whole CIDR as ONE scope
+# item, so the executor's batch_size chunking — sized for per-host batches —
+# gives a CIDR no size control at all; this is the sweep's own cap.
+# Overridable per-connector via config["max_sweep_addresses"]. A CIDR over
+# the cap is SKIPPED entirely, never truncated: silently scanning only the
+# first N addresses of a declared range would misrepresent what was
+# actually covered, which is exactly the kind of silent gap this issue
+# exists to close.
+MAX_SWEEP_ADDRESSES = 65536
 
 
 def _parse_port_list(raw: Any) -> list[int]:
@@ -105,6 +117,17 @@ class WorkerResult:
     """
     rows: list[dict] = field(default_factory=list)
     completed: bool = True
+
+
+@dataclass
+class SkippedCidr:
+    """One CIDR range excluded from the sweep, and why. A dataclass rather
+    than a (value, reason) tuple — planning#86/#104 found a real bug grown
+    from exactly that shape (a tuple pairing a value with a qualifier,
+    conflated by a later reader that forgot which slot was which); this
+    connector doesn't repeat it."""
+    value: str
+    reason: str
 
 
 class NaabuConnector(ScanningConnector):
@@ -175,7 +198,8 @@ class NaabuConnector(ScanningConnector):
         assets: list[DiscoveredAsset],
         config: dict[str, Any],
     ) -> PhaseResult:
-        """Phase 1.5 entry point — probe every public IP in `assets`."""
+        """Phase 1.5 entry point — probe every public IP in `assets`, plus
+        every public/in-cap CIDR in `config["_ip_ranges"]` (planning#161)."""
         tier_name = config.get("_tier", "")
         tier_profile = (config.get("_aggressiveness") or {}).get("naabu") or {}
         if not tier_profile.get("enabled", False):
@@ -197,8 +221,40 @@ class NaabuConnector(ScanningConnector):
             seen.add(a.value)
             ip_values.append(a.value)
 
-        if not ip_values:
-            log.info("Naabu skipped — no public IPs in scope")
+        # CIDR sweep (planning#161) — the second source of hosts for the
+        # baseline pass, injected via config["_ip_ranges"] rather than a
+        # port_scan signature change (that hook is duck-typed across
+        # several Phase 1.5 connectors — see module docstring). Each range
+        # is kept only if it's public/global AND within the size cap;
+        # everything else is skipped and the reason logged (§ below) —
+        # scan_executor's own planning#161 guard re-derives the same
+        # eligibility check independently to decide whether to report a
+        # CIDR as never-swept on the run.
+        max_sweep = int(config.get("max_sweep_addresses") or MAX_SWEEP_ADDRESSES)
+        swept_cidrs: list[str] = []
+        skipped_cidrs: list[SkippedCidr] = []
+        for value in config.get("_ip_ranges") or []:
+            if not _is_public_network(value):
+                skipped_cidrs.append(SkippedCidr(value, "not a public/global range"))
+                continue
+            num_addresses = ipaddress.ip_network(value, strict=False).num_addresses
+            if num_addresses > max_sweep:
+                skipped_cidrs.append(SkippedCidr(
+                    value,
+                    f"{num_addresses} addresses exceeds the {max_sweep}-address sweep cap",
+                ))
+                continue
+            swept_cidrs.append(value)
+
+        if skipped_cidrs:
+            log.warning(
+                "Naabu CIDR sweep skipping %d range(s): %s",
+                len(skipped_cidrs),
+                "; ".join(f"{s.value} ({s.reason})" for s in skipped_cidrs),
+            )
+
+        if not ip_values and not swept_cidrs:
+            log.info("Naabu skipped — no public IPs or sweepable CIDR ranges in scope")
             return PhaseResult()
 
         top_ports = int(tier_profile.get("top_ports", 100))
@@ -210,16 +266,22 @@ class NaabuConnector(ScanningConnector):
 
         log.info(
             "Naabu starting — tier=%s top_ports=%d rate=%dpps concurrency=%d "
-            "additional=%d exclude=%d ips=%d",
+            "additional=%d exclude=%d ips=%d cidrs=%d",
             tier_name or "?", top_ports, rate, concurrency,
-            len(additional_ports), len(exclude_ports), len(ip_values),
+            len(additional_ports), len(exclude_ports), len(ip_values), len(swept_cidrs),
         )
 
         # Pass 1 — tier baseline via -top-ports. One call carries the whole
         # estate (no chunking), so a single completed flag suffices to
         # license — or refuse — absence claims downstream (planning#160 D2).
+        # Swept CIDRs join the baseline host list here ONLY — naabu-the-
+        # binary accepts a CIDR natively and expands it itself, returning
+        # rows keyed by the individual responding host, same shape as a
+        # plain IP. They are deliberately excluded from the tarpit -verify
+        # re-discovery pass below, which re-probes specific hosts that
+        # already responded; a CIDR has no "already responded" host yet.
         baseline = self._invoke_worker(
-            hosts=ip_values,
+            hosts=ip_values + swept_cidrs,
             top_ports=top_ports,
             ports=None,
             exclude_ports=exclude_ports,
@@ -294,7 +356,14 @@ class NaabuConnector(ScanningConnector):
         for row in verify_rows:
             merged.setdefault((row.get("host", ""), int(row.get("port", 0))), row)
 
-        log.info("Naabu found %d candidate ports across %d IPs", len(merged), len(ip_values))
+        # Count hosts from `merged`, not `ip_values` — a CIDR sweep's hosts
+        # are discovered by the sweep and never appear in `ip_values`, so
+        # counting the input list would under-report exactly the coverage
+        # this issue exists to make visible (planning#161).
+        log.info(
+            "Naabu found %d candidate ports across %d IPs",
+            len(merged), len({h for h, _ in merged}),
+        )
 
         # Additional ports (operator-declared) are folded into the nmap-verify
         # candidate set directly rather than scanned by a SECOND naabu call —
@@ -347,17 +416,66 @@ class NaabuConnector(ScanningConnector):
         nmap_data = self._invoke_nmap_verify(merged, gentle_ips=tarpit_ips)
         merged = self._apply_nmap_verification(merged, nmap_data)
 
-        log.info("Nmap confirmed %d open ports across %d IPs", len(merged), len(ip_values))
+        log.info(
+            "Nmap confirmed %d open ports across %d IPs",
+            len(merged), len({h for h, _ in merged}),
+        )
         # planning#160 D3 — an incomplete baseline licenses no absence claim:
         # pass no scanned_ips (zero-port fills are suppressed inside) and no
         # fresh naabu_last_scan_at anywhere. Ports actually confirmed this
         # run still flow through as per-IP patches — presence is safe.
-        return self._build_phase_result(
+        result = self._build_phase_result(
             merged.values(), tier_name,
+            # planning#161 — deliberately `ip_values` only, NOT hosts found
+            # by the CIDR sweep. scanned_ips is what licenses an ABSENCE
+            # claim, and absence is the one thing that must never be
+            # inferred loosely (planning#160). A host discovered mid-sweep
+            # has no prior port history to contradict, so licensing absence
+            # for it buys nothing and risks retiring a port on a host we
+            # only just met. Consequence, accepted knowingly: ports on
+            # CIDR-discovered hosts are never retired until that host is
+            # also reachable as a normal asset. Tracked on planning#161.
             scanned_ips=set(ip_values) if baseline_complete else set(),
             tarpit_ips=tarpit_ips,
             baseline_complete=baseline_complete,
         )
+
+        # planning#161 — the real work of the CIDR sweep. Every patch
+        # `_build_phase_result` just built lands on an IP keyed straight off
+        # `merged`, but persisting a metadata-only patch for a value
+        # write_assets has never seen still creates the canonical row (its
+        # upsert is keyed on (asset_type, value), new or not) — EXCEPT that
+        # is only true for the host itself; nothing upstream of naabu ever
+        # asserted this address is an asset worth knowing about in the first
+        # place, because it came from a swept CIDR, not from a resolved
+        # domain or a prior scan. Make that assertion explicit: any
+        # nmap-confirmed host not already in `assets` (i.e. not in
+        # `ip_values`) gets its own bare DiscoveredAsset alongside the
+        # existing metadata patch for the same key — write_assets upserts
+        # both into one canonical row, and the metadata patch (appended
+        # after, so it's the last writer in the batch) still carries the
+        # actual open_ports. Filtered through `_is_public_ip` again —
+        # defence in depth against a worker bug returning a bogus host.
+        if swept_cidrs:
+            known_ips = set(ip_values)
+            responder_ips = {
+                (row.get("ip") or row.get("host", "")) for row in merged.values()
+            }
+            new_hosts = sorted(
+                ip for ip in responder_ips
+                if ip and ip not in known_ips and _is_public_ip(ip)
+            )
+            if new_hosts:
+                log.info(
+                    "Naabu CIDR sweep discovered %d new host(s): %s",
+                    len(new_hosts), new_hosts,
+                )
+                result.assets = [
+                    DiscoveredAsset(asset_type=AssetType.IP_ADDRESS, value=ip)
+                    for ip in new_hosts
+                ] + result.assets
+
+        return result
 
     # ── internals ────────────────────────────────────────────────────────
 
@@ -648,6 +766,11 @@ class NaabuConnector(ScanningConnector):
                 "open_ports": open_ports,
                 "naabu_tier": tier_name,
                 "tarpit_detected": ip in tarpit_ips,
+                # planning#169 — carry #160's completeness through to the CLAIM.
+                # D3 above stops the incomplete pass advancing asset_metadata's
+                # cutoff; this key stops it advancing the claim's, and stops the
+                # emitter replacing a full port claim with this pass's subset.
+                "naabu_sweep_complete": baseline_complete,
             }
             if baseline_complete:
                 metadata["naabu_last_scan_at"] = now
@@ -685,6 +808,7 @@ class NaabuConnector(ScanningConnector):
                         "naabu_last_scan_at": now,
                         "naabu_tier": tier_name,
                         "tarpit_detected": ip in tarpit_ips,
+                        "naabu_sweep_complete": True,
                     },
                 ))
 

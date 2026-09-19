@@ -21,7 +21,9 @@ either a claim or a real column:
     to columns; L3b-2 stopped reading the transitional metadata mirror).
   - `attributes["naabu_last_scan_at"]` <- the naabu `port_observation`
     claim's `last_observed_at`, isoformatted — the same value used as the
-    prune cutoff.
+    prune cutoff. Only taken from a claim whose evidence does not say
+    `complete: False` (planning#169) — an incomplete sweep may not advance
+    this cutoff.
   - `estate = "proven_ours"` <- a `cloud_inventory` claim with
     `claim_value.get("confirmed") is True` (planning#145 L4 — the epic's
     missing promotion path; see the precedence comment at the estate
@@ -163,6 +165,42 @@ def _merge_open_ports(existing: list, new: list) -> list:
     return sorted(by_port.values(), key=lambda p: p["port"])
 
 
+def _carry_forward_unclaimed_ports(merged: list, prior: list) -> list:
+    """Re-add ports from the previous projection that NO current claim
+    mentions, leaving every port the claims DO mention exactly as folded.
+
+    planning#172 — `_prune_stale_ports` can only keep a port it can SEE, and
+    the fold builds purely from current claim values, so a port every observer
+    dropped is gone before the prune's `l7_confirmed` / shodan grace branches
+    ever run. That made the flap-guard dead for naabu's own ports: disabling
+    the prune entirely changed nothing. Carrying the port forward restores the
+    accumulated input the prune had before planning#144 L3c-4 moved it, with
+    no change to what a claim MEANS — the carried entry is still the last
+    thing an observer actually said about that port, and whether it survives
+    is still the prune's decision alone.
+
+    Scoped to whole missing ports on purpose. Seeding the whole fold from the
+    previous projection instead (the first cut of this fix) also dragged stale
+    PER-FIELD values onto ports the claims still describe, which silently
+    broke clear-by-omission: `cpe_normalizer` retracts `software` by dropping
+    the port from its claim, and `_merge_open_ports` only overwrites a key the
+    new entry carries — it never deletes one the new entry omits — so a stale
+    `software` became unclearable
+    (test_cpe_normalizer.py::test_enrich_cpe_software_removal_propagates_to_projected_state).
+    A port the claims still describe must be rebuilt from those claims alone.
+    """
+    claimed = {e["port"] for e in merged if isinstance(e, dict) and isinstance(e.get("port"), int)}
+    carried = [
+        dict(e) for e in prior
+        if isinstance(e, dict)
+        and isinstance(e.get("port"), int)
+        and e["port"] not in claimed
+    ]
+    if not carried:
+        return merged
+    return _merge_open_ports(merged, carried)
+
+
 # ── asset_state read helpers (planning#144 L3c-3) ──────────────────────────
 #
 # Every backend reader repointed off `assets_canonical.metadata` in L3c-3
@@ -245,9 +283,14 @@ def merge_state_attributes(db: Session, asset_id: uuid.UUID, patch: dict) -> Non
 def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
     """Fold claims + canonical columns into `asset_state`, one row per id.
 
-    Read-only on `asset_claims` + `assets_canonical`; write-only on
-    `asset_state`. Never writes `asset_metadata`. Idempotent — running twice
-    over the same ids yields the same asset_state rows.
+    Read-only on `asset_claims` + `assets_canonical`; reads AND writes
+    `asset_state` — planning#172 carries ports no current claim mentions
+    forward from the previous projection so `_prune_stale_ports`' grace
+    windows have an input at all (see `_carry_forward_unclaimed_ports`).
+    Never writes `asset_metadata`. Idempotent — running twice over the same
+    ids yields the same asset_state rows: what is carried forward is the
+    pruned output of the previous run, and re-folding the same claims over
+    it re-derives the same set.
 
     Projects every id that still resolves to an `assets_canonical` row —
     skipping only ids that don't (deleted mid-scan). Before planning#144
@@ -265,11 +308,20 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         for r in db.query(AssetCanonical).filter(AssetCanonical.id.in_(asset_ids)).all()
     }
 
+    # planning#172 — the flap-guard's missing input, batch-loaded here and
+    # applied per asset by _carry_forward_unclaimed_ports below.
+    prior_ports_by_asset: dict[uuid.UUID, list] = {
+        asset_id: state.open_ports
+        for asset_id, state in load_states(db, asset_ids).items()
+        if isinstance(state.open_ports, list)
+    }
+
     claim_rows = (
         db.query(
             AssetClaim.asset_canonical_id,
             AssetClaim.claim_value,
             AssetClaim.last_observed_at,
+            AssetClaim.evidence,
             Observer.name,
         )
         .join(Observer, AssetClaim.observer_id == Observer.id)
@@ -279,9 +331,11 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         )
         .all()
     )
-    claims_by_asset: dict[uuid.UUID, list[tuple[str, dict, datetime]]] = {}
-    for asset_id, claim_value, last_observed_at, observer_name in claim_rows:
-        claims_by_asset.setdefault(asset_id, []).append((observer_name, claim_value, last_observed_at))
+    claims_by_asset: dict[uuid.UUID, list[tuple[str, dict, datetime, dict]]] = {}
+    for asset_id, claim_value, last_observed_at, evidence, observer_name in claim_rows:
+        claims_by_asset.setdefault(asset_id, []).append(
+            (observer_name, claim_value, last_observed_at, evidence)
+        )
 
     # Single-value claims, batch-loaded up front like port_observation above
     # rather than a get_current_claim() call per asset in the loop below.
@@ -394,7 +448,7 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
         # the naabu observer's last_observed_at (no naabu claim -> keep all).
         merged_ports: list = []
         naabu_last_observed_at: datetime | None = None
-        for observer_name, claim_value, last_observed_at in asset_claims:
+        for observer_name, claim_value, last_observed_at, evidence in asset_claims:
             ports = claim_value.get("ports") if isinstance(claim_value, dict) else None
             if not isinstance(ports, list):
                 continue
@@ -407,7 +461,26 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
                 restored.append(entry)
             merged_ports = _merge_open_ports(merged_ports, restored)
             if observer_name == "naabu":
-                naabu_last_observed_at = last_observed_at
+                # planning#169 — only a pass that FINISHED licenses absence.
+                # An incomplete sweep's confirmed ports are real and are folded
+                # in above; what it may not do is advance the staleness cutoff,
+                # which both DELETES here (_prune_stale_ports) and drives the
+                # read-time hide via attributes["naabu_last_scan_at"] below.
+                # Leaving naabu_last_observed_at None withholds both for this
+                # cycle: the previous complete sweep's cutoff is deliberately
+                # NOT carried forward, so a genuine phantom is retired one scan
+                # later than it could be — and no real port is ever deleted.
+                # A claim with no `complete` key predates #169 (or came from a
+                # producer with no notion of an unfinished pass) and counts as
+                # complete, preserving the previous behaviour exactly.
+                if not (isinstance(evidence, dict) and evidence.get("complete") is False):
+                    naabu_last_observed_at = last_observed_at
+
+        # planning#172 — must run BEFORE the prune: it exists purely to give the
+        # prune's grace branches something to judge.
+        merged_ports = _carry_forward_unclaimed_ports(
+            merged_ports, prior_ports_by_asset.get(asset_id, [])
+        )
 
         if naabu_last_observed_at is not None:
             cutoff_iso = naabu_last_observed_at.isoformat()

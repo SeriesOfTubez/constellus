@@ -431,6 +431,11 @@ def _accumulate_port_observation(
                 shodan_group.append({"port": p, "protocol": "tcp"})
                 existing_ports.add(p)
 
+    # planning#169 — did the pass that produced this patch finish? Absent key
+    # means yes: every producer other than naabu, and every claim written
+    # before #169, is complete by construction.
+    sweep_complete = meta.get("naabu_sweep_complete") is not False
+
     for source_name, entries in groups.items():
         if not entries:
             continue
@@ -442,6 +447,9 @@ def _accumulate_port_observation(
         evidence = {}
         if source_name == "naabu" and meta.get("naabu_tier"):
             evidence["naabu_tier"] = meta["naabu_tier"]
+        # Named for the pass, not the observer: httpx/tlsx don't "sweep", but
+        # they do finish or not. The projector reads this off naabu's claim.
+        evidence["complete"] = sweep_complete
 
         claim_value = {
             "ports": sorted(
@@ -451,7 +459,26 @@ def _accumulate_port_observation(
         _merge_target(
             targets, (canonical_id, observer_id, _PORT_OBSERVATION_CLAIM_TYPE),
             claim_value, evidence, merge_ports=True,
+            merge_with_existing=not sweep_complete,
         )
+
+
+def _merged_port_value(old: dict | None, new: dict | None) -> dict:
+    """Union two `{"ports": [...]}` claim values by port number, the newer
+    entry's fields overlaying the older one's.
+
+    Used twice: to combine two DiscoveredAsset entries in the same batch, and
+    (planning#169) to fold an INCOMPLETE pass into the claim already stored
+    rather than replacing it.
+    """
+    by_port = {
+        e["port"]: e for e in (old or {}).get("ports", [])
+        if isinstance(e, dict) and isinstance(e.get("port"), int)
+    }
+    for e in (new or {}).get("ports", []):
+        if isinstance(e, dict) and isinstance(e.get("port"), int):
+            by_port[e["port"]] = {**by_port.get(e["port"], {}), **e}
+    return {"ports": sorted(by_port.values(), key=lambda x: x["port"])}
 
 
 def _merge_target(
@@ -461,6 +488,7 @@ def _merge_target(
     evidence: dict,
     *,
     merge_ports: bool = False,
+    merge_with_existing: bool = False,
 ) -> None:
     """Fold a new contribution into the batch's running target map.
 
@@ -468,24 +496,27 @@ def _merge_target(
     contribute to the same (asset, observer, claim_type) — rare, but keeps
     later contributions from silently clobbering earlier ones instead of
     combining them.
+
+    `merge_with_existing` (planning#169) is carried through to `_upsert_claims`
+    and means "this pass may ADD ports but must not remove any". It ORs across
+    contributions: if any patch folded into this target was incomplete, the
+    whole target is treated as incomplete — the conservative direction.
     """
     existing = targets.get(key)
     if existing is None:
-        targets[key] = {"claim_value": claim_value, "evidence": evidence}
+        targets[key] = {
+            "claim_value": claim_value,
+            "evidence": evidence,
+            "merge_with_existing": merge_with_existing,
+        }
         return
 
     if merge_ports:
-        by_port = {
-            e["port"]: e for e in existing["claim_value"].get("ports", [])
-            if isinstance(e, dict) and isinstance(e.get("port"), int)
-        }
-        for e in claim_value.get("ports", []):
-            if isinstance(e, dict) and isinstance(e.get("port"), int):
-                by_port[e["port"]] = {**by_port.get(e["port"], {}), **e}
-        existing["claim_value"] = {"ports": sorted(by_port.values(), key=lambda x: x["port"])}
+        existing["claim_value"] = _merged_port_value(existing["claim_value"], claim_value)
     else:
         existing["claim_value"] = {**existing["claim_value"], **claim_value}
     existing["evidence"] = {**existing["evidence"], **evidence}
+    existing["merge_with_existing"] = existing["merge_with_existing"] or merge_with_existing
 
 
 # ── upsert with change-detection ──────────────────────────────────────────────
@@ -540,7 +571,22 @@ def _upsert_claims(db: Session, targets: dict[_TargetKey, dict], now: datetime) 
             ))
             continue
 
+        # planning#169 — replacing claim_value is how a signal that disappears
+        # actually disappears (asset_writer's L3c-4 note). That is only
+        # licensed by a pass that FINISHED. An incomplete pass folds into what
+        # is already stored: presence is safe, absence is not.
+        if data["merge_with_existing"]:
+            claim_value = _merged_port_value(existing.claim_value, claim_value)
+
         if _json_equal(existing.claim_value, claim_value):
+            # evidence is written here too, not just on the changed branch:
+            # it describes the LATEST pass, and the projector's completeness
+            # gate reads it. Leaving it behind would let a stale
+            # `complete: True` license a prune an incomplete pass never earned
+            # (and `naabu_tier` was silently stale for the same reason).
+            # evidence is excluded from _json_equal by design (planning#118a),
+            # so this writes no claim_history row.
+            existing.evidence = evidence
             existing.last_observed_at = now
             continue
 

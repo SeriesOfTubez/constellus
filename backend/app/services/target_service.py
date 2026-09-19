@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.models.tag_rule import TagRule
 from app.models.target import Target, TargetType, VerificationMethod
+from app.services import target_scope
 from app.services.tag_service import apply_rules_preloaded, merge_tags
 
 log = logging.getLogger(__name__)
@@ -245,16 +246,60 @@ def is_verified(db: Session, value: str) -> bool:
 def is_scan_authorised(db: Session, value: str, mode: str) -> bool:
     """Return True if active scanning against `value` is permitted under the given auth mode.
 
-    strict      — target must be fully verified (TXT record / acknowledgement)
-    acknowledge — target must exist in the targets table (adding it is implicit confirmation)
+    Matching is CONTAINMENT, not string equality: a value is authorised
+    when a declared target *covers* it — an IP inside a declared CIDR, a
+    subdomain under a declared domain, or an IP that resolved through a
+    hostname under a declared domain. It does NOT have to be a target row
+    in its own right.
+
+    strict      — only verified targets count (TXT record / acknowledgement)
+    acknowledge — every declared target counts (adding it is implicit confirmation)
     disabled    — no gate; always permitted
+
+    Three decisions worth recording (planning#128 step 1):
+
+    - `disabled` still short-circuits to `True` before any query, matching
+      the setting's documented meaning and today's default — so this change
+      alters no deployed behaviour on its own. The setting merely becomes
+      safe to flip, which is a separate deliberate act.
+    - `strict` now narrows the candidate pool to verified targets BEFORE
+      containment runs, instead of the old exact-equality `is_verified`
+      call. This is a deliberate behaviour change beyond the minimum fix:
+      filtering after containment (or matching by equality) would be the
+      same string-equality bug wearing a different hat, because a
+      *verified CIDR must license the addresses inside it*. It mirrors
+      `probe_authorisation._resolve_scoped_ids` exactly, so the two
+      enforcement paths cannot disagree. `strict` still requires
+      verification — that requirement is unchanged, only the matching is
+      fixed.
+    - Any unrecognised mode falls into the `strict` branch (fail closed),
+      unchanged from before.
+
+    Bucketing mirrors `scan_executor._resolve_dynamic_scope` — it
+    classifies from `detect_type(value)`, not from the stored `Target.type`
+    column, so a stale/incorrect stored type cannot skew the gate.
     """
     if mode == "disabled":
         return True
-    if mode == "acknowledge":
-        return db.query(Target).filter(Target.value == value).first() is not None
-    # strict (default)
-    return is_verified(db, value)
+
+    q = db.query(Target.value)
+    if mode != "acknowledge":
+        # "strict", and any unrecognised mode — fail closed.
+        q = q.filter(Target.verified == True)  # noqa: E712
+
+    domains: list[str] = []
+    ip_ranges: list[str] = []
+    for (target_value,) in q.all():
+        try:
+            t_type = detect_type(target_value)
+        except ValueError:
+            continue
+        if t_type == TargetType.DOMAIN:
+            domains.append(target_value)
+        else:
+            ip_ranges.append(target_value)
+
+    return target_scope.value_in_target_scope(db, value, domains=domains, ip_ranges=ip_ranges)
 
 
 def apex_domain(fqdn: str) -> str:
