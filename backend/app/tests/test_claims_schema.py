@@ -105,6 +105,67 @@ def test_observers_seeded_with_23_rows_and_correct_addressing():
     assert by_name["tenancy_tls"] == "ip_handshake"
 
 
+# The complete name -> noise_class map, migration 0055 (planning#196 step
+# 1). This is the policy input planning#196 step 2 reads to decide which
+# observers are too noisy for a pre-close M&A target — a new seeded
+# observer that nobody classified here must fail this test loudly rather
+# than defaulting silently to whatever the gate happens to assume.
+_EXPECTED_NOISE_CLASSES = {
+    "naabu": "target_host",
+    "banner_grab": "target_host",
+    "httpx": "target_host",
+    "tlsx": "target_host",
+    "nuclei": "target_host",
+    "tenancy_tls": "target_host",
+    "domain_affinity": "target_host",
+    "shared_infra_verifier": "target_host",
+    "dnsrecon": "target_infra",
+    "bruteforce": "target_infra",
+    "dns_resolve": "third_party_infra",
+    "dns_records": "third_party_infra",
+    "tenancy_ptr": "third_party_infra",
+    "subfinder": "silent",
+    "cert_transparency": "silent",
+    "shodan": "silent",
+    "wiz": "silent",
+    "cloudflare": "silent",
+    "hosting_classifier": "silent",
+    "tenancy_enricher": "silent",
+    "eol_enrichment": "silent",
+    "cpe_normalizer": "silent",
+    "dangling_dns_analyzer": "silent",
+}
+
+
+def test_observers_noise_class_matches_the_planning_196_classification_map():
+    """Read-only — creates no rows, so it needs no cleanup."""
+    from app.models.observer import OBSERVER_NOISE
+
+    db = SessionLocal()
+    try:
+        rows = db.execute(text("SELECT name, noise_class FROM observers")).all()
+    finally:
+        db.close()
+    by_name = dict(rows)
+
+    assert len(by_name) == 23, f"expected 23 seeded observers, got {len(by_name)}: {sorted(by_name)}"
+
+    bad_vocab = {name: nc for name, nc in by_name.items() if nc not in OBSERVER_NOISE}
+    assert not bad_vocab, f"noise_class outside OBSERVER_NOISE: {bad_vocab}"
+
+    counts = {"target_host": 0, "target_infra": 0, "third_party_infra": 0, "silent": 0}
+    for nc in by_name.values():
+        counts[nc] += 1
+    assert counts == {"target_host": 8, "target_infra": 2, "third_party_infra": 3, "silent": 10}, counts
+
+    assert by_name == _EXPECTED_NOISE_CLASSES, (
+        f"only in table: {set(by_name) - set(_EXPECTED_NOISE_CLASSES)}; "
+        f"only in map: {set(_EXPECTED_NOISE_CLASSES) - set(by_name)}; "
+        f"mismatched: {{k: (by_name[k], _EXPECTED_NOISE_CLASSES[k]) for k in by_name "
+        f"if k in _EXPECTED_NOISE_CLASSES and by_name[k] != _EXPECTED_NOISE_CLASSES[k]}}"
+    )
+
+
 def test_claim_types_seeded_with_19_rows_and_exactly_three_authorisation_ttls():
     db = SessionLocal()
     try:
@@ -249,10 +310,24 @@ def test_observers_addressing_check_rejects_bad_vocabulary():
     try:
         _assert_check_violation(
             db,
-            "INSERT INTO observers (name, kind, trust, emits_traffic_to_target, addressing, description) "
-            "VALUES (:name, 'scan', 'observed', true, 'bogus_addressing', 'test row')",
+            "INSERT INTO observers (name, kind, trust, addressing, noise_class, description) "
+            "VALUES (:name, 'scan', 'observed', 'bogus_addressing', 'target_host', 'test row')",
             {"name": f"check-test-{uuid.uuid4().hex[:8]}"},
             "observers.addressing",
+        )
+    finally:
+        db.close()
+
+
+def test_observers_noise_class_check_rejects_bad_vocabulary():
+    db = SessionLocal()
+    try:
+        _assert_check_violation(
+            db,
+            "INSERT INTO observers (name, kind, trust, addressing, noise_class, description) "
+            "VALUES (:name, 'scan', 'observed', 'none', 'bogus_noise', 'test row')",
+            {"name": f"check-test-{uuid.uuid4().hex[:8]}"},
+            "observers.noise_class",
         )
     finally:
         db.close()
@@ -308,12 +383,14 @@ def _run():
     tests = [
         test_all_seven_claims_layer_tables_exist,
         test_observers_seeded_with_23_rows_and_correct_addressing,
+        test_observers_noise_class_matches_the_planning_196_classification_map,
         test_claim_types_seeded_with_19_rows_and_exactly_three_authorisation_ttls,
         test_claim_types_frozenset_matches_the_seeded_table,
         test_edge_type_relationships_seeded_with_7_rows,
         test_claim_history_is_natively_partitioned_with_at_least_3_partitions,
         test_asset_claims_unique_constraint_behavior,
         test_observers_addressing_check_rejects_bad_vocabulary,
+        test_observers_noise_class_check_rejects_bad_vocabulary,
         test_edge_type_relationships_relationship_check_rejects_bad_vocabulary,
         test_asset_state_estate_check_rejects_bad_vocabulary,
         test_asset_claims_claim_type_check_rejects_bad_vocabulary,
