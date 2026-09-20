@@ -147,7 +147,7 @@ def test_nuclei_declares_a_resolvable_addressing_capable_observer():
         assert row.name == "nuclei"
         assert row.addressing == "name"
         assert row.kind == "scan"
-        assert row.emits_traffic_to_target is True
+        assert row.noise_class == "target_host"
     finally:
         db.close()
 

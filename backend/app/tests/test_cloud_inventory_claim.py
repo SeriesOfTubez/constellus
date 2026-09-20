@@ -82,7 +82,7 @@ def test_wiz_observer_is_seeded_with_the_intended_taxonomy():
         row = db.query(Observer).filter(Observer.name == "wiz").one()
         assert row.kind == "connector"
         assert row.trust == "observed"
-        assert row.emits_traffic_to_target is False
+        assert row.noise_class == "silent"
         assert row.addressing == "none"
     finally:
         db.close()

@@ -288,7 +288,7 @@ def test_surface_tri_state_for_proven_claimed_and_not_ours():
         # then — test_claims_schema.py:81 pins its absence), confirmed True.
         db.add(Observer(
             id=uuid.uuid4(), name=observer_name, kind="connector", trust="observed",
-            emits_traffic_to_target=False, addressing="none",
+            noise_class="silent", addressing="none",
             description="planning#145 test-only throwaway cloud_inventory producer",
         ))
         db.commit()

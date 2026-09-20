@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Boolean, Text, text
+from sqlalchemy import Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -39,6 +39,26 @@ OBSERVER_ADDRESSING: frozenset[str] = frozenset({
     "ip_handshake",
 })
 
+# Noise class — what a THIRD PARTY could notice, which is a different
+# question from `addressing` above. `addressing` answers "did this observer
+# send traffic to the target asset", because that is what decides which
+# authorisation grant a claim satisfies (see OBSERVER_ADDRESSING). It cannot
+# express "could the counterparty notice", and `bruteforce` is exactly where
+# the two diverge: addressing='none' (no packet reaches the target host) yet
+# 60-250 NXDOMAIN lookups land on the target's own authoritative nameservers.
+# planning#193 hit that wall; planning#196 is the fix.
+#
+# Ordered least to most noticeable. Seeded from each module's ACTUAL
+# BEHAVIOUR, never by analogy to `addressing` — the column this replaces was
+# seeded that way and was consequently both useless and, for
+# dangling_dns_analyzer, wrong.
+OBSERVER_NOISE: frozenset[str] = frozenset({
+    "silent",             # no network I/O attributable to us: third-party APIs, or derived from existing claims
+    "third_party_infra",  # queries someone else's infrastructure (public recursors), not the target's
+    "target_infra",       # queries the TARGET'S OWN infrastructure — authoritative nameservers
+    "target_host",        # packets at the target host itself
+})
+
 
 class Observer(Base):
     """Registry of claim producers — the L0 grounding ontology's observer
@@ -55,6 +75,12 @@ class Observer(Base):
 
     This is a green slice (L1): the table exists and is seeded, but nothing
     yet writes asset_claims rows or reads this table for a gate decision.
+
+    `noise_class` (migration 0055, planning#196) is a second, independent
+    axis: what a third party could notice, as opposed to `addressing`'s
+    "did this observer send traffic to the target". `addressing` is
+    deliberately untouched by that migration — it keeps deciding claim
+    authorisation and carries no noise information itself.
     """
 
     __tablename__ = "observers"
@@ -63,6 +89,6 @@ class Observer(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     trust: Mapped[str] = mapped_column(Text, nullable=False)
-    emits_traffic_to_target: Mapped[bool] = mapped_column(Boolean, nullable=False)
     addressing: Mapped[str] = mapped_column(Text, nullable=False)
+    noise_class: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
