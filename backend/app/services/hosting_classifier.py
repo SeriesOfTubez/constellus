@@ -4,16 +4,23 @@ Two free, keyless, provider-agnostic signals for "is this origin IP the kind
 of shared multi-tenant infrastructure where an exposure/CVE finding likely
 isn't this org's problem to fix":
 
-  - `classify_ip` — ipapi.is's `is_datacenter`/`company` classification.
-    Answers "is this a hosting/datacenter network at all" (vs. residential/
-    enterprise-owned) — a cheap pre-filter, NOT a shared-vs-dedicated
-    distinction (it can't tell an IONOS shared box from a single-tenant AWS
-    EC2 instance; both read as "hosting"). Free tier: 1000 req/day, no key.
-    Cached long-term on the ip_address asset itself — this classification is
-    very stable (an IP rarely changes which network/ASN owns it). As of
-    2026-09-15 the keyless free tier no longer returns `is_datacenter` at
-    all, so in production this lookup now always reports `attempted=False`;
-    planning#178 replaces the data source.
+  - `classify_ip` answers "is this address provider-run hosting
+    infrastructure, and whose", from the local `cloud_ranges` mirror
+    (planning#179) — no network call. It is NOT a shared-vs-dedicated
+    distinction: it cannot tell an IONOS shared box from a single-tenant
+    EC2 instance, and deliberately does not try.
+
+    The coverage is deliberately narrower than a third-party "is this a
+    datacenter" boolean, and that is a trade, not an oversight — say so
+    here so nobody closes the gap by wiring one back in (planning#188).
+    `cloud_ranges` covers ten cloud/CDN providers, so single-tenant hosting
+    outside them — **OVH, Hetzner, IONOS** — reads as "not in a provider
+    range" rather than as hosting. That is safe in this direction and only
+    this one: Phase D's branch only ever NARROWS `unverified` ->
+    `ownership_unverifiable`, so a miss falls back to `unverified` and we
+    decline to escalate, never wrongly escalate. The fix for the gap is
+    more feed coverage — geofeed discovery (planning#179) is the long-tail
+    path — not another vendor boolean we cannot audit, version or pin.
 
   - `reverse_ip_domains` — mnemonic passive DNS (planning#180), returning the
     domains observed resolving to this IP. Many unrelated domains is
@@ -41,7 +48,6 @@ not-CDN + Layer 1 already ambiguous — keeps this population small).
 """
 
 import logging
-import re
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -51,21 +57,24 @@ from sqlalchemy.orm import Session
 
 from app.connectors.http import connector_get
 from app.models.asset_canonical import AssetCanonical
+from app.services import cloud_ranges
 from app.services.claim_emitter import get_current_claim, upsert_single_claim
 
 log = logging.getLogger(__name__)
 
-_IPAPI_URL = "https://api.ipapi.is/"
 _MNEMONIC_URL = "https://api.mnemonic.no/pdns/v3/"
 
-_HOSTING_CLASS_TTL = timedelta(days=30)
 _REVERSE_IP_TTL = timedelta(days=14)
 
 # This module is the "hosting_classifier" observer for both claim types it
 # writes (planning#144 L3a) — hosting_class (classify_ip) and reverse_ip
-# (reverse_ip_domains): both are TTL caches on the ip_address asset that used
-# to live in asset_metadata, now claims. No separate observer exists for the
-# reverse-IP lookup; it's the same producer module.
+# (reverse_ip_domains). reverse_ip is a TTL cache on the ip_address asset
+# that used to live in asset_metadata, now a claim. hosting_class is NOT a
+# TTL cache (planning#188) — classify_ip always computes fresh from the
+# local cloud_ranges mirror and still writes the claim, because it's cheaper
+# than the read that would amortise it and because a TTL would mask a daily
+# dataset refresh. No separate observer exists for the reverse-IP lookup;
+# it's the same producer module.
 _OBSERVER_NAME = "hosting_classifier"
 _HOSTING_CLASS_CLAIM_TYPE = "hosting_class"
 _REVERSE_IP_CLAIM_TYPE = "reverse_ip"
@@ -98,16 +107,24 @@ _MAX_DOMAINS = 100
 @dataclass
 class HostingClass:
     is_datacenter: bool
-    company_name: str | None = None
-    asn: int | None = None
-    # False only when the lookup itself failed/was unattempted (no
-    # ip_address asset row, network error, quota exhaustion) — distinct
-    # from a genuine "checked, and it's not a datacenter" determination.
-    # Callers that cache derived state on top of this (e.g.
-    # shared_infra_verifier.classify_ip_ownership) must not treat
-    # attempted=False the same as a real is_datacenter=False, or a
-    # transient failure gets mislabeled and cached as a stable fact
-    # (planning#113 Fable review, finding 2).
+    provider: str | None = None
+    service_class: str | None = None
+    prefix: str | None = None
+    # False only when the lookup could not be made at all — no ip_address
+    # asset row, or no cloud_ranges dataset loaded. Distinct from a genuine
+    # "checked, and this address is in no provider range" determination.
+    #
+    # planning#188 changed what this distinction is ABOUT, and the change
+    # matters to callers. Under the retired third-party lookup it meant "the
+    # HTTP call failed" — per-IP and transient. The source is now a local
+    # indexed query, so it means "no dataset is loaded" — per-run and
+    # systemic, the same distinction tenancy_enricher.tick() draws (an
+    # unenriched asset has NO claim; an enriched one with no answer has a
+    # claim saying so). Callers
+    # that cache derived state on top of this (shared_infra_verifier.
+    # classify_ip_ownership) must still not treat attempted=False as a real
+    # is_datacenter=False — reporting our own outage as a determination
+    # about the asset is the failure planning#177/#181 both landed on.
     attempted: bool = True
 
 
@@ -119,96 +136,103 @@ def _get_ip_asset(db: Session, ip: str) -> AssetCanonical | None:
     )
 
 
-def _company_name(value) -> str | None:
-    """ipapi.is free tier returns `company` as a bare string (planning#177)."""
-    return value if isinstance(value, str) and value else None
+def hosting_for_match(match: "cloud_ranges.CloudRangeMatch | None") -> HostingClass:
+    """Pure mapping from a `cloud_ranges.lookup` result to a HostingClass.
+    No DB access — test this directly.
 
+    ⚠ The polarity here is NOT the same as tenancy_enricher's, and the two
+    live one import apart, so read this before "simplifying" one into the
+    other. `tenancy_for_match` maps service_class 'compute' to
+    SINGLE_TENANT. `is_datacenter` asks a different question and wants the
+    opposite answer: its only consumer (shared_infra_verifier's Phase D
+    branch) reads True as "provider-run infrastructure — do not attribute a
+    finding here to the org without corroboration". A 'compute' prefix is
+    exactly that. Wiring is_datacenter = (service_class == 'compute') would
+    invert the branch: it would demand corroboration for the addresses most
+    likely to be genuinely the org's own, and skip it for the shared
+    edge/managed space the check exists to catch.
 
-def _asn_number(value) -> int | None:
-    """Free tier returns `asn` as a display string — "AS63949 Akamai
-    Technologies, Inc." — so pull the leading AS number out of it. The org
-    name trailing it is deliberately ignored: it is not always the same as
-    `company`, and reconciling the two is out of scope (planning#177)."""
-    if not isinstance(value, str):
-        return None
-    match = re.match(r"\s*AS(\d+)", value)
-    return int(match.group(1)) if match else None
+    So ANY match is a datacenter, whatever the service_class — that is the
+    question the retired third-party boolean was actually being asked
+    (planning#188). On today's dataset 'compute' is 11,639 prefixes of
+    which ~62% are
+    Linode/DigitalOcean/Vultr VPS space: single-tenant instances on heavily
+    recycled addresses, which is precisely the false-attribution population
+    Phase D exists to catch. service_class rides along as evidence, recorded
+    on the verdict and never branched on.
+    """
+    if match is None:
+        return HostingClass(is_datacenter=False)
+    return HostingClass(
+        is_datacenter=True,
+        provider=match.provider,
+        service_class=match.service_class,
+        prefix=match.prefix,
+    )
 
 
 def classify_ip(db: Session, ip: str) -> HostingClass:
-    """Is `ip` a hosting/datacenter network? Cached as a `hosting_class`
-    claim on the ip_address asset (planning#144 L3a — moved off
-    asset_metadata), long TTL — this rarely changes."""
+    """Is `ip` inside a known cloud/CDN provider range? Local lookup against
+    the `cloud_ranges` mirror (planning#188) — no outbound call.
+
+    Recorded as a `hosting_class` claim on the ip_address asset (planning#144
+    L3a). The claim is NOT a read-through cache: planning#179's source is an
+    indexed inet containment query, cheaper than the claim read that would
+    amortise it, and a 30-day TTL would mask a daily dataset refresh — and
+    the coverage improvements geofeed discovery is meant to deliver — for a
+    month. It is written because `projector.py` projects it into
+    `AssetState.hosting`, and because it pins the dataset digest the verdict
+    was made against.
+    """
     asset = _get_ip_asset(db, ip)
     if asset is None:
         return HostingClass(is_datacenter=False, attempted=False)
 
-    claim = get_current_claim(db, asset.id, _OBSERVER_NAME, _HOSTING_CLASS_CLAIM_TYPE)
-    if claim is not None:
-        age = datetime.now(timezone.utc) - claim.last_observed_at
-        if age < _HOSTING_CLASS_TTL:
-            cached = claim.claim_value
-            return HostingClass(
-                is_datacenter=bool(cached.get("is_datacenter")),
-                company_name=cached.get("company_name"),
-                asn=cached.get("asn"),
-            )
-
-    try:
-        resp = connector_get(_IPAPI_URL, params={"q": ip}, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception:
-        log.debug("hosting_classifier: ipapi.is lookup failed for %s", ip, exc_info=True)
-        return HostingClass(is_datacenter=False, attempted=False)
-
-    # The free tier (no API key — which is all we have) dropped
-    # `is_datacenter` entirely, and the parse used to sit outside the guard
-    # above, so a vendor schema change escaped as an AttributeError instead
-    # of the fail-soft this function already implements (planning#177).
-    #
-    # Absent is NOT False. Without this field the lookup cannot answer the
-    # question it exists to answer, so it is an unattempted lookup — which
-    # is what `attempted=False` means, and what stops the caller caching it
-    # (shared_infra_verifier.py, planning#113 Fable review finding 2).
-    # Defaulting it to False instead is exactly what made a broken
-    # dependency read as a policy denial in `authorisation_decisions`.
-    # planning#178 replaces this data source.
-    if not isinstance(data, dict) or "is_datacenter" not in data:
+    # Mirrors tenancy_enricher.tick()'s guard verbatim in intent: no dataset
+    # is our outage, not a fact about the address. Reporting it as
+    # is_datacenter=False would be the #177 mistake in a new place — a
+    # broken dependency reading as a normal negative determination.
+    state = cloud_ranges.dataset_state(db)
+    if state is None:
         log.warning(
-            "hosting_classifier: ipapi.is returned an unusable schema for %s "
-            "(no is_datacenter; keys=%s) — treating as an unattempted lookup, "
-            "not a negative (planning#177)",
+            "hosting_classifier: no cloud range dataset loaded — reporting %s "
+            "as an unattempted lookup, not as 'not a datacenter' (planning#188)",
             ip,
-            sorted(data) if isinstance(data, dict) else type(data).__name__,
         )
         return HostingClass(is_datacenter=False, attempted=False)
+    if state.stale:
+        log.warning(
+            "hosting_classifier: cloud range dataset generated_at=%s is older "
+            "than %s — classifying anyway, but the claim records that "
+            "generated_at so the decision stays reconstructable",
+            state.generated_at, cloud_ranges.STALE_AFTER,
+        )
 
     try:
-        result = HostingClass(
-            is_datacenter=bool(data["is_datacenter"]),
-            company_name=_company_name(data.get("company")),
-            asn=_asn_number(data.get("asn")),
+        match = cloud_ranges.lookup(db, ip)
+        result = hosting_for_match(match)
+        now = datetime.now(timezone.utc)
+        upsert_single_claim(
+            db, asset.id, _OBSERVER_NAME, _HOSTING_CLASS_CLAIM_TYPE,
+            {
+                "is_datacenter": result.is_datacenter,
+                "provider": result.provider,
+                "service_class": result.service_class,
+                "prefix": result.prefix,
+                # Pinned so a past attribution decision stays reconstructable,
+                # the same provenance tenancy claims carry (SCHEMA.md).
+                "dataset_sha256": state.dataset_sha256,
+                "dataset_generated_at": state.generated_at.isoformat(),
+            },
+            now,
         )
+        db.commit()
     except Exception:
-        log.warning(
-            "hosting_classifier: could not parse ipapi.is response for %s "
-            "(keys=%s) — unattempted, not a negative (planning#177)",
-            ip, sorted(data), exc_info=True,
-        )
+        # The module's fail-soft contract: never raise into a scan path.
+        db.rollback()
+        log.warning("hosting_classifier: cloud_ranges lookup failed for %s", ip, exc_info=True)
         return HostingClass(is_datacenter=False, attempted=False)
 
-    now = datetime.now(timezone.utc)
-    upsert_single_claim(
-        db, asset.id, _OBSERVER_NAME, _HOSTING_CLASS_CLAIM_TYPE,
-        {
-            "is_datacenter": result.is_datacenter,
-            "company_name": result.company_name,
-            "asn": result.asn,
-        },
-        now,
-    )
-    db.commit()
     return result
 
 

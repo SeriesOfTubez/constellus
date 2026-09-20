@@ -1,7 +1,12 @@
-"""Round-trip tests for hosting_classifier's TTL-cached claims — planning#144
-L3a: `hosting_class` (classify_ip) and `reverse_ip` (reverse_ip_domains)
-moved from an asset_metadata dict cache to asset_claims, attributed to the
+"""Round-trip tests for hosting_classifier's claims — planning#144 L3a:
+`hosting_class` (classify_ip) and `reverse_ip` (reverse_ip_domains) moved
+from an asset_metadata dict cache to asset_claims, attributed to the
 "hosting_classifier" observer.
+
+`classify_ip` no longer touches the network (planning#188 — it queries the
+local `cloud_ranges` mirror instead), so the "`connector_get` is
+monkeypatched per-test" framing below applies only to the
+`reverse_ip_domains` half now.
 
 Real DB (a persisted ip_address AssetCanonical row is required to resolve
 the claim's asset_canonical_id); the network-touching `connector_get` call
@@ -23,7 +28,10 @@ from types import SimpleNamespace
 from app.core.database import SessionLocal
 from app.models.asset_canonical import AssetCanonical
 from app.models.claim import ClaimHistory
+from app.models.cloud_range import CloudRange
+from app.services import cloud_ranges
 from app.services import hosting_classifier as hc
+from app.services import tenancy_enricher as te
 from app.services.claim_emitter import get_current_claim, upsert_single_claim
 
 
@@ -56,73 +64,100 @@ def _fake_response(payload: dict | None = None, text: str = ""):
     return SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload or {}, text=text)
 
 
+def _insert_range(db, prefix, provider, service_class, service_raw=None, source="test"):
+    row = CloudRange(
+        id=uuid.uuid4(), prefix=prefix, ip_version=4, provider=provider,
+        service_raw=service_raw, service_class=service_class, region=None, source=source,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def _cleanup_ranges(db, ids):
+    db.rollback()
+    if ids:
+        db.query(CloudRange).filter(CloudRange.id.in_(ids)).delete(synchronize_session=False)
+        db.commit()
+
+
 # ── classify_ip / hosting_class claim ───────────────────────────────────────
 
-def test_classify_ip_hits_claim_cache_within_ttl_no_refetch():
+def test_hosting_for_match_any_match_is_a_datacenter_whatever_the_service_class():
+    """Pure, no DB. Every service_class cloud_ranges can produce reads as
+    is_datacenter=True — the local mirror covers ten providers, not a
+    shared-vs-dedicated distinction (planning#188)."""
+    for service_class in ("compute", "edge", "managed", "storage", "unknown"):
+        match = cloud_ranges.CloudRangeMatch(
+            prefix="203.0.113.0/24", provider="testcloud", service_raw="raw",
+            service_class=service_class, region=None, source="test",
+        )
+        result = hc.hosting_for_match(match)
+        assert result.is_datacenter is True, f"service_class={service_class} must still be a datacenter"
+        assert result.provider == "testcloud"
+        assert result.service_class == service_class
+        assert result.prefix == "203.0.113.0/24"
+
+    none_result = hc.hosting_for_match(None)
+    assert none_result.is_datacenter is False
+    assert none_result.attempted is True
+
+
+def test_hosting_for_match_compute_is_a_datacenter_not_an_exemption():
+    """planning#188 Finding 1 — the polarity regression guard, its own named
+    test so the failure message says what broke. tenancy_for_match maps
+    'compute' to single_tenant, and wiring that polarity into is_datacenter
+    would invert Phase D: it would demand corroboration for the addresses
+    most likely to be genuinely the org's own, and skip it for the shared
+    edge/managed space the check exists to catch. The two functions
+    deliberately disagree on a 'compute' match — this test is what stops
+    someone collapsing them."""
+    match = cloud_ranges.CloudRangeMatch(
+        prefix="203.0.113.0/24", provider="aws", service_raw="EC2",
+        service_class="compute", region=None, source="test",
+    )
+    assert hc.hosting_for_match(match).is_datacenter is True
+    assert te.tenancy_for_match(match)[0] == "single_tenant"
+
+
+def test_classify_ip_makes_no_outbound_call_at_all():
+    """planning#188's added acceptance criterion, enforced by the suite
+    rather than by a grep that rots: the replacement is a LOCAL query, so
+    the correct end state is zero outbound calls from classify_ip — not a
+    throttled or budgeted one.
+
+    connector_get is the module's only door to the network (reverse_ip_
+    domains still uses it for mnemonic, which is why it stays imported).
+    Booby-trap it: if classify_ip ever grows a third-party call back, this
+    fails loudly instead of quietly re-acquiring the dependency #188
+    removed.
+    """
     suffix = uuid.uuid4().hex[:10]
     ip = f"203.0.113.{10 + (int(suffix[:2], 16) % 60)}"
-    calls = {"n": 0}
+    range_id = None
 
-    # This is the parse contract: a response that actually carries
-    # `is_datacenter` (the flat free-tier shape, planning#177). Today's
-    # keyless free tier does NOT carry it — see
-    # test_classify_ip_free_tier_shape_is_unattempted_not_a_negative below.
-    def _spy(url, params=None, timeout=None):
-        calls["n"] += 1
-        return _fake_response({"is_datacenter": True, "company": "Acme Hosting", "asn": "AS64500 Acme Hosting Ltd."})
-    hc.connector_get = _spy
+    def _no_network(*a, **k):
+        raise AssertionError("classify_ip must make no outbound call (planning#188)")
+    hc.connector_get = _no_network
 
     db = SessionLocal()
     try:
         _make_ip_asset(db, ip)
-
-        first = hc.classify_ip(db, ip)
-        assert calls["n"] == 1
-        assert first.is_datacenter is True
-        assert first.company_name == "Acme Hosting"
-        assert first.asn == 64500
-
-        second = hc.classify_ip(db, ip)
-        assert calls["n"] == 1, "a fresh hosting_class claim within TTL must not refetch"
-        assert second.is_datacenter is True
-        assert second.company_name == "Acme Hosting"
-    finally:
-        db.close()
-        _cleanup(ip)
-
-
-def test_classify_ip_refetches_past_ttl():
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{80 + (int(suffix[:2], 16) % 60)}"
-    calls = {"n": 0}
-
-    def _spy(url, params=None, timeout=None):
-        calls["n"] += 1
-        return _fake_response({"is_datacenter": False, "company": "Fresh Co", "asn": "AS64501 Fresh Co"})
-    hc.connector_get = _spy
-
-    db = SessionLocal()
-    try:
-        asset = _make_ip_asset(db, ip)
-        stale = datetime.now(timezone.utc) - hc._HOSTING_CLASS_TTL - timedelta(days=1)
-        upsert_single_claim(
-            db, asset.id, "hosting_classifier", "hosting_class",
-            {"is_datacenter": True, "company_name": "Stale Co", "asn": 1}, stale,
-        )
-        db.commit()
+        range_id = _insert_range(db, f"{ip}/32", "testcloud", "edge").id
 
         result = hc.classify_ip(db, ip)
-        assert calls["n"] == 1, "a hosting_class claim past its TTL must refetch"
-        assert result.company_name == "Fresh Co"
-        assert result.asn == 64501
-
-        claim = get_current_claim(db, asset.id, "hosting_classifier", "hosting_class")
-        assert claim is not None
-        assert claim.claim_value["company_name"] == "Fresh Co"
-        assert claim.last_observed_at > stale
+        assert result.is_datacenter is True
+        assert result.attempted is True
     finally:
         db.close()
         _cleanup(ip)
+        if range_id is not None:
+            db2 = SessionLocal()
+            try:
+                _cleanup_ranges(db2, [range_id])
+            finally:
+                db2.close()
 
 
 def test_classify_ip_no_ip_asset_does_not_write_a_claim():
@@ -138,77 +173,140 @@ def test_classify_ip_no_ip_asset_does_not_write_a_claim():
         db.close()
 
 
-def test_classify_ip_free_tier_shape_is_unattempted_not_a_negative():
-    """planning#177 — the keyless free tier dropped `is_datacenter`. Absent
-    must read as "couldn't check", not "checked, not a datacenter", because
-    the caller (shared_infra_verifier.py) keys cache eligibility off
-    `attempted` (planning#113 finding 2)."""
+def test_classify_ip_provider_range_writes_claim_with_provenance():
+    """Real DB. This is the proof the claim can be written at all: the
+    retired third-party source always reported attempted=False, and the
+    guard that did so returned above the claim write, so `hosting_class`
+    could never be persisted at all (planning#177/#188)."""
     suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{140 + (int(suffix[:2], 16) % 60)}"
-
-    def _spy(url, params=None, timeout=None):
-        return _fake_response({
-            "ip": ip, "is_bogon": False,
-            "company": "Linode",
-            "asn": "AS63949 Akamai Technologies, Inc.",
-            "city": "Fremont", "region": "California", "country": "US",
-            "lat": 1.0, "lon": 2.0, "timezone": "America/Los_Angeles",
-            "docs": "https://ipapi.is/free-tier.html",
-        })
-    hc.connector_get = _spy
+    ip = f"203.0.113.{10 + (int(suffix[:2], 16) % 60)}"
+    range_id = None
 
     db = SessionLocal()
     try:
         asset = _make_ip_asset(db, ip)
+        range_id = _insert_range(db, f"{ip}/32", "testcloud", "compute", service_raw="raw").id
+
+        result = hc.classify_ip(db, ip)
+        assert result.is_datacenter is True
+        assert result.attempted is True
+        assert result.provider == "testcloud"
+        assert result.service_class == "compute"
+        assert result.prefix == f"{ip}/32"
+
+        claim = get_current_claim(db, asset.id, "hosting_classifier", "hosting_class")
+        assert claim is not None
+        assert claim.claim_value["dataset_sha256"] is not None
+        assert claim.claim_value["dataset_generated_at"] is not None
+    finally:
+        db.close()
+        _cleanup(ip)
+        if range_id is not None:
+            db2 = SessionLocal()
+            try:
+                _cleanup_ranges(db2, [range_id])
+            finally:
+                db2.close()
+
+
+def test_classify_ip_no_matching_prefix_is_a_determination_not_a_failure():
+    """Real DB, ip asset only, no range inserted. A checked-and-clean result
+    is a real determination — it IS written, with provider=None — not the
+    same as an unattempted lookup."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"203.0.113.{80 + (int(suffix[:2], 16) % 60)}"
+
+    db = SessionLocal()
+    try:
+        asset = _make_ip_asset(db, ip)
+
+        result = hc.classify_ip(db, ip)
+        assert result.is_datacenter is False
+        assert result.attempted is True
+
+        claim = get_current_claim(db, asset.id, "hosting_classifier", "hosting_class")
+        assert claim is not None
+        assert claim.claim_value["provider"] is None
+    finally:
+        db.close()
+        _cleanup(ip)
+
+
+def test_classify_ip_no_dataset_loaded_is_unattempted_and_writes_nothing():
+    """Monkeypatch dataset_state to simulate no cloud_ranges dataset loaded.
+    A pre-existing claim must survive byte-identical — our own outage must
+    neither be recorded as a determination nor poison what we already knew
+    (the planning#177 mistake, in a new place)."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"203.0.113.{140 + (int(suffix[:2], 16) % 60)}"
+
+    db = SessionLocal()
+    try:
+        asset = _make_ip_asset(db, ip)
+        stale = datetime.now(timezone.utc) - timedelta(days=1)
+        upsert_single_claim(
+            db, asset.id, "hosting_classifier", "hosting_class",
+            {"is_datacenter": True, "provider": "priorcloud", "service_class": "compute",
+             "prefix": f"{ip}/32", "dataset_sha256": "priorsha", "dataset_generated_at": stale.isoformat()},
+            stale,
+        )
+        db.commit()
+
+        hc.cloud_ranges.dataset_state = lambda db: None
 
         result = hc.classify_ip(db, ip)
         assert result.attempted is False
         assert result.is_datacenter is False
 
         claim = get_current_claim(db, asset.id, "hosting_classifier", "hosting_class")
-        assert claim is None, "an unusable response must never be cached"
-    finally:
-        db.close()
-        _cleanup(ip)
-
-
-def test_classify_ip_unusable_schema_leaves_stale_claim_intact():
-    """A broken dependency must not overwrite or poison what is already
-    cached — the stale claim survives untouched for the next attempt."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{200 + (int(suffix[:2], 16) % 50)}"
-
-    def _spy(url, params=None, timeout=None):
-        return _fake_response({
-            "ip": ip, "is_bogon": False,
-            "company": "Linode",
-            "asn": "AS63949 Akamai Technologies, Inc.",
-            "city": "Fremont", "region": "California", "country": "US",
-            "lat": 1.0, "lon": 2.0, "timezone": "America/Los_Angeles",
-            "docs": "https://ipapi.is/free-tier.html",
-        })
-    hc.connector_get = _spy
-
-    db = SessionLocal()
-    try:
-        asset = _make_ip_asset(db, ip)
-        stale = datetime.now(timezone.utc) - hc._HOSTING_CLASS_TTL - timedelta(days=1)
-        upsert_single_claim(
-            db, asset.id, "hosting_classifier", "hosting_class",
-            {"is_datacenter": True, "company_name": "Stale Co", "asn": 1}, stale,
-        )
-        db.commit()
-
-        result = hc.classify_ip(db, ip)
-        assert result.attempted is False
-
-        claim = get_current_claim(db, asset.id, "hosting_classifier", "hosting_class")
         assert claim is not None
-        assert claim.claim_value["company_name"] == "Stale Co"
+        assert claim.claim_value["provider"] == "priorcloud"
         assert claim.last_observed_at == stale
     finally:
         db.close()
         _cleanup(ip)
+
+
+def test_classify_ip_always_reflects_the_current_dataset():
+    """The dropped-TTL proof. A freshly-written claim (which would have been
+    served from cache under the old 30-day TTL) reporting "not a datacenter"
+    must be overwritten the instant a range now covers the IP — a dataset
+    refresh takes effect immediately (planning#188 drops the TTL cache)."""
+    suffix = uuid.uuid4().hex[:10]
+    ip = f"203.0.113.{200 + (int(suffix[:2], 16) % 50)}"
+    range_id = None
+
+    db = SessionLocal()
+    try:
+        asset = _make_ip_asset(db, ip)
+        now = datetime.now(timezone.utc)
+        upsert_single_claim(
+            db, asset.id, "hosting_classifier", "hosting_class",
+            {"is_datacenter": False, "provider": None, "service_class": None, "prefix": None,
+             "dataset_sha256": "oldsha", "dataset_generated_at": now.isoformat()},
+            now,
+        )
+        db.commit()
+
+        range_id = _insert_range(db, f"{ip}/32", "testcloud", "compute", service_raw="raw").id
+
+        result = hc.classify_ip(db, ip)
+        assert result.is_datacenter is True
+        assert result.provider == "testcloud"
+
+        claim = get_current_claim(db, asset.id, "hosting_classifier", "hosting_class")
+        assert claim is not None
+        assert claim.claim_value["provider"] == "testcloud"
+        assert claim.last_observed_at > now
+    finally:
+        db.close()
+        _cleanup(ip)
+        if range_id is not None:
+            db2 = SessionLocal()
+            try:
+                _cleanup_ranges(db2, [range_id])
+            finally:
+                db2.close()
 
 
 # ── reverse_ip_domains / reverse_ip claim ───────────────────────────────────
@@ -722,11 +820,13 @@ def test_budget_exhaustion_skips_the_lookup_entirely():
 
 def _run():
     tests = [
-        test_classify_ip_hits_claim_cache_within_ttl_no_refetch,
-        test_classify_ip_refetches_past_ttl,
+        test_hosting_for_match_any_match_is_a_datacenter_whatever_the_service_class,
+        test_hosting_for_match_compute_is_a_datacenter_not_an_exemption,
         test_classify_ip_no_ip_asset_does_not_write_a_claim,
-        test_classify_ip_free_tier_shape_is_unattempted_not_a_negative,
-        test_classify_ip_unusable_schema_leaves_stale_claim_intact,
+        test_classify_ip_provider_range_writes_claim_with_provenance,
+        test_classify_ip_no_matching_prefix_is_a_determination_not_a_failure,
+        test_classify_ip_no_dataset_loaded_is_unattempted_and_writes_nothing,
+        test_classify_ip_always_reflects_the_current_dataset,
         test_reverse_ip_domains_hits_claim_cache_within_ttl_no_refetch,
         test_reverse_ip_domains_refetches_past_ttl,
         test_sharing_dedicated_for_few_current_domains,
