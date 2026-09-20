@@ -14,6 +14,9 @@ from app.models.asset import AssetType
 
 log = logging.getLogger(__name__)
 
+# Stable observer slug — see subfinder.py.
+OBSERVER = "bruteforce"
+
 WORDLISTS: dict[str, list[str]] = {
     "small": [
         "www", "mail", "remote", "blog", "webmail", "server", "ns1", "ns2",

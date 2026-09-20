@@ -32,6 +32,9 @@ from app.models.asset import AssetType
 
 log = logging.getLogger(__name__)
 
+# Stable observer slug — see subfinder.py.
+OBSERVER = "dns_resolve"
+
 _DEFAULT_NAMESERVERS = ["1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4"]
 _TIMEOUT = 4.0
 _LIFETIME = 6.0

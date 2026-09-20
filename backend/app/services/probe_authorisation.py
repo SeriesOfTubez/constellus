@@ -138,6 +138,7 @@ from app.models.observer import Observer
 from app.models.target import Target
 from app.models.target_asset_link import TargetAssetLink
 from app.services import app_settings as settings_svc
+from app.services import posture
 from app.services import projector
 from app.services import target_scope
 
@@ -408,7 +409,14 @@ def _resolve_ma_pre_close_ids(db: Session, canonical_ids: set[uuid.UUID]) -> fro
         .join(Target, Target.id == TargetAssetLink.target_id)
         .filter(
             TargetAssetLink.asset_canonical_id.in_(canonical_ids),
-            Target.ma_pre_close == True,  # noqa: E712
+            # planning#196 step 2 — the predicate itself lives in
+            # `app.services.posture`, not inline here. This is the SQL
+            # rendering; `authorise_discovery` below uses the Python one
+            # (`posture.is_passive_only`) over an already-loaded row. Two
+            # query shapes, ONE policy — so planning#132's eventual move
+            # from a boolean to a posture enum is one edit in one file,
+            # not a hunt for every inline `ma_pre_close` comparison.
+            posture.passive_only_filter(),
         )
         .distinct()
         .all()
@@ -508,11 +516,14 @@ def _probe_class_cap(db: Session, *, asset_ref, canonical: AssetCanonical | None
 
 def _posture_cap(
     db: Session, *, scope: dict, asset_ref, canonical: AssetCanonical | None,
-    ma_pre_close_ids: frozenset[uuid.UUID],
+    ma_pre_close_ids: frozenset[uuid.UUID], noise_class: str | None,
 ) -> Cap:
     """Posture cap — engagement posture (pre-close diligence vs. post-close
     monitoring, etc.), planning#132. planning#193 gives it its first real
-    body: pre-close M&A denial. The rest of the posture axis (post-close
+    body: pre-close M&A denial. planning#196 step 2 makes that denial
+    depend on the CALLING OBSERVER's noise class rather than firing
+    unconditionally for every asset linked to a pre-close target — see the
+    dedicated section below. The rest of the posture axis (post-close
     monitoring and whatever else #132 eventually enumerates) remains
     permissive until that issue lands — this is a body change on an
     already-composed cap, not the cap's introduction, exactly as the
@@ -522,6 +533,30 @@ def _posture_cap(
     forward-signature-stability reason `_scope_cap` documents; kept in the
     signature so a future #132 body change does not also have to touch
     every call site again.
+
+    ## Why this cap takes the observer's noise class (planning#196)
+
+    Before planning#196, this cap denied EVERY asset linked to a pre-close
+    target regardless of which observer was asking — no `noise_class`
+    parameter existed, so there was nothing else it could do. That was
+    correct only BY ACCIDENT: every connector that reaches this gate today
+    (naabu, banner_grab, httpx, tlsx, nuclei, tenancy_tls) happens to be
+    seeded with `noise_class="target_host"`, the noisiest class, so
+    "deny unconditionally" and "deny because target_host is denied under
+    passive-only" produced the same answer for every asset this cap has
+    ever actually been asked about. Leaving that unconditional shape in
+    place while the discovery phase (`probe_authorisation.
+    authorise_discovery`, added in this same step) consults `noise_class`
+    to decide the identical question would express one policy two
+    different ways — exactly the drift planning#196 exists to remove (see
+    `app.services.posture`'s module docstring). Behaviour is unchanged
+    TODAY precisely because of that accident: every real caller of this
+    cap still passes `noise_class="target_host"`, so
+    `posture.observer_permitted` still denies it exactly as the old
+    unconditional check did. `test_posture_policy.py`'s
+    `test_posture_cap_permits_a_pre_close_asset_for_a_silent_observer`
+    pins the new, real branch (a hypothetical silent asset-shaped observer
+    would now be permitted) alongside the unchanged one.
 
     `asset_ref`/`canonical` are here because posture is **per-asset, not
     tenant-global**. The M&A case is the one that forces it: an acquired
@@ -575,7 +610,8 @@ def _posture_cap(
     """
     _ = (db, scope, asset_ref)  # unused this slice — see docstring
     if canonical is not None and canonical.id in ma_pre_close_ids:
-        return Cap(allowed=False, modes=frozenset(), names=None, rule="posture:ma_pre_close")
+        if not posture.observer_permitted(passive_only=True, noise_class=noise_class):
+            return Cap(allowed=False, modes=frozenset(), names=None, rule="posture:ma_pre_close")
     return Cap(allowed=True, modes=None, names=None, rule="posture:permissive")
 
 
@@ -728,6 +764,7 @@ def _compose(
     connector_id: str,
     observer_slug: str,
     observer_addressing: str,
+    observer_noise_class: str | None,
     canonical: AssetCanonical | None,
     state,
     mode: str,
@@ -833,6 +870,14 @@ def _compose(
         # this module is exactly the duplication the module docstring calls a
         # bug rather than a convenience.
         "tenancy": (state.attributes or {}).get("tenancy") if state is not None else None,
+        "observer_noise_class": observer_noise_class,
+        # Distinguishes this asset-shaped decision row from the
+        # domain-shaped rows `authorise_discovery` writes (planning#196
+        # step 2), so a query over the log does not have to infer the
+        # shape from `asset_canonical_id IS NULL` — that column alone is
+        # ambiguous, because the asset path also writes NULL-canonical
+        # rows for an unresolved asset (see `_decision_row`).
+        "decision_scope": "asset",
         "gate_mode": mode,
         "scan_run_id": str(scan_run_id) if scan_run_id is not None else None,
         "caps": {
@@ -965,6 +1010,12 @@ def authorise_probes(
                     # correct and not a gap: the connector was refused on its
                     # own declaration, before any asset state was consulted.
                     "tenancy": None,
+                    # Same discipline as `tenancy` above, for the same reason:
+                    # always present so a query never has to special-case this
+                    # branch. See `_compose`'s evidence dict for what
+                    # `decision_scope` separates.
+                    "observer_noise_class": observer_row.noise_class if observer_row is not None else None,
+                    "decision_scope": "asset",
                     "gate_mode": mode,
                     "scan_run_id": str(scan_run_id) if scan_run_id is not None else None,
                     "caps": {},
@@ -1029,7 +1080,7 @@ def authorise_probes(
             _probe_class_cap(db, asset_ref=asset, canonical=canonical, state=state),
             _posture_cap(
                 db, scope=scope, asset_ref=asset, canonical=canonical,
-                ma_pre_close_ids=ma_pre_close_ids,
+                ma_pre_close_ids=ma_pre_close_ids, noise_class=observer_row.noise_class,
             ),
         )
         if not caps[2].allowed:
@@ -1039,6 +1090,7 @@ def authorise_probes(
             connector_id=connector_id,
             observer_slug=observer_row.name,
             observer_addressing=observer_row.addressing,
+            observer_noise_class=observer_row.noise_class,
             canonical=canonical,
             state=state,
             mode=mode,
@@ -1067,3 +1119,150 @@ def authorise_probes(
             enforced=True,
         )
     return GateResult(permitted=list(assets), permissions=permissions, enforced=False)
+
+
+# ── the domain-level gate (planning#196) ────────────────────────────────────
+
+def authorise_discovery(
+    db: Session,
+    *,
+    observer_slug: str | None,
+    target_row,
+    domain: str,
+    scan_run_id: uuid.UUID | None = None,
+) -> bool:
+    """Authorise one discovery TOOL against one DOMAIN, before any asset
+    exists to route through `authorise_probes`.
+
+    ## Why this is not `authorise_probes`
+
+    `authorise_probes` is asset-shaped: it resolves each asset to its
+    `assets_canonical` row and composes caps over that row. A domain being
+    enumerated has no such identity yet. `assets_canonical` identity for a
+    `dns_record` is `(asset_type, value, record_type, content)` — one row
+    per RECORD, not per domain — and `write_assets(...,
+    target_ids=target_ids)` (`scan_executor.py`'s Phase 1 domain loop) runs
+    AFTER the discovery tools in that same loop, so on a target's
+    first-ever scan there is nothing to resolve to a canonical row at all.
+    Routing this check through `authorise_probes` would therefore deny ALL
+    first-run discovery — the same availability regression that already
+    forced `probe_authorisation_mode` to default to `log_only` (see the
+    module docstring's "Gate mode" section). This function exists instead
+    of widening that one.
+
+    ## Posture only — scope and probe_class are deliberately NOT composed
+
+    This function composes exactly one cap: posture. `_scope_cap` denies
+    an unresolved asset by design (`scope:unresolved_asset`), and for a
+    domain pre-discovery "unresolved" is the ordinary state, not an
+    exception — composing it here would deny every domain on every first
+    run for a reason that has nothing to do with posture. `probe_class` is
+    meaningless for a domain that has no projected `asset_state` at all.
+    The real containment duplication this leaves on the table
+    (`target_service.is_scan_authorised` vs.
+    `probe_authorisation._resolve_scoped_ids`) is tracked separately as
+    planning#197 — not silently absorbed into this function.
+
+    ## Always-enforced — no `probe_authorisation_mode` check
+
+    Same standing as `_posture_cap`'s own posture denial (see that
+    function's docstring): a pre-close M&A flag is an operator assertion,
+    not a verdict this system inferred, so the graduated `log_only` /
+    `enforce` rollout that governs scope/probe_class does not apply to it.
+    `gate_mode` is still RECORDED in the evidence below, purely for
+    comparability with the asset path's rows — it is not consulted to
+    decide anything here.
+
+    ## `rule_fired` is `"posture:ma_pre_close"` — the SAME string the asset
+    path uses, deliberately
+
+    `rule_fired` names the rule that fired, and it IS the same rule,
+    decided by the same function (`posture.observer_permitted`) in
+    `app.services.posture`. Giving the domain path its own string would
+    mean any future query for "everything posture blocked" has to know
+    both spellings — exactly the drift planning#196 exists to remove. The
+    asset/domain distinction is carried explicitly by
+    `evidence_snapshot->>'decision_scope'` (`"asset"` vs. `"domain"`), and
+    structurally by `asset_canonical_id IS NULL` alongside that rule — not
+    by inventing a second rule string.
+
+    ## Denials are logged; permits are not
+
+    This function composes exactly one cap, so a permit row here would
+    record only "posture had nothing to say" — the default state for
+    every domain in every scan, which would dominate the very table the
+    planning#148 enforce flip is counted from. The asset path's permit
+    rows earn their place in the log because they carry `probe_modes`,
+    `authorised_names`, `probe_class` and `tenancy`; a domain-level permit
+    carries none of that — there is nothing informative to record. The
+    question this log has to answer is "was this target's enumeration
+    blocked?", and that is a denial, not a permit.
+
+    ## Fail-closed on an unknown or undeclared observer
+
+    Under passive-only, a tool whose `OBSERVER` slug is missing (the
+    caller passes `observer_slug=None`) or not a seeded `observers.name`
+    resolves `noise_class` to `None`, and `posture.observer_permitted`
+    denies on the fail-closed membership test (see that function's
+    docstring) — a tool that cannot prove what noise it makes does not get
+    to make it against a target we are not authorised to touch.
+
+    Returns a bare `bool` — unlike `authorise_probes`'s `ProbePermission`,
+    there is no addressing mode or authorised-name set to describe for a
+    domain-level enumeration decision; "was this tool allowed to run" is
+    the whole question.
+    """
+    passive_only = posture.is_passive_only(target_row)
+    if not passive_only:
+        # The overwhelmingly common path — an ordinary target — must cost
+        # zero database work. Short-circuit BEFORE resolving the observer.
+        return True
+
+    observer_row = db.query(Observer).filter(Observer.name == observer_slug).first() if observer_slug else None
+    noise_class = observer_row.noise_class if observer_row is not None else None
+    allowed = posture.observer_permitted(passive_only=True, noise_class=noise_class)
+    if allowed:
+        return True
+
+    if observer_row is None:
+        # An undeclared or unseeded discovery observer is a code/seed
+        # defect, not a policy outcome — mirror the tone of the
+        # connector-declaration WARNING in `authorise_probes` above. It is
+        # still denied fail-closed under passive-only, same as any other
+        # unrecognised noise class.
+        log.warning(
+            "Discovery gate: %s denied outright for domain %s under "
+            "passive-only posture — observer slug %r did not resolve to a "
+            "seeded observers row (noise_class treated as unknown); see "
+            "planning#196.",
+            observer_slug, domain, observer_slug,
+        )
+    else:
+        log.info(
+            "Discovery gate: %s (noise_class=%s) denied for domain %s — "
+            "target is pre-close M&A (passive-only); see planning#196.",
+            observer_slug, noise_class, domain,
+        )
+
+    mode = settings_svc.get(db, "probe_authorisation_mode") or "log_only"
+    permission = ProbePermission(
+        allowed=False,
+        modes=frozenset(),
+        names=(),
+        rule_fired="posture:ma_pre_close",
+        evidence={
+            "connector_id": observer_slug,
+            "observer": observer_slug,
+            "observer_addressing": observer_row.addressing if observer_row is not None else None,
+            "observer_noise_class": noise_class,
+            "probe_class": None,
+            "tenancy": None,
+            "gate_mode": mode,
+            "scan_run_id": str(scan_run_id) if scan_run_id is not None else None,
+            "decision_scope": "domain",
+            "domain": domain,
+            "caps": {"posture": _cap_evidence(Cap(False, frozenset(), None, "posture:ma_pre_close"))},
+        },
+    )
+    _write_decisions(db, [_decision_row(None, observer_row, permission)])
+    return False

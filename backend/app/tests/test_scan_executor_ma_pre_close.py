@@ -38,6 +38,23 @@ by id in a `finally` block; nothing else touches the database.
 Address hygiene: the domains used are synthetic `.example.test` names (RFC
 2606 reserved TLD), never a real registered domain.
 
+## planning#196 step 2 made this file a decision-log writer
+
+Before planning#196, the discovery phase's posture check
+(`posture_passive`) was a bare boolean with no decision-log write on
+either branch. Step 2 replaced it with
+`probe_authorisation.authorise_discovery`, which — per its own
+docstring — writes an `authorisation_decisions` row on every DENIAL
+(never on a permit). The pre-close case in this file now denies
+dnsrecon and bruteforce, so `_drive_pipeline` writes two decision rows
+per call, carrying the run id `_run_pipeline` mints. That run id used to
+be minted inline and discarded; it is now hoisted so this file can clean
+those rows up the same way `test_phase3_gate.py`/`test_cidr_sweep.py`
+already do via `_decision_log.cleanup_for_run` — the exact residue shape
+that helper's own docstring describes ("rows that carry a run id and
+therefore read as production evidence"). No assertion in either test
+function changed.
+
 Run with:  python -m app.tests.test_scan_executor_ma_pre_close
        or: pytest app/tests/test_scan_executor_ma_pre_close.py
 """
@@ -49,6 +66,7 @@ from app.core.database import SessionLocal
 from app.models.target import Target
 from app.services import scan_executor
 from app.services.discovery import bruteforce, dns_records, dns_resolve, dnsrecon, subfinder
+from app.tests import _decision_log
 
 
 def _mk_recorder(return_value):
@@ -105,6 +123,12 @@ def _drive_pipeline(domain: str, ma_pre_close: bool) -> dict[str, list]:
     dnsrecon_run_fn, dnsrecon_calls = _mk_recorder(PhaseResult())
     bruteforce_run_fn, bruteforce_calls = _mk_recorder(PhaseResult())
 
+    # planning#196 step 2 — hoisted so the pre-close case's two posture
+    # denials (dnsrecon, bruteforce) can be cleaned up by run id in the
+    # `finally` below, the same idiom `test_phase3_gate.py`/
+    # `test_cidr_sweep.py` already use (see the module docstring).
+    scan_run_id = uuid.uuid4()
+
     try:
         row = Target(id=uuid.uuid4(), type="domain", value=domain, ma_pre_close=ma_pre_close)
         db.add(row)
@@ -127,7 +151,7 @@ def _drive_pipeline(domain: str, ma_pre_close: bool) -> dict[str, list]:
         bruteforce.run = bruteforce_run_fn
 
         scan_executor._run_pipeline(
-            db, uuid.uuid4(), {"domains": [domain], "ip_ranges": []},
+            db, scan_run_id, {"domains": [domain], "ip_ranges": []},
             {"dnsrecon": True, "bruteforce": True},  # force-enable both
             "disabled",  # auth_mode — is_scan_authorised always True, isolating the assertion to posture
             "standard", False,  # skip_discovery=False — the domain loop must actually run
@@ -145,6 +169,7 @@ def _drive_pipeline(domain: str, ma_pre_close: bool) -> dict[str, list]:
             db.query(Target).filter(Target.id == target_id).delete()
             db.commit()
         db.close()
+        _decision_log.cleanup_for_run(scan_run_id)
 
     return {
         "subfinder": subfinder_calls,

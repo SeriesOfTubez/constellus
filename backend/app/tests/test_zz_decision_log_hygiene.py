@@ -43,11 +43,16 @@ _BACKEND = pathlib.Path(__file__).resolve().parents[2]
 # bisect caught it leaking four rows a run; nothing about the file's name
 # or its docstring suggests it touches the decision log at all. A new
 # entry belongs here whenever a test drives `_run_pipeline` or calls
-# `probe_authorisation.authorise_probes`.
+# `probe_authorisation.authorise_probes` OR
+# `probe_authorisation.authorise_discovery` (planning#196 step 2 — the
+# domain-shaped gate writes a decision row on every denial, same as the
+# asset-shaped gate).
 _DECISION_WRITING_TESTS = [
     "app/tests/test_cidr_sweep.py",
     "app/tests/test_phase3_gate.py",
+    "app/tests/test_posture_policy.py",
     "app/tests/test_probe_authorisation.py",
+    "app/tests/test_scan_executor_ma_pre_close.py",
     "app/tests/test_scope_cap.py",
 ]
 
