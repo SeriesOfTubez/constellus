@@ -83,14 +83,37 @@ class ClaimHistory(Base):
     partitions are current-month, next-month, and a DEFAULT catch-all; the
     monthly rollover job is an L2 concern, not built here.
 
-    No FKs — kept lean as an append-only log. Nothing writes to this table
-    yet; append-on-value-change is also an L2 concern.
+    `asset_canonical_id` carries `ON DELETE CASCADE` (planning#191): if the
+    asset is deleted, its history goes with it. A history row is per-asset
+    provenance — "observer X claimed value Y about asset Z at time T" — and
+    it is meaningless once Z is gone; re-discovery mints a NEW canonical id,
+    so old rows could never re-link to the returning asset even if kept. An
+    asset going offline does NOT delete it (absence is modelled, planning#145),
+    so this rule never costs a real asset its history.
+
+    Do not copy this rule to `ScoreHistory`/`HygieneHistory`. They look
+    identical and the answer is the opposite: they feed org-level trend
+    aggregates, so cascading them would rewrite last month's numbers when you
+    clean up an asset today. See their docstrings.
+
+    This docstring used to say "No FKs — kept lean as an append-only log",
+    and `ScoreHistory` retroactively attributed a stronger rationale to this
+    class ("history must outlive the entity it describes") that was never
+    stated here. It also said "nothing writes to this table yet", which has
+    been stale since `claim_emitter` started appending on value change.
     """
 
     __tablename__ = "claim_history"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("uuidv7()"))
-    asset_canonical_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    asset_canonical_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("assets_canonical.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # observer_id / claim_type deliberately stay FK-free here: observers and
+    # claim_types are seeded lookup rows that are never deleted, and
+    # planning#191's decision was about the ASSET lifecycle only.
     observer_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     claim_type: Mapped[str] = mapped_column(Text, nullable=False)
     claim_value: Mapped[dict] = mapped_column(JSONB, nullable=False)

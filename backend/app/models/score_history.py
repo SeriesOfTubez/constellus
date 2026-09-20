@@ -35,10 +35,26 @@ class ScoreHistory(Base):
     0046_temporal_layer.py; this class exists only so the ORM has a mapped
     target to query/insert against.
 
-    No FKs, on purpose — mirrors `ClaimHistory`: history must outlive the
-    entity it describes (a finding can be deleted; the record of what its
-    score used to be should not vanish with it), and an FK would make a
-    future partition DROP/DETACH more expensive. `asset_canonical_id` is
+    No FKs, on purpose, and the reason is TREND AGGREGATES — not the two
+    reasons this docstring used to give. History must outlive the entity it
+    describes here because `score_history` feeds org-level trend queries
+    (planning#121/#131): a finding can be deleted, and if its score rows went
+    with it, last month's estate-wide number would silently change when you
+    clean up today. That argument is real and specific to this table and
+    `HygieneHistory`.
+
+    The two corrected claims (planning#191):
+      * it does NOT "mirror `ClaimHistory`" — that table now cascades on the
+        asset, because per-asset provenance is meaningless once the asset is
+        gone and nothing aggregates it. Same shape, opposite answer;
+      * "an FK would make a future partition DROP/DETACH more expensive" is
+        false on this stack, measured on PostgreSQL 18.6: an OUTGOING FK on a
+        range-partitioned table is accepted, cascades across partitions, and
+        blocks neither DETACH nor a subsequent DROP. The restriction being
+        remembered applies to FKs *referencing* a partitioned table.
+
+    So if these tables ever should cascade, it is a deliberate decision about
+    rewriting trend history — not a technical constraint. `asset_canonical_id` is
     denormalised here rather than requiring a join through
     `findings_canonical` for the same reason — asset-grain trend queries
     must not depend on a `findings_canonical` row that may since have been
