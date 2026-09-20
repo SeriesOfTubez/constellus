@@ -58,12 +58,16 @@ leaks. Two consequences a future test author needs:
   2. **Any handler that deletes assets by VALUE is now a cross-file
      hazard.** `_soft_cascade_target_assets` and `delete_assets_by_apex`
      both end in `_sweep_cname_descendants`, which deletes every asset
-     whose `parent_value` matches — so a test driving either one with a
-     colliding address reaches another file's rows and orphans their
-     decision rows without raising. The two tests here that call those
-     handlers therefore use unique non-IP values rather than
-     `_docaddr.alloc()`, whose pool is knowingly overlapped
-     (planning#171); each one says so at its call site.
+     whose `parent_value` matches, recursively, up to 8 levels — so a test
+     driving either one with a colliding address reaches another file's
+     rows and orphans their decision rows without raising. The two tests
+     here that call those handlers therefore use unique non-IP values
+     rather than `_docaddr.alloc()`: a unique non-address value cannot be
+     reached by an address-shaped sweep at all, which is a stronger
+     guarantee than drawing from a collision-free pool — `_docaddr`'s pool
+     is exclusive (planning#199; `test_docaddr_guard.py` enforces it), but
+     even a pool-drawn address is still address-shaped and so still
+     reachable by the sweep. Each call site says so.
 
 The hygiene guards still catch the resulting leak — `unreachable_count()`
 if the orphan had no run id, the total-count guard if it did — so this is a
@@ -410,17 +414,21 @@ def test_target_cascade_does_not_fail_the_batch_on_a_gated_asset():
         # reason is specific to this code path: `_soft_cascade_target_assets`
         # ends in `_sweep_cname_descendants(db, seed_values)`, which deletes
         # every asset whose `parent_value` is one of the values being
-        # deleted — by VALUE, recursively, up to 8 levels. `_docaddr`'s pool
-        # is knowingly overlapped by `test_cloud_inventory_claim`'s
-        # `192.0.2.{n % 200 + 10}` window (planning#171, documented in
-        # `_docaddr.py`'s own docstring), so a colliding draw would make this
+        # deleted — by VALUE, recursively, up to 8 levels, walking an
+        # address-shaped chain. A unique non-IP value cannot be reached by
+        # that recursion AT ALL — there is no address-shaped `parent_value`
+        # chain for it to be swept through — which is a stronger guarantee
+        # than drawing from `_docaddr`'s collision-free pool would give.
+        # (The pool doesn't overlap anything to begin with, post-planning#199
+        # — this isn't a workaround for that.) A real address here, even a
+        # pool-drawn one, would still be reachable by an address-shaped
+        # sweep, so a same-value collision from any source would make this
         # test delete ANOTHER file's asset mid-run. That was survivable
         # before planning#195 — the FK raised — but now the victim's
         # decision rows would silently orphan instead, which is a leak this
-        # file's own run-id cleanup cannot reach. A unique non-IP value
-        # cannot collide with anything, and nothing here parses it as an
-        # address (`test_probe_authorisation.py` uses non-IP values for
-        # `ip_address` rows the same way).
+        # file's own run-id cleanup cannot reach. Nothing here parses the
+        # value as an address (`test_probe_authorisation.py` uses non-IP
+        # values for `ip_address` rows the same way).
         asset_gated = _mk_ip_asset(db, f"pa195-cascade-gated-{suffix}")
         asset_plain = _mk_ip_asset(db, f"pa195-cascade-plain-{suffix}")
         asset_gated_id = asset_gated.id

@@ -25,6 +25,7 @@ from app.models.observer import Observer
 from app.models.target import Target, TargetType
 from app.services import projector
 from app.services.claim_emitter import upsert_single_claim
+from app.tests import _docaddr
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -137,8 +138,7 @@ def test_open_ports_merge_across_observers_with_restored_sources():
     carry tlsx's l7_confirmed field and sources unioned across both
     observers — proving the emitter's stripped `sources` gets restored from
     observer identity before the merge, not lost."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{10 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -180,8 +180,7 @@ def test_prune_stale_port_and_flap_guard_kept():
     couple of days (inside the 3-day confirmed grace) is kept — mirrors
     _prune_stale_ports' flap-guard case, now exercised end-to-end through
     claims."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{80 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -219,8 +218,7 @@ def test_prune_stale_port_and_flap_guard_kept():
 def test_no_naabu_claim_skips_prune_keeps_all():
     """No naabu port_observation claim at all -> prune is skipped entirely
     (matches the old writer's 'no naabu_last_scan_at -> keep all')."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{140 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -246,10 +244,9 @@ def test_no_naabu_claim_skips_prune_keeps_all():
 # ── estate mapping ───────────────────────────────────────────────────────
 
 def test_estate_mapping():
-    suffix = uuid.uuid4().hex[:10]
-    ip_confirmed = f"203.0.113.{170 + (int(suffix[:2], 16) % 25)}"
-    ip_rejected = f"203.0.113.{200 + (int(suffix[2:4], 16) % 25)}"
-    ip_absent = f"203.0.113.{230 + (int(suffix[4:6], 16) % 25)}"
+    ip_confirmed = _docaddr.alloc()
+    ip_rejected = _docaddr.alloc()
+    ip_absent = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -287,7 +284,7 @@ def test_probe_class_rules():
     asset_metadata — a_mx is a dns_record MX row, not an ip_address with a
     metadata flag."""
     suffix = uuid.uuid4().hex[:10]
-    ip_cidr = f"192.0.2.{100 + (int(suffix[2:4], 16) % 40)}"
+    cidr_value, ip_cidr = _docaddr.alloc_cidr()
     host_name_mx = f"probe-class-mx-{suffix}.example.com"
     host_name = f"probe-class-{suffix}.example.com"
     db = SessionLocal()
@@ -300,14 +297,15 @@ def test_probe_class_rules():
             record_type="MX", content="aspmx.l.google.com",
         )
 
-        cidr_value = f"{ip_cidr.rsplit('.', 1)[0]}.0/24"
         target_id = uuid.uuid4()
-        # planning#170: `cidr_value` is always the constant "192.0.2.0/24" — the
-        # same literal test_scope_cap.py seeds — and `Target.value` is globally
-        # UNIQUE (uq_targets_value). `_cleanup_target` deletes by *id*, so a row
-        # stranded by a run that died between scope_cap's seed and its teardown
-        # (a kill, a Ctrl-C, an unrelated crash) makes this INSERT fail on every
-        # later run until scope_cap happens to clear it. Delete-then-insert
+        # `cidr_value` is a /29 from `_docaddr.alloc_cidr()` (planning#199),
+        # so it cannot equal another test's range — not the literal
+        # "192.0.2.0/24" test_scope_cap.py seeds, and not the one the other
+        # CIDR test here draws. `Target.value` is still globally UNIQUE
+        # (uq_targets_value) and `_cleanup_target` deletes by *id*, so a row
+        # stranded by a run that died between the INSERT and its teardown
+        # (a kill, a Ctrl-C, an unrelated crash) would make this INSERT fail on
+        # every later run until something cleared it. Delete-then-insert
         # (planning#156) makes the seed idempotent, the way scope_cap's is.
         db.query(Target).filter(Target.value == cidr_value).delete(synchronize_session=False)
         db.commit()
@@ -342,8 +340,7 @@ def test_hosting_claim_only_asset_is_not_skipped():
     claims, no asset_metadata, no affinity_confirmation claim — must still
     get projected, not silently dropped by the projector's 'nothing to
     project' skip condition."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"192.0.2.{230 + (int(suffix[:2], 16) % 20)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -408,8 +405,7 @@ def test_naabu_last_scan_at_derived_from_claim():
     now also exposed for the L3c port-lifecycle readers. planning#190 moved
     both off the claim's `last_observed_at`, which is stamped after the
     connector returns and so was always later than the ports it judged."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{80 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -432,8 +428,7 @@ def test_naabu_last_scan_at_derived_from_claim():
 def test_no_naabu_claim_no_naabu_last_scan_at():
     """No naabu port_observation claim -> the key is absent entirely, not
     set to null (mirrors the prune-cutoff's own 'no naabu claim' handling)."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{200 + (int(suffix[:2], 16) % 50)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -515,8 +510,7 @@ def test_eol_summary_projected_from_eol_status_claim():
     (planning#144 L3c-3) — it was the projector's last read of the
     still-authoritative asset_metadata column. The claim wraps a LIST under
     `services` despite the column being named eol_summary."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{60 + (int(suffix[:2], 16) % 40)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -543,8 +537,7 @@ def test_eol_status_claim_emptied_clears_eol_summary():
     This is a deliberate behaviour CHANGE from the asset_metadata write it
     replaced, which only ever SET eol_services and so let a stale record
     outlive the service it described (planning#144 L3c-3)."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{100 + (int(suffix[:2], 16) % 40)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -575,8 +568,7 @@ def test_eol_status_claim_from_another_observer_is_ignored():
     """eol_status is pinned to the eol_enrichment observer — it is that
     service's output, not an open vocabulary like cdn_boundary. A claim of
     the same type from anyone else must not become eol_summary."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{140 + (int(suffix[:2], 16) % 40)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -598,8 +590,7 @@ def test_eol_status_claim_from_another_observer_is_ignored():
 def test_no_cdn_metadata_no_cdn_attributes():
     """No `cdn_boundary` claim -> neither key appears in attributes (no
     invented default)."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{10 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -626,8 +617,7 @@ def test_merge_state_attributes_inserts_fresh_row_with_column_defaults():
     """No projector run has ever touched this asset — merge_state_attributes
     must still succeed (upsert, not update-only), landing the patch in
     `attributes` with the other NOT-NULL columns at their table defaults."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{10 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         asset = _make_asset(db, "ip_address", ip)
@@ -651,8 +641,7 @@ def test_merge_state_attributes_merges_without_clobbering_existing_keys():
     """A patch written by merge_state_attributes must compose with the
     projector's own attributes || merge — disjoint keys survive both
     directions, whichever runs first."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{10 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -692,8 +681,7 @@ def test_merge_state_attributes_merges_without_clobbering_existing_keys():
 # ── idempotency ──────────────────────────────────────────────────────────
 
 def test_idempotent_double_projection():
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{10 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -928,8 +916,7 @@ def test_tenancy_and_ownership_are_separate_caps():
     says one tenant lives here, not that the tenant is us. Collapsed into one
     signal, a recycled address in a pure-VPS range authorises scanning a
     stranger's host."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{10 + (int(suffix[:2], 16) % 40)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -957,8 +944,7 @@ def test_tenancy_and_ownership_are_separate_caps():
 def test_probe_class_direct_addressable_via_tenancy_and_confirmed_ours():
     """The rung planning#182 rewrote: composed `single_tenant` AND
     `confirmed_ours`, ANDed as two independent caps."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{60 + (int(suffix[:2], 16) % 40)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -994,8 +980,7 @@ def test_is_datacenter_alone_no_longer_promotes():
     `hosting` itself must still project, unchanged: the finding-attribution
     path (epic#81 Phase D / planning#107) reads it, and that path is asking a
     genuinely different question."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{110 + (int(suffix[:2], 16) % 40)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -1054,8 +1039,7 @@ def test_not_single_tenant_denies_and_is_logged_distinctly_from_unknown():
     reader of `authorisation_decisions` can separate from "we could not
     check" — which is planning#177's whole complaint and this issue's third
     acceptance criterion."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{160 + (int(suffix[:2], 16) % 40)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -1087,8 +1071,7 @@ def test_tier2_reverse_ip_sharing_denies_a_tier0_promotion():
     writes — no new claim type, no new observer, no mnemonic quota. A live
     CDN address inside an EC2 range is the case: Tier 0 promotes, Tier 2 sees
     300 currently-resolving domains, and dissent wins outright."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"192.0.2.{10 + (int(suffix[:2], 16) % 40)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -1124,8 +1107,7 @@ def test_tenancy_claim_from_an_unlisted_observer_is_ignored():
     observer not in `_TENANCY_OBSERVERS` gets no vote — the set is the
     entitlement check, the same way emission-time seeding is for
     `cloud_inventory`."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"192.0.2.{60 + (int(suffix[:2], 16) % 40)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -1158,9 +1140,7 @@ def test_cidr_route_is_untouched_by_tenancy():
     customer declared in scope stays `direct_addressable` even when a rung
     calls the range multi-tenant. An operator declaring a CIDR is a stronger
     authorisation than any inference about who else lives there."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{100 + (int(suffix[:2], 16) % 40)}"
-    cidr_value = "198.51.100.0/24"
+    cidr_value, ip = _docaddr.alloc_cidr()
     db = SessionLocal()
     target_id = None
     try:

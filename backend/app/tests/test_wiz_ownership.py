@@ -337,10 +337,11 @@ def test_pagination_stops_at_the_page_limit_rather_than_looping_forever():
 def test_token_is_fetched_once_and_reused_across_addresses():
     """Wiz rate-limits the token endpoint per service account and asks
     integrations to cache for the full 24h validity."""
-    stub = _Stub(by_ip={f"192.0.2.{i}": [_node(f"exp-{i}", "res-a")] for i in range(1, 6)})
+    addrs = ("192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4", "192.0.2.5")
+    stub = _Stub(by_ip={ip: [_node(f"exp-{i}", "res-a")] for i, ip in enumerate(addrs, 1)})
     restore = _install(stub, public_ips=True)
     try:
-        assets = [DiscoveredAsset(asset_type=AssetType.IP_ADDRESS, value=f"192.0.2.{i}") for i in range(1, 6)]
+        assets = [DiscoveredAsset(asset_type=AssetType.IP_ADDRESS, value=ip) for ip in addrs]
         wiz.WizConnector().enrich(assets, {})
         assert stub.token_calls == 1
     finally:
@@ -449,7 +450,10 @@ def test_one_failing_address_does_not_abandon_the_batch():
 
     restore = _install(post, public_ips=True)
     try:
-        assets = [DiscoveredAsset(asset_type=AssetType.IP_ADDRESS, value=f"192.0.2.{i}") for i in (10, 11, 12)]
+        assets = [
+            DiscoveredAsset(asset_type=AssetType.IP_ADDRESS, value=ip)
+            for ip in ("192.0.2.10", "192.0.2.11", "192.0.2.12")
+        ]
         result = wiz.WizConnector().enrich(assets, {})
         assert sorted(a.value for a in result.assets) == ["192.0.2.10", "192.0.2.12"]
     finally:

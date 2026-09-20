@@ -29,6 +29,7 @@ from app.services.cpe_normalizer import (
     normalize_port_software,
     _parse_cpe_string,
 )
+from app.tests import _docaddr
 
 
 def _by_product(software: list[dict]) -> dict[str, dict]:
@@ -244,7 +245,7 @@ def test_enrich_cpe_claim_merges_with_naabu_into_projected_open_ports():
     Its output is the claim alone; the asset_metadata mutation L3c-1 kept
     alongside it is gone (no readers left), so nothing is asserted about the
     column here any more."""
-    ip = f"203.0.113.{20 + (uuid.uuid4().int % 40)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -296,7 +297,7 @@ def test_enrich_cpe_software_removal_propagates_to_projected_state():
     upsert_single_claim's whole-value replace (empty `ports` list once no
     entry has software) actually removes the stale software claim rather
     than leaving it stuck from a prior scan."""
-    ip = f"203.0.113.{80 + (uuid.uuid4().int % 40)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)

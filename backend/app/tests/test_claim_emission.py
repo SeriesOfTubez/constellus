@@ -25,6 +25,7 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.claim import AssetClaim, ClaimHistory
 from app.models.observer import Observer
 from app.services.asset_writer import write_assets
+from app.tests import _docaddr
 
 
 def _observer_id(db, name: str) -> uuid.UUID:
@@ -189,8 +190,7 @@ def test_naabu_and_tlsx_produce_two_port_observation_claims():
     """naabu and tlsx patches for the same IP, in the same batch, must
     produce two distinct port_observation claims — one per observer,
     each carrying only that observer's ports."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{100 + (int(suffix[:2], 16) % 100)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         write_assets(db, uuid.uuid4(), [

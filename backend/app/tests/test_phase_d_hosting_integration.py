@@ -44,6 +44,7 @@ from app.services import domain_affinity as da
 from app.services import hosting_classifier as hc
 from app.services import origin_corroboration as oc
 from app.services import shared_infra_verifier as siv
+from app.tests import _docaddr
 
 
 def _make_ip_asset(db, ip: str) -> AssetCanonical:
@@ -124,8 +125,7 @@ def _install_loaded_dataset() -> None:
     cloud_ranges.dataset_state = lambda db: state
 
 def test_phase_d_reaches_ownership_unverifiable_from_a_real_cloud_range():
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{10 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     range_id = None
 
     _install_loaded_dataset()
@@ -159,8 +159,7 @@ def test_shared_infra_verifier_caches_again_on_the_normal_path():
     """The observable proof the fix worked. Under the retired third-party
     lookup this affinity_confirmation claim was never written, because
     attempted=False forced cacheable=False on every single call."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{80 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     range_id = None
 
     _install_loaded_dataset()
@@ -198,8 +197,7 @@ def test_no_dataset_still_suppresses_the_cache():
     loaded is our own outage, not a real 'not a datacenter' determination,
     so it must never be cached. Same rule as before planning#188, but the
     cause it guards against is now systemic rather than per-IP."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{140 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
 
     db = SessionLocal()
     try:

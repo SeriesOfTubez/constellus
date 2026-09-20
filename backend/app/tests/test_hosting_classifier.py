@@ -33,6 +33,7 @@ from app.services import cloud_ranges
 from app.services import hosting_classifier as hc
 from app.services import tenancy_enricher as te
 from app.services.claim_emitter import get_current_claim, upsert_single_claim
+from app.tests import _docaddr
 
 
 def _make_ip_asset(db, ip: str) -> AssetCanonical:
@@ -157,8 +158,7 @@ def test_classify_ip_makes_no_outbound_call_at_all():
     fails loudly instead of quietly re-acquiring the dependency #188
     removed.
     """
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{10 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     range_id = None
 
     def _no_network(*a, **k):
@@ -203,8 +203,7 @@ def test_classify_ip_provider_range_writes_claim_with_provenance():
     retired third-party source always reported attempted=False, and the
     guard that did so returned above the claim write, so `hosting_class`
     could never be persisted at all (planning#177/#188)."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{10 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     range_id = None
 
     _install_loaded_dataset()
@@ -239,8 +238,7 @@ def test_classify_ip_no_matching_prefix_is_a_determination_not_a_failure():
     """Real DB, ip asset only, no range inserted. A checked-and-clean result
     is a real determination — it IS written, with provider=None — not the
     same as an unattempted lookup."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{80 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
 
     _install_loaded_dataset()
     db = SessionLocal()
@@ -264,8 +262,7 @@ def test_classify_ip_no_dataset_loaded_is_unattempted_and_writes_nothing():
     A pre-existing claim must survive byte-identical — our own outage must
     neither be recorded as a determination nor poison what we already knew
     (the planning#177 mistake, in a new place)."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{140 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
 
     db = SessionLocal()
     try:
@@ -299,8 +296,7 @@ def test_classify_ip_always_reflects_the_current_dataset():
     served from cache under the old 30-day TTL) reporting "not a datacenter"
     must be overwritten the instant a range now covers the IP — a dataset
     refresh takes effect immediately (planning#188 drops the TTL cache)."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{200 + (int(suffix[:2], 16) % 50)}"
+    ip = _docaddr.alloc()
     range_id = None
 
     _install_loaded_dataset()
@@ -364,8 +360,7 @@ def _pdns_response(ip: str, domains: list[str], *, count: int | None = None,
     })
 
 def test_reverse_ip_domains_hits_claim_cache_within_ttl_no_refetch():
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{10 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     calls = {"n": 0}
 
     def _spy(url, params=None, timeout=None):
@@ -390,8 +385,7 @@ def test_reverse_ip_domains_hits_claim_cache_within_ttl_no_refetch():
 
 
 def test_reverse_ip_domains_refetches_past_ttl():
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{80 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     calls = {"n": 0}
 
     def _spy(url, params=None, timeout=None):
@@ -445,8 +439,7 @@ def _fresh_rate_budget():
 def test_sharing_dedicated_for_few_current_domains():
     """A handful of recently-seen domains reads as dedicated hosting —
     planning#180's baseline case."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{140 + (int(suffix[:2], 16) % 8)}"
+    ip = _docaddr.alloc()
     domains = [f"d{i}.example.com" for i in range(5)]
 
     def _spy(url, params=None, timeout=None):
@@ -473,8 +466,7 @@ def test_sharing_dedicated_for_few_current_domains():
 def test_sharing_shared_when_many_domains_are_current():
     """More than _SHARED_DOMAIN_THRESHOLD domains, all seen recently, is live
     shared-hosting — the straightforward positive case."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{148 + (int(suffix[:2], 16) % 8)}"
+    ip = _docaddr.alloc()
     domains = [f"s{i}.example.com" for i in range(hc._SHARED_DOMAIN_THRESHOLD + 5)]
 
     def _spy(url, params=None, timeout=None):
@@ -507,8 +499,7 @@ def test_sharing_historically_shared_when_many_domains_are_all_stale():
     updated _sharing_verdict, a truncated page can never support the
     historical claim, since active_count over a partial page is a lower
     bound, not a measurement (see the truncation test below)."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{156 + (int(suffix[:2], 16) % 8)}"
+    ip = _docaddr.alloc()
     domains = [f"h{i}.example.com" for i in range(hc._SHARED_DOMAIN_THRESHOLD + 5)]
     stale_ms = int((datetime.now(timezone.utc) - timedelta(days=365 * 3)).timestamp() * 1000)
 
@@ -537,8 +528,7 @@ def test_sharing_historically_shared_when_many_domains_are_all_stale():
 def test_sharing_unknown_when_no_pdns_data():
     """No pDNS history at all (count 0, empty data) is neither dedicated nor
     shared — it's unknown, and yields no candidate domains."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{164 + (int(suffix[:2], 16) % 8)}"
+    ip = _docaddr.alloc()
 
     def _spy(url, params=None, timeout=None):
         return _pdns_response(ip, [], count=0)
@@ -567,8 +557,7 @@ def test_truncated_page_still_uses_authoritative_total():
     and the page is truncated, so the updated _sharing_verdict reports
     "shared" rather than attempting (and being unable to support) a
     historically_shared verdict from a partial view."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{172 + (int(suffix[:2], 16) % 8)}"
+    ip = _docaddr.alloc()
     domains = ["p1.example.com", "p2.example.com", "p3.example.com"]
 
     def _spy(url, params=None, timeout=None):
@@ -610,8 +599,7 @@ def test_truncated_page_cannot_claim_historically_shared():
     recycled address causes FALSE ATTRIBUTION (blaming a customer for
     someone else's box), which this product cannot afford. The reverse
     error only costs a finding we declined to attribute."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{180 + (int(suffix[:2], 16) % 8)}"
+    ip = _docaddr.alloc()
     domains = [f"c{i}.example.com" for i in range(12)]
     stale_ms = int((datetime.now(timezone.utc) - timedelta(days=365 * 3)).timestamp() * 1000)
 
@@ -643,8 +631,7 @@ def test_non_forward_records_and_foreign_answers_are_ignored():
     """_parse_pdns_records must filter to forward (A/AAAA) records answering
     this exact IP, dedup by domain, and skip malformed entries instead of
     raising."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{188 + (int(suffix[:2], 16) % 8)}"
+    ip = _docaddr.alloc()
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     other_ip = "203.0.113.99"
 
@@ -682,8 +669,7 @@ def test_records_carry_iso_timestamps():
     into the claim as parseable ISO-8601, and a record mnemonic reports with
     no last-seen data must store None, not an epoch-zero date that would
     misread as "seen in 1970" (see _epoch_ms's value<=0 guard)."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{196 + (int(suffix[:2], 16) % 8)}"
+    ip = _docaddr.alloc()
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
     def _spy(url, params=None, timeout=None):
@@ -727,8 +713,7 @@ def test_unusable_payload_is_unattempted_not_empty():
     """planning#177's lesson applied to mnemonic: a vendor schema change (no
     `data` list) must read as an unattempted lookup, not as "this IP has no
     domains" — so it must not write a reverse_ip claim at all."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{204 + (int(suffix[:2], 16) % 8)}"
+    ip = _docaddr.alloc()
 
     def _spy(url, params=None, timeout=None):
         return _fake_response({"count": 5, "size": 0, "limit": 100, "offset": 0})
@@ -751,8 +736,7 @@ def test_unusable_payload_is_unattempted_not_empty():
 def test_network_failure_returns_empty_and_writes_no_claim():
     """Same fail-soft contract as the schema-mismatch case above: a raised
     exception from connector_get must not be recorded as a negative result."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{212 + (int(suffix[:2], 16) % 8)}"
+    ip = _docaddr.alloc()
 
     def _spy(url, params=None, timeout=None):
         raise ConnectionError("simulated network failure")
@@ -820,8 +804,7 @@ def test_budget_exhaustion_skips_the_lookup_entirely():
     """Once the daily/minute budget is spent, reverse_ip_domains must not
     even attempt the network call — the budget check runs before
     connector_get, not just after, to decide whether to cache the result."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"198.51.100.{220 + (int(suffix[:2], 16) % 8)}"
+    ip = _docaddr.alloc()
     orig_calls, orig_date, orig_used = hc._minute_calls, hc._budget_date, hc._budget_used
     calls = {"n": 0}
 

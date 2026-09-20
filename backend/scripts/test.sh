@@ -3,7 +3,7 @@
 #
 # The suite mutates and deletes rows in whatever database it is pointed at, so
 # it runs against a disposable one that is recreated from scratch every time.
-# `app/tests/conftest.py` enforces that with a hard failure if the database
+# `app/tests/__init__.py` enforces that with a hard failure if the database
 # name does not end in `_test` — see its header for the six-issue history that
 # rule exists to close.
 #
