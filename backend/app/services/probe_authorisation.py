@@ -564,8 +564,8 @@ def _posture_cap(
          availability regression far larger than the hole it would close.
 
     The hole this leaves is narrow, not open-ended: Phase 1 writes
-    `target_asset_links` (`scan_executor.py:859`,
-    `write_assets(..., target_ids=target_ids)`) before Phase 1.5 ever
+    `target_asset_links` (`scan_executor._run_pipeline`'s domain loop, the
+    `write_assets(..., target_ids=target_ids)` call) before Phase 1.5 ever
     calls this gate, so an asset discovered THIS run against a pre-close
     target is already linked — and therefore already resolved to a
     canonical row — by the time it reaches here. The residual case is a
