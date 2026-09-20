@@ -38,8 +38,12 @@ class HygieneHistory(Base):
     0046_temporal_layer.py; this class exists only so the ORM has a mapped
     target to query/insert against.
 
-    No FKs, on purpose — mirrors `ScoreHistory`/`ClaimHistory`: history
-    must outlive the entity it describes.
+    No FKs, on purpose — mirrors `ScoreHistory`, and for `ScoreHistory`'s
+    reason: this table feeds org-level trend aggregates (planning#121/#131),
+    so cascading its rows away would rewrite last month's numbers when an
+    asset is cleaned up today. It does NOT mirror `ClaimHistory`, which
+    cascades on the asset as of planning#191 — same shape, opposite answer,
+    because per-asset provenance is meaningless once the asset is gone.
 
     `id` is server-generated (`uuidv7()`) — do NOT add a Python-side
     `default=uuid.uuid4`; keep Postgres as the sole generator.
