@@ -38,6 +38,39 @@ the idiom used one file over, which is what this docstring is for.
 come from the DATABASE clock, not the Python process — `clock_timestamp()`
 rather than `now()`, because `now()` is the transaction timestamp and the
 watermark is read in a different transaction than the one that writes.
+
+## planning#195 checked the residue shape against `ON DELETE SET NULL` and
+deliberately changed nothing here
+
+planning#195 made `authorisation_decisions.asset_canonical_id`
+`ON DELETE SET NULL` (it was `NO ACTION`, which made every gate-evaluated
+asset undeletable). The issue that requested it worried this would start
+making `_unreachable` below match rows it shouldn't — a real decision row,
+orphaned by an ordinary asset delete, wearing the same
+`asset_canonical_id IS NULL` shape residue does.
+
+Measured against dev at the time: **all 92 rows carried a `scan_run_id`**
+(80 with a canonical id, 12 without, zero without a run id). SET NULL
+touches only `asset_canonical_id` — it does not and cannot touch
+`evidence_snapshot` — so an orphaned real row keeps its `scan_run_id` and
+still fails `_unreachable`'s second term exactly as before it was
+orphaned. Real scan rows always carry a run id (see `_unreachable`'s own
+docstring); this migration does not change that, and does not need to.
+
+The guard's coverage only grows: a test that writes a decision row with NO
+run id and then deletes that row's asset now creates genuinely
+unreachable residue (NULL canonical id, still no run id), and
+`test_zz_decision_log_hygiene.py` firing on that is the guard working as
+designed, not a new false positive to chase.
+
+Do **not** add a `decision_scope` term to `_unreachable` to try to carve
+out "orphaned by a SET NULL delete" from "never resolved a canonical row".
+There is nothing for such a term to exclude — both measured findings above
+show a real orphaned row already fails on `scan_run_id` alone. A term that
+excludes nothing is noise dressed up as a safeguard, and it would weaken
+the invariant for the next reader who assumes it must be pulling its
+weight. This paragraph exists so that reader checks the measurement again
+before "fixing" it.
 """
 
 from datetime import datetime

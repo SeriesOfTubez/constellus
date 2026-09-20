@@ -48,6 +48,7 @@ _BACKEND = pathlib.Path(__file__).resolve().parents[2]
 # domain-shaped gate writes a decision row on every denial, same as the
 # asset-shaped gate).
 _DECISION_WRITING_TESTS = [
+    "app/tests/test_asset_delete_with_decisions.py",
     "app/tests/test_cidr_sweep.py",
     "app/tests/test_phase3_gate.py",
     "app/tests/test_posture_policy.py",

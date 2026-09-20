@@ -878,6 +878,17 @@ def _compose(
         # ambiguous, because the asset path also writes NULL-canonical
         # rows for an unresolved asset (see `_decision_row`).
         "decision_scope": "asset",
+        # planning#195 made `asset_canonical_id` `ON DELETE SET NULL`, so an
+        # orphaned row would otherwise retain no trace of what it was
+        # about. Derived from `canonical` (not the in-batch asset ref)
+        # deliberately: orphaning can only happen where a canonical row
+        # existed, so that is exactly the population this needs to cover,
+        # and reading it off `canonical` avoids widening this function's
+        # signature. Flat keys, not a nested object — `authorise_discovery`
+        # below already carries a flat `"domain": domain` for the same
+        # purpose, and flat keys stay `GROUP BY`-able.
+        "asset_type": canonical.asset_type if canonical is not None else None,
+        "asset_value": canonical.value if canonical is not None else None,
         "gate_mode": mode,
         "scan_run_id": str(scan_run_id) if scan_run_id is not None else None,
         "caps": {
@@ -1016,6 +1027,13 @@ def authorise_probes(
                     # `decision_scope` separates.
                     "observer_noise_class": observer_row.noise_class if observer_row is not None else None,
                     "decision_scope": "asset",
+                    # planning#195 — same discipline as `tenancy`/
+                    # `observer_noise_class` above: always present so an
+                    # orphaned row (asset_canonical_id now ON DELETE SET
+                    # NULL) still says what it was about. `canonical` is
+                    # already in scope in this loop.
+                    "asset_type": canonical.asset_type if canonical is not None else None,
+                    "asset_value": canonical.value if canonical is not None else None,
                     "gate_mode": mode,
                     "scan_run_id": str(scan_run_id) if scan_run_id is not None else None,
                     "caps": {},
