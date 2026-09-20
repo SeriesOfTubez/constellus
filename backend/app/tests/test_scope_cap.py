@@ -33,6 +33,7 @@ from app.models.authorisation_decision import AuthorisationDecision
 from app.models.target import Target, TargetType
 from app.services import app_settings
 from app.services import probe_authorisation as pa
+from app.tests import _decision_log
 
 _SCAN_MODE_KEY = "scan_authorisation_mode"
 _GATE_MODE_KEY = "probe_authorisation_mode"
@@ -308,6 +309,13 @@ def test_unresolved_asset_is_denied_under_a_distinct_rule():
     log-only rollout is read to tell them apart."""
     ip = "192.0.2.77"  # deliberately never seeded as a canonical row
     cidr = "192.0.2.0/24"
+    # This test writes a decision row with a NULL `asset_canonical_id` —
+    # unavoidably so, since "there is no canonical row" is the thing under
+    # test. `_cleanup` keys on the ids of canonical rows the test created,
+    # so it matches nothing here and cannot. That gap leaked one row per
+    # suite run into the DEV database from 2026-09-12 (planning#189); the
+    # watermark below is the handle that reaches it.
+    mark = _decision_log.watermark()
     db = SessionLocal()
     try:
         _mk_target(db, cidr, TargetType.CIDR, verified=False)
@@ -321,6 +329,11 @@ def test_unresolved_asset_is_denied_under_a_distinct_rule():
     finally:
         db.close()
         _cleanup([ip], [cidr])
+        # Unconditional, and NOT asserted on: an exception raised in a
+        # `finally` replaces the failure that brought us here. Whether the
+        # cleanup actually matched is the job of
+        # test_zz_decision_log_hygiene.py, which checks the whole table.
+        _decision_log.cleanup_since(mark)
 
 
 def test_scope_denial_is_recorded_in_log_only_mode_too():
