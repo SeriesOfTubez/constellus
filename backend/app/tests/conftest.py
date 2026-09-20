@@ -26,6 +26,10 @@ needs adding it here.
 
 import pytest
 
+# The non-test-database guard lives in this package's `__init__.py`, not here:
+# `python -m app.tests.<module>` does not load conftest.py, and that door has
+# to be closed too. See that file's docstring.
+
 from app.services import audit
 from app.services import cloud_ranges
 from app.services import domain_affinity
