@@ -272,7 +272,17 @@ export type VerificationEvidence = {
   ip?: string
   reason?: string
   hostnames?: Record<string, { verdict: string; signals: string[] }>
-  hosting_class?: { company_name: string | null; asn: number | null }
+  hosting_class?: {
+    // planning#188: sourced from the local cloud_ranges mirror. provider is
+    // coarse by design ("aws", "vultr"); asn has no local source and was
+    // dropped. company_name/asn are the pre-#188 third-party shape and are
+    // still present on findings stamped before it.
+    provider?: string | null
+    service_class?: string | null
+    prefix?: string | null
+    company_name?: string | null
+    asn?: number | null
+  }
   corroboration?: {
     origin_serves_others: boolean
     corroborating_hostname: string | null

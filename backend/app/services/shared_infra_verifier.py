@@ -234,15 +234,16 @@ def classify_ip_ownership(db: Session, ip_asset: AssetCanonical, force: bool = F
     if verdict == "unverified":
         hosting = hosting_classifier.classify_ip(db, ip_asset.value)
         if not hosting.attempted:
-            # Same budget-starvation shape as the reverse-IP guard below,
-            # caught in review (planning#113 Fable review, finding 2): a
-            # failed/quota-exhausted ipapi.is lookup fails soft to
-            # is_datacenter=False (hosting_classifier.py) — indistinguishable
-            # from a genuine "checked, not a datacenter" determination unless
-            # the caller checks `attempted`. Caching an unattempted lookup at
-            # the full TTL would mislabel the IP as non-datacenter (skipping
-            # corroboration entirely) for 14 days on what might be a
-            # transient failure.
+            # classify_ip fails soft to is_datacenter=False; only `attempted`
+            # separates that from a real determination (planning#113 Fable
+            # review, finding 2 — the rule survives, the reason changed).
+            #
+            # What attempted=False now means: no cloud_ranges dataset loaded
+            # (planning#188). That is systemic and per-run, not transient and
+            # per-IP — so it is not a blip we are waiting out, it is our own
+            # outage, and caching a verdict derived from it would pin this IP
+            # at "not a datacenter" (skipping corroboration entirely) for the
+            # full 14-day TTL on a fact we never established.
             cacheable = False
         elif hosting.is_datacenter:
             corroboration = origin_corroboration.corroborate_liveness(
@@ -263,7 +264,9 @@ def classify_ip_ownership(db: Session, ip_asset: AssetCanonical, force: bool = F
             elif corroboration.origin_serves_others:
                 verdict = "ownership_unverifiable"
                 evidence["hosting_class"] = {
-                    "company_name": hosting.company_name, "asn": hosting.asn,
+                    "provider": hosting.provider,
+                    "service_class": hosting.service_class,
+                    "prefix": hosting.prefix,
                 }
                 evidence["corroboration"] = {
                     "origin_serves_others": corroboration.origin_serves_others,

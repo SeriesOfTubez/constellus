@@ -108,7 +108,7 @@ def test_ambiguous_plus_corroboration_promotes_to_ownership_unverifiable():
     _use_fake_cache()
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_INDETERMINATE)
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]
-    hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=True, company_name="IONOS Inc.", asn=8560)
+    hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=True, provider="ionos", service_class="unknown", prefix="198.51.100.0/24")
     oc.corroborate_liveness = lambda db, origin_ip, subject_value, owned_apexes: oc.CorroborationResult(
         attempted=True, origin_serves_others=True, corroborating_hostname="othertenant.com",
         evidence="tls_san_match", hostnames_probed=["othertenant.com"],
@@ -118,7 +118,7 @@ def test_ambiguous_plus_corroboration_promotes_to_ownership_unverifiable():
     result = siv.classify_ip_ownership(_NoopSession(), ip_asset)
     assert result["verdict"] == "ownership_unverifiable"
     assert result["evidence"]["corroboration"]["corroborating_hostname"] == "othertenant.com"
-    assert result["evidence"]["hosting_class"]["company_name"] == "IONOS Inc."
+    assert result["evidence"]["hosting_class"]["provider"] == "ionos"
     # Decisive verdict — cached as an affinity_confirmation claim for reuse.
     assert ip_asset._affinity_claim["verdict"] == "ownership_unverifiable"
     assert ip_asset._affinity_claim_written_at is not None
@@ -128,7 +128,7 @@ def test_ambiguous_with_no_corroboration_stays_unverified():
     _use_fake_cache()
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_INDETERMINATE)
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]
-    hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=True, company_name="IONOS Inc.", asn=8560)
+    hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=True, provider="ionos", service_class="unknown", prefix="198.51.100.0/24")
     oc.corroborate_liveness = lambda db, origin_ip, subject_value, owned_apexes: oc.CorroborationResult(
         attempted=True, origin_serves_others=False,
     )
@@ -139,10 +139,11 @@ def test_ambiguous_with_no_corroboration_stays_unverified():
 
 def test_budget_starvation_is_not_cached():
     """planning#113 Fable review, regression 2: corroborate_liveness
-    attempted=False because hosting_classifier's HackerTarget budget was
-    exhausted (not because there's nothing to corroborate) must NOT be
-    cached at the full TTL — otherwise the day's first ~15 IPs pin every
-    other IP at unverified for the whole TTL window."""
+    attempted=False because corroborate_liveness's mnemonic-backed
+    reverse-IP budget was exhausted (not because there's nothing to
+    corroborate) must NOT be cached at the full TTL — otherwise the day's
+    first ~15 IPs pin every other IP at unverified for the whole TTL
+    window."""
     _use_fake_cache()
     da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_INDETERMINATE)
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]

@@ -184,7 +184,15 @@ export function VerificationEvidencePanel({ finding }: { finding: Finding }) {
   if (!ev || !v || !VERIFICATION_LABEL[v]) return null
 
   const lines: string[] = []
-  if (ev.hosting_class?.company_name) {
+  if (ev.hosting_class?.provider) {
+    const cls = ev.hosting_class.service_class && ev.hosting_class.service_class !== "unknown"
+      ? `, ${ev.hosting_class.service_class}` : ""
+    lines.push(
+      `Origin IP ${ev.ip ?? "?"} sits in a published ${ev.hosting_class.provider} range` +
+      `${ev.hosting_class.prefix ? ` (${ev.hosting_class.prefix}${cls})` : ""} — provider-run hosting infrastructure.`
+    )
+  } else if (ev.hosting_class?.company_name) {
+    // Findings stamped before planning#188 carry the old third-party shape.
     lines.push(
       `Origin IP ${ev.ip ?? "?"} belongs to ${ev.hosting_class.company_name}` +
       `${ev.hosting_class.asn ? ` (AS${ev.hosting_class.asn})` : ""} — a hosting/datacenter network.`
