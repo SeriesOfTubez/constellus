@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 import {
   Activity as ActivityIcon, AlertCircle, CheckCircle2, Circle, Clock,
-  Filter, Info, Loader2, RefreshCw, ScanLine, Timer, Trash2, XCircle,
+  Filter, Info, Loader2, Lock, RefreshCw, ScanLine, Timer, Trash2, XCircle,
 } from "lucide-react"
 import { AdminBreadcrumb } from "@/components/AdminBreadcrumb"
 import { Badge } from "@/components/ui/badge"
@@ -23,6 +23,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useFlyout } from "@/lib/flyout"
 import { api, type ScanKind, type ScanRun } from "@/lib/api"
 import { displayName } from "@/lib/apex"
+import { useAuthStore } from "@/lib/auth"
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -484,13 +485,205 @@ function SystemLogsPanel() {
   )
 }
 
+// ── Audit trail panel ─────────────────────────────────────────────────────────
+
+type AuditEntry = {
+  id: string
+  occurred_at: string
+  user_id: string | null
+  user_email: string | null
+  user_full_name: string | null
+  action: string
+  resource_type: string | null
+  resource_id: string | null
+  detail: Record<string, unknown>
+  ip_address: string | null
+}
+
+type AuditFacets = {
+  actions: string[]
+  resource_types: string[]
+  actors: { id: string; email: string; full_name: string }[]
+}
+
+function sinceFor(period: string): string | null {
+  const hours = period === "24h" ? 24 : period === "7d" ? 24 * 7 : period === "30d" ? 24 * 30 : null
+  if (hours === null) return null
+  return new Date(Date.now() - hours * 3600_000).toISOString()
+}
+
+function auditOutcomeVariant(status: number | undefined): "default" | "outline" | "success" | "warning" | "destructive" {
+  if (status === undefined) return "outline"
+  if (status >= 200 && status < 300) return "success"
+  if (status >= 400) return "destructive"
+  return "outline"
+}
+
+// A before/after value is usually a scalar ("polite" → "aggressive"), but a
+// bulk change records a map of prior values per target, so `String(value)`
+// would render "[object Object]". Anything non-scalar is stringified and
+// clipped instead.
+function auditValue(value: unknown): string {
+  if (value === null || value === undefined) return "—"
+  if (typeof value === "object") {
+    const text = JSON.stringify(value)
+    return text.length > 120 ? `${text.slice(0, 120)}…` : text
+  }
+  return String(value)
+}
+
+function AuditChangeLine({ field, value }: { field: string; value: unknown }) {
+  if (value !== null && typeof value === "object" && "from" in value && "to" in value) {
+    const { from, to } = value as { from: unknown; to: unknown }
+    return (
+      <div className="truncate">
+        <span className="text-muted-foreground">{field}:</span> {auditValue(from)} → {auditValue(to)}
+      </div>
+    )
+  }
+  return <div className="truncate"><span className="text-muted-foreground">{field}:</span> {auditValue(value)}</div>
+}
+
+function AuditRow({ entry }: { entry: AuditEntry }) {
+  const detail = entry.detail ?? {}
+  const statusCode = typeof detail.status_code === "number" ? detail.status_code : undefined
+  const changes = detail.changes !== null && typeof detail.changes === "object" ? detail.changes as Record<string, unknown> : null
+  const path = typeof detail.path === "string" ? detail.path : null
+
+  return (
+    <div className="flex gap-3 px-4 py-2 border-b text-xs items-start hover:bg-muted/40">
+      <span className="w-44 shrink-0 tabular-nums text-muted-foreground">{fmtLogTime(entry.occurred_at)}</span>
+      <span className="w-48 shrink-0 truncate" title={entry.user_email ?? ""}>
+        {entry.user_full_name || entry.user_email || entry.user_id || "—"}
+      </span>
+      <span className="w-56 shrink-0">
+        <div className="font-medium">{entry.action}</div>
+        {entry.resource_type && <div className="text-muted-foreground text-[11px]">{entry.resource_type}</div>}
+      </span>
+      <span className="w-16 shrink-0">
+        <Badge variant={auditOutcomeVariant(statusCode)}>{statusCode ?? "—"}</Badge>
+      </span>
+      <span className="flex-1 min-w-0">
+        {changes ? (
+          Object.entries(changes).map(([field, value]) => <AuditChangeLine key={field} field={field} value={value} />)
+        ) : path ? (
+          <span className="text-muted-foreground font-mono text-[11px]">{path}</span>
+        ) : null}
+      </span>
+      <span className="w-32 shrink-0 text-muted-foreground font-mono text-[11px] text-right">
+        {entry.ip_address ?? "—"}
+      </span>
+    </div>
+  )
+}
+
+function AuditPanel() {
+  const qc = useQueryClient()
+  const [actor, setActor] = useState("all")
+  const [action, setAction] = useState("all")
+  const [resource, setResource] = useState("all")
+  const [period, setPeriod] = useState("7d")
+
+  const { data: facets } = useQuery({
+    queryKey: ["audit-facets"],
+    queryFn: () => api.get<AuditFacets>("/audit/facets"),
+    staleTime: 30_000,
+  })
+
+  const { data: entries, isLoading, isFetching } = useQuery({
+    queryKey: ["audit", actor, action, resource, period],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (actor !== "all") params.set("user_id", actor)
+      if (action !== "all") params.set("action", action)
+      if (resource !== "all") params.set("resource_type", resource)
+      const since = sinceFor(period)
+      if (since) params.set("since", since)
+      params.set("limit", "500")
+      return api.get<AuditEntry[]>(`/audit/?${params}`)
+    },
+  })
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="px-4 py-3 border-b space-y-3 flex-shrink-0">
+        <div className="flex flex-wrap gap-2 items-center">
+          <Select value={actor} onValueChange={setActor}>
+            <SelectTrigger className="w-56 h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All actors</SelectItem>
+              {facets?.actors.map(a => (
+                <SelectItem key={a.id} value={a.id}>{a.full_name || a.email}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={action} onValueChange={setAction}>
+            <SelectTrigger className="w-48 h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All actions</SelectItem>
+              {facets?.actions.map(a => (
+                <SelectItem key={a} value={a}>{a}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={resource} onValueChange={setResource}>
+            <SelectTrigger className="w-40 h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All resources</SelectItem>
+              {facets?.resource_types.map(r => (
+                <SelectItem key={r} value={r}>{r}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={period} onValueChange={setPeriod}>
+            <SelectTrigger className="w-36 h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="24h">Last 24 hours</SelectItem>
+              <SelectItem value="7d">Last 7 days</SelectItem>
+              <SelectItem value="30d">Last 30 days</SelectItem>
+              <SelectItem value="all">All time</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <span className="text-xs text-muted-foreground">{entries?.length ?? 0} events</span>
+
+          <div className="flex items-center gap-3 ml-auto">
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Lock className="h-3.5 w-3.5" />
+              Append-only — no delete path
+            </span>
+            <Button variant="outline" size="sm" onClick={() => qc.invalidateQueries({ queryKey: ["audit"] })}>
+              {isFetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {isLoading ? (
+          <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+        ) : entries?.length === 0 ? (
+          <div className="p-4 text-sm text-muted-foreground">No audit events in this period.</div>
+        ) : (
+          entries?.map(entry => <AuditRow key={entry.id} entry={entry} />)
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function Activity() {
-  const [tab, setTab] = useState<"scans" | "logs">("scans")
+  const { user } = useAuthStore()
+  const canAudit = user?.role === "admin"
+  const [tab, setTab] = useState<"scans" | "logs" | "audit">("scans")
 
   return (
-    <Tabs value={tab} onValueChange={(v) => setTab(v as "scans" | "logs")} className="flex flex-col h-screen">
+    <Tabs value={tab} onValueChange={(v) => setTab(v as "scans" | "logs" | "audit")} className="flex flex-col h-screen">
       <div className="flex flex-col px-6 pt-4 pb-3 border-b flex-shrink-0 gap-3">
         <AdminBreadcrumb page="Activity" />
         <div className="flex items-center justify-between gap-4">
@@ -498,12 +691,13 @@ export default function Activity() {
             <ActivityIcon className="h-5 w-5 text-muted-foreground" />
             <div>
               <h1 className="text-xl font-semibold leading-tight">Activity</h1>
-              <p className="text-xs text-muted-foreground">Scan runs and system logs</p>
+              <p className="text-xs text-muted-foreground">Scan runs, system logs and the audit trail</p>
             </div>
           </div>
           <TabsList>
             <TabsTrigger value="scans">Scans</TabsTrigger>
             <TabsTrigger value="logs">System logs</TabsTrigger>
+            {canAudit && <TabsTrigger value="audit">Audit trail</TabsTrigger>}
           </TabsList>
         </div>
       </div>
@@ -514,6 +708,11 @@ export default function Activity() {
       <TabsContent value="logs" className="flex-1 overflow-hidden min-h-0 m-0 data-[state=inactive]:hidden" forceMount>
         <SystemLogsPanel />
       </TabsContent>
+      {canAudit && (
+        <TabsContent value="audit" className="flex-1 overflow-hidden min-h-0 m-0 data-[state=inactive]:hidden" forceMount>
+          <AuditPanel />
+        </TabsContent>
+      )}
     </Tabs>
   )
 }

@@ -554,7 +554,21 @@ def _verify_and_resolve(
     registry: dict,
 ) -> None:
     """Run the verification scan and resolve the canonical finding if it
-    wasn't re-observed (i.e. its last_seen_at didn't advance past started_at)."""
+    wasn't re-observed (i.e. its last_seen_at didn't advance past started_at).
+
+    The run MUST have reached COMPLETED first (planning#162 item 4). Without
+    that check, a verification scan that died turned "we did not look" into
+    "it is fixed" — absence of evidence promoted to evidence of absence, the
+    same shape as planning#160.
+
+    Note what does NOT work here: wrapping the launch in try/except.
+    `scan_executor.launch` catches everything itself and calls `_fail()`
+    internally (scan_executor.py:56-64), so it returns `None` on success and
+    `None` on catastrophe — the caller cannot tell the two apart from the
+    return value. The run's own `status` is the only honest signal, so we
+    re-read it. `db.expire_all()` below makes that re-read see the row the
+    executor's separate session committed.
+    """
     from app.core.database import SessionLocal
     db = SessionLocal()
     try:
@@ -563,13 +577,72 @@ def _verify_and_resolve(
             return
         scan_executor.launch(scan_run_id, run.scope, registry)
         db.expire_all()
+
+        run = db.get(ScanRun, scan_run_id)
+        status = getattr(run.status, "value", run.status) if run else None
         original = db.get(FindingCanonical, original_finding_id)
-        if original and original.last_seen_at < started_at:
+        if original is None:
+            return
+
+        if status != ScanStatus.COMPLETED.value:
+            # FAILED, CANCELLED, or still RUNNING (a hard abort that never
+            # reached _fail). Leave the finding's state exactly as it was and
+            # record why, so the operator who clicked Re-verify learns that
+            # nothing happened rather than clicking forever against a
+            # systematically failing scanner.
+            _record_verification_attempt(db, original, run, "failed")
+            db.commit()
+            return
+
+        if original.last_seen_at < started_at:
             original.state = FindingState.RESOLVED.value
             original.resolved_at = datetime.now(timezone.utc)
-            db.commit()
+            _record_verification_attempt(db, original, run, "resolved")
+        else:
+            _record_verification_attempt(db, original, run, "still_observed")
+        db.commit()
     finally:
         db.close()
+
+
+def _record_verification_attempt(
+    db: Session,
+    finding: FindingCanonical,
+    run: ScanRun | None,
+    outcome: str,
+) -> None:
+    """Stamp the outcome of a manual Re-verify onto the finding
+    (planning#162 item 4).
+
+    Lives in `detail` rather than on the `verification` / `verified_at`
+    columns on purpose: those belong to the shared-infra verifier and answer
+    a different question (is this finding attributable to an asset we own).
+    Conflating "the ownership verdict" with "the last recheck scan's outcome"
+    would corrupt an axis the claims layer reads. `detail` is already
+    serialized out wholesale by `_serialize_finding`, and `last_verification`
+    is lifted to a top-level key there, so the UI can render
+    "Last verification failed — view run" with no schema change.
+
+    `outcome` is one of: `failed` (the run did not reach COMPLETED — the
+    finding's state was left untouched), `resolved`, `still_observed`.
+    """
+    attempt: dict = {
+        "outcome": outcome,
+        "at": datetime.now(timezone.utc).isoformat(),
+        "scan_run_id": str(run.id) if run else None,
+        "scan_run_status": (getattr(run.status, "value", run.status) if run else None),
+    }
+    if run is not None and outcome == "failed":
+        # `error` is set by the executor's `_fail`; `partial_failures` carries
+        # per-chunk errors on a run that otherwise completed. Both are useful
+        # to a human here and neither is guaranteed to be populated.
+        if run.error:
+            attempt["error"] = run.error
+        if run.partial_failures:
+            attempt["partial_failures"] = run.partial_failures
+    # Reassign rather than mutate: SQLAlchemy does not track in-place changes
+    # to a plain JSONB dict, so an in-place update would never be flushed.
+    finding.detail = {**(finding.detail or {}), "last_verification": attempt}
 
 
 def _finding_asset_state(db: Session, f: FindingCanonical):
@@ -596,6 +669,10 @@ def _serialize_finding(f: FindingCanonical, a: AssetCanonical | None, state=None
         "title": f.title,
         "description": f.description,
         "detail": f.detail or {},
+        # Outcome of the last manual Re-verify (planning#162 item 4). Lifted
+        # out of `detail` so the UI does not have to know it lives in a
+        # free-form blob; None means this finding has never been re-verified.
+        "last_verification": (f.detail or {}).get("last_verification"),
         "state": f.state,
         "acknowledged_at": f.acknowledged_at.isoformat() if f.acknowledged_at else None,
         "suppressed_until": f.suppressed_until.isoformat() if f.suppressed_until else None,

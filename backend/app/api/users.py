@@ -1,12 +1,13 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_role
 from app.core.database import get_db
 from app.models.user import UserRole
 from app.schemas.user import UserCreate, UserResponse, UserUpdate
+from app.services import audit
 from app.services.user import create_user, get_user, get_user_by_email, list_users, update_user
 
 router = APIRouter()
@@ -50,6 +51,7 @@ def get_one(
 
 @router.patch("/{user_id}", response_model=UserResponse)
 def update(
+    request: Request,
     user_id: uuid.UUID,
     data: UserUpdate,
     db: Session = Depends(get_db),
@@ -58,4 +60,17 @@ def update(
     user = get_user(db, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    return update_user(db, user, data)
+
+    # planning#194 — "who changed this role" is only useful with "from what,
+    # to what", and the middleware cannot know the old value. Captured before
+    # the update, recorded by the choke point after the response.
+    before = {"role": user.role, "is_active": user.is_active}
+    result = update_user(db, user, data)
+    changed = {
+        field: {"from": was, "to": getattr(result, field)}
+        for field, was in before.items()
+        if getattr(result, field) != was
+    }
+    if changed:
+        audit.record_detail(request, **changed)
+    return result

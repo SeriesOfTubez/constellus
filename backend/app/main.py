@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from app.api import connectors, scans, findings, assets, auth, users, saml, targets, logs, tags
+from app.api import audit
 from app.api import claims
 from app.api import edges
 from app.api import hygiene
@@ -21,6 +22,7 @@ from app.api import settings as settings_api
 from app.api import system
 from app.core.config import require_configured_secret_key, settings
 from app.core.database import get_db
+from app.services.audit import AuditMiddleware
 
 
 @asynccontextmanager
@@ -87,6 +89,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# planning#194 — one choke point for the audit trail. Added before CORS, so
+# it sits INSIDE it: a CORS preflight is answered and short-circuited above
+# this and never produces a row, while every real request passes through and
+# its final status code is observed. It records nothing for a request that
+# carried no authenticated principal — see services/audit.py.
+app.add_middleware(AuditMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
@@ -113,6 +122,7 @@ app.include_router(notifications.router, prefix="/api/notifications", tags=["not
 app.include_router(edges.router, prefix="/api/edges", tags=["edges"])
 app.include_router(claims.router, prefix="/api/claims", tags=["claims"])
 app.include_router(hygiene.router, prefix="/api/hygiene", tags=["hygiene"])
+app.include_router(audit.router, prefix="/api/audit", tags=["audit"])
 
 
 @app.get("/api/health")
