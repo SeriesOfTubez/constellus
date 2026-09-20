@@ -39,6 +39,7 @@ from app.models.claim import AssetClaim, ClaimHistory
 from app.models.cloud_range import CloudRange
 from app.models.observer import Observer
 from app.services import claim_emitter
+from app.services import cloud_ranges
 from app.services import domain_affinity as da
 from app.services import hosting_classifier as hc
 from app.services import origin_corroboration as oc
@@ -99,11 +100,35 @@ def _affinity_indeterminate(hostname, origin_ip, apexes, ports=None):
     )
 
 
+
+def _install_loaded_dataset() -> None:
+    """Make `cloud_ranges.dataset_state` report a loaded mirror for THIS test.
+
+    The tests below insert their own CloudRange rows, so `lookup` works
+    anywhere — but `classify_ip` also reads `dataset_state`, the single-row
+    freshness/provenance marker, and returns `attempted=False` when it is
+    absent. On the dev DB that row exists (a real mirror is loaded), so
+    assuming it is there passes locally and fails in CI, whose database is
+    migrated but empty. That is the assumption, not the environment, being
+    wrong: a test that needs a loaded dataset must provide one.
+
+    `cloud_ranges` is in conftest.py's _GUARDED_MODULES, so this is restored
+    after each test. Monkeypatched rather than inserted because
+    cloud_ranges_meta is a single-row table holding the REAL mirror on the
+    dev DB — writing to it would clobber live provenance.
+    """
+    state = cloud_ranges.DatasetState(
+        dataset_sha256="testsha", generated_at=datetime.now(timezone.utc),
+        record_count=1, stale=False,
+    )
+    cloud_ranges.dataset_state = lambda db: state
+
 def test_phase_d_reaches_ownership_unverifiable_from_a_real_cloud_range():
     suffix = uuid.uuid4().hex[:10]
     ip = f"203.0.113.{10 + (int(suffix[:2], 16) % 60)}"
     range_id = None
 
+    _install_loaded_dataset()
     db = SessionLocal()
     try:
         ip_asset = _make_ip_asset(db, ip)
@@ -138,6 +163,7 @@ def test_shared_infra_verifier_caches_again_on_the_normal_path():
     ip = f"203.0.113.{80 + (int(suffix[:2], 16) % 60)}"
     range_id = None
 
+    _install_loaded_dataset()
     db = SessionLocal()
     try:
         ip_asset = _make_ip_asset(db, ip)
