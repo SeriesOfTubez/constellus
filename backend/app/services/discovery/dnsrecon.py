@@ -16,6 +16,9 @@ from app.models.asset import AssetType
 
 log = logging.getLogger(__name__)
 
+# Stable observer slug — see subfinder.py.
+OBSERVER = "dnsrecon"
+
 IMAGE = "darkoperator/dnsrecon"
 
 _TYPE_MAP = {

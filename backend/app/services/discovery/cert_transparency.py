@@ -36,6 +36,9 @@ from app.models.ct_query_cache import CTQueryCache
 
 log = logging.getLogger(__name__)
 
+# Stable observer slug — see subfinder.py.
+OBSERVER = "cert_transparency"
+
 _HOSTNAME_RE = re.compile(r"^(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$")
 
 SUCCESS_TTL_SECONDS = 6 * 3600   # 6 h — a daily monitoring tick + buffer

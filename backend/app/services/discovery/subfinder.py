@@ -16,6 +16,18 @@ from app.models.asset import AssetType
 
 log = logging.getLogger(__name__)
 
+# Stable observer slug (planning#196) — the same convention as
+# `DiscoveredAsset.observer` (`app/connectors/base.py`) and the connectors'
+# `observer` class attributes (e.g. `app/connectors/naabu.py`); this module
+# already passes `source="subfinder"` into its emitted assets' metadata.
+# These discovery modules are bare `run()`/`available()` functions, not
+# connector classes, so they have no `.observer` attribute of their own —
+# this module-level constant is how `probe_authorisation.
+# authorise_discovery` learns which seeded `observers` row describes this
+# tool. The value MUST match a seeded `observers.name` — see
+# `test_posture_policy.py`'s `test_every_discovery_module_declares_a_seeded_observer_slug`.
+OBSERVER = "subfinder"
+
 IMAGE = "projectdiscovery/subfinder:latest"
 
 

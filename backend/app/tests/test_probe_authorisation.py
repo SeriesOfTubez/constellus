@@ -418,11 +418,12 @@ def test_posture_cap_receives_the_asset_and_can_decide_per_asset():
             asset = _mk_ip_asset(db, value)
             _set_state(db, asset.id, "direct_addressable")
 
-        def _per_asset_posture(db_, *, scope, asset_ref, canonical, ma_pre_close_ids):
+        def _per_asset_posture(db_, *, scope, asset_ref, canonical, ma_pre_close_ids, noise_class):
             # Record what actually arrived, then decide on it.
-            # `ma_pre_close_ids` is accepted (unused) purely to match the
-            # planning#193 signature `authorise_probes` now calls this
-            # function with — a stand-in that dropped it would TypeError.
+            # `ma_pre_close_ids` and `noise_class` are both accepted
+            # (unused) purely to match the planning#193 / planning#196
+            # signature `authorise_probes` now calls this function with —
+            # a stand-in that dropped either would TypeError.
             seen.append((getattr(asset_ref, "value", None), canonical))
             if getattr(asset_ref, "value", None) == denied_value:
                 return pa.Cap(False, frozenset(), None, "posture:ma_pre_close")
@@ -964,7 +965,7 @@ def test_posture_cap_denies_an_asset_linked_to_a_pre_close_target():
         _link(db, target.id, asset.id)
 
         ma_ids = pa._resolve_ma_pre_close_ids(db, {asset.id})
-        cap = pa._posture_cap(db, scope={}, asset_ref=None, canonical=asset, ma_pre_close_ids=ma_ids)
+        cap = pa._posture_cap(db, scope={}, asset_ref=None, canonical=asset, ma_pre_close_ids=ma_ids, noise_class="target_host")
         assert cap.allowed is False
         assert cap.rule == "posture:ma_pre_close"
         assert cap.modes == frozenset()
@@ -991,7 +992,7 @@ def test_posture_cap_permits_unlinked_and_ordinary_linked_assets():
         assert ma_ids == frozenset(), "an ordinary target's link must not appear in the pre-close set"
 
         for asset in (unlinked, ordinary_asset):
-            cap = pa._posture_cap(db, scope={}, asset_ref=None, canonical=asset, ma_pre_close_ids=ma_ids)
+            cap = pa._posture_cap(db, scope={}, asset_ref=None, canonical=asset, ma_pre_close_ids=ma_ids, noise_class="target_host")
             assert cap.allowed is True, asset.value
             assert cap.rule == "posture:permissive", asset.value
     finally:
@@ -1020,7 +1021,7 @@ def test_posture_cap_any_link_wins_even_with_an_ordinary_target_also_linked():
         _link(db, ordinary_target.id, asset.id)
 
         ma_ids = pa._resolve_ma_pre_close_ids(db, {asset.id})
-        cap = pa._posture_cap(db, scope={}, asset_ref=None, canonical=asset, ma_pre_close_ids=ma_ids)
+        cap = pa._posture_cap(db, scope={}, asset_ref=None, canonical=asset, ma_pre_close_ids=ma_ids, noise_class="target_host")
         assert cap.allowed is False, "one pre-close link must deny even with an ordinary target also linked"
         assert cap.rule == "posture:ma_pre_close"
     finally:
@@ -1036,10 +1037,17 @@ def test_posture_cap_permissive_when_canonical_is_none():
     `_posture_cap` does not deny on that basis — `_scope_cap`'s
     `scope:unresolved_asset` is what closes this case instead. Pinned here
     so a future change to this behaviour is made on purpose, not by
-    accident."""
+    accident.
+
+    planning#196 added the `noise_class` argument to `_posture_cap`; this
+    call passes `"target_host"` — the noisiest class, denied outright
+    under passive-only — deliberately, so the PERMISSIVE outcome asserted
+    below is proven for the hardest case, not one that would pass anyway
+    because the noise class happened to be permitted.
+    """
     cap = pa._posture_cap(
         None, scope={}, asset_ref=None, canonical=None,
-        ma_pre_close_ids=frozenset({uuid.uuid4()}),
+        ma_pre_close_ids=frozenset({uuid.uuid4()}), noise_class="target_host",
     )
     assert cap.allowed is True
     assert cap.rule == "posture:permissive"

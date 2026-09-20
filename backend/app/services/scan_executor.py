@@ -717,6 +717,10 @@ def _run_pipeline(
         # path Phase 1 uses below for leaf FQDNs.
         if domains:
             try:
+                # planning#196: not routed through `_posture_permits` /
+                # `probe_authorisation.authorise_discovery` — there is no
+                # `targets` row in scope in this branch at all (skip_discovery
+                # is the per-asset recheck path, seeded straight from scope).
                 from app.services.discovery.dns_resolve import resolve_names
                 resolved = resolve_names(domains, source="dns_resolve", owned_domains=owned_domains)
                 if resolved:
@@ -754,28 +758,39 @@ def _run_pipeline(
                 domain, auth_mode,
             )
 
-        # planning#193 route (c). dnsrecon and bruteforce are the two
-        # discovery tools that generate traffic a counterparty can see:
-        # both enumerate against the domain's OWN authoritative
-        # nameservers (dnsrecon `-t std`; bruteforce resolves 60-250
-        # wordlist prefixes). Neither reaches `authorise_probes` — the
-        # discovery phase gates on `is_scan_authorised`, which knows
-        # nothing about posture — so the probe gate's `_posture_cap`
-        # cannot close this door and the check has to be made here.
-        # planning#193 tracks folding this phase behind the gate as the
-        # follow-up (route (b)); until then this is the second of two
-        # enforcement points and that is a known, written-down cost.
-        posture_passive = bool(target_row is not None and target_row.ma_pre_close)
-        if posture_passive:
-            log.info(
-                "Target %s is pre-close M&A (passive-only) — skipping dnsrecon and "
-                "bruteforce; passive discovery (CT, subfinder, DNS resolution) continues",
-                domain,
+        # planning#196 step 2. Every discovery tool in this loop now
+        # declares a module-level `OBSERVER` slug (see
+        # `app/services/discovery/*.py`) and asks
+        # `probe_authorisation.authorise_discovery` whether ITS noise class
+        # is permitted under this target's posture — replacing the
+        # planning#193 route (c) hardcoded dnsrecon/bruteforce-only check
+        # that used to live here. This is why a NEW noisy discovery tool is
+        # covered without editing this function's policy at all: it
+        # inherits the check simply by declaring an `OBSERVER` and being
+        # routed through `_posture_permits` below, the same way every tool
+        # already in this loop is. See planning#193 for the original
+        # route-(c) provenance and `app.services.posture` for the shared
+        # policy this now composes against.
+        def _posture_permits(module) -> bool:
+            return probe_authorisation.authorise_discovery(
+                db,
+                observer_slug=getattr(module, "OBSERVER", None),
+                target_row=target_row,
+                domain=domain,
+                scan_run_id=scan_run_id,
             )
 
-        if options.get("subfinder", True) and domain_authorised:
+        # `getattr(module, "OBSERVER", None)` above, rather than
+        # `module.OBSERVER`, is deliberate: a tool that forgets to declare
+        # one is denied fail-closed under passive-only (same as any other
+        # unrecognised observer — see `authorise_discovery`'s docstring),
+        # and is completely unaffected otherwise — not a mid-scan
+        # `AttributeError` either way.
+
+        from app.services.discovery import bruteforce, dns_records, dns_resolve, dnsrecon, subfinder
+
+        if options.get("subfinder", True) and domain_authorised and _posture_permits(subfinder):
             try:
-                from app.services.discovery import subfinder
                 if subfinder.available():
                     result = subfinder.run(domain, owned_domains=owned_domains)
                     phase_assets.extend(result.assets)
@@ -789,21 +804,25 @@ def _run_pipeline(
         # with no children would otherwise emit zero ip_address assets and
         # Phase 1.5 (naabu) + Phase 2 host-enrichment would have nothing to
         # work with. Passive — same rationale as dns_records below.
-        try:
-            from app.services.discovery.dns_resolve import resolve_names
-            self_resolved = resolve_names([domain], source="dns_resolve", apex=apex, owned_domains=owned_domains)
-            if self_resolved:
-                phase_assets.extend(self_resolved)
-                connectors_used.append("dns_resolve")
-        except Exception:
-            log.exception("dns_resolve failed for %s", domain)
+        if _posture_permits(dns_resolve):
+            try:
+                # Call the module attribute, not a name bound by `from ...
+                # import resolve_names` — `test_scan_executor_ma_pre_close.py`
+                # monkeypatches `dns_resolve.resolve_names` by module-attribute
+                # assignment and relies on this call re-reading the attribute
+                # off the module object at call time.
+                self_resolved = dns_resolve.resolve_names([domain], source="dns_resolve", apex=apex, owned_domains=owned_domains)
+                if self_resolved:
+                    phase_assets.extend(self_resolved)
+                    connectors_used.append("dns_resolve")
+            except Exception:
+                log.exception("dns_resolve failed for %s", domain)
 
         # Direct MX / NS / SPF lookups against the apex. Passive from the
         # target's perspective (queries against public recursors), so no
         # scan-auth gate — same rationale as dns_resolve.
-        if options.get("dns_records", True):
+        if options.get("dns_records", True) and _posture_permits(dns_records):
             try:
-                from app.services.discovery import dns_records
                 result = dns_records.run(domain)
                 phase_assets.extend(result.assets)
                 if result.assets:
@@ -813,9 +832,8 @@ def _run_pipeline(
 
         # dnsrecon: per-run options can force-enable; otherwise the tier decides.
         dnsrecon_tier = aggressiveness.dnsrecon_profile(tier)
-        if options.get("dnsrecon", dnsrecon_tier["enabled"]) and domain_authorised and not posture_passive:
+        if options.get("dnsrecon", dnsrecon_tier["enabled"]) and domain_authorised and _posture_permits(dnsrecon):
             try:
-                from app.services.discovery import dnsrecon
                 if dnsrecon.available():
                     result = dnsrecon.run(domain)
                     phase_assets.extend(result.assets)
@@ -827,9 +845,8 @@ def _run_pipeline(
         # bruteforce: tier sets default enablement + wordlist; per-run options
         # override both independently.
         brute_tier = aggressiveness.bruteforce_profile(tier)
-        if options.get("bruteforce", brute_tier["enabled"]) and domain_authorised and not posture_passive:
+        if options.get("bruteforce", brute_tier["enabled"]) and domain_authorised and _posture_permits(bruteforce):
             try:
-                from app.services.discovery import bruteforce
                 wordlist = options.get("bruteforce_wordlist", brute_tier["wordlist"])
                 result = bruteforce.run(domain, wordlist)
                 phase_assets.extend(result.assets)
