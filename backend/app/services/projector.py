@@ -20,10 +20,12 @@ either a claim or a real column:
     `assets_canonical.record_type`/`.content` columns (L3b-1 promoted those
     to columns; L3b-2 stopped reading the transitional metadata mirror).
   - `attributes["naabu_last_scan_at"]` <- the naabu `port_observation`
-    claim's `last_observed_at`, isoformatted — the same value used as the
-    prune cutoff. Only taken from a claim whose evidence does not say
-    `complete: False` (planning#169) — an incomplete sweep may not advance
-    this cutoff.
+    claim's `evidence["swept_at"]` — the sweep's own clock, and the same
+    value used as the prune cutoff. Only taken from a claim whose evidence
+    does not say `complete: False` (planning#169) — an incomplete sweep may
+    not advance this cutoff — and absent entirely when the claim carries no
+    `swept_at` at all (planning#190: pre-#190 claims prune nothing rather
+    than fall back to the write timestamp that WAS the bug).
   - `attributes["tenancy"]` <- every rung's `tenancy` claim (any observer in
     `_TENANCY_OBSERVERS`) plus the Tier 2 opinion derived from the
     `reverse_ip` claim, folded by `_compose_tenancy` (planning#182 rung 3).
@@ -123,6 +125,28 @@ def _prune_stale_ports(open_ports: list, naabu_last_scan_at: str, now: datetime)
             kept.append(entry)
         # else: stale / grace-expired — drop
     return kept
+
+
+def _normalized_swept_at(raw) -> str | None:
+    """planning#190 — the naabu sweep's own timestamp off the claim's
+    evidence, normalized to a tz-aware ISO string, or None if there isn't a
+    usable one.
+
+    Validated once, here, rather than downstream: the value feeds BOTH
+    `_prune_stale_ports` (which would keep everything on an unparseable
+    marker) and `attributes["naabu_last_scan_at"]` (which the read-time
+    `api.assets._filter_stale_ports` would likewise ignore). Same outcome
+    either way — this just says it in one place instead of two.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.isoformat()
 
 
 def _merge_open_ports(existing: list, new: list) -> list:
@@ -743,9 +767,10 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
 
         # ── open_ports: fold every observer's claim through _merge_open_ports,
         # restoring the observer identity the emitter stripped, then prune on
-        # the naabu observer's last_observed_at (no naabu claim -> keep all).
+        # the naabu sweep's own clock (no naabu claim, or no clock on it ->
+        # keep all).
         merged_ports: list = []
-        naabu_last_observed_at: datetime | None = None
+        naabu_swept_at: str | None = None
         for observer_name, claim_value, last_observed_at, evidence in asset_claims:
             ports = claim_value.get("ports") if isinstance(claim_value, dict) else None
             if not isinstance(ports, list):
@@ -764,15 +789,37 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
                 # in above; what it may not do is advance the staleness cutoff,
                 # which both DELETES here (_prune_stale_ports) and drives the
                 # read-time hide via attributes["naabu_last_scan_at"] below.
-                # Leaving naabu_last_observed_at None withholds both for this
-                # cycle: the previous complete sweep's cutoff is deliberately
-                # NOT carried forward, so a genuine phantom is retired one scan
-                # later than it could be — and no real port is ever deleted.
+                # Leaving naabu_swept_at None withholds both for this cycle:
+                # the previous complete sweep's cutoff is deliberately NOT
+                # carried forward into the prune, so a genuine phantom is
+                # retired one scan later than it could be — and no real port
+                # is ever deleted.
                 # A claim with no `complete` key predates #169 (or came from a
                 # producer with no notion of an unfinished pass) and counts as
                 # complete, preserving the previous behaviour exactly.
                 if not (isinstance(evidence, dict) and evidence.get("complete") is False):
-                    naabu_last_observed_at = last_observed_at
+                    # planning#190 — the cutoff is the SWEEP's clock, carried
+                    # on evidence by the emitter from the same `now` that
+                    # stamped every port's `last_seen_at`. It used to be this
+                    # claim's `last_observed_at`, which write_assets() stamps
+                    # only after the connector has returned — always strictly
+                    # later than every port it judged, so every fresh port was
+                    # deleted on the projection that first recorded it and
+                    # open_ports was permanently [].
+                    #
+                    # A claim with no `swept_at` predates #190, and there is
+                    # no safe substitute for it: `last_observed_at` IS the
+                    # bug, and max(port.last_seen_at) cannot retire anything
+                    # because a sweep that finds ZERO ports has no port
+                    # timestamps to take a max of. So leave it None and prune
+                    # nothing this cycle — the same "can't judge it, don't
+                    # risk dropping it" posture as _prune_stale_ports'
+                    # unparseable-marker branch above. _upsert_claims rewrites
+                    # evidence on every pass, so the gap closes after one
+                    # naabu scan.
+                    naabu_swept_at = _normalized_swept_at(
+                        evidence.get("swept_at") if isinstance(evidence, dict) else None
+                    )
 
         # planning#172 — must run BEFORE the prune: it exists purely to give the
         # prune's grace branches something to judge.
@@ -780,9 +827,8 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
             merged_ports, prior_ports_by_asset.get(asset_id, [])
         )
 
-        if naabu_last_observed_at is not None:
-            cutoff_iso = naabu_last_observed_at.isoformat()
-            merged_ports = _prune_stale_ports(merged_ports, cutoff_iso, now)
+        if naabu_swept_at is not None:
+            merged_ports = _prune_stale_ports(merged_ports, naabu_swept_at, now)
 
         # ── hosting_class / affinity_confirmation claims (planning#144 L3a) ──
         hosting = hosting_claim_value if isinstance(hosting_claim_value, dict) else {}
@@ -946,8 +992,8 @@ def project(db: Session, asset_ids: set[uuid.UUID], now: datetime) -> None:
             # log-only rollout is already being read by — untouched.
             attributes["tenancy"] = composed_tenancy
 
-        if naabu_last_observed_at is not None:
-            attributes["naabu_last_scan_at"] = naabu_last_observed_at.isoformat()
+        if naabu_swept_at is not None:
+            attributes["naabu_last_scan_at"] = naabu_swept_at
 
         # ── cdn / cdn_domain: the discovery observer's `cdn_boundary` claim
         # (planning#144 L3c-3). This replaces the L3b-2 stopgap, which

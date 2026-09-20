@@ -457,8 +457,24 @@ def _accumulate_port_observation(
             continue
 
         evidence = {}
-        if source_name == "naabu" and meta.get("naabu_tier"):
-            evidence["naabu_tier"] = meta["naabu_tier"]
+        if source_name == "naabu":
+            if meta.get("naabu_tier"):
+                evidence["naabu_tier"] = meta["naabu_tier"]
+            # planning#190 — carry the SWEEP's own clock onto the claim, so the
+            # projector's staleness cutoff and the port entries it judges come
+            # from the same one. naabu stamps this key and every port's
+            # `last_seen_at` from a single `now` in `_build_phase_result`, and
+            # omits it entirely when the pass did not complete (planning#160
+            # D3), so an unfinished sweep contributes no cutoff here either.
+            #
+            # The cutoff used to be the claim's `last_observed_at`, which
+            # `asset_writer.write_assets()` stamps after the connector has
+            # returned — by construction strictly LATER than every port it was
+            # compared against, so every freshly observed port was deleted on
+            # the projection that first recorded it.
+            swept_at = meta.get("naabu_last_scan_at")
+            if isinstance(swept_at, str) and swept_at:
+                evidence["swept_at"] = swept_at
         # Named for the pass, not the observer: httpx/tlsx don't "sweep", but
         # they do finish or not. The projector reads this off naabu's claim.
         evidence["complete"] = sweep_complete

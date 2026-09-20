@@ -57,13 +57,19 @@ def _make_asset(
     return row
 
 
-def _add_port_claim(db, asset_id, observer_name: str, ports: list[dict], last_observed_at: datetime) -> None:
+def _add_port_claim(db, asset_id, observer_name: str, ports: list[dict],
+                    last_observed_at: datetime, evidence: dict | None = None) -> None:
+    """planning#190 — `evidence` matters for naabu claims: the prune cutoff is
+    `evidence["swept_at"]` (the sweep's own clock), not `last_observed_at`.
+    A naabu claim seeded without it prunes NOTHING, by design — that is the
+    back-compat posture for claims written before #190. So any test that wants
+    the prune to RUN has to seed the evidence a real naabu pass would carry."""
     db.add(AssetClaim(
         asset_canonical_id=asset_id,
         observer_id=_observer_id(db, observer_name),
         claim_type="port_observation",
         claim_value={"ports": ports},
-        evidence={},
+        evidence=evidence if evidence is not None else {},
         first_observed_at=last_observed_at,
         last_observed_at=last_observed_at,
     ))
@@ -191,7 +197,7 @@ def test_prune_stale_port_and_flap_guard_kept():
         _add_port_claim(db, asset.id, "naabu", [
             {"port": 22, "protocol": "tcp", "last_seen_at": now.isoformat()},
             {"port": 8080, "protocol": "tcp", "last_seen_at": old.isoformat()},
-        ], now)
+        ], now, evidence={"complete": True, "swept_at": now.isoformat()})
         # A previously-confirmed real service on 443, 2 days stale — inside
         # the 3-day confirmed grace, so kept despite predating the naabu cutoff.
         _add_port_claim(db, asset.id, "tlsx", [
@@ -398,8 +404,10 @@ def test_provider_mx_recompute_from_columns():
 
 def test_naabu_last_scan_at_derived_from_claim():
     """attributes["naabu_last_scan_at"] is the naabu port_observation claim's
-    last_observed_at, isoformatted — the same value already used as the
-    prune cutoff, now also exposed for the L3c port-lifecycle readers."""
+    `evidence["swept_at"]` — the same value already used as the prune cutoff,
+    now also exposed for the L3c port-lifecycle readers. planning#190 moved
+    both off the claim's `last_observed_at`, which is stamped after the
+    connector returns and so was always later than the ports it judged."""
     suffix = uuid.uuid4().hex[:10]
     ip = f"198.51.100.{80 + (int(suffix[:2], 16) % 60)}"
     db = SessionLocal()
@@ -408,7 +416,7 @@ def test_naabu_last_scan_at_derived_from_claim():
         asset = _make_asset(db, "ip_address", ip)
         _add_port_claim(db, asset.id, "naabu", [
             {"port": 443, "protocol": "tcp", "last_seen_at": now.isoformat()},
-        ], now)
+        ], now, evidence={"complete": True, "swept_at": now.isoformat()})
         db.commit()
 
         projector.project(db, {asset.id}, now)

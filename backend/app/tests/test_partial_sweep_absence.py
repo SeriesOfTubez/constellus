@@ -223,6 +223,10 @@ def test_complete_sweep_still_retires_ports():
             "sources": ["naabu"],
             "naabu_tier": "standard",
             "naabu_sweep_complete": True,
+            # planning#190 — a completed pass carries its own clock, and that
+            # is what earns the cutoff now. Without it nothing is pruned and
+            # httpx's 8080 survives, so the over-fix guard below tests nothing.
+            "naabu_last_scan_at": now.isoformat(),
             "open_ports": [
                 {"port": 443, "protocol": "tcp", "sources": ["naabu"], "last_seen_at": now.isoformat()},
             ],
@@ -296,6 +300,11 @@ def test_absent_completeness_key_behaves_as_complete():
         _emit_and_project(db, ip, asset_id, now, {
             "sources": ["naabu"],
             "naabu_tier": "standard",
+            # `naabu_last_scan_at` predates #169 (planning#160), so a producer
+            # that has never heard of `naabu_sweep_complete` still writes it —
+            # the absence under test here is the COMPLETENESS key, not the
+            # sweep clock (planning#190).
+            "naabu_last_scan_at": now.isoformat(),
             "open_ports": [
                 {"port": 443, "protocol": "tcp", "sources": ["naabu"], "last_seen_at": now.isoformat()},
             ],
