@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.services.user import is_first_run
 
@@ -16,12 +17,22 @@ def status(db: Session = Depends(get_db)):
 
 
 @router.get("/monitoring-status")
-def monitoring_status(db: Session = Depends(get_db)):
+def monitoring_status(
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
     """Return the last + next default monitoring run timestamps.
 
     The default monitoring template scans every target on a recurring
     schedule; this endpoint lets the UI show "last run / next run" so
     operators don't have to guess when assets and findings were refreshed.
+
+    Authenticated (planning#162 item 2). Any signed-in role may read it —
+    it drives a UI widget, not a mutation — but it was reachable with no
+    credentials at all, which handed anyone who could reach the port the
+    monitoring cadence (when we last scanned, when we scan next). `/status`
+    above stays open deliberately: the first-run bootstrap has to be
+    readable before any user exists.
     """
     from app.models.scan import ScanRun, ScanStatus
     from app.services import scheduler

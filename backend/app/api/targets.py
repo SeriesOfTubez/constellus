@@ -2,7 +2,7 @@ import logging
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -12,7 +12,7 @@ from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.scan_template import ScanTemplate
 from app.models.target import Target, TargetType
 from app.models.user import UserRole
-from app.services import scheduler, target_service as svc
+from app.services import audit, scheduler, target_service as svc
 
 log = logging.getLogger(__name__)
 
@@ -291,6 +291,7 @@ def bulk_recheck_targets(
 
 @router.post("/bulk/aggressiveness", status_code=200)
 def bulk_set_aggressiveness(
+    request: Request,
     data: BulkAggressivenessRequest,
     db: Session = Depends(get_db),
     _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
@@ -313,12 +314,29 @@ def bulk_set_aggressiveness(
             )
         new_value = data.aggressiveness
 
+    # planning#194 — the before-values, captured before the bulk UPDATE
+    # overwrites them. Capped: `audit_logs` is append-only with no retention
+    # sweep, so a 5,000-target bulk must not write a 5,000-entry blob into a
+    # table nothing ever prunes. Past the cap the count is recorded instead,
+    # and the individual prior values are recoverable from `claim_history`
+    # if anyone ever needs them.
+    _BEFORE_VALUE_CAP = 50
+    rows = db.query(Target.id, Target.aggressiveness).filter(Target.id.in_(data.target_ids)).all()
+    if len(rows) <= _BEFORE_VALUE_CAP:
+        was: dict | str = {str(r[0]): r[1] for r in rows}
+    else:
+        was = f"{len(rows)} targets — individual prior values omitted (over the {_BEFORE_VALUE_CAP}-row cap)"
+
     updated = (
         db.query(Target)
         .filter(Target.id.in_(data.target_ids))
         .update({Target.aggressiveness: new_value}, synchronize_session=False)
     )
     db.commit()
+    audit.record_detail(
+        request,
+        aggressiveness={"from": was, "to": new_value, "target_count": len(rows)},
+    )
     return {"updated": updated, "aggressiveness": new_value}
 
 
@@ -435,17 +453,31 @@ def delete_target(
 
 @router.patch("/{target_id}", response_model=TargetResponse)
 def patch_target(
+    request: Request,
     target_id: uuid.UUID,
     data: TargetPatch,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
 ):
-    """Partial update. Only fields present in the body are modified."""
+    """Partial update. Only fields present in the body are modified.
+
+    ADMIN-gated (planning#162 item 1). `TargetPatch` carries
+    `aggressiveness`, which governs how hard this system probes a third
+    party's infrastructure, and every sibling route that touches the same
+    field or object already requires this pair — `bulk_set_aggressiveness`,
+    `bulk_recheck_targets`, `bulk_delete_targets`, `delete_target`. This
+    route was the only one guarded by bare `get_current_user`, so any
+    authenticated VIEWER could raise the outbound scan tier one target at a
+    time while being correctly blocked from doing it in bulk.
+    """
     from app.services import aggressiveness as aggr
 
     target = db.get(Target, target_id)
     if not target:
         raise HTTPException(status_code=404, detail="Target not found")
+
+    was_aggressiveness = target.aggressiveness
+    was_notes = target.notes
 
     if data.clear_aggressiveness:
         target.aggressiveness = None
@@ -459,6 +491,20 @@ def patch_target(
 
     if data.notes is not None:
         target.notes = data.notes
+
+    # planning#194 — aggressiveness governs outbound traffic toward a third
+    # party, so "who raised it, from what" is the question the audit trail
+    # exists to answer. Captured here because only the handler saw the old
+    # value; `notes` is recorded as changed-or-not rather than verbatim,
+    # since free text is an operator's, not an auditor's, business.
+    changes: dict = {}
+    if was_aggressiveness != target.aggressiveness:
+        changes["aggressiveness"] = {"from": was_aggressiveness, "to": target.aggressiveness}
+    if was_notes != target.notes:
+        changes["notes"] = {"changed": True}
+    if changes:
+        changes["target"] = target.value
+        audit.record_detail(request, **changes)
 
     db.commit()
     db.refresh(target)
