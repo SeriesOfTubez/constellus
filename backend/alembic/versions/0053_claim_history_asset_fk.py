@@ -77,24 +77,34 @@ depends_on = None
 
 _FK_NAME = "fk_claim_history_asset_canonical"
 
-_ORPHANED = """
-    NOT EXISTS (SELECT 1 FROM assets_canonical a WHERE a.id = h.asset_canonical_id)
-"""
+# Every statement below is a self-contained literal, and the orphan predicate
+# is repeated rather than hoisted into a shared constant. Factoring it out
+# reads better but builds the SQL string at runtime, which is precisely what
+# `python.sqlalchemy.security.audit.avoid-sqlalchemy-text` flags — the rule
+# exempts a `text()` whose argument is an adjacent literal. No user input
+# reaches here, but the honest fix is to keep the SQL literal rather than to
+# suppress the rule.
 
 
 def upgrade() -> None:
     conn = op.get_bind()
 
-    live_before = conn.execute(sa.text(f"""
-        SELECT count(*) FROM claim_history h WHERE NOT ({_ORPHANED})
+    live_before = conn.execute(sa.text("""
+        SELECT count(*) FROM claim_history h
+         WHERE EXISTS (SELECT 1 FROM assets_canonical a WHERE a.id = h.asset_canonical_id)
     """)).scalar_one()
 
-    conn.execute(sa.text(f"DELETE FROM claim_history h WHERE {_ORPHANED}"))
+    conn.execute(sa.text("""
+        DELETE FROM claim_history h
+         WHERE NOT EXISTS (SELECT 1 FROM assets_canonical a WHERE a.id = h.asset_canonical_id)
+    """))
 
-    live_after, orphans_after = conn.execute(sa.text(f"""
-        SELECT count(*) FILTER (WHERE NOT ({_ORPHANED})),
-               count(*) FILTER (WHERE {_ORPHANED})
-        FROM claim_history h
+    live_after, orphans_after = conn.execute(sa.text("""
+        SELECT count(*) FILTER (
+                   WHERE EXISTS (SELECT 1 FROM assets_canonical a WHERE a.id = h.asset_canonical_id)),
+               count(*) FILTER (
+                   WHERE NOT EXISTS (SELECT 1 FROM assets_canonical a WHERE a.id = h.asset_canonical_id))
+          FROM claim_history h
     """)).one()
 
     # Verify-third. Raising here rolls the migration back whole, so a purge
