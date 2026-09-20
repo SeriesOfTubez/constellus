@@ -4,10 +4,12 @@ import { toast } from "sonner"
 import { ChevronLeft, ShieldCheck, RefreshCw, Trash2 } from "lucide-react"
 
 import { ConnectedEntities } from "@/components/ConnectedEntities"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Switch } from "@/components/ui/switch"
 import { api, type AggressivenessTier, type Target } from "@/lib/api"
 import { displayName } from "@/lib/apex"
 import { relativeTime, relativeFuture } from "@/lib/time"
@@ -95,6 +97,18 @@ export default function TargetDetail() {
     onError: () => toast.error("Failed to update aggressiveness"),
   })
 
+  // planning#193 — pre-close M&A posture. Mirrors aggressivenessMutation
+  // above: same endpoint, same invalidation pair, same toast shape.
+  const maPreCloseMutation = useMutation({
+    mutationFn: (next: boolean) => api.patch(`/targets/${id}`, { ma_pre_close: next }),
+    onSuccess: () => {
+      toast.success("Pre-close M&A posture updated")
+      qc.invalidateQueries({ queryKey: ["target-detail", id] })
+      qc.invalidateQueries({ queryKey: ["targets"] })
+    },
+    onError: () => toast.error("Failed to update pre-close M&A posture"),
+  })
+
   if (isLoading) return (
     <div className="max-w-4xl mx-auto px-6 py-8 space-y-4">
       <Skeleton className="h-6 w-32" />
@@ -135,6 +149,7 @@ export default function TargetDetail() {
               unverified
             </span>
           )}
+          {target.ma_pre_close && <Badge variant="warning">Passive-only</Badge>}
         </div>
         <h1 className="font-mono text-xl break-all leading-tight" title={target.value}>{displayName(target.value)}</h1>
 
@@ -224,6 +239,19 @@ export default function TargetDetail() {
               ))}
             </SelectContent>
           </Select>
+        </div>
+        <div className="space-y-1">
+          <p className="text-xs text-muted-foreground">Pre-close M&A (passive-only)</p>
+          <div className="flex items-center gap-2 h-8">
+            <Switch
+              checked={target.ma_pre_close}
+              onCheckedChange={(next) => maPreCloseMutation.mutate(next)}
+              disabled={maPreCloseMutation.isPending}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Blocks all active probing and DNS enumeration. Passive discovery continues.
+          </p>
         </div>
         {target.notes && (
           <div className="col-span-2 space-y-0.5">

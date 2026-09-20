@@ -260,6 +260,7 @@ export type Target = {
   tags: string[]
   aggressiveness: AggressivenessTier | null
   effective_aggressiveness: AggressivenessTier
+  ma_pre_close: boolean
   last_scanned_at: string | null
   next_scan_at: string | null
 }

@@ -136,6 +136,7 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.authorisation_decision import AuthorisationDecision
 from app.models.observer import Observer
 from app.models.target import Target
+from app.models.target_asset_link import TargetAssetLink
 from app.services import app_settings as settings_svc
 from app.services import projector
 from app.services import target_scope
@@ -202,14 +203,19 @@ class GateResult:
     passed in for one connector.
 
     `enforced` reports whether this call's outcome actually reflects
-    enforcement — `True` under the `enforce` setting, and also `True` for
-    a connector-declaration failure (§ module docstring: that check narrows
-    to nothing in both modes, so its `permitted` is never a passthrough).
-    It is `False` only for the ordinary `log_only` path, where `permitted`
-    is the unfiltered input and the real verdict lives solely in the
-    decision log. Callers that just want to know whether to keep going
-    check `permitted` — `enforced` is for logging/tests that care WHY
-    `permitted` looks the way it does.
+    enforcement — `True` under the `enforce` setting; also `True` for a
+    connector-declaration failure (§ module docstring: that check narrows
+    to nothing in both modes, so its `permitted` is never a passthrough);
+    and also `True`, as of planning#193, when one or more assets were
+    denied by `posture:ma_pre_close` under `log_only` — that denial too
+    narrows to nothing in both modes (see `_posture_cap`'s docstring), so
+    a `permitted` list that has actually been narrowed must report
+    `enforced=True` even though the gate as a whole is still in
+    `log_only`. It is `False` only for the ordinary `log_only` path with
+    no posture denials, where `permitted` is the unfiltered input and the
+    real verdict lives solely in the decision log. Callers that just want
+    to know whether to keep going check `permitted` — `enforced` is for
+    logging/tests that care WHY `permitted` looks the way it does.
     """
 
     permitted: list  # subset of the input assets
@@ -370,6 +376,46 @@ def _resolve_scoped_ids(db: Session, scope: dict, auth_mode: str) -> frozenset[u
     }))
 
 
+def _resolve_ma_pre_close_ids(db: Session, canonical_ids: set[uuid.UUID]) -> frozenset[uuid.UUID]:
+    """The subset of `canonical_ids` linked — via `target_asset_links` — to
+    at least one `targets` row with `ma_pre_close = True` (planning#193).
+
+    Computed once per `authorise_probes` call, the same pattern as
+    `_resolve_scoped_ids` above: one query bounded by `canonical_ids`, not
+    a lookup per asset. This is the direct answer to the planning#193
+    hand-off's "untested at scale, runs per asset per connector" concern —
+    membership is a single set built once and consulted per asset in the
+    loop, exactly like `scoped_ids`.
+
+    Returns an empty set immediately, without touching the database, when
+    `canonical_ids` is empty — mirroring `_resolve_scoped_ids`'s
+    short-circuit on `disabled` mode.
+
+    ## Any linked target wins
+
+    `target_asset_links` is N-to-N. If an asset is linked to one pre-close
+    target and three ordinary ones, it is STILL DENIED — the presence of
+    ordinary targets does not dilute or overrule the pre-close flag. The
+    flag is a statement that someone has not authorised this system to
+    touch the asset; one target's authorisation cannot cancel another
+    target's lack of it. Fail closed.
+    """
+    if not canonical_ids:
+        return frozenset()
+
+    rows = (
+        db.query(TargetAssetLink.asset_canonical_id)
+        .join(Target, Target.id == TargetAssetLink.target_id)
+        .filter(
+            TargetAssetLink.asset_canonical_id.in_(canonical_ids),
+            Target.ma_pre_close == True,  # noqa: E712
+        )
+        .distinct()
+        .all()
+    )
+    return frozenset(r[0] for r in rows)
+
+
 def _probe_class_cap(db: Session, *, asset_ref, canonical: AssetCanonical | None, state) -> Cap:
     """Probe-class cap — the only cap with a real body in this slice.
 
@@ -460,19 +506,22 @@ def _probe_class_cap(db: Session, *, asset_ref, canonical: AssetCanonical | None
     return Cap(False, frozenset(), None, "probe_class:unprojected")
 
 
-def _posture_cap(db: Session, *, scope: dict, asset_ref, canonical: AssetCanonical | None) -> Cap:
+def _posture_cap(
+    db: Session, *, scope: dict, asset_ref, canonical: AssetCanonical | None,
+    ma_pre_close_ids: frozenset[uuid.UUID],
+) -> Cap:
     """Posture cap — engagement posture (pre-close diligence vs. post-close
-    monitoring, etc.), planning#132. Slice 1: **permissive**.
+    monitoring, etc.), planning#132. planning#193 gives it its first real
+    body: pre-close M&A denial. The rest of the posture axis (post-close
+    monitoring and whatever else #132 eventually enumerates) remains
+    permissive until that issue lands — this is a body change on an
+    already-composed cap, not the cap's introduction, exactly as the
+    module docstring's "present-and-permissive" bet intended.
 
-    Present-and-permissive is a deliberate choice, not an oversight:
-    omitting this axis now and retrofitting it once #132 lands would mean
-    every call site (and every test) that assumes a fixed 2-cap
-    composition has to be revisited when the 3rd cap shows up. Shipping it
-    now as an inert identity cap means #132 is purely a body change here,
-    exactly like #128's relationship to `_scope_cap` above.
-
-    `db`/`scope`/`asset_ref`/`canonical` are accepted now, unused, for the
-    same forward-signature-stability reason as `_scope_cap`.
+    `db`/`scope`/`asset_ref` remain unused this slice, for the same
+    forward-signature-stability reason `_scope_cap` documents; kept in the
+    signature so a future #132 body change does not also have to touch
+    every call site again.
 
     `asset_ref`/`canonical` are here because posture is **per-asset, not
     tenant-global**. The M&A case is the one that forces it: an acquired
@@ -484,8 +533,49 @@ def _posture_cap(db: Session, *, scope: dict, asset_ref, canonical: AssetCanonic
     global setting would be structurally unable to express that, and #132
     would have to widen this signature and revisit every call site and
     test. Taking the asset now costs nothing and keeps #132 a body change.
+
+    ## `posture:ma_pre_close` is always-enforced, in BOTH gate modes
+
+    Every other cap's denial is subject to `probe_authorisation_mode`
+    (module docstring, "Gate mode"): under `log_only`,
+    `GateResult.permitted` is the unfiltered list regardless of what the
+    caps decided, because `probe_authorisation_mode` is a graduated-rollout
+    switch for verdicts THIS SYSTEM INFERS — scope containment, projected
+    reachability class. A pre-close M&A flag is not inferred; an operator
+    asserted it directly on the target. There is no safe interim state in
+    which a target an operator has explicitly marked "we are not
+    authorised to touch this" gets probed anyway just because the rollout
+    hasn't reached `enforce` yet — the same argument the
+    connector-declaration check (`_resolve_connector_observer`) already
+    makes for itself, and enforced the same way: see `authorise_probes`'
+    `posture_denied` handling, not a mode check in this function.
+
+    ## `canonical is None` is deliberately PERMISSIVE here
+
+    An unresolved asset is not denied by this cap, even though that reads
+    as the more cautious choice. Two reasons:
+
+      1. It is already denied by `_scope_cap`'s `scope:unresolved_asset` —
+         this cap does not need to duplicate that denial to close the same
+         hole.
+      2. If posture denied unresolved assets too, the always-enforced path
+         (§ above) would turn into a global block on every unresolved
+         asset in every scan in every deployment, M&A or not — an
+         availability regression far larger than the hole it would close.
+
+    The hole this leaves is narrow, not open-ended: Phase 1 writes
+    `target_asset_links` (`scan_executor.py:859`,
+    `write_assets(..., target_ids=target_ids)`) before Phase 1.5 ever
+    calls this gate, so an asset discovered THIS run against a pre-close
+    target is already linked — and therefore already resolved to a
+    canonical row — by the time it reaches here. The residual case is a
+    `skip_discovery` run (a per-asset recheck) against an asset that was
+    never linked by any previous run; that asset arrives with `canonical
+    is None` and slips this cap, but is still caught by `_scope_cap`.
     """
-    _ = (db, scope, asset_ref, canonical)  # unused this slice — see docstring; kept for #132's signature stability
+    _ = (db, scope, asset_ref)  # unused this slice — see docstring
+    if canonical is not None and canonical.id in ma_pre_close_ids:
+        return Cap(allowed=False, modes=frozenset(), names=None, rule="posture:ma_pre_close")
     return Cap(allowed=True, modes=None, names=None, rule="posture:permissive")
 
 
@@ -658,9 +748,21 @@ def _compose(
     for when #128/#132 add a real names constraint).
 
     `rule_fired`:
-      - if the composed caps deny (`not all(c.allowed ...)`), it's the
-        `.rule` of the FIRST cap, in scope → probe_class → posture order,
-        that returned `allowed=False`.
+      - if the composed caps deny (`not all(c.allowed ...)`), it is
+        **the posture cap's rule if posture denied, regardless of whether
+        scope or probe_class also denied** — otherwise the `.rule` of the
+        first cap, in scope → probe_class → posture order, that returned
+        `allowed=False`. This precedence flip is planning#193's: the
+        reported rule must be the rule that ACTUALLY blocks. Under
+        `log_only`, posture is the only one of the three caps whose denial
+        takes effect (§ `_posture_cap`'s docstring, "always-enforced") —
+        reporting `scope:out_of_scope` for an asset that is in fact being
+        blocked because its target is pre-close M&A would put a
+        misleading reason in the one table planning#189 established is
+        read to make policy decisions from. Nothing about the other two
+        caps' own verdicts is lost by this — `evidence["caps"]["scope"]`
+        and `evidence["caps"]["probe_class"]` still carry each cap's
+        independent verdict regardless of which one wins `rule_fired`.
       - else, if the connector's own declared `addressing` isn't in the
         composed `modes`, it's `"addressing_not_permitted"`.
       - else, if the connector is name-addressing and the resolved names
@@ -741,7 +843,12 @@ def _compose(
     }
 
     if not composed_allowed:
-        denial_rule = next(c.rule for c in caps if not c.allowed)
+        # posture wins the rule_fired slot over scope/probe_class when it
+        # denied, regardless of composition order — see the docstring
+        # above ("rule_fired") for why: it's the only one of the three
+        # whose denial is not subject to the log_only rollout, so it's the
+        # only one that's guaranteed to actually be the operative reason.
+        denial_rule = posture_cap.rule if not posture_cap.allowed else next(c.rule for c in caps if not c.allowed)
         return ProbePermission(False, frozenset(), sorted_names, denial_rule, evidence)
 
     if observer_addressing not in composed_modes:
@@ -889,10 +996,26 @@ def authorise_probes(
     # would repeat that scan for every asset in the batch.
     auth_mode = settings_svc.get(db, "scan_authorisation_mode") or "strict"
     scoped_ids = _resolve_scoped_ids(db, scope, auth_mode)
+    # planning#193 — resolved once per call, the same batching discipline
+    # as scoped_ids/states above: one query bounded by canonical_ids, not
+    # a lookup per asset.
+    ma_pre_close_ids = _resolve_ma_pre_close_ids(db, canonical_ids)
 
     permitted: list = []
     permissions = {}
     rows = []
+    # planning#193 — assets denied specifically by posture, tracked
+    # separately from `permitted` because posture denial is
+    # always-enforced (§ `_posture_cap` docstring) and must narrow the
+    # `log_only` return below even though nothing else does. Detected from
+    # the cap itself, NOT from `rule_fired`: `_compose` now prefers
+    # posture's rule when posture denies (§193, precedence flip), but an
+    # asset could in principle be denied by scope/probe_class alone with
+    # posture separately permissive, and the reverse check (deriving
+    # "posture denied" from rule_fired) would only be safe because of that
+    # flip — checking the cap directly is simpler and doesn't depend on
+    # `_compose`'s internals staying in sync with this loop.
+    posture_denied: set[tuple[str, str]] = set()
 
     for asset in assets:
         canonical = canonical_by_key.get(_canonical_key_for(asset))
@@ -904,8 +1027,13 @@ def authorise_probes(
                 scoped_ids=scoped_ids, auth_mode=auth_mode,
             ),
             _probe_class_cap(db, asset_ref=asset, canonical=canonical, state=state),
-            _posture_cap(db, scope=scope, asset_ref=asset, canonical=canonical),
+            _posture_cap(
+                db, scope=scope, asset_ref=asset, canonical=canonical,
+                ma_pre_close_ids=ma_pre_close_ids,
+            ),
         )
+        if not caps[2].allowed:
+            posture_denied.add((asset.asset_type, asset.value))
         permission = _compose(
             caps,
             connector_id=connector_id,
@@ -926,4 +1054,16 @@ def authorise_probes(
 
     if enforce:
         return GateResult(permitted=permitted, permissions=permissions, enforced=True)
+
+    # log_only, but posture denials are NOT subject to the rollout switch —
+    # same standing as the connector-declaration check above, for the
+    # reason in `_posture_cap`'s docstring. Everything else still passes
+    # through unfiltered, so this does not become an early #148 enforce
+    # flip by the back door: only the posture axis bites here.
+    if posture_denied:
+        return GateResult(
+            permitted=[a for a in assets if (a.asset_type, a.value) not in posture_denied],
+            permissions=permissions,
+            enforced=True,
+        )
     return GateResult(permitted=list(assets), permissions=permissions, enforced=False)
