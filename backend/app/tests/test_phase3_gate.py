@@ -42,6 +42,7 @@ from app.services import app_settings as settings_svc
 from app.services import connector_config
 from app.services import probe_authorisation
 from app.services import scan_executor
+from app.tests import _decision_log
 
 
 # ── shared stub / harness plumbing (mirrors test_cidr_sweep.py) ────────────
@@ -94,14 +95,13 @@ def _cleanup(values: list[str]) -> None:
 
 
 def _cleanup_decisions_for_run(scan_run_id: uuid.UUID) -> None:
-    db = SessionLocal()
-    try:
-        db.query(AuthorisationDecision).filter(
-            AuthorisationDecision.evidence_snapshot["scan_run_id"].astext == str(scan_run_id)
-        ).delete(synchronize_session=False)
-        db.commit()
-    finally:
-        db.close()
+    """Thin alias over the shared helper. This file had its own copy of
+    this delete until planning#189; `test_cidr_sweep.py` needed the same
+    one and did not have it, and two more files needed a different cleanup
+    handle entirely. One implementation, in `_decision_log`, so the next
+    file that needs it finds it instead of reinventing it — or omitting it.
+    """
+    _decision_log.cleanup_for_run(scan_run_id)
 
 
 def _run_pipeline_with_stub(chunk_scope: dict, stub, mode: str) -> uuid.UUID:

@@ -39,6 +39,7 @@ from app.models.asset_state import AssetState
 from app.models.authorisation_decision import AuthorisationDecision
 from app.services import app_settings
 from app.services import probe_authorisation as pa
+from app.tests import _decision_log
 
 _MODE_KEY = "probe_authorisation_mode"
 
@@ -637,6 +638,13 @@ def test_dns_record_authorised_names_and_identity_key():
     """
     suffix = uuid.uuid4().hex[:10]
     host = f"pa-dns-{suffix}.example.com"
+    # The `bare` half below denies as `unresolved_asset`, which logs a
+    # decision row with a NULL `asset_canonical_id` that `_cleanup([host])`
+    # cannot reach. Until planning#189 this leaked, and was masked: the
+    # table-wide sweep in `test_unresolved_asset_is_distinct_from_unprojected`
+    # happened to delete it on the way past. Running THIS test alone still
+    # added a row. Each test cleans up after itself now.
+    mark = _decision_log.watermark()
     db = SessionLocal()
     now = datetime.now(timezone.utc)
     try:
@@ -682,6 +690,7 @@ def test_dns_record_authorised_names_and_identity_key():
     finally:
         db.close()
         _cleanup([host])
+        _decision_log.cleanup_since(mark)
 
 
 # ── 13. unresolved vs unprojected are distinct, logged denial rules ────────
@@ -696,6 +705,7 @@ def test_unresolved_asset_is_distinct_from_unprojected():
     suffix = uuid.uuid4().hex[:10]
     orphan = f"pa-orphan-{suffix}"
     projected_none = f"pa-noproj-{suffix}"
+    mark = _decision_log.watermark()
     db = SessionLocal()
     try:
         _mk_ip_asset(db, projected_none)  # canonical row, deliberately no asset_state
@@ -715,17 +725,21 @@ def test_unresolved_asset_is_distinct_from_unprojected():
             db.query(AuthorisationDecision)
             .filter(AuthorisationDecision.asset_canonical_id.is_(None))
             .filter(AuthorisationDecision.rule_fired == "unresolved_asset")
+            .filter(AuthorisationDecision.decided_at >= mark)
             .count()
         )
         assert orphan_rows >= 1
     finally:
-        db.query(AuthorisationDecision).filter(
-            AuthorisationDecision.asset_canonical_id.is_(None),
-            AuthorisationDecision.rule_fired == "unresolved_asset",
-        ).delete(synchronize_session=False)
-        db.commit()
         db.close()
         _cleanup([projected_none])
+        # Was a table-wide DELETE of every NULL-id `unresolved_asset` row
+        # (planning#189). The backend suite runs against the DEV database,
+        # so that swept rows belonging to other tests — and would sweep a
+        # REAL scan row, which takes exactly this shape whenever a scan
+        # meets an address with no canonical row under a permissive scope
+        # cap. Bounded to this test's own window now; the assertion above
+        # is bounded the same way, for the same reason (planning#163).
+        _decision_log.cleanup_since(mark)
 
 
 # ── regression guard: every REGISTRY port_scan connector declares a valid

@@ -50,6 +50,7 @@ from app.models.scan import ScanRun, ScanStatus
 from app.services import app_settings as settings_svc
 from app.services import connector_config
 from app.services import scan_executor
+from app.tests import _decision_log
 
 
 # ── shared stub plumbing (mirrors test_worker_outage_absence.py) ───────────
@@ -318,11 +319,18 @@ def _run_pipeline_with_stub(chunk_scope: dict, tier: str = "standard"):
     had_naabu_row = naabu_row is not None
     original_enabled = naabu_row.enabled if naabu_row else None
     original_mode = settings_svc.get(db, "probe_authorisation_mode")
+    # Bound to a name rather than generated inline at the call below: the
+    # gate stamps this on every decision row `_run_pipeline` writes, and an
+    # id nobody kept is a row nobody can delete. That is how this helper
+    # leaked four decision rows per suite run into the DEV database —
+    # rows carrying a scan_run_id, so they read as REAL scan evidence
+    # rather than as obvious residue (planning#189).
+    scan_run_id = uuid.uuid4()
     try:
         connector_config.set_enabled(db, "naabu", True)
         _set_probe_mode(db, "log_only")
         scan_executor._run_pipeline(
-            db, uuid.uuid4(), chunk_scope, {}, "disabled", tier,
+            db, scan_run_id, chunk_scope, {}, "disabled", tier,
             False, {"naabu": stub}, [], frozenset(),
         )
     finally:
@@ -330,6 +338,7 @@ def _run_pipeline_with_stub(chunk_scope: dict, tier: str = "standard"):
             connector_config.set_enabled(db, "naabu", original_enabled)
         _set_probe_mode(db, original_mode)
         db.close()
+        _decision_log.cleanup_for_run(scan_run_id)
     return stub
 
 
@@ -372,6 +381,10 @@ def _cleanup_run(db, run_id):
     db.rollback()
     db.query(ScanRun).filter(ScanRun.id == run_id).delete()
     db.commit()
+    # `authorisation_decisions` carries the run id inside `evidence_snapshot`
+    # and has no FK to `scan_runs`, so deleting the run orphans its decision
+    # rows rather than cascading to them (planning#189).
+    _decision_log.cleanup_for_run(run_id)
 
 
 def _guard_messages(run: ScanRun, value: str) -> list[str]:
