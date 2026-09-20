@@ -50,3 +50,10 @@ class Target(Base):
     # template/global default. Resolution order is target > template > global,
     # implemented in app.services.aggressiveness.effective_for_target.
     aggressiveness: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # planning#193 — pre-close M&A posture. True = passive-only: this
+    # system must do nothing the counterparty could notice, because we
+    # hold no authorisation to probe them yet. Enforced in TWO places
+    # (see planning#193's routing decision): the composed probe gate's
+    # `_posture_cap`, and the discovery phase's dnsrecon/bruteforce
+    # enablement. Not nullable — there is no "inherit" for this.
+    ma_pre_close: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))

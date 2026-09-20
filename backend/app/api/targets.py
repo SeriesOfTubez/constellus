@@ -34,6 +34,7 @@ class TargetResponse(BaseModel):
     notes: str | None
     aggressiveness: str | None
     effective_aggressiveness: str
+    ma_pre_close: bool
     last_scanned_at: str | None
     next_scan_at: str | None
 
@@ -52,6 +53,10 @@ class TargetPatch(BaseModel):
     # Sentinel: pass `clear_aggressiveness=True` to reset to inherit
     # (since `aggressiveness=None` in a JSON body is ambiguous with "absent").
     clear_aggressiveness: bool = False
+    # No sentinel needed here, unlike aggressiveness: `ma_pre_close` has no
+    # inherit state, so `None` unambiguously means "absent from this
+    # request" rather than "clear it" — there's nothing to clear it TO.
+    ma_pre_close: bool | None = None
 
 
 class AcknowledgeRequest(BaseModel):
@@ -469,6 +474,13 @@ def patch_target(
     route was the only one guarded by bare `get_current_user`, so any
     authenticated VIEWER could raise the outbound scan tier one target at a
     time while being correctly blocked from doing it in bulk.
+
+    Also carries `ma_pre_close` (planning#193): this flag governs whether
+    the system probes a counterparty it may hold no authorisation to probe
+    at all, which is a strictly higher-stakes toggle than aggressiveness —
+    so "who turned it off, and when" is precisely what the audit trail
+    exists to answer, the same argument already made above for
+    aggressiveness.
     """
     from app.services import aggressiveness as aggr
 
@@ -478,6 +490,7 @@ def patch_target(
 
     was_aggressiveness = target.aggressiveness
     was_notes = target.notes
+    was_ma_pre_close = target.ma_pre_close
 
     if data.clear_aggressiveness:
         target.aggressiveness = None
@@ -492,6 +505,9 @@ def patch_target(
     if data.notes is not None:
         target.notes = data.notes
 
+    if data.ma_pre_close is not None:
+        target.ma_pre_close = data.ma_pre_close
+
     # planning#194 — aggressiveness governs outbound traffic toward a third
     # party, so "who raised it, from what" is the question the audit trail
     # exists to answer. Captured here because only the handler saw the old
@@ -502,6 +518,8 @@ def patch_target(
         changes["aggressiveness"] = {"from": was_aggressiveness, "to": target.aggressiveness}
     if was_notes != target.notes:
         changes["notes"] = {"changed": True}
+    if was_ma_pre_close != target.ma_pre_close:
+        changes["ma_pre_close"] = {"from": was_ma_pre_close, "to": target.ma_pre_close}
     if changes:
         changes["target"] = target.value
         audit.record_detail(request, **changes)
@@ -549,6 +567,7 @@ def _to_response(
         notes=t.notes,
         aggressiveness=t.aggressiveness,
         effective_aggressiveness=effective,
+        ma_pre_close=t.ma_pre_close,
         last_scanned_at=last_scanned_at,
         next_scan_at=next_scan_at,
     )

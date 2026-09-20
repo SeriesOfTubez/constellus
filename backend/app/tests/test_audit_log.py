@@ -314,6 +314,43 @@ def test_a_successful_mutation_is_recorded_with_actor_action_and_resource():
         fx.teardown()
 
 
+def test_ma_pre_close_patch_sets_clears_and_is_audited():
+    """planning#193. Same route, same audit machinery already proved above
+    for `aggressiveness` — `ma_pre_close` governs whether this system
+    probes a counterparty it may hold no authorisation to probe AT ALL,
+    which is a strictly higher-stakes toggle, so "who turned it off, and
+    when" is exactly the question this trail exists to answer. Covers both
+    directions (set True, then clear back to False) in one fixture rather
+    than two, since both produce exactly the same `{from, to}` shape and
+    the two-row assertion below is itself part of what's being pinned."""
+    fx = _Fixture()
+    try:
+        client = TestClient(app)
+
+        r = client.patch(
+            f"/api/targets/{fx.target_id}",
+            json={"ma_pre_close": True},
+            headers=fx.headers("admin"),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["ma_pre_close"] is True
+
+        r = client.patch(
+            f"/api/targets/{fx.target_id}",
+            json={"ma_pre_close": False},
+            headers=fx.headers("admin"),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["ma_pre_close"] is False
+
+        rows = fx.rows()
+        assert len(rows) == 2, f"expected two audit rows (set, then clear), got {len(rows)}"
+        assert rows[0].detail["changes"]["ma_pre_close"] == {"from": False, "to": True}
+        assert rows[1].detail["changes"]["ma_pre_close"] == {"from": True, "to": False}
+    finally:
+        fx.teardown()
+
+
 def test_no_request_body_is_recorded_by_default():
     """The audit row is built from the route, not from what the caller sent.
     A body echoed into `detail` is how an audit table becomes a store of

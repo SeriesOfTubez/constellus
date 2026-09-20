@@ -754,6 +754,25 @@ def _run_pipeline(
                 domain, auth_mode,
             )
 
+        # planning#193 route (c). dnsrecon and bruteforce are the two
+        # discovery tools that generate traffic a counterparty can see:
+        # both enumerate against the domain's OWN authoritative
+        # nameservers (dnsrecon `-t std`; bruteforce resolves 60-250
+        # wordlist prefixes). Neither reaches `authorise_probes` — the
+        # discovery phase gates on `is_scan_authorised`, which knows
+        # nothing about posture — so the probe gate's `_posture_cap`
+        # cannot close this door and the check has to be made here.
+        # planning#193 tracks folding this phase behind the gate as the
+        # follow-up (route (b)); until then this is the second of two
+        # enforcement points and that is a known, written-down cost.
+        posture_passive = bool(target_row is not None and target_row.ma_pre_close)
+        if posture_passive:
+            log.info(
+                "Target %s is pre-close M&A (passive-only) — skipping dnsrecon and "
+                "bruteforce; passive discovery (CT, subfinder, DNS resolution) continues",
+                domain,
+            )
+
         if options.get("subfinder", True) and domain_authorised:
             try:
                 from app.services.discovery import subfinder
@@ -794,7 +813,7 @@ def _run_pipeline(
 
         # dnsrecon: per-run options can force-enable; otherwise the tier decides.
         dnsrecon_tier = aggressiveness.dnsrecon_profile(tier)
-        if options.get("dnsrecon", dnsrecon_tier["enabled"]) and domain_authorised:
+        if options.get("dnsrecon", dnsrecon_tier["enabled"]) and domain_authorised and not posture_passive:
             try:
                 from app.services.discovery import dnsrecon
                 if dnsrecon.available():
@@ -808,7 +827,7 @@ def _run_pipeline(
         # bruteforce: tier sets default enablement + wordlist; per-run options
         # override both independently.
         brute_tier = aggressiveness.bruteforce_profile(tier)
-        if options.get("bruteforce", brute_tier["enabled"]) and domain_authorised:
+        if options.get("bruteforce", brute_tier["enabled"]) and domain_authorised and not posture_passive:
             try:
                 from app.services.discovery import bruteforce
                 wordlist = options.get("bruteforce_wordlist", brute_tier["wordlist"])
