@@ -123,6 +123,13 @@ def _run_naabu_pass(db, ip: str, asset_id: uuid.UUID, now: datetime,
             "naabu_sweep_complete": complete,
         },
     )
+    if complete:
+        # planning#190 — the sweep's own clock, the prune cutoff's real
+        # source. naabu writes this key only on a completed pass
+        # (planning#160 D3, connectors/naabu.py), from the SAME `now` that
+        # stamps each port's `last_seen_at` above; mirror that exactly, or
+        # the prune this file exists to test never runs.
+        patch.asset_metadata["naabu_last_scan_at"] = now.isoformat()
     claim_emitter.emit_claims(db, [patch], {("ip_address", ip): asset_id}, now)
     db.commit()
     projector.project(db, {asset_id}, now)

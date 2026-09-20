@@ -21,8 +21,17 @@ def _ports(rows):
 
 
 def test_fresh_port_kept():
-    """Re-observed at/after the cutoff → kept."""
-    e = {"port": 80, "sources": ["naabu"], "last_seen_at": "2026-06-19T00:30:00+00:00"}
+    """Re-observed by the sweep this cutoff came from → kept.
+
+    planning#190: the fixture is EQUALITY, not "half an hour after", because
+    equality is the only thing production produces. naabu stamps the cutoff
+    (`naabu_last_scan_at`, now carried to the claim as `evidence["swept_at"]`)
+    and every port's `last_seen_at` from a single `now` in
+    `_build_phase_result`. The old "30 minutes after the cutoff" fixture
+    documented an ordering the pipeline cannot reach and is why #190 — every
+    fresh port deleted on the projection that recorded it — went unnoticed
+    through both this file and test_projector.py."""
+    e = {"port": 80, "sources": ["naabu"], "last_seen_at": _CUTOFF}
     assert 80 in _ports(_prune_stale_ports([e], _CUTOFF, _NOW))
 
 

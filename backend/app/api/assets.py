@@ -541,17 +541,24 @@ _CONFIRMED_PORT_GRACE_DAYS = 3
 def _filter_stale_ports(metadata: dict, now: datetime | None = None) -> dict:
     """Remove open_ports entries not re-observed in the most recent naabu scan.
 
-    naabu_last_scan_at is written to asset_metadata each time naabu (now with
-    nmap verification) completes for this IP. Any port whose last_seen_at
-    predates that timestamp was not confirmed in the latest verified scan and
-    is treated as closed — with two exceptions: (1) a previously app-confirmed
+    naabu_last_scan_at is the naabu sweep's OWN clock, projected onto
+    asset_state by `projector` from the `port_observation` claim's
+    `evidence["swept_at"]` each time naabu (now with nmap verification)
+    completes for this IP. planning#190 — it used to be the claim's write
+    timestamp, a different quantity that was always later than every port it
+    judged, so this filter hid every freshly observed port. Any port whose
+    last_seen_at predates the sweep was not confirmed in the latest verified
+    scan and is treated as closed — with two exceptions: (1) a previously app-confirmed
     port (l7_confirmed) is kept for _CONFIRMED_PORT_GRACE_DAYS past its last
     confirmation so an intermittent/flapping real port isn't retired on one miss;
     (2) a Shodan-sourced port is kept as time-boxed intel for
     _SHODAN_PORT_GRACE_DAYS days from its last_seen_at so operators can
     investigate before it is silently dropped.
 
-    If no naabu scan has ever run, all ports are kept.
+    If no naabu scan has ever run — or the claim behind this projection
+    predates planning#190 and carries no sweep clock, so `projector` set no
+    cutoff at all — all ports are kept. "Can't judge it, don't hide it",
+    matching the write-time prune's own fallback.
 
     The `now` parameter is exposed for testing (defaults to UTC now).
     """
