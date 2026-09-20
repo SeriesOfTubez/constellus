@@ -20,16 +20,17 @@ from app.models.target import Target, TargetType
 from app.services.asset_writer import write_assets
 from app.services.target_scope import target_scoped_asset_ids
 from app.services.target_service import is_scan_authorised
+from app.tests import _docaddr
 
 
 def _seed_target(db, value: str, target_type: str) -> Target:
     """Delete-then-insert one Target (planning#170, planning#156).
 
     `Target.value` is globally UNIQUE (uq_targets_value). Several values here
-    are constants ("198.51.100.0/28") and the rest are drawn from a 50-address
-    window, so a row stranded by a run that died before `_cleanup` makes the
-    matching INSERT fail on a later run. Deleting first makes the seed
-    idempotent, so a dirty exit costs the next run nothing.
+    are constants ("198.51.100.0/28") and the rest come from `_docaddr.alloc()`
+    (planning#199), so a row stranded by a run that died before `_cleanup`
+    makes the matching INSERT fail on a later run. Deleting first makes the
+    seed idempotent, so a dirty exit costs the next run nothing.
     """
     db.query(Target).filter(Target.value == value).delete(synchronize_session=False)
     db.commit()
@@ -150,8 +151,7 @@ def test_leg3_bare_ip_target_has_no_target_asset_link_but_is_still_covered():
     TargetAssetLink row at all (only the domain-discovery loop populates
     that table) — without leg 3, this asset would be silently invisible to
     the whole helper."""
-    suffix = uuid.uuid4().hex[:6]
-    ip = f"198.51.100.{20 + int(suffix, 16) % 50}"
+    ip = _docaddr.alloc()
 
     db = SessionLocal()
     try:

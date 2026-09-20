@@ -24,9 +24,7 @@ from app.models.claim import AssetClaim, ClaimHistory
 from app.models.observer import Observer
 from app.services import projector
 from app.services.asset_writer import write_assets
-
-# Documentation range only (RFC-5737) — no real address in a tracked file.
-_IP_PREFIX = "192.0.2."
+from app.tests import _docaddr
 
 
 def _claims_for(db, canonical_id):
@@ -91,7 +89,7 @@ def test_wiz_observer_is_seeded_with_the_intended_taxonomy():
 def test_confirmed_payload_becomes_a_claim_and_projects_to_proven_ours():
     """The whole point of the slice: a credentialed ownership claim reaches
     `estate = "proven_ours"`, which had no producer before."""
-    ip = f"{_IP_PREFIX}{uuid.uuid4().int % 200 + 10}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         row = _write(db, ip, _claim_payload())
@@ -121,7 +119,7 @@ def test_confirmed_claim_also_promotes_probe_class_to_direct_addressable():
     `name_only`, while an address that merely looked like a datacenter IP
     with a heuristic affinity verdict earned `direct_addressable` — weaker
     evidence licensing more probing than stronger evidence."""
-    ip = f"{_IP_PREFIX}{uuid.uuid4().int % 200 + 10}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         row = _write(db, ip, _claim_payload())
@@ -141,7 +139,7 @@ def test_third_party_boundary_still_outranks_ownership_proof_for_probing():
     They answer different questions — "is this ours" vs "may we send it
     traffic" — and an address that is both our account AND fronting a
     vendor endpoint must not be probed."""
-    ip = f"{_IP_PREFIX}{uuid.uuid4().int % 200 + 10}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         write_assets(db, uuid.uuid4(), [DiscoveredAsset(
@@ -177,7 +175,7 @@ def test_evidence_is_split_out_so_churn_is_not_an_ownership_change():
     answer to "is this address ours" does not — left inline, the emitter's
     JSON-equality check would read that as a value change and append a
     claim_history row saying ownership changed."""
-    ip = f"{_IP_PREFIX}{uuid.uuid4().int % 200 + 10}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         row = _write(db, ip, _claim_payload())
@@ -207,7 +205,7 @@ def test_evidence_is_split_out_so_churn_is_not_an_ownership_change():
 def test_a_genuine_ownership_change_does_append_history():
     """The counterpart to the test above — evidence churn is filtered out,
     but a real change in what Wiz says owns the address is not."""
-    ip = f"{_IP_PREFIX}{uuid.uuid4().int % 200 + 10}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         row = _write(db, ip, _claim_payload())
@@ -235,7 +233,7 @@ def test_unconfirmed_payload_writes_no_claim_at_all():
     yes may be recorded — and "Wiz has not heard of this address" is not
     evidence the address is not ours. The absence layer (planning#145)
     represents that, by the claim's absence."""
-    ip = f"{_IP_PREFIX}{uuid.uuid4().int % 200 + 10}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         row = _write(db, ip, _claim_payload(confirmed=False))
@@ -252,7 +250,7 @@ def test_truthy_but_non_true_confirmed_is_rejected():
     """`is not True`, not `not truthy`. A producer sending the string "yes"
     or a non-empty dict must not clear a bar this high by accident."""
     for bogus in ["yes", 1, {"ok": True}, [1]]:
-        ip = f"{_IP_PREFIX}{uuid.uuid4().int % 200 + 10}"
+        ip = _docaddr.alloc()
         db = SessionLocal()
         try:
             row = _write(db, ip, _claim_payload(confirmed=bogus))
@@ -264,7 +262,7 @@ def test_truthy_but_non_true_confirmed_is_rejected():
 
 
 def test_non_dict_payload_is_ignored_without_raising():
-    ip = f"{_IP_PREFIX}{uuid.uuid4().int % 200 + 10}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         row = _write(db, ip, "confirmed")

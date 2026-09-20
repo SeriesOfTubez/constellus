@@ -51,6 +51,7 @@ from app.models.observer import Observer
 from app.services import claims_query, projector
 from app.services.asset_writer import write_assets
 from app.services.claim_emitter import upsert_single_claim
+from app.tests import _docaddr
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -105,8 +106,7 @@ def test_conflicting_values_from_multiple_observers_are_preserved():
     observer's view would silently clobber the other's. asset_claims'
     unique (asset, observer, claim_type) key means both survive as
     distinct rows with their own claim_value intact instead."""
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{10 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         write_assets(db, uuid.uuid4(), [
@@ -150,10 +150,9 @@ def test_absence_query_returns_assets_with_no_claim_from_observer():
     absence query must return the unclaimed and zero-claim assets and
     exclude the naabu-claimed one — the NOT-EXISTS correctness case an
     anti-join gated on some other row existing would get wrong."""
-    suffix = uuid.uuid4().hex[:10]
-    ip_claimed = f"203.0.113.{70 + (int(suffix[:2], 16) % 30)}"
-    ip_unclaimed = f"198.51.100.{10 + (int(suffix[2:4], 16) % 60)}"
-    ip_zero_claims = f"198.51.100.{80 + (int(suffix[4:6], 16) % 60)}"
+    ip_claimed = _docaddr.alloc()
+    ip_unclaimed = _docaddr.alloc()
+    ip_zero_claims = _docaddr.alloc()
     db = SessionLocal()
     try:
         write_assets(db, uuid.uuid4(), [
@@ -208,7 +207,7 @@ def test_reobservation_bumps_timestamp_without_history_and_change_writes_one_row
     not the value being merely present."""
     suffix = uuid.uuid4().hex[:10]
     value = f"epic129-reobs-{suffix}.example.com"
-    ip = f"203.0.113.{140 + (int(suffix[:2], 16) % 60)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         write_assets(db, uuid.uuid4(), [DiscoveredAsset(
@@ -272,9 +271,9 @@ def test_surface_tri_state_for_proven_claimed_and_not_ours():
     the planning#145 settled decision that it reads as `"unknown"`, not
     `None` and not silently `"not_ours"`."""
     suffix = uuid.uuid4().hex[:10]
-    ip_proven = f"203.0.113.{20 + (int(suffix[:2], 16) % 20)}"
-    ip_claimed = f"203.0.113.{40 + (int(suffix[2:4], 16) % 20)}"
-    ip_unknown = f"203.0.113.{60 + (int(suffix[4:6], 16) % 20)}"
+    ip_proven = _docaddr.alloc()
+    ip_claimed = _docaddr.alloc()
+    ip_unknown = _docaddr.alloc()
     third_party_value = f"edge-{suffix}.vendor.invalid"
     all_values = [ip_proven, ip_claimed, ip_unknown, third_party_value]
     observer_name = f"test_cloud_inv_{uuid.uuid4().hex[:10]}"

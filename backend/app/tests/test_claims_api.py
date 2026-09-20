@@ -23,6 +23,7 @@ from app.core.database import SessionLocal
 from app.models.asset_canonical import AssetCanonical
 from app.models.claim import ClaimHistory
 from app.services.asset_writer import write_assets
+from app.tests import _docaddr
 
 
 def _cleanup(values: list[str]) -> None:
@@ -52,8 +53,7 @@ def _assert_http_error(fn, expected_status: int, *args, **kwargs) -> HTTPExcepti
 # ── GET /api/claims/surface/{asset_id} ───────────────────────────────────────
 
 def test_get_surface_returns_shape_for_a_real_asset():
-    suffix = uuid.uuid4().hex[:10]
-    ip = f"203.0.113.{170 + (int(suffix[:2], 16) % 20)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         write_assets(db, uuid.uuid4(), [DiscoveredAsset(
@@ -84,9 +84,8 @@ def test_get_surface_404s_for_an_id_with_no_canonical_row():
 # ── GET /api/claims/absence ───────────────────────────────────────────────────
 
 def test_get_absence_returns_rows_shaped_and_surfaced():
-    suffix = uuid.uuid4().hex[:10]
-    ip_claimed = f"203.0.113.{190 + (int(suffix[:2], 16) % 10)}"
-    ip_unclaimed = f"198.51.100.{110 + (int(suffix[2:4], 16) % 60)}"
+    ip_claimed = _docaddr.alloc()
+    ip_unclaimed = _docaddr.alloc()
     db = SessionLocal()
     try:
         write_assets(db, uuid.uuid4(), [DiscoveredAsset(

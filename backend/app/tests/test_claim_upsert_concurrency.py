@@ -15,20 +15,22 @@ and on conflict re-reads the row with `.with_for_update().populate_existing()`
 before the read-modify-write, so a losing writer falls through to an UPDATE
 under a row lock instead of raising.
 
-These are real two-session tests against the real dev DB (no test DB exists
-in this project — see backend/app/tests/test_hosting_classifier.py's
-docstring and planning#171): two genuine `threading.Thread`s, each opening
-its own `SessionLocal()`, synchronized on a `threading.Barrier(2)` so both
-threads are actually racing inside Postgres. A mock or monkeypatched DB
-proves nothing here — the entire mechanism being tested is DB-level
-(the unique index and row locking), not application logic.
+These are real two-session tests against a real Postgres instance — whatever
+`DATABASE_URL` points at, the throwaway `constellus_test` database that
+`backend/scripts/test.ps1`/`test.sh` recreate and migrate before each run
+(planning#200): two genuine `threading.Thread`s, each opening its own
+`SessionLocal()`, synchronized on a `threading.Barrier(2)` so both threads
+are actually racing inside Postgres. A mock or monkeypatched DB proves
+nothing here — the entire mechanism being tested is DB-level (the unique
+index and row locking), not application logic.
 
-Cleanup discipline (planning#171): every asset this file creates uses an
-RFC 5737 documentation IP (192.0.2.0/24) suffixed by `uuid4().hex[:8]`-style
-randomness picked from high in the range, so parallel runs don't collide.
-`_cleanup(value)` mirrors test_hosting_classifier.py's helper: delete
-ClaimHistory by asset_canonical_id.in_(ids) for that one value, then the
-asset_canonical rows for that one value — never a table-wide delete.
+Cleanup discipline (planning#199): every asset this file creates uses an
+address drawn from `_docaddr.alloc()` — collision-free by construction,
+not merely low-probability, so no other test file's rows can be swept up
+by accident. `_cleanup(value)` mirrors test_hosting_classifier.py's
+helper: delete ClaimHistory by asset_canonical_id.in_(ids) for that one
+value, then the asset_canonical rows for that one value — never a
+table-wide delete.
 
 Run with:  python -m app.tests.test_claim_upsert_concurrency
        or: pytest app/tests/test_claim_upsert_concurrency.py -v
@@ -44,6 +46,7 @@ from app.core.database import SessionLocal
 from app.models.asset_canonical import AssetCanonical
 from app.models.claim import AssetClaim, ClaimHistory
 from app.services.claim_emitter import get_current_claim, upsert_single_claim
+from app.tests import _docaddr
 
 _OBSERVER = "hosting_classifier"
 _CLAIM_TYPE = "hosting_class"
@@ -157,8 +160,7 @@ def _race(asset_id, barrier, value_a, value_b, results):
 # ── Test 1: first write, no existing claim ──────────────────────────────────
 
 def test_concurrent_first_write_does_not_raise_integrity_error():
-    suffix = uuid.uuid4().hex[:8]
-    ip = f"192.0.2.{200 + (int(suffix[:2], 16) % 50)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         asset = _make_ip_asset(db, ip)
@@ -198,8 +200,7 @@ def test_concurrent_first_write_does_not_raise_integrity_error():
 # ── Test 2: concurrent update of an existing claim ──────────────────────────
 
 def test_concurrent_update_of_existing_claim_keeps_one_row_and_history_consistent():
-    suffix = uuid.uuid4().hex[:8]
-    ip = f"192.0.2.{100 + (int(suffix[:2], 16) % 50)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         asset = _make_ip_asset(db, ip)
@@ -258,8 +259,7 @@ def test_concurrent_update_of_existing_claim_keeps_one_row_and_history_consisten
 # ── Test 3: concurrent identical-value writes add no history ───────────────
 
 def test_concurrent_identical_value_writes_add_no_history_rows():
-    suffix = uuid.uuid4().hex[:8]
-    ip = f"192.0.2.{50 + (int(suffix[:2], 16) % 40)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         asset = _make_ip_asset(db, ip)
@@ -304,8 +304,7 @@ def test_concurrent_identical_value_writes_add_no_history_rows():
 # ── Test 4: unknown observer guard (not concurrency) ────────────────────────
 
 def test_unknown_observer_still_returns_none_without_writing():
-    suffix = uuid.uuid4().hex[:8]
-    ip = f"192.0.2.{10 + (int(suffix[:2], 16) % 30)}"
+    ip = _docaddr.alloc()
     unknown_observer = uuid.uuid4().hex
 
     db = SessionLocal()

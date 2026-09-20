@@ -165,7 +165,7 @@ jobs:
         env:
           POSTGRES_USER: constellus
           POSTGRES_PASSWORD: constellus
-          # Named `_test` deliberately: app/tests/conftest.py refuses to run
+          # Named `_test` deliberately: app/tests/__init__.py refuses to run
           # against a database whose name does not end in `_test`, so CI and a
           # developer's local run are held to the same rule by the same check.
           POSTGRES_DB: constellus_test

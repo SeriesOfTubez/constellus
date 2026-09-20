@@ -26,6 +26,7 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.claim import ClaimHistory
 from app.services import origin_corroboration as oc
 from app.services.claim_emitter import upsert_single_claim
+from app.tests import _docaddr
 
 
 def test_ip_in_hostname_ipv4_plain():
@@ -189,7 +190,7 @@ def test_shodan_hostnames_read_from_reverse_hostname_claim():
     """planning#144 L3c-3: the candidate pool comes from the
     `reverse_hostname` claim, which is where claim_emitter's Table 1 puts
     what asset_metadata["shodan_hostnames"] used to hold."""
-    ip = f"203.0.113.{150 + (uuid.uuid4().int % 40)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         row = _seed_ip_with_reverse_hostname_claim(db, ip, ["a.example.com", "b.example.com"])
@@ -203,7 +204,7 @@ def test_shodan_hostnames_empty_without_claim():
     """No claim -> [] (not an error). The caller unions this with
     HackerTarget's reverse-IP list, and an empty union is the
     graceful-degradation `attempted=False` signal."""
-    ip = f"203.0.113.{60 + (uuid.uuid4().int % 40)}"
+    ip = _docaddr.alloc()
     db = SessionLocal()
     try:
         row = _seed_ip_with_reverse_hostname_claim(db, ip, None)

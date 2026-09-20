@@ -60,11 +60,12 @@ def _reset_address(db, ip: str, host: str | None) -> None:
     Deleting by value is safe because the suite runs sequentially in one
     process: no other test holds one of these addresses at the moment this
     runs, so the only rows it can find are this module's own, or debris a
-    crashed run left behind — and removing those is the repair. (The pool is
-    *not* exclusively ours; see `_docaddr` — test_cloud_inventory_claim draws
-    a window that swallows it. That costs an occasional red, never a wrong
-    deletion.) `_cleanup`'s own by-id Target semantics are deliberately
-    unchanged.
+    crashed run left behind — and removing those is the repair. (The pool
+    IS exclusively ours: `_docaddr.alloc()` draws without replacement, and
+    `test_docaddr_guard.py` statically enforces that no literal anywhere in
+    `app/tests` falls inside it — so no other test can be holding one of
+    these addresses, full stop, not just "usually.") `_cleanup`'s own by-id
+    Target semantics are deliberately unchanged.
     """
     values = [ip] + ([host] if host else [])
     db.query(FindingCanonical).filter(

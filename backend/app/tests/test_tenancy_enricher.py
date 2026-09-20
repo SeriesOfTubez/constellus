@@ -197,10 +197,9 @@ def test_tenancy_for_match_mapping():
 # ── tri-state end to end ─────────────────────────────────────────────────
 
 def test_tick_tri_state_end_to_end():
-    suffix = uuid.uuid4().hex[:8]
-    ip_compute = f"192.0.2.{10}"
-    ip_edge = f"198.51.100.{10}"
-    ip_unknown = f"203.0.113.{10}"
+    ip_compute = "192.0.2.10"
+    ip_edge = "198.51.100.10"
+    ip_unknown = "203.0.113.10"
     values = [ip_compute, ip_edge, ip_unknown]
 
     db = SessionLocal()

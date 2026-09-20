@@ -63,6 +63,7 @@ from app.models.audit import AuditLog
 from app.models.target import Target, TargetType
 from app.models.user import User, UserRole
 from app.services import audit
+from app.tests import _docaddr
 
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -112,10 +113,10 @@ class _Fixture:
             id=uuid.uuid4(), email=f"audit-viewer-{marker}@example.invalid",
             full_name="Audit test viewer", role=UserRole.VIEWER.value, is_active=True,
         )
-        # 198.51.100.0/24 is RFC 5737 TEST-NET-2 — never routable, never a
-        # real customer asset.
+        # Drawn from `_docaddr`'s pool (planning#199) — collision-free by
+        # construction, not merely low-probability.
         self.target = Target(
-            id=uuid.uuid4(), type=TargetType.IP, value=f"198.51.100.{uuid.uuid4().int % 250 + 1}",
+            id=uuid.uuid4(), type=TargetType.IP, value=_docaddr.alloc(),
             verified=False, token=uuid.uuid4().hex, aggressiveness="polite",
         )
         # Scalars captured BEFORE the commit expires the instances. The

@@ -51,6 +51,7 @@ from app.services import eol_enrichment
 from app.services.asset_writer import write_assets
 from app.services.claim_emitter import upsert_single_claim
 from app.services.projector import project
+from app.tests import _docaddr
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -100,7 +101,7 @@ def test_bridge_metadata_reconstructs_seeded_assets(monkeypatch):
     suffix = uuid.uuid4().hex[:10]
     apex = f"bridge-{suffix}.example.com"
     cname_value = f"cdn.bridge-{suffix}.example.com"
-    ip = f"203.0.113.{100 + (int(suffix[:2], 16) % 100)}"
+    ip = _docaddr.alloc()
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
 

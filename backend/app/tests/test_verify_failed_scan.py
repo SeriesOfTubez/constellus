@@ -40,6 +40,7 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.finding_canonical import FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.services import scan_executor
+from app.tests import _docaddr
 
 
 def _mk_fixture(db, marker: str):
@@ -84,9 +85,10 @@ def _cleanup(asset_id, run_id) -> None:
 
 
 def _marker() -> str:
-    # 198.51.100.0/24 is RFC 5737 TEST-NET-2 — never routable, never a real
-    # asset, and the last octet keeps concurrent runs from colliding.
-    return f"198.51.100.{uuid.uuid4().int % 250 + 1}"
+    # Drawn from `_docaddr`'s pool (planning#199) — collision-free by
+    # construction, not merely low-probability, so no other test file's
+    # rows can collide with this one.
+    return _docaddr.alloc()
 
 
 def _exploding_run(*args, **kwargs):
