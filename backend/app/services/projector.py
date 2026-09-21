@@ -347,9 +347,18 @@ _TENANCY_OBSERVERS = frozenset({"tenancy_enricher", "tenancy_ptr", "tenancy_tls"
 #     genuinely weaker evidence.
 #   - It is admitted anyway because the promotion never fires on tenancy
 #     alone: `probe_class` ANDs the composed `single_tenant` verdict with
-#     `estate == "confirmed_ours"` (see the disjunct below in this module),
-#     so a Tier 1 promotion also requires a positive affinity proof that one
-#     of our own hostnames serves from that address.
+#     the `affinity_confirmation` claim's `verdict == "confirmed_ours"` (see
+#     the disjunct below in this module), so a Tier 1 promotion also
+#     requires a positive affinity proof that one of our own hostnames
+#     serves from that address.
+#
+#     Not `estate` — this said `estate == "confirmed_ours"` until
+#     planning#148's measurement went looking for it. `estate` is a
+#     projected column whose CHECK constraint admits only `proven_ours` /
+#     `claimed_ours` / `not_ours`, so that comparison could never have been
+#     true, and a reader who trusted the comment would go hunting for a
+#     state the ladder never reaches. The code was always right; the prose
+#     named the wrong field.
 #   - Rule 1 is the second guard: Tier 2 (`reverse_ip.sharing == "shared"`)
 #     is specialised in exactly the failure mode a default certificate would
 #     hide — a genuinely multi-tenant host carries many names in passive

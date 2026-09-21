@@ -975,6 +975,79 @@ def test_posture_cap_denies_an_asset_linked_to_a_pre_close_target():
         _cleanup_targets([target_id])
 
 
+def test_the_real_posture_cap_alone_flips_the_composed_verdict():
+    """planning#148 acceptance §5.4, with no cap stubbed out.
+
+    `test_each_cap_independently_reduces_and_cannot_widen` monkeypatches all
+    three caps, so what it proves is the COMPOSITION — that `min()` takes the
+    tightest answer and no cap can widen another. It cannot show that a real
+    cap is capable of reducing anything, because no real cap runs in it.
+    Conversely `test_posture_cap_denies_an_asset_linked_to_a_pre_close_target`
+    exercises the real posture body but calls `_posture_cap` directly, so it
+    says nothing about the composed verdict.
+
+    Between the two there was a gap exactly the shape of the acceptance
+    criterion: tighten ONE REAL cap, hold the other two open, and show the
+    composed outcome changes. That was unprovable while `_posture_cap` was a
+    permissive stub; planning#193 gave it a real body (pre-close M&A) and
+    planning#196 made it consult the observer's noise class, so it is
+    provable now.
+
+    Scope and probe-class are held genuinely open rather than mocked open:
+    `scan_authorisation_mode` unset (the scope cap's default short-circuit)
+    and a real `direct_addressable` projection, which is the state the
+    planning#148 measurement showed a live asset actually reaching. The only
+    thing that changes between the two halves is the target's
+    `ma_pre_close` flag.
+    """
+    suffix = uuid.uuid4().hex[:10]
+    v = f"pa148-composed-{suffix}"
+    db = SessionLocal()
+    target_id = None
+    try:
+        asset = _mk_ip_asset(db, v)
+        _set_state(db, asset.id, "direct_addressable")
+
+        # Half 1 — an ordinary target. Scope open, probe-class open, posture
+        # open: the composed verdict permits, and `ip` is among the modes.
+        target = _mk_target(db, f"pa148-target-{suffix}.example.com", ma_pre_close=False)
+        target_id = target.id
+        _link(db, target.id, asset.id)
+
+        permitted = pa.authorise_probes(
+            db, connector_id="test-ip", connector=_IP_CONNECTOR,
+            assets=[_da(v)], scope={},
+        ).permissions[("ip_address", v)]
+        assert permitted.allowed is True, (
+            "baseline must permit, or the half below proves nothing: "
+            f"{permitted.rule_fired}"
+        )
+        assert "ip" in permitted.modes
+
+        # Half 2 — the SAME asset, same scope, same projection. Flip only the
+        # posture input.
+        db.get(Target, target_id).ma_pre_close = True
+        db.commit()
+
+        denied = pa.authorise_probes(
+            db, connector_id="test-ip", connector=_IP_CONNECTOR,
+            assets=[_da(v)], scope={},
+        ).permissions[("ip_address", v)]
+        assert denied.allowed is False, (
+            "the real posture cap must be able to deny an otherwise fully "
+            "authorised asset on its own"
+        )
+        assert denied.rule_fired == "posture:ma_pre_close"
+        assert denied.modes == frozenset(), (
+            "a posture denial removes every addressing mode, it does not "
+            "merely narrow them"
+        )
+    finally:
+        db.close()
+        _cleanup([v])
+        _cleanup_targets([target_id])
+
+
 def test_posture_cap_permits_unlinked_and_ordinary_linked_assets():
     suffix = uuid.uuid4().hex[:10]
     v_unlinked = f"pa193-unlinked-{suffix}"
@@ -1209,6 +1282,7 @@ def _run():
         test_tenancy_verdict_separates_the_three_name_only_denials,
         test_tenancy_key_present_even_when_the_projection_says_nothing,
         test_posture_cap_denies_an_asset_linked_to_a_pre_close_target,
+        test_the_real_posture_cap_alone_flips_the_composed_verdict,
         test_posture_cap_permits_unlinked_and_ordinary_linked_assets,
         test_posture_cap_any_link_wins_even_with_an_ordinary_target_also_linked,
         test_posture_cap_permissive_when_canonical_is_none,
