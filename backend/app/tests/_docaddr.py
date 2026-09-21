@@ -55,6 +55,11 @@ have to trust):
     192.0.2.78     - 192.0.2.127         50 addresses
 
 315 total against roughly 110 draws in a full suite run — about 2.9x headroom.
+
+`alloc_cidr()` draws from its own, separate blocks (`CIDR_BLOCKS`, below):
+ten /29s against five draws. The original six ran out during planning#197,
+which is the failure mode this module is designed to have — a loud
+`RuntimeError` naming the fix, not a silent reuse.
 `.0` and `.255` are outside every block: they are the network and broadcast
 addresses of their /24, and a test that builds a network around a drawn
 address should not have to think about that.
@@ -95,8 +100,18 @@ POOL_BLOCKS = (
 
 # Handed out whole, as /29s, by `alloc_cidr()`. Held apart from POOL_BLOCKS so
 # a declared range and a loose address can never be carved from the same
-# octets. Six /29s: .24, .32, .40, .48, .56, .64.
-CIDR_BLOCKS = (("198.51.100.", 24, 71),)
+# octets. Ten /29s:
+#   198.51.100.  .24 .32 .40 .48 .56 .64
+#   203.0.113.   .216 .224 .232 .240
+# The second block was added for planning#197, which exhausted the original
+# six. Chosen by reading every 203.0.113.x literal in app/tests: the nearest
+# are .212 below and .250 above, so .216-.247 is clear, and it sits outside
+# POOL_BLOCKS' .100-.209. It stops at .240 rather than .248 because a /29 at
+# .248 would contain the /24's broadcast address.
+CIDR_BLOCKS = (
+    ("198.51.100.", 24, 71),
+    ("203.0.113.", 216, 247),
+)
 
 _lock = threading.Lock()
 _available = [

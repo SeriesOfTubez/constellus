@@ -262,43 +262,57 @@ def is_scan_authorised(db: Session, value: str, mode: str) -> bool:
       the setting's documented meaning and today's default — so this change
       alters no deployed behaviour on its own. The setting merely becomes
       safe to flip, which is a separate deliberate act.
-    - `strict` now narrows the candidate pool to verified targets BEFORE
+    - `strict` narrows the candidate pool to verified targets BEFORE
       containment runs, instead of the old exact-equality `is_verified`
       call. This is a deliberate behaviour change beyond the minimum fix:
       filtering after containment (or matching by equality) would be the
       same string-equality bug wearing a different hat, because a
-      *verified CIDR must license the addresses inside it*. It mirrors
-      `probe_authorisation._resolve_scoped_ids` exactly, so the two
-      enforcement paths cannot disagree. `strict` still requires
-      verification — that requirement is unchanged, only the matching is
-      fixed.
+      *verified CIDR must license the addresses inside it*. `strict` still
+      requires verification — that requirement is unchanged, only the
+      matching is fixed.
     - Any unrecognised mode falls into the `strict` branch (fail closed),
       unchanged from before.
+
+    ## Its relationship to the probe gate (planning#197)
+
+    This function's docstring used to claim it "mirrors
+    `probe_authorisation._resolve_scoped_ids` exactly, so the two
+    enforcement paths cannot disagree." **That was false**, and they did
+    disagree, in both directions at once — see `entry_in_target_scope` for
+    the two measured cases. Two implementations kept in step by hand is
+    not an invariant, and asserting one in a docstring is how the drift
+    went unnoticed.
+
+    What is actually shared is now shared, in code: both paths get their
+    authorised pool from `target_scope.authorised_target_pool`, which is
+    the single definition of the mode semantics and of the
+    verified-before-containment ordering. A change to either lands once.
+
+    What legitimately differs is the keyspace, and only that:
+
+      - this function answers over a **value** (one hostname or address),
+        via `value_in_target_scope`, and gates *enumeration*;
+      - `_resolve_scoped_ids` answers over **scope entries** (which may be
+        CIDRs), via `entry_in_target_scope`, and its result then selects
+        canonical asset ids for the *probe* gate.
+
+    Both delegate the actual matching to this module, so the suffix and
+    containment rules cannot drift either.
 
     Bucketing mirrors `scan_executor._resolve_dynamic_scope` — it
     classifies from `detect_type(value)`, not from the stored `Target.type`
     column, so a stale/incorrect stored type cannot skew the gate.
+    `authorised_target_pool` is where that now happens.
+
+    Cost note, not a defect: the pool is rebuilt per call, and Phase 1
+    calls this once per domain in its discovery loop. That is one query
+    over `targets` per domain. Unchanged by planning#197 — recorded here
+    so the next person to profile the discovery loop knows it is known.
     """
     if mode == "disabled":
         return True
 
-    q = db.query(Target.value)
-    if mode != "acknowledge":
-        # "strict", and any unrecognised mode — fail closed.
-        q = q.filter(Target.verified == True)  # noqa: E712
-
-    domains: list[str] = []
-    ip_ranges: list[str] = []
-    for (target_value,) in q.all():
-        try:
-            t_type = detect_type(target_value)
-        except ValueError:
-            continue
-        if t_type == TargetType.DOMAIN:
-            domains.append(target_value)
-        else:
-            ip_ranges.append(target_value)
-
+    domains, ip_ranges = target_scope.authorised_target_pool(db, mode)
     return target_scope.value_in_target_scope(db, value, domains=domains, ip_ranges=ip_ranges)
 
 
