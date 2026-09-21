@@ -51,6 +51,7 @@ import pytest
 from app.core.database import SessionLocal
 from app.models.asset_canonical import AssetCanonical
 from app.models.target import Target, TargetType
+from app.models.target_asset_link import TargetAssetLink
 from app.services.probe_authorisation import _resolve_scoped_ids
 from app.services.target_scope import authorised_target_pool, entry_in_target_scope
 from app.services.target_service import is_scan_authorised
@@ -302,6 +303,65 @@ def test_both_gates_agree_on_every_value_under_strict_and_acknowledge():
                 )
     finally:
         _cleanup(db, [apex, sub, stranger, cidr, inside, outside])
+        db.close()
+
+
+def test_the_widening_reaches_leg_1_links_of_a_covered_subdomain_target():
+    """Pins the furthest consequence of the `strict` widening, because it is
+    the thing a reviewer should check and it is NOT self-evident.
+
+    `target_scoped_asset_ids` unions leg 1 (`TargetAssetLink`), which links
+    every asset in a domain's discovery batch to that domain's target —
+    including, per `value_in_target_scope`'s own warning, a CNAME boundary
+    target or shared-hosting IP belonging to a third party. Leg 1 is why
+    `_scope_cap`'s answer is a strict SUPERSET of `is_scan_authorised`'s,
+    and that asymmetry is pre-existing and deliberate.
+
+    planning#197 widens which ENTRIES feed leg 1 under `strict`: previously
+    only entries that were themselves verified targets, now also entries
+    covered by a verified target. So an unverified subdomain target under a
+    verified apex now contributes its leg-1 links — including ones outside
+    the apex, as asserted here.
+
+    This is consistent rather than new: the verified apex, whenever it is
+    in scope, already contributes exactly the same kind of link. The
+    widening applies the existing rule to entries that were always
+    authorised; it does not create a new class of over-inclusion. Narrowing
+    leg 1 is a separate question about `target_scoped_asset_ids` and about
+    third-party attribution, deliberately NOT decided here.
+
+    In the other direction planning#197 made leg 1 stricter, not looser:
+    `acknowledge` used to feed it EVERY scope entry, uncovered ones
+    included.
+    """
+    apex = _domain("leg1")
+    sub = f"api.{apex}"
+    stranger = f"s197-cname-{uuid.uuid4().hex[:10]}.example.net"
+
+    db = SessionLocal()
+    try:
+        _seed_target(db, apex, TargetType.DOMAIN, verified=True)
+        sub_target = _seed_target(db, sub, TargetType.DOMAIN, verified=False)
+        # A third-party CNAME destination, linked to the subdomain target by
+        # the discovery batch — outside the verified apex entirely.
+        offsite = _seed_asset(db, asset_type="dns_record", value=stranger)
+        db.add(TargetAssetLink(target_id=sub_target.id, asset_canonical_id=offsite.id))
+        db.commit()
+
+        # The subdomain is unverified, so before planning#197 the entry was
+        # dropped by string equality and nothing was scoped.
+        scoped = _resolve_scoped_ids(db, {"domains": [sub], "ip_ranges": []}, "strict")
+        assert offsite.id in scoped
+
+        # The enumeration gate still refuses the offsite name itself — it
+        # omits leg 1, which is exactly why its answer is the subset.
+        assert is_scan_authorised(db, stranger, "strict") is False
+    finally:
+        db.query(TargetAssetLink).filter(
+            TargetAssetLink.asset_canonical_id == offsite.id
+        ).delete(synchronize_session=False)
+        db.commit()
+        _cleanup(db, [apex, sub, stranger])
         db.close()
 
 
