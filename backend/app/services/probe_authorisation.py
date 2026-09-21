@@ -380,6 +380,23 @@ def _resolve_scoped_ids(db: Session, scope: dict, auth_mode: str) -> frozenset[u
     keyspace difference is the only difference that remains, and it is
     real — see `is_scan_authorised`'s docstring for the precise statement.
 
+    ## The pool is the declared inventory, not this run's scope
+
+    Worth stating because it is the subtlest part of the change. The
+    entries being *filtered* are this run's scope; the targets they are
+    filtered *against* are every declared target, which is what
+    `is_scan_authorised` has always used. Those are different sets — scope
+    comes from `scan_executor._resolve_dynamic_scope`, which partitions
+    the inventory by tag-based cadence tier, so a scan template's scope is
+    a SUBSET of the declared targets.
+
+    Using the run's own scope as its own authorisation pool would make
+    "authorised" mean "whatever this template happens to own this cycle".
+    Cadence tiers are a scheduling mechanism; they carry no statement
+    about what the user permitted. A verified apex authorises its
+    subdomains whether or not the tier template currently executing
+    happens to own that apex.
+
     Under the default `disabled` mode this changes nothing, as with every
     slice of planning#128 and #148 before it.
     """

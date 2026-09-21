@@ -179,7 +179,18 @@ def test_strict_scope_entry_inside_a_verified_cidr_scopes_its_assets():
 
 def test_strict_scope_entry_under_a_verified_apex_scopes_its_assets():
     """REGRESSION (planning#197). Same bug, domain keyspace: the entry is a
-    subdomain of the verified apex and is not itself a target row."""
+    subdomain of the verified apex and is not itself a target row.
+
+    This also pins the subtlest part of the change, so note what is NOT in
+    the scope dict: the apex. The entries being filtered are the run's
+    scope; the targets they are filtered against are the whole declared
+    inventory. Those are different sets — `_resolve_dynamic_scope`
+    partitions the inventory by cadence tier, so a template's scope is a
+    subset of it. If the pool were the run's own scope, "authorised" would
+    mean "whatever this template owns this cycle", and a verified apex
+    would stop authorising its subdomains whenever a tier template that
+    does not own the apex was the one running.
+    """
     apex = _domain("narrow")
     sub = f"api.{apex}"
 
