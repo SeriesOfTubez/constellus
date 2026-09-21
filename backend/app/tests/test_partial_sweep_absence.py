@@ -34,6 +34,18 @@ style) but the PATCH under test is driven through the real
 claim_emitter.emit_claims() -> projector.project() path, since the bug
 lives in the emitter's merge/replace decision, not in direct claim seeding.
 
+The last three tests are planning#175 rather than #169, and they are here
+because this is where the real emit -> project harness lives. They cover the
+patch shape none of the above did: an EMPTY one. Every test above narrows a
+port list, which replaces a claim normally; emptying one did nothing at all,
+because the emitter built its observer groups out of port entries and a patch
+with no entries produced no group. That made the zero-port fill patch naabu
+has emitted since planning#160 inert — an asset's LAST port never retired —
+and it was never specific to the CIDR-swept hosts planning#175 found it
+through. The two bounds on the fix (an incomplete pass, and another
+observer's silence) are pinned alongside it, since emptying a claim is the
+most destructive thing the emitter can do.
+
 Run with:  python -m app.tests.test_partial_sweep_absence
        or: pytest app/tests/test_partial_sweep_absence.py
 """
@@ -315,6 +327,138 @@ def test_absent_completeness_key_behaves_as_complete():
 
         state = _state_for(db, asset_id)
         assert [p["port"] for p in state.open_ports] == [443], state.open_ports
+    finally:
+        db.close()
+        if asset_id is not None:
+            _cleanup(asset_id)
+
+
+def test_an_empty_complete_sweep_retires_the_last_port():
+    """planning#175 — the zero-port fill patch, end to end.
+
+    Every other test here narrows a port list; this one empties it. That
+    distinction matters because the empty patch is the *only* thing the
+    planning#175 fix newly emits: a CIDR-swept host whose last port closed
+    gets `open_ports: []` with a fresh `naabu_last_scan_at`, and nothing
+    else. If the emitter treated an empty list as "nothing to claim" and
+    skipped the upsert — a perfectly plausible reading — the fix would
+    produce a patch that changes nothing, and every connector-level test in
+    test_swept_host_port_retirement.py would still pass.
+
+    It lives in this module rather than with the rest of planning#175
+    because the harness that drives the real emit -> project path is here.
+
+    httpx's 8080 retiring alongside naabu's ports is the correct and
+    already-tested consequence of a complete pass earning the cutoff (see
+    `test_complete_sweep_still_retires_ports`) — an absence claim is
+    cross-observer, not naabu-only."""
+    ip = _docaddr.alloc()
+    db = SessionLocal()
+    asset_id = None
+    try:
+        seeded_at = datetime.now(timezone.utc) - timedelta(days=1)
+        asset_id = _seed(db, ip, seeded_at)
+        now = datetime.now(timezone.utc)
+
+        _emit_and_project(db, ip, asset_id, now, {
+            "sources": ["naabu"],
+            "naabu_tier": "standard",
+            "naabu_sweep_complete": True,
+            "naabu_last_scan_at": now.isoformat(),
+            "open_ports": [],
+        })
+
+        claim = _naabu_claim(db, asset_id)
+        assert claim.claim_value["ports"] == [], (
+            "an empty complete sweep must replace the claim, not be skipped "
+            "as an empty update: " + repr(claim.claim_value)
+        )
+
+        state = _state_for(db, asset_id)
+        assert [p["port"] for p in state.open_ports] == [], state.open_ports
+    finally:
+        db.close()
+        if asset_id is not None:
+            _cleanup(asset_id)
+
+
+def test_an_incomplete_empty_sweep_retires_nothing():
+    """planning#175's first safety bound. `absence_claimants` triggers on
+    `naabu_last_scan_at`, which `_build_phase_result` writes only when the
+    baseline completed (planning#160 D3) — so a pass that died mid-sweep,
+    which looks identical apart from that key, must still empty nothing.
+
+    Emptying a claim is the most destructive thing the emitter can do, and
+    an unfinished pass is precisely when it must not.
+
+    Measured, not assumed: deleting the `naabu_last_scan_at` condition from
+    `absence_claimants` leaves this test PASSING, because planning#169's
+    `merge_with_existing=not sweep_complete` independently folds the empty
+    list into the stored one. Two mechanisms cover this case, and this test
+    pins the behaviour rather than either mechanism — if it ever fails, both
+    have gone, which is the thing actually worth knowing."""
+    ip = _docaddr.alloc()
+    db = SessionLocal()
+    asset_id = None
+    try:
+        seeded_at = datetime.now(timezone.utc) - timedelta(days=1)
+        asset_id = _seed(db, ip, seeded_at)
+
+        _emit_and_project(db, ip, asset_id, datetime.now(timezone.utc), {
+            "sources": ["naabu"],
+            "naabu_tier": "standard",
+            "naabu_sweep_complete": False,
+            # no naabu_last_scan_at — an incomplete pass omits it entirely
+            "open_ports": [],
+        })
+
+        claim = _naabu_claim(db, asset_id)
+        assert [e["port"] for e in claim.claim_value["ports"]] == [22, 80, 443, 3306, 5432], (
+            "an incomplete pass emptied a claim: " + repr(claim.claim_value)
+        )
+    finally:
+        db.close()
+        if asset_id is not None:
+            _cleanup(asset_id)
+
+
+def test_another_observers_silence_is_not_an_absence_claim():
+    """planning#175's second safety bound, and the reason `absence_claimants`
+    names naabu rather than reading the patch's own `sources`.
+
+    Only naabu sweeps an address exhaustively enough for "no ports" to be an
+    observation. A patch from any other observer that mentions no ports means
+    that observer did not speak — not that it looked and saw nothing — so
+    neither its own claim nor naabu's may be emptied by it."""
+    ip = _docaddr.alloc()
+    db = SessionLocal()
+    asset_id = None
+    try:
+        seeded_at = datetime.now(timezone.utc) - timedelta(days=1)
+        asset_id = _seed(db, ip, seeded_at)
+
+        _emit_and_project(db, ip, asset_id, datetime.now(timezone.utc), {
+            "sources": ["httpx"],
+            "open_ports": [],
+        })
+
+        assert [e["port"] for e in _naabu_claim(db, asset_id).claim_value["ports"]] == [
+            22, 80, 443, 3306, 5432,
+        ], "another observer's empty patch emptied naabu's claim"
+
+        httpx_claim = (
+            db.query(AssetClaim)
+            .filter(
+                AssetClaim.asset_canonical_id == asset_id,
+                AssetClaim.observer_id == _observer_id(db, "httpx"),
+                AssetClaim.claim_type == "port_observation",
+            )
+            .one()
+        )
+        assert [e["port"] for e in httpx_claim.claim_value["ports"]] == [8080], (
+            "an observer emptied its OWN claim by not mentioning ports: "
+            + repr(httpx_claim.claim_value)
+        )
     finally:
         db.close()
         if asset_id is not None:

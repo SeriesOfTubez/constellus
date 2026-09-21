@@ -253,6 +253,28 @@ class NaabuConnector(ScanningConnector):
                 "; ".join(f"{s.value} ({s.reason})" for s in skipped_cidrs),
             )
 
+        # planning#175 — addresses the sweep physically covers that are
+        # already persisted assets, handed over by the executor
+        # (`_known_ips_in_ranges`, computed from the DECLARED ranges). Kept
+        # only where it lands inside a CIDR this pass actually sweeps: a
+        # range rejected just above as non-public or oversized is never
+        # scanned, and an unscanned address licenses no absence claim
+        # (planning#160 D2). The containment is re-derived here rather than
+        # asked of the executor because only this function knows which
+        # ranges survived — the same reason scan_executor's own planning#161
+        # guard re-derives the eligibility check instead of importing it.
+        swept_networks = [
+            ipaddress.ip_network(value, strict=False) for value in swept_cidrs
+        ]
+        swept_known_ips: set[str] = set()
+        for value in config.get("_known_ips_in_ranges") or []:
+            try:
+                ip_obj = ipaddress.ip_address(value)
+            except ValueError:
+                continue
+            if any(ip_obj in net for net in swept_networks):
+                swept_known_ips.add(value)
+
         if not ip_values and not swept_cidrs:
             log.info("Naabu skipped — no public IPs or sweepable CIDR ranges in scope")
             return PhaseResult()
@@ -426,16 +448,27 @@ class NaabuConnector(ScanningConnector):
         # run still flow through as per-IP patches — presence is safe.
         result = self._build_phase_result(
             merged.values(), tier_name,
-            # planning#161 — deliberately `ip_values` only, NOT hosts found
-            # by the CIDR sweep. scanned_ips is what licenses an ABSENCE
-            # claim, and absence is the one thing that must never be
-            # inferred loosely (planning#160). A host discovered mid-sweep
-            # has no prior port history to contradict, so licensing absence
-            # for it buys nothing and risks retiring a port on a host we
-            # only just met. Consequence, accepted knowingly: ports on
-            # CIDR-discovered hosts are never retired until that host is
-            # also reachable as a normal asset. Tracked on planning#161.
-            scanned_ips=set(ip_values) if baseline_complete else set(),
+            # planning#161/#175 — `ip_values` plus the persisted assets this
+            # pass actually swept. scanned_ips licenses an ABSENCE claim, the
+            # one thing that must never be inferred loosely (planning#160),
+            # so both halves are addresses this pass demonstrably covered:
+            # the asset list was scanned by name, and `swept_known_ips` is
+            # the subset of the executor's candidates contained by a CIDR
+            # that survived the public/size filter above.
+            #
+            # planning#161 originally passed `ip_values` alone, reasoning
+            # that a host met mid-sweep has no port history worth
+            # contradicting. That reasoning only ever governed the run that
+            # DISCOVERS a host — `swept_known_ips` holds persisted assets, so
+            # a first sighting still licenses nothing — and, more to the
+            # point, the code never delivered the conservatism the comment
+            # claimed: a swept host with any confirmed port gets a per-IP
+            # patch below carrying `naabu_last_scan_at` regardless of this
+            # set, so its other ports were always retired normally. The one
+            # case this set governs is a host whose LAST port closed: no
+            # per-IP patch, and before planning#175 no fill patch either, so
+            # its cutoff never advanced and the dead port was permanent.
+            scanned_ips=(set(ip_values) | swept_known_ips) if baseline_complete else set(),
             tarpit_ips=tarpit_ips,
             baseline_complete=baseline_complete,
         )
@@ -782,11 +815,22 @@ class NaabuConnector(ScanningConnector):
             ))
 
         # IPs naabu scanned but nmap confirmed zero open ports still need a
-        # naabu_last_scan_at update. Without it the staleness filter in the
-        # assets API never advances past the previous scan's timestamp and
-        # the old ports remain visible. Writing an empty open_ports patch
-        # updates the timestamp while the merge leaves existing port rows
-        # untouched — the API filter then hides them as stale.
+        # naabu_last_scan_at update. Without it neither the projector's prune
+        # cutoff nor the read-time staleness hide in the assets API advances
+        # past the previous scan, and ports that have since closed stay
+        # visible forever. An empty open_ports patch carries the timestamp
+        # while asserting nothing, which is exactly the absence claim.
+        #
+        # That mechanism went through `asset_metadata` when it was written
+        # and now goes through the claim layer instead (planning#144/#190 —
+        # the timestamp rides on naabu's port_observation claim as
+        # `evidence.swept_at`, and the projector puts it back on
+        # `attributes`). It was DEAD in between: `claim_emitter` built its
+        # observer groups out of port entries, so a patch with no entries
+        # emitted no claim and advanced nothing, and these fill patches were
+        # silently discarded. planning#175 made the empty patch a claim in
+        # its own right — see `_accumulate_port_observation`'s
+        # `absence_claimants`, which is what makes this loop do anything.
         #
         # planning#160 D3 — but only a completed baseline may make that
         # claim. When it did not complete, the fill patches are precisely

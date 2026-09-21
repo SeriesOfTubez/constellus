@@ -46,6 +46,7 @@ from app.services import app_settings as settings_svc
 from app.services import nuclei_tag_filter
 from app.services import probe_authorisation
 from app.services import projector
+from app.services import target_scope
 from app.services.asset_writer import write_assets
 from app.services.finding_writer import write_findings
 from app.services.target_service import is_verified, is_scan_authorised, apex_domain
@@ -948,6 +949,14 @@ def _run_pipeline(
         # open_ports[] patches in `all_assets` to know what to probe.
         # Default 100 keeps existing connectors in registry-insertion order
         # relative to each other.
+
+        # planning#175 — hoisted out of the connector loop below on purpose.
+        # `ip_range_member_values` has no CIDR-containment operator to lean on
+        # and falls back to scanning every `ip_address` row whenever a real
+        # range (not a bare /32) is in scope; the answer is identical for all
+        # four Phase 1.5 connectors, so computing it per connector would pay
+        # for that scan four times per chunk.
+        known_ips_in_ranges = target_scope.ip_range_member_values(db, list(ip_ranges))
         port_scan_connectors = sorted(
             ((cid, c) for cid, c in registry.items() if hasattr(c, "port_scan")),
             key=lambda pair: getattr(pair[1], "port_scan_order", 100),
@@ -978,6 +987,32 @@ def _run_pipeline(
                     # naabu currently reads `_ip_ranges` (app/connectors/
                     # naabu.py), everything else ignores the key.
                     "_ip_ranges": list(ip_ranges),
+                    # planning#175 — the addresses inside those ranges that
+                    # are ALREADY persisted assets. A sweep physically scans
+                    # every address in the range, but a host that only ever
+                    # entered via a sweep is never in `all_assets` (it is
+                    # rebuilt each run from this run's discovery output, and
+                    # nothing loads persisted assets back in), so naabu has
+                    # no way to know it covered one. Without this, the moment
+                    # such a host's LAST port closes it emits no patch at
+                    # all, nothing advances its cutoff, and the dead port is
+                    # frozen in the projection forever.
+                    #
+                    # Named addresses only, never the whole range: the
+                    # zero-port fill builds DiscoveredAssets, so licensing a
+                    # whole /24 would mint a row for each of its 254
+                    # addresses. Every value here is a persisted asset, so
+                    # the fill updates a row rather than creating one.
+                    #
+                    # Not routed through the probe gate, and deliberately so:
+                    # this sends no packet and probes nothing. The sweep of
+                    # the range was itself authorised above, and an address
+                    # inside a swept range is covered by that authorisation —
+                    # all that is recorded here is that the coverage
+                    # happened. naabu re-filters against the ranges it
+                    # ACTUALLY swept, so a range it skipped still licenses
+                    # nothing (planning#160 D2).
+                    "_known_ips_in_ranges": list(known_ips_in_ranges),
                 }
                 result = port_scan(gate.permitted, config)
                 # planning#160 — record incompleteness before the assets

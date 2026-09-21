@@ -431,6 +431,37 @@ def _accumulate_port_observation(
             for source_name in source_names:
                 groups.setdefault(source_name, []).append(dict(stripped))
 
+    # planning#175 — a COMPLETE naabu pass that confirmed ZERO ports on an
+    # address is a positive absence claim, and the only way to state one here
+    # is an EMPTY group: `groups` is built from port ENTRIES, so an
+    # `open_ports: []` patch produced no group, no upsert, and no advanced
+    # cutoff at all. The zero-port fill patch `naabu._build_phase_result` has
+    # emitted since planning#160 was therefore inert from the moment claims
+    # replaced direct `asset_metadata` writes — planning#144 dropped the very
+    # column the fill existed to update, and the fill's own call-site comment
+    # ("without it the staleness filter never advances past the previous
+    # scan's timestamp") has described a dead mechanism ever since.
+    #
+    # The visible consequence was that an asset's LAST port never retired:
+    # every other pass narrows a port list, which replaces the claim
+    # normally, but emptying one did nothing. planning#175 found this via
+    # CIDR-swept hosts; it was never specific to them.
+    #
+    # Narrow on purpose, in two ways. Only naabu may claim absence — every
+    # other observer's silence stays silence, because an httpx patch that
+    # mentions no ports means httpx did not speak, not that httpx looked and
+    # saw nothing. And only on a patch carrying `naabu_last_scan_at`, which
+    # solely a pass that FINISHED ever writes (planning#160 D3), so an
+    # incomplete sweep still cannot empty a claim.
+    absence_claimants: set[str] = set()
+    if (
+        isinstance(open_ports, list) and not open_ports
+        and isinstance(meta.get("naabu_last_scan_at"), str)
+        and meta.get("naabu_last_scan_at")
+    ):
+        absence_claimants.add("naabu")
+        groups.setdefault("naabu", [])
+
     # shodan_ports: bare port ints alongside the richer open_ports entries.
     # Fold in any port not already covered so no signal is silently dropped,
     # without duplicating a port already carried by an open_ports entry.
@@ -449,7 +480,7 @@ def _accumulate_port_observation(
     sweep_complete = meta.get("naabu_sweep_complete") is not False
 
     for source_name, entries in groups.items():
-        if not entries:
+        if not entries and source_name not in absence_claimants:
             continue
         observer_id = observer_ids.get(source_name)
         if observer_id is None:
