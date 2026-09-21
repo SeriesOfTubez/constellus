@@ -346,30 +346,81 @@ def _resolve_scoped_ids(db: Session, scope: dict, auth_mode: str) -> frozenset[u
     on that mode before ever reading this, so paying for a full scan to
     build a set nobody consults would be waste.
 
-    Under `strict`, the scope entries are filtered down to verified targets
-    BEFORE containment runs. Doing it in this order is what makes a
-    verified CIDR license the addresses inside it; filtering afterwards
-    would be the string-equality bug wearing a different hat.
+    ## Two steps, and the one that was wrong (planning#197)
+
+    Step 1, **authorisation**: which scope entries count as scope at all
+    under this mode. Step 2, **containment**: which canonical assets sit
+    inside the surviving entries.
+
+    Step 2 was always right. Step 1 was not. It used to read
+
+        Target.value.in_(declared)
+
+    — string equality between a scope entry and a target's own stored
+    value — and it only ran under `strict`. That is exactly the defect
+    planning#128 exists to remove, reintroduced one layer up in the
+    function whose previous docstring asserted it had been fixed ("what
+    makes a verified CIDR license the addresses inside it"). It licensed
+    the addresses inside a verified CIDR on the *asset* side while
+    discarding the *entry* side by equality, so the two halves disagreed
+    with each other.
+
+    Both failure directions were reproduced live before the rewrite, and
+    `entry_in_target_scope` records them: too narrow under `strict` (a
+    recheck whose scope entry is a subdomain of a verified apex, or an
+    address inside a verified CIDR, scoped nothing and denied every asset
+    in the run), and too wide under `acknowledge` (no entry filter ran, so
+    an entry no target covers was probed while the discovery gate refused
+    to enumerate it).
+
+    Both steps are now delegated to `target_scope`, which is also where
+    `target_service.is_scan_authorised` gets them, so the mode semantics
+    and the verified-before-containment ordering have one definition
+    between the two gates rather than two hand-synchronised ones. The
+    keyspace difference is the only difference that remains, and it is
+    real — see `is_scan_authorised`'s docstring for the precise statement.
+
+    ## The pool is the declared inventory, not this run's scope
+
+    Worth stating because it is the subtlest part of the change. The
+    entries being *filtered* are this run's scope; the targets they are
+    filtered *against* are every declared target, which is what
+    `is_scan_authorised` has always used. Those are different sets — scope
+    comes from `scan_executor._resolve_dynamic_scope`, which partitions
+    the inventory by tag-based cadence tier, so a scan template's scope is
+    a SUBSET of the declared targets.
+
+    Using the run's own scope as its own authorisation pool would make
+    "authorised" mean "whatever this template happens to own this cycle".
+    Cadence tiers are a scheduling mechanism; they carry no statement
+    about what the user permitted. A verified apex authorises its
+    subdomains whether or not the tier template currently executing
+    happens to own that apex.
+
+    Under the default `disabled` mode this changes nothing, as with every
+    slice of planning#128 and #148 before it.
     """
     if auth_mode == "disabled":
         return frozenset()
 
     domains = list(scope.get("domains") or [])
     ip_ranges = list(scope.get("ip_ranges") or [])
+    if not domains and not ip_ranges:
+        return frozenset()
 
-    if auth_mode not in ("acknowledge", "disabled"):
-        # "strict" (and any unrecognised mode, which target_service treats
-        # as strict — fail closed, and stay consistent with it).
-        declared = domains + ip_ranges
-        if not declared:
-            return frozenset()
-        verified = {
-            r[0] for r in db.query(Target.value)
-            .filter(Target.value.in_(declared), Target.verified == True)  # noqa: E712
-            .all()
-        }
-        domains = [d for d in domains if d in verified]
-        ip_ranges = [r for r in ip_ranges if r in verified]
+    pool_domains, pool_ip_ranges = target_scope.authorised_target_pool(db, auth_mode)
+    domains = [
+        d for d in domains
+        if target_scope.entry_in_target_scope(
+            db, d, domains=pool_domains, ip_ranges=pool_ip_ranges
+        )
+    ]
+    ip_ranges = [
+        r for r in ip_ranges
+        if target_scope.entry_in_target_scope(
+            db, r, domains=pool_domains, ip_ranges=pool_ip_ranges
+        )
+    ]
 
     return frozenset(target_scope.target_scoped_asset_ids(db, {
         "domains": domains,
@@ -1176,10 +1227,15 @@ def authorise_discovery(
     exception — composing it here would deny every domain on every first
     run for a reason that has nothing to do with posture. `probe_class` is
     meaningless for a domain that has no projected `asset_state` at all.
-    The real containment duplication this leaves on the table
+    The containment duplication this left on the table
     (`target_service.is_scan_authorised` vs.
-    `probe_authorisation._resolve_scoped_ids`) is tracked separately as
-    planning#197 — not silently absorbed into this function.
+    `probe_authorisation._resolve_scoped_ids`) was handled separately, as
+    planning#197, rather than being silently absorbed into this function.
+    That issue did NOT merge the two into one call — the reasoning above
+    still holds, and `_scope_cap` still must not gate first-run discovery.
+    It unified the half that was genuinely shared (the `auth_mode`
+    semantics and the verified-before-containment ordering, now
+    `target_scope.authorised_target_pool`) and left the keyspaces apart.
 
     ## Always-enforced — no `probe_authorisation_mode` check
 
