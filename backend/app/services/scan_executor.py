@@ -938,6 +938,11 @@ def _run_pipeline(
     # would silently reopen the exact hasattr-only hole this issue closes;
     # the gate is what now enforces the "both" requirement.
     if all_assets:
+        # planning#203 — compute the evidence the probe gate is about to read,
+        # BEFORE it reads it, so an asset discovered on this run can be
+        # promoted on the run that discovered it rather than the next one.
+        _precompute_probe_evidence(db, all_assets, touched_asset_ids)
+
         # Copy persisted passive port hints (Shodan host ports from a prior
         # enrichment) onto the in-batch IP assets so naabu can fold them into
         # the nmap-verify candidate set. In-batch assets are rebuilt fresh each
@@ -1322,6 +1327,139 @@ def _hydrate_asset_ports(asset, persisted_meta: dict) -> None:
             meta["prior_ports"] = sorted(existing_prior | set(prior))
 
     asset.asset_metadata = meta
+
+
+def _precompute_probe_evidence(db: Session, assets: list, touched_asset_ids: set | None) -> None:
+    """planning#203 — resolve the two claims `probe_class` rung 3 needs, then
+    re-project, so Phase 1.5's gate reads THIS run's evidence instead of the
+    previous run's.
+
+    ## The problem this fixes
+
+    `probe_class` is projected from claims, and rung 3 ANDs a `tenancy`
+    claim with an `affinity_confirmation` verdict. Before this, the first
+    was written only by a background drip job (`tenancy_enricher.tick`,
+    every 60s) and the second only by `shared_infra_verifier.verify_findings`
+    at the very END of the run. `write_assets` does project mid-run, so a
+    freshly discovered asset HAS an `asset_state` row by the time the gate
+    reads it — it is just projected from port claims alone, with neither
+    rung-3 input present, so it lands on `name_only` and every `ip`-addressing
+    probe is denied.
+
+    Measured on planning#148: two runs against the same target, identical
+    scope, nothing else changed — run 1 denied naabu (`name_only`), run 2
+    permitted it (`direct_addressable`). Invisible under `log_only`, where
+    the connector scans regardless; under `enforce` it means a newly
+    discovered asset is never actively probed on the run that discovered it,
+    and "Scan now" on a new asset returns nothing.
+
+    ## Why this is a reordering and not a widening of the gate
+
+    Both inputs are obtainable at `name_only`, which is what makes moving
+    them earlier legitimate rather than a way of granting ourselves
+    permission we had not earned:
+
+      * tenancy (Tier 0) is a purely local `cloud_ranges` lookup — one
+        indexed query, no network, no traffic to anyone.
+      * affinity is `name`-addressed (SNI/Host-header probing of ports the
+        worker picks itself), and `name_only` explicitly licenses `name`.
+        It needs no port data from Phase 1.5, only the A/AAAA `dns_record`
+        rows Phase 1 has already written — so there is no circularity here.
+
+    Nothing is probed that was not already probeable, and nothing is probed
+    that this run would not have probed anyway: `classify_ip_ownership` is
+    cache-first on a 14-day TTL, so this is the same single probe the
+    end-of-run `verify_findings` would have made, moved earlier in the same
+    run. That later call now hits the cache.
+
+    ## What it deliberately does not do
+
+    It does not gate the affinity probe. That probe is unauthorised today —
+    `shared_infra_verifier` is declared `addressing="name"`,
+    `noise_class="target_host"` and reaches no gate at all, which is a real
+    hole in planning#148's "one choke point" claim and is tracked
+    separately. Moving an already-ungated probe earlier neither creates nor
+    worsens that; folding the fix in here would put two unrelated arguments
+    in one diff.
+
+    It also cannot help an asset discovered AFTER this point — a CIDR-swept
+    host is minted by naabu during Phase 1.5 itself (planning#175/#202), so
+    it is still first probeable on a later run.
+
+    Failures are swallowed per-asset: this is an optimisation of WHEN
+    evidence is gathered, and a scan must not fail because an address could
+    not be classified. An asset that errors here simply keeps the projection
+    it already had, which is the pre-planning#203 behaviour.
+    """
+    from app.models.asset_canonical import AssetCanonical
+    from app.services import shared_infra_verifier, tenancy_enricher
+    from app.services.cloud_ranges import dataset_state
+
+    # `== "ip_address"`, not `str(...)`: `AssetType` is a `(str, Enum)`, so it
+    # compares equal to its value but `str()` renders it "AssetType.IP_ADDRESS".
+    # An earlier version of this line matched on the rendered string and so
+    # silently selected NOTHING in production while passing every test that
+    # built its batch out of plain strings — the whole pass was inert. Both
+    # the enum (what connectors emit) and a bare string (what the
+    # `skip_discovery` seeds emit) must match.
+    ip_values = {
+        a.value for a in assets
+        if getattr(a, "asset_type", None) == "ip_address" and a.value
+    }
+    if not ip_values:
+        return
+
+    rows = (
+        db.query(AssetCanonical)
+        .filter(AssetCanonical.asset_type == "ip_address", AssetCanonical.value.in_(ip_values))
+        # Deterministic order: an unordered IN() makes the blast radius of a
+        # mid-loop failure depend on whatever order the planner returns, which
+        # is both unreproducible in the log and untestable.
+        .order_by(AssetCanonical.value)
+        .all()
+    )
+    if not rows:
+        return
+
+    # Resolved once for the batch, exactly as `tenancy_enricher.tick` does.
+    # None means no dataset has been mirrored yet: an IP with no tenancy
+    # claim is "not yet enriched", and writing `undetermined` here would
+    # report our own outage as a determination about the asset.
+    state = dataset_state(db)
+
+    now = datetime.now(timezone.utc)
+    projected: set[uuid.UUID] = set()
+    for row in rows:
+        try:
+            if state is not None:
+                tenancy_enricher.enrich_asset(db, row, state, now)
+            shared_infra_verifier.classify_ip_ownership(db, row)
+            # Commit per asset rather than once after the loop, for the same
+            # reason `shared_infra_verifier.verify_findings` does: the
+            # rollback below would otherwise discard every PRIOR asset's
+            # still-pending claims too, turning one unclassifiable address
+            # into lost evidence for all the addresses processed before it.
+            # `classify_ip_ownership` already commits internally on a cache
+            # write, so partial progress is the existing shape here anyway.
+            db.commit()
+            projected.add(row.id)
+        except Exception:
+            db.rollback()
+            log.exception(
+                "planning#203 pre-gate evidence failed for %s — leaving its "
+                "existing projection in place", row.value,
+            )
+
+    if not projected:
+        return
+    try:
+        projector.project(db, projected, datetime.now(timezone.utc))
+        db.commit()
+        if touched_asset_ids is not None:
+            touched_asset_ids.update(projected)
+    except Exception:
+        db.rollback()
+        log.exception("planning#203 pre-gate projection failed — gate reads the prior projection")
 
 
 def _hydrate_port_hints(db: Session, assets: list) -> None:
