@@ -114,8 +114,30 @@ def _domain_suffix_clause(column, domains: list[str]):
 
 
 def _ip_scoped_asset_ids(db: Session, ip_ranges: list[str]) -> set[uuid.UUID]:
+    return {asset_id for asset_id, _ in _ip_scoped_rows(db, ip_ranges)}
+
+
+def ip_range_member_values(db: Session, ip_ranges: list[str]) -> list[str]:
+    """The `value` of every persisted `ip_address` asset contained by one of
+    `ip_ranges`, sorted.
+
+    The second rendering of `_ip_scoped_rows` — same containment, different
+    projection — so there is one definition of "inside a declared range" and
+    not two that can drift (planning#197).
+
+    This one is NOT an authorisation answer, and callers must not read it as
+    one. `target_scoped_asset_ids` composes this leg with the domain leg and
+    the link leg to decide what a run's scope covers; this function answers
+    only the containment question, for planning#175, where the caller needs
+    the addresses a CIDR sweep physically covered rather than the assets a
+    scope authorises.
+    """
+    return sorted({value for _, value in _ip_scoped_rows(db, ip_ranges)})
+
+
+def _ip_scoped_rows(db: Session, ip_ranges: list[str]) -> list[tuple[uuid.UUID, str]]:
     if not ip_ranges:
-        return set()
+        return []
 
     bare_ips: list[str] = []
     networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
@@ -129,13 +151,13 @@ def _ip_scoped_asset_ids(db: Session, ip_ranges: list[str]) -> set[uuid.UUID]:
         else:
             networks.append(net)
 
-    ids: set[uuid.UUID] = set()
+    found: list[tuple[uuid.UUID, str]] = []
     if bare_ips:
-        ids |= {
-            r[0] for r in db.query(AssetCanonical.id)
+        found.extend(
+            db.query(AssetCanonical.id, AssetCanonical.value)
             .filter(AssetCanonical.asset_type == "ip_address", AssetCanonical.value.in_(bare_ips))
             .all()
-        }
+        )
     if networks:
         # No CIDR-containment operator over a text column — only pay for a
         # full ip_address scan when a real CIDR (not a bare /32 or /128
@@ -151,8 +173,8 @@ def _ip_scoped_asset_ids(db: Session, ip_ranges: list[str]) -> set[uuid.UUID]:
             except ValueError:
                 continue
             if any(ip_obj in net for net in networks):
-                ids.add(asset_id)
-    return ids
+                found.append((asset_id, value))
+    return found
 
 
 @functools.lru_cache(maxsize=4096)
