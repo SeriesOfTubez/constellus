@@ -113,6 +113,37 @@ def _claim_value(tenancy: str, reason: str, match, state: "cloud_ranges.DatasetS
     }
 
 
+def enrich_asset(db: Session, asset, state, now: datetime) -> bool:
+    """Write one asset's `tenancy` claim from the local mirror. Returns True
+    if a claim was written.
+
+    Factored out of `tick()` so the inline pre-gate pass (planning#203,
+    `scan_executor._precompute_probe_evidence`) and the background drip job
+    share ONE definition of what a Tier 0 tenancy claim is, rather than the
+    scan path growing a second, drifting copy. `tick()` still owns batching,
+    selection and the dataset guards; this owns only the per-asset write.
+
+    Caller-supplied `state` rather than a lookup per asset: `tick()` already
+    resolves it once per batch and the dataset guards ("no dataset loaded"
+    writes nothing at all) belong with the caller that knows whether it is
+    processing a batch or a single scan's addresses. A caller that cannot
+    obtain a state must not call this.
+
+    Purely local — one indexed `cloud_ranges` query, no network. That is
+    what makes it safe to call inline on the scan path (planning#203): the
+    thing this unblocks is a promotion, and a promotion that depended on a
+    remote call would be exactly the "dependency outage becomes a silent
+    denial" failure this module's docstring exists to rule out.
+    """
+    match = cloud_ranges.lookup(db, asset.value)
+    tenancy, reason = tenancy_for_match(match)
+    upsert_single_claim(
+        db, asset.id, _OBSERVER_NAME, _CLAIM_TYPE,
+        _claim_value(tenancy, reason, match, state), now,
+    )
+    return True
+
+
 def tick() -> None:
     """One enricher pass. Idempotent; safe to call from APScheduler."""
     db = SessionLocal()
@@ -143,13 +174,8 @@ def tick() -> None:
         enriched = 0
         for asset in assets:
             try:
-                match = cloud_ranges.lookup(db, asset.value)
-                tenancy, reason = tenancy_for_match(match)
-                upsert_single_claim(
-                    db, asset.id, _OBSERVER_NAME, _CLAIM_TYPE,
-                    _claim_value(tenancy, reason, match, state), now,
-                )
-                enriched += 1
+                if enrich_asset(db, asset, state, now):
+                    enriched += 1
             except Exception:
                 # One bad asset must not lose the tick's other writes.
                 log.exception("tenancy_enricher: failed to enrich asset %s (%s)", asset.id, asset.value)
