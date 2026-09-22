@@ -849,6 +849,7 @@ def _compose(
     observer_addressing: str,
     observer_noise_class: str | None,
     canonical: AssetCanonical | None,
+    asset_ref,
     state,
     mode: str,
     scan_run_id: uuid.UUID | None,
@@ -970,8 +971,22 @@ def _compose(
         # signature. Flat keys, not a nested object — `authorise_discovery`
         # below already carries a flat `"domain": domain` for the same
         # purpose, and flat keys stay `GROUP BY`-able.
-        "asset_type": canonical.asset_type if canonical is not None else None,
-        "asset_value": canonical.value if canonical is not None else None,
+        # planning#209 — identity falls back to the IN-BATCH asset when no
+        # canonical row matched. `canonical is None` is not a rare edge: it
+        # is exactly the `unresolved_asset` denial, and it is the one branch
+        # where `asset_canonical_id` is ALSO null, so reading identity off
+        # `canonical` alone left that row unattributable in both directions
+        # at once. planning#195 added these keys so an orphaned row would
+        # still say what it was about; it read them off the object that is
+        # missing in the case being guarded against.
+        #
+        # The in-batch ref always has both — `authorise_probes` keys
+        # `permissions` on `(asset.asset_type, asset.value)` one line after
+        # calling this, so they are load-bearing already. `canonical` still
+        # wins when present: it is the durable identity, and for a
+        # `dns_record` it is the row the composite key actually resolved to.
+        "asset_type": canonical.asset_type if canonical is not None else getattr(asset_ref, "asset_type", None),
+        "asset_value": canonical.value if canonical is not None else getattr(asset_ref, "value", None),
         "gate_mode": mode,
         "scan_run_id": str(scan_run_id) if scan_run_id is not None else None,
         "caps": {
@@ -1113,10 +1128,18 @@ def authorise_probes(
                     # planning#195 — same discipline as `tenancy`/
                     # `observer_noise_class` above: always present so an
                     # orphaned row (asset_canonical_id now ON DELETE SET
-                    # NULL) still says what it was about. `canonical` is
-                    # already in scope in this loop.
-                    "asset_type": canonical.asset_type if canonical is not None else None,
-                    "asset_value": canonical.value if canonical is not None else None,
+                    # NULL) still says what it was about.
+                    #
+                    # planning#209 — and falling back to the in-batch `asset`
+                    # (in scope in this loop, and already keying
+                    # `permissions` below) when nothing resolved, for the
+                    # reason spelled out on `_compose`'s copy of these two
+                    # keys. This path matters MORE than that one, not less:
+                    # it denies every asset in the batch for a whole
+                    # connector, so an unattributable row here loses the
+                    # whole batch rather than one asset.
+                    "asset_type": canonical.asset_type if canonical is not None else asset.asset_type,
+                    "asset_value": canonical.value if canonical is not None else asset.value,
                     "gate_mode": mode,
                     "scan_run_id": str(scan_run_id) if scan_run_id is not None else None,
                     "caps": {},
@@ -1200,6 +1223,7 @@ def authorise_probes(
             observer_addressing=observer_row.addressing,
             observer_noise_class=observer_row.noise_class,
             canonical=canonical,
+            asset_ref=asset,
             state=state,
             mode=mode,
             scan_run_id=scan_run_id,
@@ -1461,8 +1485,23 @@ def authorise_ownership_probe(
     denial_state = states.get(denial_id)
     probe_class_value = (denial_state.attributes or {}).get("probe_class") if denial_state is not None else None
 
+    # planning#209 — this scope wrote NO identity keys at all, which made
+    # `AuthorisationDecision`'s own docstring false for it: that docstring
+    # tells a reader an orphaned row is still readable because
+    # `evidence_snapshot` carries `asset_type`/`asset_value`, and named
+    # `_compose` as the writer — but this gate does not go through
+    # `_compose`. `asset_canonical_id` is ON DELETE SET NULL, so deleting
+    # the asset would have left an ownership-probe denial with no identity
+    # anywhere on it.
+    #
+    # One query, on the denial path only: this function returns early
+    # ("nothing denied — no log") for every permit, so permits pay nothing.
+    denial_asset = db.get(AssetCanonical, denial_id)
+
     evidence = {
         "decision_scope": "ownership_probe",
+        "asset_type": denial_asset.asset_type if denial_asset is not None else None,
+        "asset_value": denial_asset.value if denial_asset is not None else None,
         "subject": subject,
         "observer": _OWNERSHIP_PROBE_OBSERVER,
         "observer_noise_class": noise_class,
