@@ -32,9 +32,31 @@ class AuthorisationDecision(Base):
     `asset_canonical_id` — so an orphaned row still counts fully for the
     purpose this table exists for. And an orphaned row is not silently
     unreadable evidence: `evidence_snapshot` carries the asset's own
-    identity (`asset_type`/`asset_value`, written by
-    `app.services.probe_authorisation._compose`), so a row that has lost
-    its FK reference is still human-readable.
+    identity (`asset_type`/`asset_value`), so a row that has lost its FK
+    reference is still human-readable.
+
+    ## That identity claim was only two-thirds true until planning#209
+
+    The paragraph above named `probe_authorisation._compose` as the writer.
+    It is now written by all three entry points, which it was not before:
+
+      - `_compose` read it off `canonical` alone, so it was NULL on exactly
+        the `unresolved_asset` denial — the one branch where
+        `asset_canonical_id` is also NULL. Measured on dev before the fix:
+        39 of 155 rows on one run, a third of all denials, unattributable
+        in both directions at once. It now falls back to the in-batch
+        asset, which always carries both.
+      - The connector-declaration-failure path had the same guard inline,
+        and denies an entire batch at once.
+      - `authorise_ownership_probe` (planning#205) wrote no identity keys
+        at all — it does not go through `_compose`, so the claim above was
+        simply false for `decision_scope = "ownership_probe"`.
+
+    ⚠ Rows written BEFORE planning#209 keep whatever they had. Any query
+    treating `asset_value` as reliably present must be bounded by
+    `decided_at`, or tolerate NULL — on dev that is 92 pre-planning#196
+    rows carrying no `decision_scope` either, plus every historical
+    `unresolved_asset` row.
     """
 
     __tablename__ = "authorisation_decisions"
