@@ -670,4 +670,17 @@ def _serialize_asset(
         # observed" — see hygiene_scorer.scanned_by_asset's docstring for
         # the exact rule and its known limitation.
         "scanned": scanned,
+        # planning#204: the projected reachability class
+        # (`app.services.projector`, read by `probe_authorisation.
+        # _probe_class_cap`) — same top-level rule as `surface`/
+        # `hygiene_score` above and for the same reason: not a bridged
+        # claim, must never fold into `asset_metadata`. `None` when there
+        # is no `asset_state` row yet, or the row has no `probe_class` key.
+        "probe_class": _probe_class_of(claims.get("state")),
     }
+
+
+def _probe_class_of(state) -> str | None:
+    if state is None:
+        return None
+    return (state.attributes or {}).get("probe_class")

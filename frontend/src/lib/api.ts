@@ -122,6 +122,11 @@ export type ScanRun = {
   error: string | null
   asset_count: number
   finding_count: number
+  // planning#204 — assets this run evaluated whose probe_class denied `ip`
+  // addressing (port scanning), unioned across the run's probe-gate calls.
+  // probe_class-derived only — scope/posture denials aren't counted (see
+  // the backend migration 0057 docstring). Render only when > 0.
+  port_scan_unauthorised_count: number
 }
 
 export type AvailableDomain = {
@@ -159,6 +164,19 @@ export type DomainWhoisInfo = {
 // dash-on-the-Hygiene-column case this drives.
 export type AssetSurface = "proven_ours" | "claimed_ours" | "not_ours" | "unknown"
 
+// planning#204 — the projected reachability class (backend
+// `app.services.projector`, read by `probe_authorisation._probe_class_cap`):
+// `no_probe` = third-party/provider-managed, never probed at all;
+// `name_only` = ownership not established — name-addressed probing
+// (httpx/tlsx/nuclei) still happens, only the `ip`-addressed port sweep
+// (naabu/banner_grab) is withheld; `direct_addressable` = confirmed ours,
+// everything licensed. `null` means no projection yet (fresh asset, or the
+// projector hasn't run over it). NOTE the gate's mode is `log_only` today —
+// it denies on paper and the connector scans anyway — so nothing this type
+// touches may claim a probe did NOT happen, only that it was not
+// authorised.
+export type ProbeClass = "direct_addressable" | "name_only" | "no_probe"
+
 export type Asset = {
   id: string
   asset_type: string
@@ -187,6 +205,9 @@ export type Asset = {
   // `hygiene_scorer.scanned_by_asset` docstring for the exact rule and its
   // known limitation. Drives the Risk column's Clean vs. Unscanned split.
   scanned: boolean
+  // planning#204 — see ProbeClass above for the value/null meanings and
+  // the log_only caveat.
+  probe_class: ProbeClass | null
 }
 
 // ── Asset hygiene (planning#130 L2) ─────────────────────────────────────────

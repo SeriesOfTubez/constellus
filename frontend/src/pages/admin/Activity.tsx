@@ -90,6 +90,18 @@ function ScanDetailSheet({ run, onClose }: { run: ScanRun; onClose: () => void }
             ))}
           </div>
 
+          {/* planning#204 — muted line, not a fourth tile (that's the badge/
+              panel accretion the pending UI/UX review is meant to fix, not
+              this issue). Only rendered when the gate actually denied a
+              port scan this run — a 0 here means "not recorded" on runs
+              older than migration 0057 as much as it means "nothing
+              denied", so it must stay silent either way. */}
+          {run.port_scan_unauthorised_count > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {run.port_scan_unauthorised_count} asset{run.port_scan_unauthorised_count !== 1 ? "s" : ""} not authorised for port scanning
+            </p>
+          )}
+
           <div className="space-y-2">
             <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Scope</p>
             <div className="rounded-md border divide-y text-xs font-mono max-h-48 overflow-y-auto">

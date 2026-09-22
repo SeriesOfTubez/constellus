@@ -4,7 +4,7 @@ import { toast } from "sonner"
 import { ChevronLeft, RefreshCw, Eye, EyeOff, Trash2 } from "lucide-react"
 
 import { ConnectedEntities, type ObservedName } from "@/components/ConnectedEntities"
-import { OpenPortsPanel, type OpenPortEntry } from "@/components/OpenPortsPanel"
+import { OpenPortsPanel, lastPortScanAtOf, type OpenPortEntry } from "@/components/OpenPortsPanel"
 import { TlsPanel } from "@/components/TlsPanel"
 import { AssetRiskCard } from "@/components/AssetRiskCard"
 import { AssetHygieneCard } from "@/components/AssetHygieneCard"
@@ -193,6 +193,12 @@ function AssetDetailBody({
   const legacyShodanPorts: number[] = hasShodanEnrichment && Array.isArray(enrichMeta.shodan_ports)
     ? (enrichMeta.shodan_ports as number[])
     : []
+  // planning#204 — the asset the ports actually came from, mirroring
+  // `portEntries`' own precedence (enrichMeta.open_ports first, then the
+  // asset's own m.open_ports): for a dns_record the panel shows the
+  // TERMINAL IP's ports, so the probe_class note must describe the IP's
+  // probe_class, not the hostname's.
+  const portSubject: Asset | null = enrichmentIpAsset ?? (portEntries.length > 0 ? asset : null)
   const hasCerts = portEntries.some(e => e.cert_summary)
   const eolServices: EolService[] = Array.isArray(enrichMeta.eol_services)
     ? (enrichMeta.eol_services as EolService[])
@@ -338,10 +344,13 @@ function AssetDetailBody({
             </div>
           )}
 
-          {/* Open ports */}
-          {(portEntries.length > 0 || legacyShodanPorts.length > 0) && (
-            <OpenPortsPanel entries={portEntries} legacyShodanPorts={legacyShodanPorts} />
-          )}
+          {/* Open ports — the panel owns its own empty state (planning#204) */}
+          <OpenPortsPanel
+            entries={portEntries}
+            legacyShodanPorts={legacyShodanPorts}
+            probeClass={portSubject?.probe_class ?? null}
+            lastPortScanAt={lastPortScanAtOf(portSubject)}
+          />
 
           {/* Software inventory (EOL) */}
           {eolServices.length > 0 && (

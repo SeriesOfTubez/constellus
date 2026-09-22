@@ -155,6 +155,10 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     new_finding_ids: list[uuid.UUID] = []
     touched_asset_ids: set[uuid.UUID] = set()
     touched_finding_ids: set[uuid.UUID] = set()
+    # planning#204 — mirrors `touched_asset_ids`: accumulated across chunks,
+    # unioned in from every `authorise_probes()` call site inside
+    # `_run_pipeline`, stamped onto the run once the chunk loop finishes.
+    port_scan_unauthorised_ids: set[uuid.UUID] = set()
 
     for chunk_idx, (chunk_tier, chunk_scope) in enumerate(chunks):
         # Cancellation check between chunks
@@ -172,6 +176,7 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
                 touched_asset_ids=touched_asset_ids,
                 touched_finding_ids=touched_finding_ids,
                 degraded=degraded,
+                port_scan_unauthorised_ids=port_scan_unauthorised_ids,
             )
         except Exception as exc:
             log.exception("Chunk %d/%d failed for run %s", chunk_idx + 1, len(chunks), scan_run_id)
@@ -405,6 +410,7 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     # found by both shodan and version_match.
     run.asset_count = len(touched_asset_ids)
     run.finding_count = _logical_finding_count(db, touched_finding_ids)
+    run.port_scan_unauthorised_count = len(port_scan_unauthorised_ids)
     db.commit()
 
     # planning#160 — record collected degradation on the run. Appended here
@@ -695,6 +701,7 @@ def _run_pipeline(
     touched_asset_ids: set[uuid.UUID] | None = None,
     touched_finding_ids: set[uuid.UUID] | None = None,
     degraded: list[str] | None = None,
+    port_scan_unauthorised_ids: set[uuid.UUID] | None = None,
 ) -> None:
     """Run Phase 1/2/3 against one chunk's scope."""
     domains: list[str] = chunk_scope.get("domains", [])
@@ -977,6 +984,8 @@ def _run_pipeline(
                     db, connector_id=cid, connector=connector, assets=all_assets,
                     scope=chunk_scope, scan_run_id=scan_run_id,
                 )
+                if port_scan_unauthorised_ids is not None:
+                    port_scan_unauthorised_ids.update(gate.port_scan_unauthorised_ids)
                 if not gate.permitted:
                     log.info("Probe gate: no assets authorised for %s", cid)
                     continue
@@ -1102,6 +1111,8 @@ def _run_pipeline(
                     db, connector_id=cid, connector=connector, assets=all_assets,
                     scope=chunk_scope, scan_run_id=scan_run_id,
                 )
+                if port_scan_unauthorised_ids is not None:
+                    port_scan_unauthorised_ids.update(gate.port_scan_unauthorised_ids)
                 targets = _extract_scan_targets(gate.permitted)
                 if not targets:
                     log.info("Probe gate: no scan targets authorised for %s", cid)

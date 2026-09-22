@@ -222,6 +222,38 @@ class GateResult:
     permitted: list  # subset of the input assets
     permissions: dict[tuple[str, str], ProbePermission]  # (asset_type, value) -> descriptor
     enforced: bool  # False in log-only mode
+    # planning#204 — the canonical asset ids, among the assets evaluated in
+    # THIS call, whose `probe_class` cap did not license the `ip`
+    # addressing mode (i.e. port scanning — naabu/banner_grab are the only
+    # two declared `addressing = "ip"`). Derived from `caps[1].modes`
+    # inside the per-asset loop, never by re-reading `probe_class` off
+    # `state` a second time — if `_probe_class_cap`'s mapping ever changes,
+    # this follows automatically instead of silently drifting from it.
+    # Assets with `canonical is None` are skipped (no id to report).
+    #
+    # Understated, not wrong, on the two early-return paths: an empty
+    # `assets` list returns the empty default correctly (there is nothing
+    # to evaluate), but a connector-declaration failure ALSO returns the
+    # empty default even though every asset was in fact denied `ip` —
+    # `states` is never loaded on that path, so there is no cap to derive
+    # from. Not fixed here: the executor unions this set across every
+    # connector in a phase, and a healthy connector's own gate call still
+    # reports the true denial for the same assets, so the phase-level count
+    # is correct even though this one connector's GateResult understates it.
+    #
+    # ⚠ One asymmetry with the asset-level surface, found in review and
+    # recorded rather than fixed. An UNPROJECTED asset (no `asset_state`
+    # row, or a `probe_class` the cap does not recognise) has empty modes,
+    # so it lands in this set and raises the run's count — but
+    # `api/assets.py` serializes its `probe_class` as `None`, and the UI
+    # renders nothing for `None`. A user can therefore see a run count of
+    # N and find fewer than N assets that explain it. Both alternatives are
+    # worse: excluding unprojected assets would make the count understate a
+    # denial that is real and fail-closed by design (§ `_probe_class_cap`),
+    # and rendering a line for `None` would put "not authorised" on every
+    # asset the projector has simply not reached yet, which is a different
+    # and false claim.
+    port_scan_unauthorised_ids: frozenset = frozenset()
 
 
 # ── the three caps ──────────────────────────────────────────────────────────
@@ -1136,6 +1168,11 @@ def authorise_probes(
     # flip — checking the cap directly is simpler and doesn't depend on
     # `_compose`'s internals staying in sync with this loop.
     posture_denied: set[tuple[str, str]] = set()
+    # planning#204 — see GateResult.port_scan_unauthorised_ids' docstring
+    # for the exact definition. Built alongside `posture_denied` in the
+    # same loop, from the same per-asset `caps` tuple, for the same reason:
+    # one pass, no second read of `state`.
+    port_scan_unauthorised_ids: set[uuid.UUID] = set()
 
     for asset in assets:
         canonical = canonical_by_key.get(_canonical_key_for(asset))
@@ -1154,6 +1191,8 @@ def authorise_probes(
         )
         if not caps[2].allowed:
             posture_denied.add((asset.asset_type, asset.value))
+        if canonical is not None and "ip" not in caps[1].modes:
+            port_scan_unauthorised_ids.add(canonical.id)
         permission = _compose(
             caps,
             connector_id=connector_id,
@@ -1174,7 +1213,10 @@ def authorise_probes(
     _write_decisions(db, rows)
 
     if enforce:
-        return GateResult(permitted=permitted, permissions=permissions, enforced=True)
+        return GateResult(
+            permitted=permitted, permissions=permissions, enforced=True,
+            port_scan_unauthorised_ids=frozenset(port_scan_unauthorised_ids),
+        )
 
     # log_only, but posture denials are NOT subject to the rollout switch —
     # same standing as the connector-declaration check above, for the
@@ -1186,8 +1228,12 @@ def authorise_probes(
             permitted=[a for a in assets if (a.asset_type, a.value) not in posture_denied],
             permissions=permissions,
             enforced=True,
+            port_scan_unauthorised_ids=frozenset(port_scan_unauthorised_ids),
         )
-    return GateResult(permitted=list(assets), permissions=permissions, enforced=False)
+    return GateResult(
+        permitted=list(assets), permissions=permissions, enforced=False,
+        port_scan_unauthorised_ids=frozenset(port_scan_unauthorised_ids),
+    )
 
 
 # ── the ownership/affinity-probe gate (planning#205) ────────────────────────
