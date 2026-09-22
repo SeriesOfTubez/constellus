@@ -60,6 +60,17 @@ class ScanRun(Base):
     # dropped once readers moved to canonical.
     asset_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
     finding_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    # planning#204 — assets this run evaluated whose probe_class denied `ip`
+    # addressing (port scanning), unioned across every authorise_probes()
+    # call by the executor (see GateResult.port_scan_unauthorised_ids).
+    # probe_class-derived ONLY: scope and posture denials are NOT counted
+    # here, a deliberate limitation following the issue's rejection of a
+    # decision-log read surface for this count. 0 on a run stamped before
+    # this migration means "not recorded", not "nothing was denied" — safe
+    # only because the UI never renders a zero count (Activity.tsx).
+    port_scan_unauthorised_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     # Resolved aggressiveness tier at run start. Denormalised from app_settings
     # (or the run's per-run override) so audit logs answer "why did this scan
     # generate so many requests" without time-travelling app_settings history.

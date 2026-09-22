@@ -714,6 +714,10 @@ export default function Findings() {
       hygiene_score: null,
       hygiene_band: null,
       scanned: false,
+      // Same synthetic-fallback reasoning as `scanned` above: no real asset
+      // row means no projection to report, so `null` ("not projected yet"),
+      // never a guessed class.
+      probe_class: null,
     }
 
   // ── Risk verdict pills (header primary action) ───────────────────────────────

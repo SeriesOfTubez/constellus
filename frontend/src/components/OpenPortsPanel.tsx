@@ -2,6 +2,18 @@ import { Radio } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { relativeTime } from "@/lib/time"
+import type { ProbeClass } from "@/lib/api"
+
+// planning#204 — the exact strings a `probeClass` note renders, chosen
+// against the gate's `log_only` constraint (see OpenPortsPanel's own
+// docstring below): none of these may assert that a probe did not HAPPEN,
+// only that it was not AUTHORISED — under log_only the gate denies on
+// paper and the connector scans anyway. Do not reword.
+const NOT_PROBED_BY_DESIGN =
+  "Not probed by design — third-party or provider-managed infrastructure."
+const NOT_AUTHORISED_FOR_PORT_SCAN =
+  "Not authorised for port scanning — ownership of this address is not established."
+const NO_OPEN_PORTS_FOUND = "No open ports found."
 
 // Per-port "sources" values are connector registry IDs (asset_writer's union
 // of banner_grab.py / naabu.py / httpx_probe.py / tlsx.py / shodan.py
@@ -32,6 +44,15 @@ const ACTIVE_PROBE_SOURCES = ["naabu", "nmap", "banner_grab", "httpx", "tlsx"]
  * source chips, last-seen relative time. Designed to scale — when
  * tlsx/httpx/banner-grab start contributing they just add their source
  * chip and (eventually) extra columns for service/version/tech.
+ *
+ * planning#204 — the panel also owns its own empty state, via the optional
+ * `probeClass` prop (the SUBJECT asset's projected reachability class —
+ * callers pass the IP the ports actually came from, not necessarily the
+ * asset being viewed; see AssetDetail.tsx/Assets.tsx's `portSubject`). An
+ * asset that was never port-scanned because the gate declined to
+ * authorise it looks identical to one that was scanned and had nothing
+ * open unless the panel says which. `probeClass == null` (no projection
+ * yet) preserves the old silent-return behaviour exactly.
  */
 
 export type OpenPortEntry = {
@@ -122,6 +143,7 @@ const WELL_KNOWN: Record<number, string> = {
 export function OpenPortsPanel({
   entries,
   legacyShodanPorts,
+  probeClass,
 }: {
   entries: OpenPortEntry[]
   /**
@@ -130,9 +152,12 @@ export function OpenPortsPanel({
    * already in `entries`, "shodan" is just added to its sources.
    */
   legacyShodanPorts?: number[]
+  /** planning#204 — the SUBJECT asset's projected reachability class. See
+   *  the module docstring above for what drives the empty/note states. */
+  probeClass?: ProbeClass | null
 }) {
   const merged = mergeEntries(entries, legacyShodanPorts ?? [])
-  if (merged.length === 0) return null
+  if (merged.length === 0 && probeClass == null) return null
 
   // Derive "last scanned" from the freshest per-port timestamp — the
   // IP-level `naabu_last_scan_at` field can go stale because the writer's
@@ -143,11 +168,27 @@ export function OpenPortsPanel({
     null,
   )
 
+  // planning#204 — one muted line, never a badge/panel: a holistic finding-
+  // surface UI/UX review is pending and this issue explicitly declines to
+  // pre-empt it with more badge/panel accretion. `no_probe` must read as
+  // DELIBERATE, not a failure, so it gets the same plain muted treatment as
+  // everything else here — never destructive/amber.
+  let note: string | null = null
+  if (merged.length === 0) {
+    note = probeClass === "no_probe" ? NOT_PROBED_BY_DESIGN
+      : probeClass === "name_only" ? NOT_AUTHORISED_FOR_PORT_SCAN
+      : NO_OPEN_PORTS_FOUND
+  } else if (probeClass === "name_only") {
+    note = NOT_AUTHORISED_FOR_PORT_SCAN
+  } else if (probeClass === "no_probe") {
+    note = NOT_PROBED_BY_DESIGN
+  }
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-          Open ports ({merged.length})
+          {merged.length > 0 ? `Open ports (${merged.length})` : "Open ports"}
         </p>
         {lastScanAt && (
           <span
@@ -158,9 +199,12 @@ export function OpenPortsPanel({
           </span>
         )}
       </div>
-      <div className="rounded-md border divide-y text-sm">
-        {merged.map(entry => <PortRow key={entry.port} entry={entry} />)}
-      </div>
+      {merged.length > 0 && (
+        <div className="rounded-md border divide-y text-sm">
+          {merged.map(entry => <PortRow key={entry.port} entry={entry} />)}
+        </div>
+      )}
+      {note && <p className="text-xs text-muted-foreground">{note}</p>}
     </div>
   )
 }

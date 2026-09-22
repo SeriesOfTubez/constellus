@@ -363,7 +363,12 @@ function AssetDetailSheet({
       ? (m.open_ports as OpenPortEntry[])
       : []
   const legacyShodanPorts: number[] = hasShodanEnrichment && Array.isArray(enrichMeta.shodan_ports) ? (enrichMeta.shodan_ports as number[]) : []
-  const hasAnyPorts = portEntries.length > 0 || legacyShodanPorts.length > 0
+  // planning#204 — the asset the ports actually came from, mirroring
+  // `portEntries`' own precedence (enrichMeta.open_ports first, then the
+  // asset's own m.open_ports): for a dns_record the panel shows the
+  // TERMINAL IP's ports, so the probe_class note must describe the IP's
+  // probe_class, not the hostname's.
+  const portSubject: Asset | null = enrichmentIpAsset ?? (portEntries.length > 0 ? asset : null)
 
   type EolService = { port: number; service: string | null; product: string; version: string; eol_date: string | null; is_eol: boolean; days_past_eol: number | null; latest: string | null }
   const eolServices: EolService[] = Array.isArray(enrichMeta.eol_services) ? (enrichMeta.eol_services as EolService[]) : []
@@ -521,7 +526,12 @@ function AssetDetailSheet({
                   </div>
                 )}
 
-                {hasAnyPorts && <OpenPortsPanel entries={portEntries} legacyShodanPorts={legacyShodanPorts} />}
+                {/* Open ports — the panel owns its own empty state (planning#204) */}
+                <OpenPortsPanel
+                  entries={portEntries}
+                  legacyShodanPorts={legacyShodanPorts}
+                  probeClass={portSubject?.probe_class ?? null}
+                />
 
                 {eolServices.length > 0 && (
                   <div className="space-y-2">

@@ -48,6 +48,7 @@ class ScanResponse(BaseModel):
     error: str | None
     asset_count: int = 0
     finding_count: int = 0
+    port_scan_unauthorised_count: int = 0
     aggressiveness: str = "polite"
 
     model_config = {"from_attributes": True}
