@@ -198,7 +198,18 @@ def classify_ip_ownership(db: Session, ip_asset: AssetCanonical, force: bool = F
     verdicts: list[str] = []
 
     for host in owned:
-        probe = domain_affinity.check_affinity(host.value, ip_asset.value, apexes)
+        # planning#205 — gated. `asset_canonical_ids` carries BOTH sides:
+        # the packets go to the IP carrying the hostname's SNI/Host, so
+        # either the owned hostname or the IP itself may be pre-close M&A
+        # or `no_probe`, and the gate must fail closed on either. No
+        # `scan_run_id` in scope here (`classify_ip_ownership` isn't handed
+        # one by either of its callers — `verify_findings` or
+        # `scan_executor._precompute_probe_evidence` — and threading one in
+        # would be new plumbing this issue doesn't add).
+        probe = domain_affinity.check_affinity(
+            db, host.value, ip_asset.value, apexes,
+            asset_canonical_ids=[host.id, ip_asset.id],
+        )
         per_hostname[host.value] = {"verdict": probe.verdict, "signals": probe.signals}
         matrices[host.value] = probe.matrix
         verdicts.append(probe.verdict)

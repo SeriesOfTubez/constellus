@@ -418,7 +418,17 @@ def _evaluate_record(
     # is only for Layer 3 corroboration filtering (a broader "don't
     # corroborate with our own other domains" check), a new concern this
     # feature introduces, not a change to Layer 1's established scope.
-    result = domain_affinity.check_affinity(record.value, origin_ip, {record_apex})
+    # planning#205 — gated. `origin_ip` is a resolved string, not a
+    # canonical row — it may have no `AssetCanonical` of its own (no lookup
+    # is invented here for one), so only `record.id` is passed. No
+    # `scan_run_id`: `analyze_dangling_dns` (the caller two frames up) has
+    # one, but `_evaluate_record` itself does not, and threading it through
+    # this function's signature purely to plumb it one level down is new
+    # plumbing this issue doesn't add.
+    result = domain_affinity.check_affinity(
+        db, record.value, origin_ip, {record_apex},
+        asset_canonical_ids=[record.id],
+    )
 
     if not result.matrix:
         # Regression #1 fix: an empty matrix is what a fully-unreachable

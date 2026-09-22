@@ -94,7 +94,7 @@ def _owned_host():
     return SimpleNamespace(id=uuid.uuid4(), value="itsupport.contoso.com")
 
 
-def _affinity_indeterminate(hostname, origin_ip, apexes, ports=None):
+def _affinity_indeterminate(db, hostname, origin_ip, apexes, ports=None, **kw):
     return da.AffinityResult(
         hostname=hostname, origin_ip=origin_ip, verdict=da.VERDICT_INDETERMINATE,
         signals=[], matrix={"443": {"owned": {}}},

@@ -26,6 +26,7 @@ planning#103.
 
 import logging
 import os
+import uuid
 from dataclasses import dataclass, field
 
 import dns.exception
@@ -34,9 +35,18 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.models.asset_canonical import AssetCanonical
+from app.services import probe_authorisation
 from app.services.asset_chain import chain_target_ids
 
 log = logging.getLogger(__name__)
+
+# This module's identity in the `observers` table (planning#205) — the slug
+# `authorise_ownership_probe` resolves `noise_class`/`addressing` from,
+# regardless of which OTHER module's call stack triggered the probe (see
+# that function's docstring: keying on the calling module's own slug would
+# let `dangling_dns_analyzer`'s seeded `silent` row permit a passive-only
+# target under posture, reopening the hole this gate exists to close).
+OBSERVER = "domain_affinity"
 
 _SCANNER_URL = os.environ.get("SCANNER_URL", "http://scanner-worker:8001")
 _SCANNER_TOKEN = os.environ.get("SCANNER_INTERNAL_TOKEN", "")
@@ -172,10 +182,42 @@ def resolve_origin(db: Session, dns_record: AssetCanonical) -> str | None:
     return candidate_ip
 
 
-def _probe_worker(hostname: str, origin_ip: str, ports: list[int] | None = None) -> dict:
+def _probe_worker(
+    db: Session, hostname: str, origin_ip: str, ports: list[int] | None = None,
+    *, asset_canonical_ids: list[uuid.UUID], scan_run_id: uuid.UUID | None = None,
+) -> dict:
     """Call the scanner-worker /affinity/probe endpoint. Returns the raw
     {"ports": {...}} matrix, or {"ports": {}} on any failure (fail-soft —
-    callers treat an empty matrix as indeterminate, not as an exception)."""
+    callers treat an empty matrix as indeterminate, not as an exception).
+
+    On an authorisation denial (planning#205) the return is
+    {"ports": {}, "denied": True} — the same fail-soft SHAPE as a worker
+    outage (an empty matrix still flows into `check_affinity` ->
+    `indeterminate` -> `classify_ip_ownership` -> `unverified`, unchanged),
+    but with the one extra key `check_affinity` reads to add a distinguishing
+    signal string (see that function's docstring) rather than silently
+    conflating "the worker is down" with "we are not authorised to ask it".
+    The verdict enum itself is deliberately NOT widened with a fourth value
+    for this — see `check_affinity`'s docstring.
+
+    The gate call is HERE, at the top of this function, before the
+    `httpx.post` below — not at this function's call site (`check_affinity`)
+    and not at THAT function's own call sites. This is what makes "nothing
+    in this module can reach the network without passing the gate" a fact
+    about the module rather than a convention its callers have to remember —
+    see `probe_authorisation.authorise_ownership_probe`'s docstring for the
+    full reasoning (why this gate, why these two caps, why observer identity
+    is keyed on `OBSERVER` and not the calling module's own slug).
+    """
+    if not probe_authorisation.authorise_ownership_probe(
+        db, asset_canonical_ids=asset_canonical_ids, subject=hostname, scan_run_id=scan_run_id,
+    ):
+        log.info(
+            "domain_affinity: ownership probe denied by the authorisation gate for %s / %s",
+            hostname, origin_ip,
+        )
+        return {"ports": {}, "denied": True}
+
     payload: dict = {"hostname": hostname, "origin_ip": origin_ip}
     if ports:
         payload["ports"] = ports
@@ -202,17 +244,44 @@ def _probe_worker(hostname: str, origin_ip: str, ports: list[int] | None = None)
     except httpx.HTTPError:
         log.exception("domain_affinity: probe request failed for %s / %s", hostname, origin_ip)
         return {"ports": {}}
+    # (the gate-denial early return above carries "denied": True; every path
+    # below this point is a genuine worker-request failure and deliberately
+    # does NOT set it — see check_affinity's own docstring for why the two
+    # must stay distinguishable.)
 
 
 def probe_corroboration_candidates(
-    hostnames: list[str], origin_ip: str, ports: list[int] | None = None,
+    db: Session, hostnames: list[str], origin_ip: str, ports: list[int] | None = None,
+    *, asset_canonical_ids: list[uuid.UUID], scan_run_id: uuid.UUID | None = None,
 ) -> dict:
     """Call the scanner-worker /affinity/corroborate endpoint — owned-side-
     only probes for MULTIPLE candidate hostnames against one origin_ip
     (planning#106, epic#81 Phase C). Returns the raw
     {"<hostname>": {"<port>": {...}}} matrix, or {} on any failure
     (fail-soft, mirrors _probe_worker — callers treat an empty result as
-    "couldn't corroborate," not as an exception)."""
+    "couldn't corroborate," not as an exception) OR on an authorisation
+    denial (planning#205) — same fail-soft shape, deliberately: the caller
+    (`origin_corroboration.corroborate_liveness`) already treats an empty
+    result as "couldn't corroborate", which is exactly the right read for a
+    denial too.
+
+    Gated at the top of this function, before `httpx.post`, for the same
+    reason `_probe_worker` is — see that function's docstring and
+    `probe_authorisation.authorise_ownership_probe`'s. `asset_canonical_ids`
+    here is the corroborating IP's own id (the candidate `hostnames` are not
+    separately gated — they are not `AssetCanonical` rows this call has
+    resolved, and the question this gate answers is "are we authorised to
+    send traffic to `origin_ip` at all", which the IP's own id already
+    answers)."""
+    if not probe_authorisation.authorise_ownership_probe(
+        db, asset_canonical_ids=asset_canonical_ids, subject=origin_ip, scan_run_id=scan_run_id,
+    ):
+        log.info(
+            "domain_affinity: corroboration probe denied by the authorisation gate for %s against %s",
+            hostnames, origin_ip,
+        )
+        return {}
+
     payload: dict = {"hostnames": hostnames, "origin_ip": origin_ip}
     if ports:
         payload["ports"] = ports
@@ -338,10 +407,14 @@ def _score_port(port: str, matrix: dict, hostname: str, owned_apexes: set[str]) 
 
 
 def check_affinity(
+    db: Session,
     hostname: str,
     origin_ip: str,
     owned_apexes: set[str],
     ports: list[int] | None = None,
+    *,
+    asset_canonical_ids: list[uuid.UUID],
+    scan_run_id: uuid.UUID | None = None,
 ) -> AffinityResult:
     """Probe `hostname` against `origin_ip` and return an affinity verdict.
 
@@ -356,10 +429,33 @@ def check_affinity(
     203.0.113.44 with hostname itsupport.contoso.com — the owned vhost
     404s (nginx, no matching Host) while the default vhost is a live,
     distinct Apache identity (www.brightleaf-goods.com) -> not_affine.
+
+    ## Gated (planning#205)
+
+    `asset_canonical_ids` is passed straight through to `_probe_worker`,
+    which consults `probe_authorisation.authorise_ownership_probe` before
+    ever calling the scanner-worker (see that function's docstring). A
+    denial comes back as an empty matrix exactly like a worker outage
+    would — the verdict is still `indeterminate`, NOT a fourth verdict enum
+    value, because every downstream consumer of this result
+    (`shared_infra_verifier.classify_ip_ownership`'s "no vote" handling,
+    `dangling_dns_analyzer`'s `STATUS_SKIPPED` empty-matrix branch) already
+    treats "no usable evidence" correctly and conservatively; adding a
+    distinct verdict would mean re-auditing every one of those branches for
+    a distinction none of them actually need to act on differently. What
+    IS added is a `signals` entry (`"ownership probe denied by the
+    authorisation gate"`) so a denial is at least distinguishable from a
+    worker outage in the audit trail, without widening the enum.
     """
-    matrix = _probe_worker(hostname, origin_ip, ports).get("ports") or {}
+    probe_result = _probe_worker(
+        db, hostname, origin_ip, ports,
+        asset_canonical_ids=asset_canonical_ids, scan_run_id=scan_run_id,
+    )
+    matrix = probe_result.get("ports") or {}
 
     signals: list[str] = []
+    if probe_result.get("denied"):
+        signals.append("ownership probe denied by the authorisation gate")
     affine_votes = 0
     not_affine_votes = 0
     unreachable_votes = 0

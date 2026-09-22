@@ -99,7 +99,7 @@ def test_widens_stamping_to_every_finding_type_and_source_on_the_ip():
     ip = _docaddr.alloc()
     host = f"owned-{suffix}.example.com"
 
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: da.AffinityResult(
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: da.AffinityResult(
         hostname=hostname, origin_ip=origin_ip, verdict=da.VERDICT_AFFINE, signals=[], matrix={},
     )
 
@@ -163,7 +163,7 @@ def test_verify_once_contract_preserved():
     ip = _docaddr.alloc()
     host = f"owned-{suffix}.example.com"
 
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: da.AffinityResult(
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: da.AffinityResult(
         hostname=hostname, origin_ip=origin_ip, verdict=da.VERDICT_AFFINE, signals=[], matrix={},
     )
 
@@ -219,7 +219,7 @@ def test_ip_target_with_no_touched_assets_still_gets_stamped():
     ip = _docaddr.alloc()
     host = f"owned-{suffix}.example.com"
 
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: da.AffinityResult(
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: da.AffinityResult(
         hostname=hostname, origin_ip=origin_ip, verdict=da.VERDICT_AFFINE, signals=[], matrix={},
     )
 
@@ -311,7 +311,7 @@ def test_ownership_verdict_claim_cache_hit_and_ttl_refetch():
     host = f"owned-{suffix}.example.com"
     calls = {"n": 0}
 
-    def _spy(hostname, origin_ip, apexes, ports=None):
+    def _spy(db, hostname, origin_ip, apexes, ports=None, **kw):
         calls["n"] += 1
         return da.AffinityResult(hostname=hostname, origin_ip=origin_ip, verdict=da.VERDICT_AFFINE, signals=[], matrix={})
     da.check_affinity = _spy
@@ -363,7 +363,7 @@ def test_force_reverify_restamps_an_already_verified_finding_end_to_end():
     ip = _docaddr.alloc()
     host = f"owned-{suffix}.example.com"
 
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: da.AffinityResult(
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: da.AffinityResult(
         hostname=hostname, origin_ip=origin_ip, verdict=da.VERDICT_NOT_AFFINE, signals=[], matrix={},
     )
 

@@ -102,7 +102,7 @@ def test_gate_closed_skips_without_probing():
 def test_medium_tier_on_not_affine():
     tf.find_takeover_signal = lambda db, asset_id, since: None
     da.resolve_origin = lambda db, record: "203.0.113.5"
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_NOT_AFFINE)
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(da.VERDICT_NOT_AFFINE)
     oc.corroborate_liveness = _no_corroboration
     record = _record("shared.example.com", "A")
     result = dda._evaluate_record(None, record, _SINCE, _NO_APEXES, gate_open=True)
@@ -115,7 +115,7 @@ def test_medium_tier_on_not_affine():
 def test_low_tier_on_fully_unreachable_origin():
     tf.find_takeover_signal = lambda db, asset_id, since: None
     da.resolve_origin = lambda db, record: "203.0.113.5"
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(
         da.VERDICT_INDETERMINATE, unreachable_votes=2, matrix={"443": {}, "80": {}},
     )
     oc.corroborate_liveness = _no_corroboration
@@ -133,7 +133,7 @@ def test_low_promoted_to_medium_on_strong_corroboration():
     the Low tier's premise (origin dead) is directly falsified."""
     tf.find_takeover_signal = lambda db, asset_id, since: None
     da.resolve_origin = lambda db, record: "203.0.113.5"
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(
         da.VERDICT_INDETERMINATE, unreachable_votes=2, matrix={"443": {}, "80": {}},
     )
     oc.corroborate_liveness = lambda db, origin_ip, subject_value, owned_apexes: oc.CorroborationResult(
@@ -154,7 +154,7 @@ def test_low_stays_low_on_weak_or_absent_corroboration():
     must NOT promote — only a strong (cert-SAN-match) hit does."""
     tf.find_takeover_signal = lambda db, asset_id, since: None
     da.resolve_origin = lambda db, record: "203.0.113.5"
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(
         da.VERDICT_INDETERMINATE, unreachable_votes=2, matrix={"443": {}, "80": {}},
     )
     oc.corroborate_liveness = lambda db, origin_ip, subject_value, owned_apexes: oc.CorroborationResult(
@@ -174,7 +174,7 @@ def test_silent_on_ambiguous_indeterminate():
     tier must not misfire on genuine ambiguity)."""
     tf.find_takeover_signal = lambda db, asset_id, since: None
     da.resolve_origin = lambda db, record: "203.0.113.5"
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(
         da.VERDICT_INDETERMINATE, unreachable_votes=0, matrix={"443": {}},
     )
     record = _record("ambiguous.example.com", "A")
@@ -186,7 +186,7 @@ def test_silent_on_ambiguous_indeterminate():
 def test_silent_on_affine():
     tf.find_takeover_signal = lambda db, asset_id, since: None
     da.resolve_origin = lambda db, record: "203.0.113.5"
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_AFFINE)
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(da.VERDICT_AFFINE)
     record = _record("healthy.example.com", "A")
     result = dda._evaluate_record(None, record, _SINCE, _NO_APEXES, gate_open=True)
     assert result.status == dda.STATUS_PROBED_CLEAN
@@ -230,7 +230,7 @@ def test_empty_probe_matrix_is_skipped_not_probed_clean():
     worker outage must never silently resolve open findings."""
     tf.find_takeover_signal = lambda db, asset_id, since: None
     da.resolve_origin = lambda db, record: "203.0.113.5"
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(
         da.VERDICT_INDETERMINATE, unreachable_votes=0, matrix={},
     )
     record = _record("worker-down.example.com", "A")

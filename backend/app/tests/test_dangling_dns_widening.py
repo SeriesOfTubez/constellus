@@ -206,7 +206,7 @@ def test_scope_only_record_gets_probed_and_stamped_with_no_touched_assets():
     suffix = uuid.uuid4().hex[:8]
     domain = f"widen-{suffix}.example.com"
     da.resolve_origin = lambda db, record: "203.0.113.30"
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: da.AffinityResult(
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: da.AffinityResult(
         hostname=hostname, origin_ip=origin_ip, verdict=da.VERDICT_AFFINE, signals=[], matrix={"443": {}},
     )
     tf.find_takeover_signal = lambda db, asset_id, since: None
@@ -248,7 +248,7 @@ def test_worker_down_does_not_resolve_backdated_open_finding():
     suffix = uuid.uuid4().hex[:8]
     value = f"worker-down-{suffix}.example.com"
     da.resolve_origin = lambda db, record: "203.0.113.40"
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: da.AffinityResult(
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: da.AffinityResult(
         hostname=hostname, origin_ip=origin_ip, verdict=da.VERDICT_INDETERMINATE, signals=[], matrix={},
     )
     tf.find_takeover_signal = lambda db, asset_id, since: None
@@ -300,7 +300,7 @@ def test_per_record_exception_is_caught_and_does_not_abort_the_batch():
         return "203.0.113.50"
 
     da.resolve_origin = _resolve_origin
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: da.AffinityResult(
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: da.AffinityResult(
         hostname=hostname, origin_ip=origin_ip, verdict=da.VERDICT_AFFINE, signals=[], matrix={"443": {}},
     )
     tf.find_takeover_signal = lambda db, asset_id, since: None

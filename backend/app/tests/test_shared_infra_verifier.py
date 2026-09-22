@@ -106,7 +106,7 @@ def _affinity_result(verdict, matrix=None):
 
 def test_ambiguous_plus_corroboration_promotes_to_ownership_unverifiable():
     _use_fake_cache()
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_INDETERMINATE)
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(da.VERDICT_INDETERMINATE)
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]
     hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=True, provider="ionos", service_class="unknown", prefix="198.51.100.0/24")
     oc.corroborate_liveness = lambda db, origin_ip, subject_value, owned_apexes: oc.CorroborationResult(
@@ -126,7 +126,7 @@ def test_ambiguous_plus_corroboration_promotes_to_ownership_unverifiable():
 
 def test_ambiguous_with_no_corroboration_stays_unverified():
     _use_fake_cache()
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_INDETERMINATE)
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(da.VERDICT_INDETERMINATE)
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]
     hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=True, provider="ionos", service_class="unknown", prefix="198.51.100.0/24")
     oc.corroborate_liveness = lambda db, origin_ip, subject_value, owned_apexes: oc.CorroborationResult(
@@ -145,7 +145,7 @@ def test_budget_starvation_is_not_cached():
     first ~15 IPs pin every other IP at unverified for the whole TTL
     window."""
     _use_fake_cache()
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_INDETERMINATE)
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(da.VERDICT_INDETERMINATE)
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]
     hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=True)
     oc.corroborate_liveness = lambda db, origin_ip, subject_value, owned_apexes: oc.CorroborationResult(attempted=False)
@@ -162,7 +162,7 @@ def test_cache_hit_skips_recompute_entirely():
     _use_fake_cache()
     calls = {"n": 0}
 
-    def _spy(hostname, origin_ip, apexes, ports=None):
+    def _spy(db, hostname, origin_ip, apexes, ports=None, **kw):
         calls["n"] += 1
         return _affinity_result(da.VERDICT_AFFINE)
     da.check_affinity = _spy
@@ -184,7 +184,7 @@ def test_cache_hit_skips_recompute_entirely():
 
 def test_not_a_datacenter_never_spends_corroboration_call():
     _use_fake_cache()
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_INDETERMINATE)
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(da.VERDICT_INDETERMINATE)
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]
     hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=False)  # attempted=True by default
 
@@ -209,7 +209,7 @@ def test_hosting_lookup_failure_is_not_cached():
     failed lookup at the full TTL would mislabel the IP as non-datacenter
     (skipping corroboration entirely) for 14 days on what might be transient."""
     _use_fake_cache()
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_INDETERMINATE)
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(da.VERDICT_INDETERMINATE)
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]
     hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=False, attempted=False)
 
@@ -227,7 +227,7 @@ def test_hosting_lookup_failure_is_not_cached():
 
 def test_unanimous_not_affine_still_hard_rejects_unaffected_by_phase_d():
     _use_fake_cache()
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_NOT_AFFINE)
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(da.VERDICT_NOT_AFFINE)
 
     def _should_not_be_called(*a, **k):
         raise AssertionError("Phase D logic must not run when the aggregate already hard-rejects")
@@ -240,7 +240,7 @@ def test_unanimous_not_affine_still_hard_rejects_unaffected_by_phase_d():
 
 def test_confirmed_ours_unaffected_by_phase_d():
     _use_fake_cache()
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(da.VERDICT_AFFINE)
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(da.VERDICT_AFFINE)
 
     def _should_not_be_called(*a, **k):
         raise AssertionError("Phase D logic must not run when a hostname confirms ownership")
@@ -294,7 +294,7 @@ def test_stamp_findings_for_ip_includes_tech_absence_when_cve_product_matches():
     _use_fake_cache()
     siv._owned_hostnames_for_ip = lambda db, ip: [_owned_host()]
     matrix = {"80": {"owned": {"status_code": 404, "tech": ["nginx"]}}}
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity_result(
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity_result(
         da.VERDICT_INDETERMINATE, matrix=matrix,
     )
     hc.classify_ip = lambda db, ip: hc.HostingClass(is_datacenter=True)
@@ -335,7 +335,7 @@ def test_force_bypasses_ttl_cache():
     _use_fake_cache()
     calls = {"n": 0}
 
-    def _spy(hostname, origin_ip, apexes, ports=None):
+    def _spy(db, hostname, origin_ip, apexes, ports=None, **kw):
         calls["n"] += 1
         return _affinity_result(da.VERDICT_AFFINE)
     da.check_affinity = _spy

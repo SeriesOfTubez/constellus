@@ -98,7 +98,7 @@ def _affinity(verdict):
 @contextmanager
 def _stub_affinity(verdict):
     original = da.check_affinity
-    da.check_affinity = lambda hostname, origin_ip, apexes, ports=None: _affinity(verdict)
+    da.check_affinity = lambda db, hostname, origin_ip, apexes, ports=None, **kw: _affinity(verdict)
     try:
         yield
     finally:
@@ -402,7 +402,7 @@ def test_one_unclassifiable_address_does_not_lose_another_ones_evidence():
 
             original = da.check_affinity
 
-            def _selective(hostname, origin_ip, apexes, ports=None):
+            def _selective(db, hostname, origin_ip, apexes, ports=None, **kw):
                 if origin_ip == bad_ip:
                     raise RuntimeError("unreachable")
                 return _affinity(da.VERDICT_AFFINE)
