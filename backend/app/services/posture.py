@@ -36,10 +36,26 @@ shapes, this module exports the DECISION FUNCTION
 (`passive_only_filter`/`is_passive_only`) that both callers compose for
 themselves: `probe_authorisation._posture_cap` (asset-shaped) and
 `probe_authorisation.authorise_discovery` (domain-shaped, planning#196 step
-2's new entry point). Both are the only two callers of
-`observer_permitted`, by design — a third call site is presumptively either
-one of these two shapes in disguise, or a sign this module's contract needs
-to grow.
+2's new entry point).
+
+planning#205 adds a THIRD caller, `probe_authorisation.
+authorise_ownership_probe` — the point above ("a third call site is
+presumptively either one of these two shapes in disguise") does not hold
+for it, and this update exists so that claim does not silently keep reading
+as though it still covers every caller. It is asset-shaped, like
+`_posture_cap`, but is not just another instance of that shape: it composes
+NO scope cap (unlike `_posture_cap`, which is always evaluated alongside
+`_scope_cap` inside `authorise_probes`) and is reached from call sites —
+`shared_infra_verifier.classify_ip_ownership`,
+`dangling_dns_analyzer._evaluate_record`,
+`origin_corroboration.corroborate_liveness` — that have no scan run and,
+for the manual Re-verify path in particular, no scope dict to compose in
+the first place (see `authorise_ownership_probe`'s own docstring, "Why not
+`authorise_probes`"). It calls `observer_permitted` the same way
+`_posture_cap` does (`passive_only=True` resolved via
+`_resolve_ma_pre_close_ids`, real `noise_class` from the seeded `observers`
+row), so the policy itself is unchanged — this is a new CALLER of the one
+shared decision, not a fourth shape for this module to grow a case for.
 
 ## The load-bearing property this module exists to preserve
 

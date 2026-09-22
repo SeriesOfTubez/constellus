@@ -71,6 +71,26 @@ excludes nothing is noise dressed up as a safeguard, and it would weaken
 the invariant for the next reader who assumes it must be pulling its
 weight. This paragraph exists so that reader checks the measurement again
 before "fixing" it.
+
+⚠ planning#205 narrowed the "real scan rows always carry a run id" claim
+above, and this note exists so the next reader re-measures rather than
+trusting the 92-row figure. `probe_authorisation.authorise_ownership_probe`
+(the ownership/affinity-probe gate, `decision_scope = "ownership_probe"`)
+writes its denial rows with `scan_run_id` NULL — not because they happen
+outside a scan, but because none of its three call sites
+(`shared_infra_verifier.classify_ip_ownership`,
+`dangling_dns_analyzer._evaluate_record`,
+`origin_corroboration.corroborate_liveness`) is handed one, even when
+`scan_executor._precompute_probe_evidence` two frames up has it. So a real,
+non-residue row of that scope fails `_unreachable`'s second term on its own
+merits, and becomes a match the moment its asset is deleted.
+
+This is NOT a reason to add a `decision_scope` term — see the paragraph
+above, which still holds for exactly the reason it gives. It IS a reason to
+clean decision rows BEFORE their assets in any test that writes one (the
+ordering `test_affinity_probe_gate.py`'s `_cleanup` already follows). If
+this guard ever fires on an `ownership_probe` row, the bug is a test that
+deleted an asset without clearing its decisions, not this invariant.
 """
 
 from datetime import datetime

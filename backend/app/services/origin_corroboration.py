@@ -132,7 +132,16 @@ def corroborate_liveness(
         batch = candidates[i:i + _PROBE_BATCH_SIZE]
         hostnames_probed.extend(batch)
         try:
-            matrix = domain_affinity.probe_corroboration_candidates(batch, origin_ip, _CORROBORATION_PORTS)
+            # planning#205 — gated on the corroborating IP's own id, already
+            # loaded above as `ip_asset`. No `scan_run_id`: this function
+            # isn't handed one by either of its two callers
+            # (`shared_infra_verifier.classify_ip_ownership`,
+            # `dangling_dns_analyzer._evaluate_record`), and adding it purely
+            # to plumb a value through is new plumbing this issue doesn't add.
+            matrix = domain_affinity.probe_corroboration_candidates(
+                db, batch, origin_ip, _CORROBORATION_PORTS,
+                asset_canonical_ids=[ip_asset.id],
+            )
         except Exception:
             log.exception("origin_corroboration: probe failed for %s against %s", origin_ip, subject_value)
             continue

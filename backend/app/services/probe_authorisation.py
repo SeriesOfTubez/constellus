@@ -1190,6 +1190,260 @@ def authorise_probes(
     return GateResult(permitted=list(assets), permissions=permissions, enforced=False)
 
 
+# ── the ownership/affinity-probe gate (planning#205) ────────────────────────
+
+# The observer identity `authorise_ownership_probe` keys on. A module
+# constant here (not an import of `app.services.domain_affinity`) because
+# `domain_affinity` imports THIS module (§ that function's docstring below);
+# importing it back would be the exact module-load cycle `_canonical_key_for`
+# already avoids by importing `asset_writer` lazily. `domain_affinity.py`
+# mirrors this literal as its own `OBSERVER` constant — the two are the same
+# string on purpose, not two names for one thing that happen to agree today.
+_OWNERSHIP_PROBE_OBSERVER = "domain_affinity"
+
+
+def authorise_ownership_probe(
+    db: Session,
+    *,
+    asset_canonical_ids: list[uuid.UUID],
+    subject: str,
+    scan_run_id: uuid.UUID | None = None,
+) -> bool:
+    """Authorise ONE ownership/affinity probe — `domain_affinity._probe_worker`
+    and `domain_affinity.probe_corroboration_candidates`, the module's only
+    two network-egress functions — against every asset in
+    `asset_canonical_ids`. Returns a bare `bool`: unlike `authorise_probes`,
+    there is no addressing mode or authorised-name set to describe here, the
+    probe either goes out or it doesn't (see "Why not `authorise_discovery`"
+    below for the same point put the other way).
+
+    ## Why this exists
+
+    `domain_affinity` sends real HTTP/TLS to target hosts and, before
+    planning#205, never consulted the gate at all — the two-line hole
+    `scan_executor._precompute_probe_evidence`'s own docstring already
+    flagged and deferred ("It does not gate the affinity probe ... a real
+    hole in planning#148's 'one choke point' claim"). Gating only
+    `check_affinity` would have been PARTIALLY inert: a denied
+    `check_affinity` returns `indeterminate`, which
+    `shared_infra_verifier.classify_ip_ownership` turns into `unverified`,
+    which is exactly the branch Phase D's `corroborate_liveness` fires from
+    — so a denial at the first probe would simply route traffic into the
+    second, ungated one. Both `_probe_worker` and
+    `probe_corroboration_candidates` call this function, at their own top,
+    before their own `httpx.post` — see each function's body, not their
+    call sites, which is what makes "nothing in this module can reach the
+    network without passing the gate" true rather than aspirational.
+
+    ## Why not `authorise_probes`
+
+    That function composes `_scope_cap`, which needs a `scope` dict. One of
+    the three call sites this feeds — `app/api/findings.py`'s manual
+    Re-verify button, reached via `shared_infra_verifier.verify_findings(...,
+    force=True)` — has no scan run and no scope at all. Composing scope
+    there would deny an explicit human action for a reason that has nothing
+    to do with posture or reachability class, the two axes this issue is
+    actually about.
+
+    ## Why not `authorise_discovery`
+
+    That function is domain-shaped: it takes one `target_row` and one
+    `domain` string, because a domain being enumerated has no canonical
+    identity yet. The call sites here are the opposite shape — they already
+    HAVE `AssetCanonical` rows (one hostname's, one IP's, or just the IP's;
+    see each call site) and no single target: the probe is one owned
+    hostname against a shared IP, which is N-to-1 with hostnames and, across
+    a target's whole estate, N-to-N with targets by construction. Composing
+    over a list of canonical ids (this function) rather than one domain
+    string is the natural fit for that shape, not a third, ad hoc interface.
+
+    ## Composes exactly two caps — posture, and only the `no_probe` half of
+    probe_class
+
+    Deliberately NOT `_scope_cap` (see above) and deliberately NOT the FULL
+    `_probe_class_cap` (`name_only`/`direct_addressable` say nothing here —
+    this probe is `name`-addressed by construction, always at the owned
+    hostname's own name, so there is no addressing-mode question for those
+    two states to answer; only the "never probe this at all" state matters).
+
+      - **posture** — resolved via `_resolve_ma_pre_close_ids(db,
+        set(asset_canonical_ids))` (same helper `_posture_cap` uses) and
+        decided with `posture.observer_permitted(passive_only=...,
+        noise_class=...)`. `rule_fired` is `"posture:ma_pre_close"` — the
+        SAME string `_posture_cap` and `authorise_discovery` both use,
+        deliberately (planning#196: one rule, one spelling, so a query for
+        "everything posture blocked" never has to know a third spelling).
+        **Always-enforced, in BOTH gate modes** — same standing as
+        `_posture_cap`'s own posture denial: a pre-close M&A flag is an
+        operator assertion, not a verdict this system inferred, so the
+        graduated `log_only`/`enforce` rollout that governs probe_class
+        below does not apply to it.
+      - **`no_probe`** — read from `state.attributes["probe_class"]`
+        (`projector.load_states`, the same source `_probe_class_cap` reads)
+        for each id in `asset_canonical_ids`. Denies ONLY on an EXPLICIT
+        `probe_class == "no_probe"`; `rule_fired` is `"probe_class:no_probe"`
+        — the SAME string `_probe_class_cap` uses. **Mode-gated**: enforced
+        only when `probe_authorisation_mode == "enforce"`, matching
+        `_probe_class_cap`'s own standing under the planning#148 log_only
+        rollout. Under `log_only` the denial is still COMPUTED and a
+        decision row is still WRITTEN (the log_only rollout exists to be
+        read, not to be a no-op — see the module docstring's "Gate mode"),
+        but the probe proceeds.
+
+    ## Deliberate differences from `_probe_class_cap` — recorded
+    limitations, not oversights
+
+      - A missing `asset_state`, an unprojected asset, or a `probe_class`
+        string this module doesn't recognise all **permit** here, where
+        `_probe_class_cap` denies them outright (`probe_class:unprojected`).
+        Denying unprojected assets here would block every first-run
+        affinity probe under `enforce` — an availability regression this
+        issue is not the place to relitigate, the same reasoning
+        `_probe_class_cap`'s own docstring gives for why THAT denial is
+        safe to ship specifically because the gate defaults to `log_only`.
+        `authorise_ownership_probe` has no such safety net for this one
+        axis: composing the full unprojected-denial here would make EVERY
+        call site's very first probe of a newly-discovered asset deny
+        outright the moment `enforce` is flipped, regardless of the rest of
+        `_probe_class_cap`'s reasoning, since this function does not also
+        compose scope — so the narrower "explicit no_probe only" rule is
+        the one that ships.
+      - An asset with no resolvable canonical row is **permitted** — it
+        simply is not a member of `ma_pre_close_ids` and has no
+        `asset_state` row for `no_probe` to fire against. This is not a
+        regression: today, with no gate on this module at all, such an
+        asset is unconditionally probed. It is also not an improvement —
+        the hole is simply left exactly where it already was, same as the
+        residual gap `_posture_cap`'s own docstring records for a
+        `skip_discovery` recheck against a never-linked asset.
+
+    ## Fail-closed across the list: deny if ANY id is denied
+
+    `asset_canonical_ids` is N-to-N by construction (one hostname, one IP;
+    or just an IP) — mirrors `_resolve_ma_pre_close_ids`'s own documented
+    "any linked target wins": the presence of one clean id does not dilute
+    or overrule another id's denial. When posture denies at least one id in
+    the list, `rule_fired` is `"posture:ma_pre_close"` regardless of whether
+    `no_probe` also denied a (possibly different) id in the same call — the
+    same precedence `_compose` already gives posture over the other caps,
+    for the same reason: posture is the one axis guaranteed to actually be
+    the operative denial reason in every gate mode.
+
+    ## Logging: denials write a decision row; permits do not
+
+    Same argument as `authorise_discovery`: a permit here records only "the
+    two caps had nothing to say", which is the default state of nearly
+    every probe and would dominate the very table the planning#148 enforce
+    flip is counted from. `evidence_snapshot["decision_scope"]` is
+    `"ownership_probe"` — a THIRD value alongside `authorise_probes`'
+    `"asset"` and `authorise_discovery`'s `"domain"` (no CHECK constraint on
+    this column; it lives in the jsonb, so adding a value here is a body
+    change, not a migration). The row is attached to whichever canonical id
+    in the list actually caused the denial — the first one found, posture
+    taking priority over `no_probe` per the precedence above.
+
+    Observer identity is always `_OWNERSHIP_PROBE_OBSERVER` ("domain_affinity")
+    — resolved from the seeded `observers` row by that name — **deliberately
+    NOT the calling module's own slug**. The seeded table has:
+
+        domain_affinity        | name | target_host | derived
+        shared_infra_verifier   | name | target_host | derived
+        dangling_dns_analyzer   | name | silent      | derived
+
+    `dangling_dns_analyzer` is seeded `silent` while calling a `target_host`
+    probe (it triggers Layer 1/3 network traffic through `domain_affinity`,
+    but attributable network I/O is not itself `dangling_dns_analyzer`'s own
+    behaviour). Keying posture's noise-class check on the CALLING module's
+    slug would read that `silent` row and PERMIT a passive-only target under
+    posture — reopening the exact hole this issue exists to close. Keying
+    on the observer that actually emits the traffic, regardless of which
+    module's call stack triggered it, is the only version of this that is
+    correct for all three call sites (`shared_infra_verifier`,
+    `dangling_dns_analyzer`, and `origin_corroboration` alike).
+
+    `_write_decisions` commits (pre-existing, accepted — `authorise_discovery`
+    does the same); it only runs on a denial, which is rare, and never on
+    the permit path.
+    """
+    ids = list(asset_canonical_ids)
+    if not ids:
+        return True
+
+    mode = settings_svc.get(db, "probe_authorisation_mode") or "log_only"
+    enforce = mode == "enforce"
+
+    observer_row = db.query(Observer).filter(Observer.name == _OWNERSHIP_PROBE_OBSERVER).first()
+    noise_class = observer_row.noise_class if observer_row is not None else None
+
+    id_set = set(ids)
+    ma_pre_close_ids = _resolve_ma_pre_close_ids(db, id_set)
+    states = projector.load_states(db, id_set)
+
+    posture_permitted = posture.observer_permitted(passive_only=True, noise_class=noise_class)
+    posture_denied_ids = [cid for cid in ids if cid in ma_pre_close_ids] if not posture_permitted else []
+
+    no_probe_ids = [
+        cid for cid in ids
+        if states.get(cid) is not None
+        if (states[cid].attributes or {}).get("probe_class") == "no_probe"
+    ]
+
+    posture_cap = Cap(
+        allowed=not posture_denied_ids,
+        modes=frozenset() if posture_denied_ids else None,
+        names=None,
+        rule="posture:ma_pre_close" if posture_denied_ids else "posture:permissive",
+    )
+    probe_class_cap = Cap(
+        allowed=not no_probe_ids,
+        modes=frozenset() if no_probe_ids else None,
+        names=None,
+        rule="probe_class:no_probe" if no_probe_ids else "probe_class:permitted",
+    )
+
+    if not posture_cap.allowed:
+        denial_id = posture_denied_ids[0]
+        rule_fired = posture_cap.rule
+    elif not probe_class_cap.allowed:
+        denial_id = no_probe_ids[0]
+        rule_fired = probe_class_cap.rule
+    else:
+        return True  # nothing denied — no log, see docstring
+
+    enforced_denied = (not posture_cap.allowed) or (enforce and not probe_class_cap.allowed)
+
+    denial_state = states.get(denial_id)
+    probe_class_value = (denial_state.attributes or {}).get("probe_class") if denial_state is not None else None
+
+    evidence = {
+        "decision_scope": "ownership_probe",
+        "subject": subject,
+        "observer": _OWNERSHIP_PROBE_OBSERVER,
+        "observer_noise_class": noise_class,
+        "observer_addressing": observer_row.addressing if observer_row is not None else None,
+        "gate_mode": mode,
+        "scan_run_id": str(scan_run_id) if scan_run_id is not None else None,
+        "probe_class": probe_class_value,
+        "tenancy": None,
+        "caps": {
+            "posture": _cap_evidence(posture_cap),
+            "probe_class": _cap_evidence(probe_class_cap),
+        },
+    }
+    row = {
+        "asset_canonical_id": denial_id,
+        "observer_id": observer_row.id if observer_row is not None else None,
+        "allowed": False,
+        "probe_modes": [],
+        "authorised_names": [],
+        "rule_fired": rule_fired,
+        "evidence_snapshot": evidence,
+    }
+    _write_decisions(db, [row])
+
+    return not enforced_denied
+
+
 # ── the domain-level gate (planning#196) ────────────────────────────────────
 
 def authorise_discovery(
