@@ -240,6 +240,19 @@ class GateResult:
     # connector in a phase, and a healthy connector's own gate call still
     # reports the true denial for the same assets, so the phase-level count
     # is correct even though this one connector's GateResult understates it.
+    #
+    # ⚠ One asymmetry with the asset-level surface, found in review and
+    # recorded rather than fixed. An UNPROJECTED asset (no `asset_state`
+    # row, or a `probe_class` the cap does not recognise) has empty modes,
+    # so it lands in this set and raises the run's count — but
+    # `api/assets.py` serializes its `probe_class` as `None`, and the UI
+    # renders nothing for `None`. A user can therefore see a run count of
+    # N and find fewer than N assets that explain it. Both alternatives are
+    # worse: excluding unprojected assets would make the count understate a
+    # denial that is real and fail-closed by design (§ `_probe_class_cap`),
+    # and rendering a line for `None` would put "not authorised" on every
+    # asset the projector has simply not reached yet, which is a different
+    # and false claim.
     port_scan_unauthorised_ids: frozenset = frozenset()
 
 

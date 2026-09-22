@@ -4,7 +4,7 @@ import { toast } from "sonner"
 import { ChevronLeft, RefreshCw, Eye, EyeOff, Trash2 } from "lucide-react"
 
 import { ConnectedEntities, type ObservedName } from "@/components/ConnectedEntities"
-import { OpenPortsPanel, type OpenPortEntry } from "@/components/OpenPortsPanel"
+import { OpenPortsPanel, lastPortScanAtOf, type OpenPortEntry } from "@/components/OpenPortsPanel"
 import { TlsPanel } from "@/components/TlsPanel"
 import { AssetRiskCard } from "@/components/AssetRiskCard"
 import { AssetHygieneCard } from "@/components/AssetHygieneCard"
@@ -349,6 +349,7 @@ function AssetDetailBody({
             entries={portEntries}
             legacyShodanPorts={legacyShodanPorts}
             probeClass={portSubject?.probe_class ?? null}
+            lastPortScanAt={lastPortScanAtOf(portSubject)}
           />
 
           {/* Software inventory (EOL) */}

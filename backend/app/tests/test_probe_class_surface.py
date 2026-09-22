@@ -40,6 +40,17 @@ comment that touches this surface repeats the constraint on purpose, so a
 future reader editing wording near this code trips over it before shipping
 the wrong verb.
 
+## Addresses
+
+Every row here is an `ip_address` asset, so every value is drawn from
+`_docaddr.alloc()` — a real documentation address, without replacement.
+An earlier draft used opaque non-address strings, which the `_docaddr`
+guard permits (they are not addresses, so no rule fires) but which put a
+value that is not an address into a column typed as one — the same class
+of defect planning#174 is open about. `alloc()` costs nothing here: the
+loose-address pool is 315 wide, and only `alloc_cidr()`'s ten /29s are
+scarce.
+
 Run with:  python -m app.tests.test_probe_class_surface
        or: pytest app/tests/test_probe_class_surface.py
 """
@@ -107,8 +118,7 @@ def _cleanup(values: list[str]) -> None:
 
 def test_probe_class_reflects_each_projected_value():
     for probe_class in ("no_probe", "name_only", "direct_addressable"):
-        suffix = uuid.uuid4().hex[:10]
-        value = f"pcs-{probe_class}-{suffix}"
+        value = alloc_ip()
         db = SessionLocal()
         try:
             asset = _mk_asset(db, value)
@@ -123,8 +133,7 @@ def test_probe_class_reflects_each_projected_value():
 
 
 def test_probe_class_is_null_with_no_state_row():
-    suffix = uuid.uuid4().hex[:10]
-    value = f"pcs-nostate-{suffix}"
+    value = alloc_ip()
     db = SessionLocal()
     try:
         asset = _mk_asset(db, value)
@@ -139,8 +148,7 @@ def test_probe_class_is_null_with_no_state_row():
 
 
 def test_probe_class_is_null_when_state_row_has_no_probe_class_key():
-    suffix = uuid.uuid4().hex[:10]
-    value = f"pcs-nokey-{suffix}"
+    value = alloc_ip()
     db = SessionLocal()
     try:
         asset = _mk_asset(db, value)
@@ -165,8 +173,7 @@ def test_asset_metadata_does_not_gain_a_probe_class_key():
     that wrote `probe_class` into `metadata` before returning the dict
     would still pass tests 1-3 above (the top-level key would just be a
     copy) but fail here."""
-    suffix = uuid.uuid4().hex[:10]
-    value = f"pcs-metadata-{suffix}"
+    value = alloc_ip()
     db = SessionLocal()
     try:
         asset = _mk_asset(db, value)
@@ -207,11 +214,10 @@ def test_gate_reports_port_scan_unauthorised_ids_derived_from_the_cap():
     `ip`). Verified by making that exact edit, running this test, watching
     it fail on the name_only id being absent, and reverting.
     """
-    suffix = uuid.uuid4().hex[:10]
     values = {
-        "no_probe": f"pcs-gate-noprobe-{suffix}",
-        "name_only": f"pcs-gate-nameonly-{suffix}",
-        "direct_addressable": f"pcs-gate-direct-{suffix}",
+        "no_probe": alloc_ip(),
+        "name_only": alloc_ip(),
+        "direct_addressable": alloc_ip(),
     }
     db = SessionLocal()
     try:

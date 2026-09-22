@@ -14,6 +14,18 @@ const NOT_PROBED_BY_DESIGN =
 const NOT_AUTHORISED_FOR_PORT_SCAN =
   "Not authorised for port scanning — ownership of this address is not established."
 const NO_OPEN_PORTS_FOUND = "No open ports found."
+// The same rule pointed the other way. "No open ports found." is itself a
+// positive claim — that we looked and there was nothing — and asserting it
+// about an address no port scan has ever reached would recreate planning#204's
+// own defect from the opposite direction. `naabu_last_scan_at` (projected by
+// `app.services.projector`, bridged into asset_metadata) is the record that a
+// scan reached the address at all, so the affirmative line is only rendered
+// once it is earned. Absence of the marker is a statement about our records,
+// never about what did or did not happen on the wire.
+// Reachable but not present in any current estate data (a `direct_addressable`
+// asset promoted since its last sweep) — the other three states were each
+// confirmed against live rows before shipping, this one by reading.
+const NO_PORT_SCAN_RECORDED = "No port scan recorded for this address."
 
 // Per-port "sources" values are connector registry IDs (asset_writer's union
 // of banner_grab.py / naabu.py / httpx_probe.py / tlsx.py / shodan.py
@@ -140,10 +152,28 @@ const WELL_KNOWN: Record<number, string> = {
   50070: "hadoop", 50090: "hadoop",
 }
 
+/**
+ * planning#204 — `naabu_last_scan_at` off an asset's bridged metadata, or
+ * `null` when no port scan is on record for it (`app.services.projector`
+ * writes the key only once naabu has actually swept the address).
+ *
+ * Exported and shared rather than inlined at each call site: AssetDetail and
+ * the Assets flyout reuse this file's leaf components precisely so the two
+ * surfaces cannot drift, and a duplicated key lookup is exactly how they
+ * would.
+ */
+export function lastPortScanAtOf(
+  asset: { asset_metadata?: Record<string, unknown> } | null | undefined,
+): string | null {
+  const v = asset?.asset_metadata?.naabu_last_scan_at
+  return typeof v === "string" ? v : null
+}
+
 export function OpenPortsPanel({
   entries,
   legacyShodanPorts,
   probeClass,
+  lastPortScanAt,
 }: {
   entries: OpenPortEntry[]
   /**
@@ -155,6 +185,11 @@ export function OpenPortsPanel({
   /** planning#204 — the SUBJECT asset's projected reachability class. See
    *  the module docstring above for what drives the empty/note states. */
   probeClass?: ProbeClass | null
+  /** planning#204 — the SUBJECT asset's `asset_metadata.naabu_last_scan_at`,
+   *  i.e. whether any port scan is on record for it. Only consulted to decide
+   *  between the two `direct_addressable` empty states; see
+   *  NO_PORT_SCAN_RECORDED. */
+  lastPortScanAt?: string | null
 }) {
   const merged = mergeEntries(entries, legacyShodanPorts ?? [])
   if (merged.length === 0 && probeClass == null) return null
@@ -177,7 +212,8 @@ export function OpenPortsPanel({
   if (merged.length === 0) {
     note = probeClass === "no_probe" ? NOT_PROBED_BY_DESIGN
       : probeClass === "name_only" ? NOT_AUTHORISED_FOR_PORT_SCAN
-      : NO_OPEN_PORTS_FOUND
+      : lastPortScanAt ? NO_OPEN_PORTS_FOUND
+      : NO_PORT_SCAN_RECORDED
   } else if (probeClass === "name_only") {
     note = NOT_AUTHORISED_FOR_PORT_SCAN
   } else if (probeClass === "no_probe") {

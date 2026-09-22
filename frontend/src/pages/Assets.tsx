@@ -13,7 +13,7 @@ import {
   ArrowDownWideNarrow,
 } from "lucide-react"
 import { ConnectedEntities, type ObservedName } from "@/components/ConnectedEntities"
-import { OpenPortsPanel, type OpenPortEntry } from "@/components/OpenPortsPanel"
+import { OpenPortsPanel, lastPortScanAtOf, type OpenPortEntry } from "@/components/OpenPortsPanel"
 import { WorkspaceShell, type TabDef } from "@/components/WorkspaceShell"
 import { PivotTable, type PivotSummaryRow, type PivotAssetRow, SENSITIVE_PORTS } from "@/components/PivotTable"
 import { IndeterminateCheckbox } from "@/components/ui/indeterminate-checkbox"
@@ -531,6 +531,7 @@ function AssetDetailSheet({
                   entries={portEntries}
                   legacyShodanPorts={legacyShodanPorts}
                   probeClass={portSubject?.probe_class ?? null}
+                  lastPortScanAt={lastPortScanAtOf(portSubject)}
                 />
 
                 {eolServices.length > 0 && (
