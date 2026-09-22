@@ -46,13 +46,16 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.asset_state import AssetState
 from app.models.authorisation_decision import AuthorisationDecision
 from app.models.claim import AssetClaim, ClaimHistory
+from app.models.cloud_range import CloudRange
 from app.models.observer import Observer
 from app.models.target import Target
 from app.models.target_asset_link import TargetAssetLink
 from app.services import app_settings
+from app.services import cloud_ranges
 from app.services import domain_affinity as da
+from app.services import hosting_classifier as hc
 from app.services import shared_infra_verifier as siv
-from app.services.claim_emitter import get_current_claim
+from app.services.claim_emitter import get_current_claim, upsert_single_claim
 from app.tests import _decision_log, _docaddr
 
 _MODE_KEY = "probe_authorisation_mode"
@@ -365,20 +368,39 @@ def test_corroboration_candidates_denied_for_pre_close_ip():
 def test_classify_ip_ownership_pre_close_makes_zero_network_calls():
     """The inertness test (spec case 5) and the verdict test (spec case 6)
     share one fixture: a pre-close-linked IP with one owned hostname,
-    classified end-to-end through the REAL classify_ip_ownership. This must
-    fail if only `_probe_worker` is gated — a fresh test DB has no
-    cloud_ranges dataset loaded, so `hosting.attempted` is False and Phase D
-    never even reaches `corroborate_liveness`/`probe_corroboration_candidates`
-    on ITS OWN; that path is exercised separately by
-    test_phase_d_hosting_integration.py and test_ownership_stamping.py, and
-    is not what this test is pinning. What this test pins is narrower and
-    prior to Phase D: `check_affinity`'s own denial must not leak a single
-    `httpx.post` call, for every hostname classify_ip_ownership loops over.
+    classified end-to-end through the REAL classify_ip_ownership.
+
+    ⚠ THE WHOLE POINT is the ROUTE-AROUND, so this test must make Phase D
+    genuinely fire. A denied `check_affinity` returns `indeterminate`, which
+    classify_ip_ownership turns into `unverified` — and `unverified` is the
+    ONLY branch Phase D's `corroborate_liveness` runs from, which then calls
+    `probe_corroboration_candidates`, the module's SECOND egress function.
+    Gating only `_probe_worker` would therefore route the denial straight
+    into an ungated probe.
+
+    An earlier version of this test seeded no `cloud_ranges` dataset, so
+    `hosting.attempted` was False and Phase D never ran at all — it passed
+    with the corroboration gate removed (verified by mutation), i.e. it did
+    not pin the thing its own docstring claimed. It now seeds a real
+    CloudRange row covering this module's /29 and stubs
+    `cloud_ranges.dataset_state` (the pattern
+    test_phase_d_hosting_integration.py established, which avoids writing to
+    the single-row `cloud_ranges_meta` table other tests share), plus a
+    cached `reverse_ip` claim so corroboration has candidates without a
+    network call of its own.
+
+    Two assertions together are what make this non-vacuous: corroboration
+    must be REACHED (proving Phase D fired) and `httpx.post` must never be
+    called (proving the second gate stopped it). Asserting only the latter
+    would pass for the wrong reason if Phase D silently stopped running.
     """
     ip = _IP_E2E
     db = SessionLocal()
     asset_ids: list = []
     target_ids: list = []
+    range_ids: list = []
+    original_dataset_state = hc.cloud_ranges.dataset_state
+    original_corroborate = da.probe_corroboration_candidates
     try:
         host, ip_asset = _mk_host_and_ip(db, ip)
         asset_ids = [host.id, ip_asset.id]
@@ -386,10 +408,59 @@ def test_classify_ip_ownership_pre_close_makes_zero_network_calls():
         target_ids = [target.id]
         _link(db, target.id, ip_asset.id)
 
+        # Phase D precondition 1: a matching cloud range. `hosting_for_match`
+        # treats ANY match as a datacenter whatever the service_class, so one
+        # row over this module's own /29 is enough — and a /29 no other test
+        # can be handed keeps this out of the containment-collision regime
+        # the shared /24 rows live in.
+        cr = CloudRange(
+            id=uuid.uuid4(), prefix=_CIDR, ip_version=4, provider="gate-test",
+            service_class="compute", source="planning-205-test",
+        )
+        db.add(cr)
+        db.commit()
+        range_ids = [cr.id]
+
+        state = cloud_ranges.DatasetState(
+            dataset_sha256="0" * 64,
+            generated_at=datetime.now(timezone.utc),
+            record_count=1,
+            stale=False,
+        )
+        hc.cloud_ranges.dataset_state = lambda _db: state
+
+        # Phase D precondition 2: at least one corroboration candidate, from
+        # the cached `reverse_ip` claim rather than a live mnemonic lookup.
+        # A DIFFERENT apex from the owned hostname's, or _select_candidates
+        # drops it as one of ours.
+        upsert_single_claim(
+            db, ip_asset.id, "hosting_classifier", "reverse_ip",
+            {"domains": [f"othertenant-{uuid.uuid4().hex[:8]}.example.net"], "count": 1},
+            datetime.now(timezone.utc),
+        )
+        db.commit()
+
+        corro_calls: list = []
+
+        def _counting_corroborate(*args, **kwargs):
+            corro_calls.append((args, kwargs))
+            return original_corroborate(*args, **kwargs)
+
+        # Wrapped, NOT replaced — it calls through to the real function, so
+        # the gate inside it still runs. This counts that the path was
+        # reached; `httpx.post` remains the assertion about the network.
+        da.probe_corroboration_candidates = _counting_corroborate
+
         calls, restore = _install_post_spy()
         try:
             _set_mode(db, "log_only")
             result = siv.classify_ip_ownership(db, ip_asset)
+
+            assert corro_calls, (
+                "Phase D must actually reach probe_corroboration_candidates in "
+                "this fixture — otherwise the zero-network assertion below "
+                "passes for the wrong reason and the route-around is unpinned"
+            )
             assert calls == [], (
                 "classify_ip_ownership must make ZERO httpx.post calls for a "
                 "pre-close M&A IP — this fails if only _probe_worker is gated "
@@ -407,6 +478,15 @@ def test_classify_ip_ownership_pre_close_makes_zero_network_calls():
             restore()
             _set_mode(db, None)
     finally:
+        da.probe_corroboration_candidates = original_corroborate
+        hc.cloud_ranges.dataset_state = original_dataset_state
+        if range_ids:
+            cdb = SessionLocal()
+            try:
+                cdb.query(CloudRange).filter(CloudRange.id.in_(range_ids)).delete(synchronize_session=False)
+                cdb.commit()
+            finally:
+                cdb.close()
         _cleanup(asset_ids, target_ids)
         db.close()
 
