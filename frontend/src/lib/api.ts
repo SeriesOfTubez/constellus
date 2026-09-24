@@ -265,6 +265,29 @@ export type SecurityScore = {
   }[]
 }
 
+// planning#211 — the four engagement postures. Only pre_close/abandoned
+// restrict traffic (server-side: app.services.posture.RESTRICTING_POSTURES);
+// the UI never re-derives that, it reads `passive_only` off the target.
+export type EngagementPosture = "pre_close" | "day_0" | "integrated" | "abandoned"
+
+export type TargetEngagementSummary = {
+  id: string
+  name: string
+  posture: EngagementPosture
+}
+
+export type Engagement = {
+  id: string
+  name: string
+  posture: EngagementPosture
+  posture_changed_at: string
+  authorised_at: string | null
+  authorisation_reference: string | null
+  authorised_by: string | null
+  created_at: string
+  member_targets: { id: string; value: string; type: Target["type"] }[]
+}
+
 export type Target = {
   id: string
   type: "domain" | "ip" | "cidr"
@@ -281,7 +304,10 @@ export type Target = {
   tags: string[]
   aggressiveness: AggressivenessTier | null
   effective_aggressiveness: AggressivenessTier
-  ma_pre_close: boolean
+  // planning#211 — the engagement fields. `passive_only` is derived
+  // server-side (`posture.is_passive_only`), never re-implemented here.
+  engagement: TargetEngagementSummary | null
+  passive_only: boolean
   last_scanned_at: string | null
   next_scan_at: string | null
 }

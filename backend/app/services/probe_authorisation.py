@@ -41,8 +41,10 @@ Each cap is owned by a different issue and lands on a different schedule:
     projected reachability class (`no_probe` / `name_only` /
     `direct_addressable`, `app.services.projector`) one that permits active
     probing at all. See `_probe_class_cap`.
-  - **posture** (planning#132) — engagement posture (pre-close diligence
-    vs. post-close monitoring, etc.). **Still a permissive stub.**
+  - **posture** (planning#132/#211) — engagement posture, read off the
+    linked `Engagement` row(s): `pre_close`/`abandoned` restrict to
+    passive-only, `day_0`/`integrated` are fully permissive. See
+    `_posture_cap`.
 
 Posture is deliberately present-and-permissive rather than omitted. The
 whole reason this issue was split from #128/#132 in the first place is so
@@ -134,6 +136,7 @@ from sqlalchemy.orm import Session
 
 from app.models.asset_canonical import AssetCanonical
 from app.models.authorisation_decision import AuthorisationDecision
+from app.models.engagement import Engagement
 from app.models.observer import Observer
 from app.models.target import Target
 from app.models.target_asset_link import TargetAssetLink
@@ -207,13 +210,14 @@ class GateResult:
     enforcement — `True` under the `enforce` setting; also `True` for a
     connector-declaration failure (§ module docstring: that check narrows
     to nothing in both modes, so its `permitted` is never a passthrough);
-    and also `True`, as of planning#193, when one or more assets were
-    denied by `posture:ma_pre_close` under `log_only` — that denial too
-    narrows to nothing in both modes (see `_posture_cap`'s docstring), so
-    a `permitted` list that has actually been narrowed must report
-    `enforced=True` even though the gate as a whole is still in
-    `log_only`. It is `False` only for the ordinary `log_only` path with
-    no posture denials, where `permitted` is the unfiltered input and the
+    and also `True`, as of planning#193 (re-keyed under planning#211), when
+    one or more assets were denied by `posture:passive_only` under
+    `log_only` — that denial too narrows to nothing in both modes (see
+    `_posture_cap`'s docstring), so a `permitted` list that has actually
+    been narrowed must report `enforced=True` even though the gate as a
+    whole is still in `log_only`. It is `False` only for the ordinary
+    `log_only` path with no posture denials, where `permitted` is the
+    unfiltered input and the
     real verdict lives solely in the decision log. Callers that just want
     to know whether to keep going check `permitted` — `enforced` is for
     logging/tests that care WHY `permitted` looks the way it does.
@@ -460,51 +464,95 @@ def _resolve_scoped_ids(db: Session, scope: dict, auth_mode: str) -> frozenset[u
     }))
 
 
-def _resolve_ma_pre_close_ids(db: Session, canonical_ids: set[uuid.UUID]) -> frozenset[uuid.UUID]:
-    """The subset of `canonical_ids` linked — via `target_asset_links` — to
-    at least one `targets` row with `ma_pre_close = True` (planning#193).
+@dataclass(frozen=True)
+class EngagementResolution:
+    """The result of one `_resolve_engagements` call — everything the three
+    gate call sites need to know about the engagements linked to a batch of
+    canonical asset ids, computed in one or two queries bounded by those
+    ids, never per-asset (the same batching discipline as `_resolve_
+    scoped_ids`/`states` above).
 
-    Computed once per `authorise_probes` call, the same pattern as
-    `_resolve_scoped_ids` above: one query bounded by `canonical_ids`, not
-    a lookup per asset. This is the direct answer to the planning#193
-    hand-off's "untested at scale, runs per asset per connector" concern —
-    membership is a single set built once and consulted per asset in the
-    loop, exactly like `scoped_ids`.
+    `passive_ids` — the subset of the input ids linked, via
+    `target_asset_links`, to at least one RESTRICTING engagement
+    (`posture.RESTRICTING_POSTURES`: `pre_close` or `abandoned`). This is
+    the SQL rendering of the passive-only predicate
+    (`posture.passive_only_filter()`) and it alone must stay load-bearing
+    for the deny — see `_posture_cap`'s use of it.
 
-    Returns an empty set immediately, without touching the database, when
-    `canonical_ids` is empty — mirroring `_resolve_scoped_ids`'s
-    short-circuit on `disabled` mode.
+    `by_asset` — for EVERY input id, the engagements of ALL its linked
+    targets that have one, as `{"id": str, "posture": str}` dicts sorted by
+    id for determinism. An id with no linked target, or whose linked
+    targets have no engagement, maps to `()` via `.get(id, ())` at the call
+    site rather than a `KeyError` — this dict only carries keys for ids
+    that resolved to at least one engagement. Feeds `evidence_snapshot
+    ["engagements"]` directly: `[]` there means "no linked target had an
+    engagement when this decision was made" — worded about the RECORD, not
+    the world.
+    """
 
-    ## Any linked target wins
+    passive_ids: frozenset[uuid.UUID]
+    by_asset: dict[uuid.UUID, tuple[dict, ...]]
 
-    `target_asset_links` is N-to-N. If an asset is linked to one pre-close
-    target and three ordinary ones, it is STILL DENIED — the presence of
-    ordinary targets does not dilute or overrule the pre-close flag. The
-    flag is a statement that someone has not authorised this system to
-    touch the asset; one target's authorisation cannot cancel another
-    target's lack of it. Fail closed.
+
+def _resolve_engagements(db: Session, canonical_ids: set[uuid.UUID]) -> EngagementResolution:
+    """Resolve every asset in `canonical_ids` to the engagement(s) of its
+    linked target(s) — planning#211's re-key of the boolean-flag resolver
+    planning#193/#196 originally shipped.
+
+    Computed once per `authorise_probes`/`authorise_ownership_probe` call,
+    the same pattern as `_resolve_scoped_ids` above: queries bounded by
+    `canonical_ids`, not a lookup per asset.
+
+    Returns the empty resolution immediately, without touching the
+    database, when `canonical_ids` is empty — mirroring `_resolve_scoped_
+    ids`'s short-circuit on `disabled` mode.
+
+    ## Any linked RESTRICTING target wins
+
+    `target_asset_links` is N-to-N. If an asset is linked to one
+    `pre_close` target and three ordinary ones, it is STILL DENIED — the
+    presence of ordinary targets does not dilute or overrule the
+    restricting engagement. One target's authorisation cannot cancel
+    another target's lack of it. Fail closed.
     """
     if not canonical_ids:
-        return frozenset()
+        return EngagementResolution(passive_ids=frozenset(), by_asset={})
 
-    rows = (
+    passive_rows = (
         db.query(TargetAssetLink.asset_canonical_id)
         .join(Target, Target.id == TargetAssetLink.target_id)
         .filter(
             TargetAssetLink.asset_canonical_id.in_(canonical_ids),
-            # planning#196 step 2 — the predicate itself lives in
+            # planning#211 — the predicate itself lives in
             # `app.services.posture`, not inline here. This is the SQL
             # rendering; `authorise_discovery` below uses the Python one
             # (`posture.is_passive_only`) over an already-loaded row. Two
-            # query shapes, ONE policy — so planning#132's eventual move
-            # from a boolean to a posture enum is one edit in one file,
-            # not a hunt for every inline `ma_pre_close` comparison.
+            # query shapes, ONE policy.
             posture.passive_only_filter(),
         )
         .distinct()
         .all()
     )
-    return frozenset(r[0] for r in rows)
+    passive_ids = frozenset(r[0] for r in passive_rows)
+
+    engagement_rows = (
+        db.query(TargetAssetLink.asset_canonical_id, Engagement.id, Engagement.posture)
+        .join(Target, Target.id == TargetAssetLink.target_id)
+        .join(Engagement, Engagement.id == Target.engagement_id)
+        .filter(TargetAssetLink.asset_canonical_id.in_(canonical_ids))
+        .all()
+    )
+    by_asset_lists: dict[uuid.UUID, list[dict]] = {}
+    for asset_id, engagement_id, engagement_posture in engagement_rows:
+        by_asset_lists.setdefault(asset_id, []).append(
+            {"id": str(engagement_id), "posture": engagement_posture}
+        )
+
+    by_asset = {
+        asset_id: tuple(sorted(entries, key=lambda e: e["id"]))
+        for asset_id, entries in by_asset_lists.items()
+    }
+    return EngagementResolution(passive_ids=passive_ids, by_asset=by_asset)
 
 
 def _probe_class_cap(db: Session, *, asset_ref, canonical: AssetCanonical | None, state) -> Cap:
@@ -599,18 +647,19 @@ def _probe_class_cap(db: Session, *, asset_ref, canonical: AssetCanonical | None
 
 def _posture_cap(
     db: Session, *, scope: dict, asset_ref, canonical: AssetCanonical | None,
-    ma_pre_close_ids: frozenset[uuid.UUID], noise_class: str | None,
+    passive_ids: frozenset[uuid.UUID], noise_class: str | None,
 ) -> Cap:
-    """Posture cap — engagement posture (pre-close diligence vs. post-close
-    monitoring, etc.), planning#132. planning#193 gives it its first real
-    body: pre-close M&A denial. planning#196 step 2 makes that denial
-    depend on the CALLING OBSERVER's noise class rather than firing
-    unconditionally for every asset linked to a pre-close target — see the
-    dedicated section below. The rest of the posture axis (post-close
-    monitoring and whatever else #132 eventually enumerates) remains
-    permissive until that issue lands — this is a body change on an
-    already-composed cap, not the cap's introduction, exactly as the
-    module docstring's "present-and-permissive" bet intended.
+    """Posture cap — engagement posture, planning#132/#211. planning#193
+    gave it its first real body: pre-close M&A denial. planning#196 step 2
+    made that denial depend on the CALLING OBSERVER's noise class rather
+    than firing unconditionally for every asset linked to a pre-close
+    target — see the dedicated section below. planning#211 re-keys the
+    input from a bare boolean flag to `passive_ids`, the set of
+    canonical ids linked to a RESTRICTING engagement
+    (`posture.RESTRICTING_POSTURES` — `pre_close` or `abandoned`), computed
+    by `_resolve_engagements`. `day_0`/`integrated` engagements are fully
+    permissive here, same as no engagement at all — this cap only ever
+    distinguishes "restricting" from "not".
 
     `db`/`scope`/`asset_ref` remain unused this slice, for the same
     forward-signature-stability reason `_scope_cap` documents; kept in the
@@ -652,7 +701,7 @@ def _posture_cap(
     would have to widen this signature and revisit every call site and
     test. Taking the asset now costs nothing and keeps #132 a body change.
 
-    ## `posture:ma_pre_close` is always-enforced, in BOTH gate modes
+    ## `posture:passive_only` is always-enforced, in BOTH gate modes
 
     Every other cap's denial is subject to `probe_authorisation_mode`
     (module docstring, "Gate mode"): under `log_only`,
@@ -692,9 +741,9 @@ def _posture_cap(
     is None` and slips this cap, but is still caught by `_scope_cap`.
     """
     _ = (db, scope, asset_ref)  # unused this slice — see docstring
-    if canonical is not None and canonical.id in ma_pre_close_ids:
+    if canonical is not None and canonical.id in passive_ids:
         if not posture.observer_permitted(passive_only=True, noise_class=noise_class):
-            return Cap(allowed=False, modes=frozenset(), names=None, rule="posture:ma_pre_close")
+            return Cap(allowed=False, modes=frozenset(), names=None, rule="posture:passive_only")
     return Cap(allowed=True, modes=None, names=None, rule="posture:permissive")
 
 
@@ -853,6 +902,7 @@ def _compose(
     state,
     mode: str,
     scan_run_id: uuid.UUID | None,
+    engagements: tuple[dict, ...] = (),
 ) -> ProbePermission:
     """Compose the three caps (`scope`, `probe_class`, `posture`, in that
     fixed order) into one `ProbePermission` for this (asset, connector)
@@ -989,6 +1039,13 @@ def _compose(
         "asset_value": canonical.value if canonical is not None else getattr(asset_ref, "value", None),
         "gate_mode": mode,
         "scan_run_id": str(scan_run_id) if scan_run_id is not None else None,
+        # planning#211 — the engagement(s) of every target linked to this
+        # asset, `{"id", "posture"}` each, as resolved by `_resolve_
+        # engagements` and threaded in by the caller (never re-queried
+        # here — see that function's docstring for why `by_asset` already
+        # has everything this needs). `[]` means "no linked target had an
+        # engagement when this decision was made", not "no target".
+        "engagements": list(engagements),
         "caps": {
             "scope": _cap_evidence(scope_cap),
             "probe_class": _cap_evidence(probe_cap),
@@ -1171,10 +1228,10 @@ def authorise_probes(
     # would repeat that scan for every asset in the batch.
     auth_mode = settings_svc.get(db, "scan_authorisation_mode") or "strict"
     scoped_ids = _resolve_scoped_ids(db, scope, auth_mode)
-    # planning#193 — resolved once per call, the same batching discipline
-    # as scoped_ids/states above: one query bounded by canonical_ids, not
-    # a lookup per asset.
-    ma_pre_close_ids = _resolve_ma_pre_close_ids(db, canonical_ids)
+    # planning#193/#211 — resolved once per call, the same batching
+    # discipline as scoped_ids/states above: one/two queries bounded by
+    # canonical_ids, not a lookup per asset.
+    engagement_resolution = _resolve_engagements(db, canonical_ids)
 
     permitted: list = []
     permissions = {}
@@ -1209,7 +1266,7 @@ def authorise_probes(
             _probe_class_cap(db, asset_ref=asset, canonical=canonical, state=state),
             _posture_cap(
                 db, scope=scope, asset_ref=asset, canonical=canonical,
-                ma_pre_close_ids=ma_pre_close_ids, noise_class=observer_row.noise_class,
+                passive_ids=engagement_resolution.passive_ids, noise_class=observer_row.noise_class,
             ),
         )
         if not caps[2].allowed:
@@ -1227,6 +1284,7 @@ def authorise_probes(
             state=state,
             mode=mode,
             scan_run_id=scan_run_id,
+            engagements=engagement_resolution.by_asset.get(canonical.id, ()) if canonical is not None else (),
         )
 
         permissions[(asset.asset_type, asset.value)] = permission
@@ -1336,18 +1394,18 @@ def authorise_ownership_probe(
     hostname's own name, so there is no addressing-mode question for those
     two states to answer; only the "never probe this at all" state matters).
 
-      - **posture** — resolved via `_resolve_ma_pre_close_ids(db,
-        set(asset_canonical_ids))` (same helper `_posture_cap` uses) and
-        decided with `posture.observer_permitted(passive_only=...,
-        noise_class=...)`. `rule_fired` is `"posture:ma_pre_close"` — the
+      - **posture** — resolved via `_resolve_engagements(db,
+        set(asset_canonical_ids)).passive_ids` (same helper `_posture_cap`
+        uses) and decided with `posture.observer_permitted(passive_only=...,
+        noise_class=...)`. `rule_fired` is `"posture:passive_only"` — the
         SAME string `_posture_cap` and `authorise_discovery` both use,
         deliberately (planning#196: one rule, one spelling, so a query for
         "everything posture blocked" never has to know a third spelling).
         **Always-enforced, in BOTH gate modes** — same standing as
-        `_posture_cap`'s own posture denial: a pre-close M&A flag is an
-        operator assertion, not a verdict this system inferred, so the
-        graduated `log_only`/`enforce` rollout that governs probe_class
-        below does not apply to it.
+        `_posture_cap`'s own posture denial: a restricting engagement
+        posture is an operator assertion, not a verdict this system
+        inferred, so the graduated `log_only`/`enforce` rollout that
+        governs probe_class below does not apply to it.
       - **`no_probe`** — read from `state.attributes["probe_class"]`
         (`projector.load_states`, the same source `_probe_class_cap` reads)
         for each id in `asset_canonical_ids`. Denies ONLY on an EXPLICIT
@@ -1379,7 +1437,7 @@ def authorise_ownership_probe(
         compose scope — so the narrower "explicit no_probe only" rule is
         the one that ships.
       - An asset with no resolvable canonical row is **permitted** — it
-        simply is not a member of `ma_pre_close_ids` and has no
+        simply is not a member of `passive_ids` and has no
         `asset_state` row for `no_probe` to fire against. This is not a
         regression: today, with no gate on this module at all, such an
         asset is unconditionally probed. It is also not an improvement —
@@ -1390,10 +1448,11 @@ def authorise_ownership_probe(
     ## Fail-closed across the list: deny if ANY id is denied
 
     `asset_canonical_ids` is N-to-N by construction (one hostname, one IP;
-    or just an IP) — mirrors `_resolve_ma_pre_close_ids`'s own documented
-    "any linked target wins": the presence of one clean id does not dilute
-    or overrule another id's denial. When posture denies at least one id in
-    the list, `rule_fired` is `"posture:ma_pre_close"` regardless of whether
+    or just an IP) — mirrors `_resolve_engagements`'s own documented
+    "any linked RESTRICTING target wins": the presence of one clean id does
+    not dilute or overrule another id's denial. When posture denies at
+    least one id in the list, `rule_fired` is `"posture:passive_only"`
+    regardless of whether
     `no_probe` also denied a (possibly different) id in the same call — the
     same precedence `_compose` already gives posture over the other caps,
     for the same reason: posture is the one axis guaranteed to actually be
@@ -1446,11 +1505,13 @@ def authorise_ownership_probe(
     noise_class = observer_row.noise_class if observer_row is not None else None
 
     id_set = set(ids)
-    ma_pre_close_ids = _resolve_ma_pre_close_ids(db, id_set)
+    engagement_resolution = _resolve_engagements(db, id_set)
     states = projector.load_states(db, id_set)
 
     posture_permitted = posture.observer_permitted(passive_only=True, noise_class=noise_class)
-    posture_denied_ids = [cid for cid in ids if cid in ma_pre_close_ids] if not posture_permitted else []
+    posture_denied_ids = (
+        [cid for cid in ids if cid in engagement_resolution.passive_ids] if not posture_permitted else []
+    )
 
     no_probe_ids = [
         cid for cid in ids
@@ -1462,7 +1523,7 @@ def authorise_ownership_probe(
         allowed=not posture_denied_ids,
         modes=frozenset() if posture_denied_ids else None,
         names=None,
-        rule="posture:ma_pre_close" if posture_denied_ids else "posture:permissive",
+        rule="posture:passive_only" if posture_denied_ids else "posture:permissive",
     )
     probe_class_cap = Cap(
         allowed=not no_probe_ids,
@@ -1510,6 +1571,12 @@ def authorise_ownership_probe(
         "scan_run_id": str(scan_run_id) if scan_run_id is not None else None,
         "probe_class": probe_class_value,
         "tenancy": None,
+        # planning#211 — the DENIAL asset's own engagements (§ `_compose`'s
+        # copy of this key for the same reasoning); `by_asset` only carries
+        # entries for ids that resolved to at least one, so `.get(..., ())`
+        # covers the (impossible on the posture-denial path, but real on
+        # the no_probe-only path) case of an id with none.
+        "engagements": list(engagement_resolution.by_asset.get(denial_id, ())),
         "caps": {
             "posture": _cap_evidence(posture_cap),
             "probe_class": _cap_evidence(probe_class_cap),
@@ -1586,7 +1653,7 @@ def authorise_discovery(
     comparability with the asset path's rows — it is not consulted to
     decide anything here.
 
-    ## `rule_fired` is `"posture:ma_pre_close"` — the SAME string the asset
+    ## `rule_fired` is `"posture:passive_only"` — the SAME string the asset
     path uses, deliberately
 
     `rule_fired` names the rule that fired, and it IS the same rule,
@@ -1653,16 +1720,27 @@ def authorise_discovery(
     else:
         log.info(
             "Discovery gate: %s (noise_class=%s) denied for domain %s — "
-            "target is pre-close M&A (passive-only); see planning#196.",
+            "target posture is passive-only; see planning#196/#211.",
             observer_slug, noise_class, domain,
         )
 
     mode = settings_svc.get(db, "probe_authorisation_mode") or "log_only"
+    # planning#211 — the target's own engagement, read off the relationship
+    # `posture.is_passive_only` above already resolved (cheap: SQLAlchemy
+    # caches it on `target_row` for the life of the object, so this is not
+    # a second query). `[]` only if `target_row` somehow has none despite
+    # `passive_only` being True, which cannot happen through `is_passive_
+    # only`'s own logic but is handled rather than assumed.
+    engagements = (
+        [{"id": str(target_row.engagement.id), "posture": target_row.engagement.posture}]
+        if target_row is not None and target_row.engagement is not None
+        else []
+    )
     permission = ProbePermission(
         allowed=False,
         modes=frozenset(),
         names=(),
-        rule_fired="posture:ma_pre_close",
+        rule_fired="posture:passive_only",
         evidence={
             "connector_id": observer_slug,
             "observer": observer_slug,
@@ -1674,7 +1752,8 @@ def authorise_discovery(
             "scan_run_id": str(scan_run_id) if scan_run_id is not None else None,
             "decision_scope": "domain",
             "domain": domain,
-            "caps": {"posture": _cap_evidence(Cap(False, frozenset(), None, "posture:ma_pre_close"))},
+            "engagements": engagements,
+            "caps": {"posture": _cap_evidence(Cap(False, frozenset(), None, "posture:passive_only"))},
         },
     )
     _write_decisions(db, [_decision_row(None, observer_row, permission)])

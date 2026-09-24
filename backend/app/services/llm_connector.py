@@ -25,15 +25,16 @@ caller anywhere in the app. It stops at the connector + ledger.
 ## Why posture, not an engagement, decides data policy
 
 R3: pre-close is decided ONLY by `app.services.posture.is_passive_only`,
-never by a new rendering of "is this pre-close" and never by reading
-`targets.ma_pre_close` directly in this module. The real question this
-slice wants to ask is "is there an active engagement whose confidentiality
-requires the strict data policy" — but planning#132 has not built an
-engagement object yet, so `is_passive_only` (pre-close M&A posture) is used
-as the best available proxy today. When #132 lands, `effective_data_policy`
-is the one function that needs to change, the same way `posture.py`'s own
-module docstring describes itself as the one place planning#132 must edit
-when posture becomes a real enum.
+never by a new rendering of "is this pre-close" and never by reading a
+target's engagement posture directly in this module. The real question
+this slice wants to ask is "is there an active engagement whose
+confidentiality requires the strict data policy" — planning#211 has since
+built the engagement object `is_passive_only` now reads
+(`target_row.engagement.posture`), but this module still calls
+`is_passive_only` exactly as before and does not read the engagement
+directly; the re-key onto `engagement_id`/a per-engagement data policy is
+planning#140 slice 2, deliberately not built here. When that slice lands,
+`effective_data_policy` is the one function that needs to change.
 
 ## R1 — no silent fallback to a non-compliant endpoint
 

@@ -115,7 +115,11 @@ def _error_response(status: int, *, message: str = "error", headers: dict | None
 
 
 def _make_target(db, *, suffix: str, pre_close: bool) -> Target:
-    t = Target(id=uuid.uuid4(), type="domain", value=f"llm140-{suffix}.example.test", ma_pre_close=pre_close)
+    engagement_id = None
+    if pre_close:
+        from app.tests._engagement import make_engagement
+        engagement_id = make_engagement(db, "pre_close").id
+    t = Target(id=uuid.uuid4(), type="domain", value=f"llm140-{suffix}.example.test", engagement_id=engagement_id)
     db.add(t)
     db.commit()
     return t
@@ -190,10 +194,14 @@ def _cleanup(task: str) -> None:
 def _delete_target(target: Target | None) -> None:
     if target is None:
         return
+    engagement_id = target.engagement_id
     db = SessionLocal()
     try:
         db.query(Target).filter(Target.id == target.id).delete(synchronize_session=False)
         db.commit()
+        if engagement_id is not None:
+            from app.tests._engagement import cleanup_engagement
+            cleanup_engagement(db, engagement_id)
     finally:
         db.close()
 

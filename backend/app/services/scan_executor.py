@@ -85,6 +85,8 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
         run.scope = scope  # audit: record what we actually scanned
         db.commit()
 
+    _stamp_scope_target_engagements(db, run, scope)
+
     auth_mode = settings_svc.get(db, "scan_authorisation_mode") or "disabled"
 
     # planning#125 — every declared domain Target (and its subdomains) is
@@ -522,6 +524,44 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
             log.exception("notification_dispatcher.dispatch_promotions failed for run %s", scan_run_id)
 
 
+def _stamp_scope_target_engagements(db: Session, run: ScanRun, scope: dict) -> None:
+    """Stamp `scan_runs.scope_target_engagements` (migration 0059,
+    planning#211) once per run, right after scope is finalised (whether it
+    came from the run's own static scope or from `_resolve_dynamic_scope`
+    above) and before any phase runs.
+
+    Records `[{"target_id", "engagement_id", "posture"}]` for every
+    `Target` whose `value` is LITERALLY present in `scope["domains"] +
+    scope["ip_ranges"]` and has an engagement. Deliberately narrow — see
+    the column's own model comment (`app/models/scan.py`) for why this is
+    NOT the posture of every asset the run touches: a recheck of a child IP
+    of a pre-close target has no Target value in scope at all (it is the
+    ASSET being rechecked, not the target), so it stamps `[]` here while
+    the gate still denies it through `target_asset_links` — per-asset truth
+    lives in the decision rows, not this column.
+    """
+    from app.models.engagement import Engagement
+    from app.models.target import Target
+
+    values = list(scope.get("domains") or []) + list(scope.get("ip_ranges") or [])
+    if not values:
+        run.scope_target_engagements = []
+        db.commit()
+        return
+
+    rows = (
+        db.query(Target.id, Engagement.id, Engagement.posture)
+        .join(Engagement, Engagement.id == Target.engagement_id)
+        .filter(Target.value.in_(values))
+        .all()
+    )
+    run.scope_target_engagements = [
+        {"target_id": str(target_id), "engagement_id": str(engagement_id), "posture": posture_value}
+        for target_id, engagement_id, posture_value in rows
+    ]
+    db.commit()
+
+
 def _resolve_dynamic_scope(db: Session, template: ScanTemplate) -> dict:
     """Build scope from the targets table, respecting tag-based cadence tiers.
 
@@ -539,7 +579,22 @@ def _resolve_dynamic_scope(db: Session, template: ScanTemplate) -> dict:
     Each target's value is re-validated as a safety net for any legacy junk
     rows that slipped in before input validation tightened — a malformed
     value would otherwise be passed to Phase 1 and trigger upstream errors.
+
+    planning#211 — targets whose engagement posture is `abandoned` are
+    excluded outright, regardless of tier. This is the ONLY path scheduled
+    scans use (`scheduler.py` creates dynamic-scope template runs), so
+    excluding here is sufficient to stop scheduled scanning of an abandoned
+    engagement's member targets. A manual scan (bulk recheck, a per-target
+    "Recheck" button) does NOT go through this resolver at all — it is
+    still allowed to run, and the gate still denies it passive-only, same
+    as any other `abandoned`/`pre_close` target. Only `abandoned` is
+    excluded here: `pre_close` targets are still scanned on schedule (the
+    gate is what keeps that passive-only), because pre-close diligence is
+    an active, ongoing state a schedule should keep touching passively.
     """
+    from sqlalchemy import or_
+
+    from app.models.engagement import Engagement, EngagementPosture
     from app.models.target import Target
     from app.services.target_service import detect_type
 
@@ -561,7 +616,12 @@ def _resolve_dynamic_scope(db: Session, template: ScanTemplate) -> dict:
         return None
 
     is_tier = template.tag_priority is not None
-    targets = db.query(Target).all()
+    targets = (
+        db.query(Target)
+        .outerjoin(Engagement, Target.engagement_id == Engagement.id)
+        .filter(or_(Engagement.posture.is_(None), Engagement.posture != EngagementPosture.ABANDONED.value))
+        .all()
+    )
 
     domains: list[str] = []
     ip_ranges: list[str] = []
@@ -815,7 +875,7 @@ def _run_pipeline(
         if _posture_permits(dns_resolve):
             try:
                 # Call the module attribute, not a name bound by `from ...
-                # import resolve_names` — `test_scan_executor_ma_pre_close.py`
+                # import resolve_names` — `test_scan_executor_pre_close.py`
                 # monkeypatches `dns_resolve.resolve_names` by module-attribute
                 # assignment and relies on this call re-reading the attribute
                 # off the module object at call time.

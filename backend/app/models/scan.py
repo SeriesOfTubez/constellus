@@ -71,6 +71,22 @@ class ScanRun(Base):
     port_scan_unauthorised_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
+    # planning#211 — `[{"target_id", "engagement_id", "posture"}]`, stamped
+    # once by `scan_executor._stamp_scope_target_engagements` right after
+    # scope is finalised and before any phase runs. Named for honesty, not
+    # convenience: this is the engagements of the `Target` rows literally
+    # NAMED in `scope["domains"] + scope["ip_ranges"]` — it is NOT the
+    # posture of every asset this run touches. A recheck of a child IP of a
+    # pre-close target has no Target value in scope (the IP is the asset
+    # being rechecked, not a target), so it stamps `[]` here while the gate
+    # still denies through `target_asset_links` — per-asset truth lives in
+    # `authorisation_decisions`, not this column. `[]` on a run stamped
+    # before this migration, or a run whose scope named no engaged target,
+    # both read as "nothing recorded" — the same ambiguity `asset_count`/
+    # `port_scan_unauthorised_count` already accept for the same reason.
+    scope_target_engagements: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'")
+    )
     # Resolved aggressiveness tier at run start. Denormalised from app_settings
     # (or the run's per-run override) so audit logs answer "why did this scan
     # generate so many requests" without time-travelling app_settings history.

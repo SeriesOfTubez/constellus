@@ -4,19 +4,26 @@ from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_current_user, require_role
 from app.core.database import get_db
+from app.models.engagement import Engagement, EngagementPosture
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.scan_template import ScanTemplate
 from app.models.target import Target, TargetType
 from app.models.user import UserRole
-from app.services import audit, scheduler, target_service as svc
+from app.services import audit, posture, scheduler, target_service as svc
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class TargetEngagementSummary(BaseModel):
+    id: uuid.UUID
+    name: str
+    posture: str
 
 
 class TargetResponse(BaseModel):
@@ -34,7 +41,11 @@ class TargetResponse(BaseModel):
     notes: str | None
     aggressiveness: str | None
     effective_aggressiveness: str
-    ma_pre_close: bool
+    # planning#211 — the posture field. `passive_only` is derived via
+    # `posture.is_passive_only`, never re-implemented here, so the UI never
+    # has to know which postures restrict traffic.
+    engagement: TargetEngagementSummary | None
+    passive_only: bool
     last_scanned_at: str | None
     next_scan_at: str | None
 
@@ -53,10 +64,15 @@ class TargetPatch(BaseModel):
     # Sentinel: pass `clear_aggressiveness=True` to reset to inherit
     # (since `aggressiveness=None` in a JSON body is ambiguous with "absent").
     clear_aggressiveness: bool = False
-    # No sentinel needed here, unlike aggressiveness: `ma_pre_close` has no
-    # inherit state, so `None` unambiguously means "absent from this
-    # request" rather than "clear it" — there's nothing to clear it TO.
-    ma_pre_close: bool | None = None
+    # planning#211 — the engagement membership fields. Same sentinel pattern as
+    # `clear_aggressiveness`: `engagement_id=None` in a JSON body is
+    # ambiguous with "absent", so detaching a target from its engagement
+    # needs `clear_engagement=True` to say so unambiguously.
+    engagement_id: uuid.UUID | None = None
+    clear_engagement: bool = False
+    # Required only when the membership change WIDENS traffic (§
+    # `patch_target`'s docstring) — non-blank after `.strip()`, or 422.
+    authorisation_reference: str | None = None
 
 
 class AcknowledgeRequest(BaseModel):
@@ -84,7 +100,10 @@ def list_targets(
     from app.services import aggressiveness as aggr
     from app.services import app_settings as app_settings_svc
 
-    q = db.query(Target)
+    # planning#211 — `selectinload` so `_to_response`'s `t.engagement`
+    # access (needed for both the `engagement` field and
+    # `posture.is_passive_only`) doesn't N+1 one query per target.
+    q = db.query(Target).options(selectinload(Target.engagement))
     if verified is not None:
         q = q.filter(Target.verified == verified)
     if type:
@@ -462,25 +481,42 @@ def patch_target(
     target_id: uuid.UUID,
     data: TargetPatch,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
 ):
     """Partial update. Only fields present in the body are modified.
 
-    ADMIN-gated (planning#162 item 1). `TargetPatch` carries
+    ADMIN-gated at minimum (planning#162 item 1). `TargetPatch` carries
     `aggressiveness`, which governs how hard this system probes a third
     party's infrastructure, and every sibling route that touches the same
     field or object already requires this pair — `bulk_set_aggressiveness`,
-    `bulk_recheck_targets`, `bulk_delete_targets`, `delete_target`. This
-    route was the only one guarded by bare `get_current_user`, so any
-    authenticated VIEWER could raise the outbound scan tier one target at a
-    time while being correctly blocked from doing it in bulk.
+    `bulk_recheck_targets`, `bulk_delete_targets`, `delete_target`.
 
-    Also carries `ma_pre_close` (planning#193): this flag governs whether
-    the system probes a counterparty it may hold no authorisation to probe
-    at all, which is a strictly higher-stakes toggle than aggressiveness —
-    so "who turned it off, and when" is precisely what the audit trail
-    exists to answer, the same argument already made above for
-    aggressiveness.
+    Also carries `engagement_id`/`clear_engagement` (planning#211). The
+    route-level guard stays (ADMIN, INTEGRATION_ADMIN)
+    for the common case — attaching a target to any engagement, or moving
+    it between two RESTRICTING engagements, never widens what gets probed,
+    so it keeps today's role pair.
+
+    ## The widening rule
+
+    A membership change WIDENS if the target's OLD engagement restricted
+    traffic (`posture.posture_restricts`) and the NEW state doesn't —
+    either detaching entirely, or moving to a `day_0`/`integrated`
+    engagement. That is the one case this route can actually increase what
+    this system does to a counterparty, so it is held to a stricter bar
+    than the role-level guard can express: **ADMIN only** (INTEGRATION_ADMIN
+    gets 403, checked here, not at the dependency, because whether a given
+    request widens anything depends on the target's CURRENT engagement,
+    which the dependency cannot see) **and** a non-blank
+    `authorisation_reference` (422 otherwise) — the same "who authorised
+    this, and with what" record `app/api/engagements.py`'s `needs_ref`
+    transition requires, because detaching a target from a restricting
+    engagement is exactly as consequential as widening the engagement
+    itself.
+
+    Attaching to an `abandoned` engagement is refused outright (409):
+    `abandoned` is terminal (§ `posture.py`) and nothing joins it, widening
+    or not.
     """
     from app.services import aggressiveness as aggr
 
@@ -490,7 +526,7 @@ def patch_target(
 
     was_aggressiveness = target.aggressiveness
     was_notes = target.notes
-    was_ma_pre_close = target.ma_pre_close
+    was_engagement_id = target.engagement_id
 
     if data.clear_aggressiveness:
         target.aggressiveness = None
@@ -505,8 +541,40 @@ def patch_target(
     if data.notes is not None:
         target.notes = data.notes
 
-    if data.ma_pre_close is not None:
-        target.ma_pre_close = data.ma_pre_close
+    engagement_change_requested = data.clear_engagement or data.engagement_id is not None
+    authorisation_reference_used: str | None = None
+    if engagement_change_requested:
+        old_engagement = target.engagement
+        old_restricts = posture.posture_restricts(old_engagement.posture) if old_engagement is not None else False
+
+        new_engagement = None
+        if not data.clear_engagement:
+            new_engagement = db.get(Engagement, data.engagement_id)
+            if new_engagement is None:
+                raise HTTPException(status_code=422, detail="engagement not found")
+            if new_engagement.posture == EngagementPosture.ABANDONED.value:
+                raise HTTPException(
+                    status_code=409,
+                    detail="cannot attach a target to an abandoned engagement — it is terminal",
+                )
+        new_restricts = posture.posture_restricts(new_engagement.posture) if new_engagement is not None else False
+
+        widening = old_restricts and not new_restricts
+        if widening:
+            if current_user.role != UserRole.ADMIN.value:
+                raise HTTPException(
+                    status_code=403,
+                    detail="widening a target's engagement membership requires ADMIN",
+                )
+            reference = (data.authorisation_reference or "").strip()
+            if not reference:
+                raise HTTPException(
+                    status_code=422,
+                    detail="authorisation_reference is required to widen a target's engagement membership",
+                )
+            authorisation_reference_used = reference
+
+        target.engagement_id = new_engagement.id if new_engagement is not None else None
 
     # planning#194 — aggressiveness governs outbound traffic toward a third
     # party, so "who raised it, from what" is the question the audit trail
@@ -518,8 +586,19 @@ def patch_target(
         changes["aggressiveness"] = {"from": was_aggressiveness, "to": target.aggressiveness}
     if was_notes != target.notes:
         changes["notes"] = {"changed": True}
-    if was_ma_pre_close != target.ma_pre_close:
-        changes["ma_pre_close"] = {"from": was_ma_pre_close, "to": target.ma_pre_close}
+    if was_engagement_id != target.engagement_id:
+        changes["engagement"] = {
+            "from": str(was_engagement_id) if was_engagement_id else None,
+            "to": str(target.engagement_id) if target.engagement_id else None,
+        }
+        if authorisation_reference_used is not None:
+            # NOT "authorisation_reference" — `audit.scrub`'s SECRET_KEY_HINTS
+            # matches any key containing "auth" (for `Authorization` headers,
+            # `client_secret`, etc.) and would silently redact this legitimate
+            # business record, defeating the entire point of the widening
+            # rule's audit trail. Same reasoning in `app/api/engagements.py`'s
+            # `transition_engagement`.
+            changes["engagement"]["reference"] = authorisation_reference_used
     if changes:
         changes["target"] = target.value
         audit.record_detail(request, **changes)
@@ -567,7 +646,11 @@ def _to_response(
         notes=t.notes,
         aggressiveness=t.aggressiveness,
         effective_aggressiveness=effective,
-        ma_pre_close=t.ma_pre_close,
+        engagement=(
+            TargetEngagementSummary(id=t.engagement.id, name=t.engagement.name, posture=t.engagement.posture)
+            if t.engagement is not None else None
+        ),
+        passive_only=posture.is_passive_only(t),
         last_scanned_at=last_scanned_at,
         next_scan_at=next_scan_at,
     )

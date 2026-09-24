@@ -315,41 +315,67 @@ def test_a_successful_mutation_is_recorded_with_actor_action_and_resource():
         fx.teardown()
 
 
-def test_ma_pre_close_patch_sets_clears_and_is_audited():
-    """planning#193. Same route, same audit machinery already proved above
-    for `aggressiveness` — `ma_pre_close` governs whether this system
-    probes a counterparty it may hold no authorisation to probe AT ALL,
-    which is a strictly higher-stakes toggle, so "who turned it off, and
-    when" is exactly the question this trail exists to answer. Covers both
-    directions (set True, then clear back to False) in one fixture rather
-    than two, since both produce exactly the same `{from, to}` shape and
-    the two-row assertion below is itself part of what's being pinned."""
+def test_engagement_patch_sets_clears_and_is_audited():
+    """planning#211 (re-key of planning#193's posture-boolean coverage). Same
+    route, same audit machinery already proved above for `aggressiveness` —
+    a target's engagement membership governs whether this system probes a
+    counterparty it may hold no authorisation to probe AT ALL, which is a
+    strictly higher-stakes toggle, so "who changed it, and when" is exactly
+    the question this trail exists to answer.
+
+    Covers attach (no engagement -> pre_close, NOT a widening, so ADMIN or
+    INTEGRATION_ADMIN would do — this fixture uses admin like the rest of
+    the file) then detach (pre_close -> none, WHICH IS a widening and so
+    requires `authorisation_reference`) in one fixture, since the two
+    produce distinguishable `{from, to}` shapes and the two-row assertion
+    below is itself part of what's being pinned.
+    """
+    from app.models.engagement import Engagement
+
     fx = _Fixture()
+    engagement = Engagement(id=uuid.uuid4(), name=f"audit-test-engagement-{uuid.uuid4().hex[:8]}", posture="pre_close")
+    db = SessionLocal()
+    try:
+        db.add(engagement)
+        db.commit()
+        engagement_id = engagement.id
+    finally:
+        db.close()
+
     try:
         client = TestClient(app)
 
         r = client.patch(
             f"/api/targets/{fx.target_id}",
-            json={"ma_pre_close": True},
+            json={"engagement_id": str(engagement_id)},
             headers=fx.headers("admin"),
         )
         assert r.status_code == 200, r.text
-        assert r.json()["ma_pre_close"] is True
+        assert r.json()["engagement"]["id"] == str(engagement_id)
 
         r = client.patch(
             f"/api/targets/{fx.target_id}",
-            json={"ma_pre_close": False},
+            json={"clear_engagement": True, "authorisation_reference": "audit-test widening reference"},
             headers=fx.headers("admin"),
         )
         assert r.status_code == 200, r.text
-        assert r.json()["ma_pre_close"] is False
+        assert r.json()["engagement"] is None
 
         rows = fx.rows()
-        assert len(rows) == 2, f"expected two audit rows (set, then clear), got {len(rows)}"
-        assert rows[0].detail["changes"]["ma_pre_close"] == {"from": False, "to": True}
-        assert rows[1].detail["changes"]["ma_pre_close"] == {"from": True, "to": False}
+        assert len(rows) == 2, f"expected two audit rows (attach, then detach), got {len(rows)}"
+        assert rows[0].detail["changes"]["engagement"] == {"from": None, "to": str(engagement_id)}
+        assert rows[1].detail["changes"]["engagement"] == {
+            "from": str(engagement_id), "to": None,
+            "reference": "audit-test widening reference",
+        }
     finally:
         fx.teardown()
+        db = SessionLocal()
+        try:
+            db.query(Engagement).filter(Engagement.id == engagement_id).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
 
 
 def test_no_request_body_is_recorded_by_default():

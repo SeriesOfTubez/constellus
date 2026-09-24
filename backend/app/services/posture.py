@@ -1,100 +1,92 @@
-"""Engagement-posture policy (planning#132, planning#196 step 2).
+"""Engagement-posture policy (planning#132, planning#196 step 2, planning#211).
 
 This module is the SHARED policy the two places that enforce engagement
-posture must both call, instead of each independently reading
-`targets.ma_pre_close` and reimplementing the same decision. Before this
-module existed, `app.services.probe_authorisation._posture_cap` (the
-asset-shaped gate) and `app.services.scan_executor._run_pipeline` (the
-discovery-phase dnsrecon/bruteforce enablement check) each read
-`targets.ma_pre_close` directly and each independently decided who counted
-as "too noisy" for a pre-close M&A target. That is precisely the kind of
-duplication `probe_authorisation`'s own module docstring calls a bug, not a
-convenience (see epic#81 and the shared-infra false-attribution history it
-cites): two code paths that can each independently decide a security-load-
-bearing question will eventually disagree, and planning#196 exists because
-they already had — the discovery phase's `is_scan_authorised` check knows
-nothing about posture at all, so route (c) (planning#193) had to bolt a
-second, ad hoc `posture_passive` flag onto `scan_executor` rather than reuse
-the probe gate's own cap.
+posture must both call, instead of each independently reading a posture
+value and reimplementing the same decision. Before this module existed,
+`app.services.probe_authorisation._posture_cap` (the asset-shaped gate) and
+`app.services.scan_executor._run_pipeline` (the discovery-phase dnsrecon/
+bruteforce enablement check) each read a bare posture boolean directly and
+each independently decided who counted as "too noisy" for a pre-close M&A
+target. That is precisely the kind of duplication `probe_authorisation`'s
+own module docstring calls a bug, not a convenience (see epic#81 and the
+shared-infra false-attribution history it cites): two code paths that can
+each independently decide a security-load-bearing question will eventually
+disagree, and planning#196 exists because they already had — the discovery
+phase's `is_scan_authorised` check knew nothing about posture at all, so
+route (c) (planning#193) had to bolt a second, ad hoc `posture_passive`
+flag onto `scan_executor` rather than reuse the probe gate's own cap.
 
 ## Why a shared POLICY, not one shared CALLABLE
 
 planning#196's own hand-off considered routing the discovery phase's check
 through `probe_authorisation.authorise_probes` itself, and rejected it: a
-domain being enumerated has no canonical identity yet.
-`assets_canonical` identity for a `dns_record` is `(asset_type, value,
-record_type, content)` — a row per RECORD, not per domain — and
-`write_assets(..., target_ids=...)` (`scan_executor.py`, Phase 1) runs
-*after* the discovery tools in this same loop, so on a brand-new target's
-first-ever scan there is nothing to resolve to a canonical row at all. An
-asset-shaped gate consulted before any asset exists would deny ALL
-first-run discovery — the exact availability regression that already
-forced `probe_authorisation_mode` to default to `log_only` (see that
-module's "Gate mode" section). So instead of one callable serving both
-shapes, this module exports the DECISION FUNCTION
+domain being enumerated has no canonical identity yet. So instead of one
+callable serving both shapes, this module exports the DECISION FUNCTION
 (`observer_permitted`) and the two PREDICATE renderings
 (`passive_only_filter`/`is_passive_only`) that both callers compose for
 themselves: `probe_authorisation._posture_cap` (asset-shaped) and
-`probe_authorisation.authorise_discovery` (domain-shaped, planning#196 step
-2's new entry point).
-
-planning#205 adds a THIRD caller, `probe_authorisation.
-authorise_ownership_probe` — the point above ("a third call site is
-presumptively either one of these two shapes in disguise") does not hold
-for it, and this update exists so that claim does not silently keep reading
-as though it still covers every caller. It is asset-shaped, like
-`_posture_cap`, but is not just another instance of that shape: it composes
-NO scope cap (unlike `_posture_cap`, which is always evaluated alongside
-`_scope_cap` inside `authorise_probes`) and is reached from call sites —
-`shared_infra_verifier.classify_ip_ownership`,
-`dangling_dns_analyzer._evaluate_record`,
-`origin_corroboration.corroborate_liveness` — that have no scan run and,
-for the manual Re-verify path in particular, no scope dict to compose in
-the first place (see `authorise_ownership_probe`'s own docstring, "Why not
-`authorise_probes`"). It calls `observer_permitted` the same way
-`_posture_cap` does (`passive_only=True` resolved via
-`_resolve_ma_pre_close_ids`, real `noise_class` from the seeded `observers`
-row), so the policy itself is unchanged — this is a new CALLER of the one
-shared decision, not a fourth shape for this module to grow a case for.
+`probe_authorisation.authorise_discovery` (domain-shaped). planning#205
+adds a third caller, `probe_authorisation.authorise_ownership_probe` —
+asset-shaped like `_posture_cap`, calling `observer_permitted` the same
+way.
 
 ## The load-bearing property this module exists to preserve
 
 planning#193 shipped the discovery-phase denial as "deny dnsrecon and
-bruteforce outright under `ma_pre_close`". planning#196 replaces that
+bruteforce outright under the pre-close M&A flag". planning#196 replaced that
 hardcoded pair with a general noise-class axis (`app.models.observer`,
-migration 0055) — but ONLY as a refactor, not a policy change:
+migration 0055) as a REFACTOR, not a policy change:
 `PASSIVE_ONLY_PERMITTED_NOISE`/`PASSIVE_ONLY_DENIED_NOISE` are chosen so
 that, applied to the 23 seeded `observers` rows, the resulting denied set is
 EXACTLY `{naabu, banner_grab, httpx, tlsx, nuclei, tenancy_tls,
-domain_affinity, shared_infra_verifier, dnsrecon, bruteforce}` — the eight
-`target_host` observers plus the two `target_infra` observers dnsrecon and
-bruteforce, and nothing else. `test_posture_policy.py`'s
-`test_seeded_observers_reproduce_planning_193s_shipped_denial_set` pins this
-directly against the live seeded table, not against a hand-copied list, so
-a future edit to `OBSERVER_NOISE` or to the seed data that changes this set
-fails loudly rather than silently drifting.
+domain_affinity, shared_infra_verifier, dnsrecon, bruteforce}` —
+`test_posture_policy.py`'s
+`test_seeded_observers_reproduce_planning_193s_shipped_denial_set` pins
+this directly against the live seeded table.
+
+## planning#211: from a boolean to a real posture object
+
+The engagement object (`app.models.engagement.Engagement`) replaces
+the boolean flag this codebase used before. Posture is now read off
+`target_row.engagement.posture` — a real four-value enum (`pre_close`,
+`day_0`, `integrated`,
+`abandoned`) — rather than a single boolean standing in for one posture
+value. `RESTRICTING_POSTURES` is the subset that restricts traffic to
+passive-only: `pre_close` (the original planning#193 case) AND `abandoned`
+(a fallen-through deal restricts FOREVER — see `Engagement`'s docstring;
+purging member targets is a separate, explicit human action, never a side
+effect of the posture transition). `day_0` and `integrated` are both fully
+permissive here — the boundary this module enforces is "may we touch this
+target's infrastructure at all", not "has the deal closed" in general.
+
+`observer_permitted` and the noise-class vocabulary below are UNCHANGED by
+this re-key — they already took a bare `passive_only: bool`, and that is
+still exactly what they take. The whole re-key is contained to
+`RESTRICTING_POSTURES`/`posture_restricts`/`passive_only_filter`/
+`is_passive_only` in this one file, which is the entire reason both
+renderings of the predicate have always lived side by side here rather
+than inlined at their call sites.
 
 ## Two renderings of one predicate — not two policies
 
 `passive_only_filter()` (a SQLAlchemy expression, for a query that must
 compose the predicate into a WHERE clause bounded by a batch of ids — see
-`probe_authorisation._resolve_ma_pre_close_ids`) and `is_passive_only()` (a
+`probe_authorisation._resolve_engagements`) and `is_passive_only()` (a
 plain Python function, for a caller that already has one loaded `targets`
-row in hand — see `probe_authorisation.authorise_discovery`) exist
-separately only because the two call sites have genuinely different
-shapes, not because the predicate itself differs. Both must always agree,
-by construction, on every `targets` row — `test_posture_policy.py`'s
+row, with its `engagement` relationship loaded, in hand — see
+`probe_authorisation.authorise_discovery`) exist separately only because
+the two call sites have genuinely different shapes, not because the
+predicate itself differs. Both must always agree, by construction, on
+every `targets` row — `test_posture_policy.py`'s
 `test_sql_and_python_renderings_of_the_predicate_agree` asserts exactly
-that. When planning#132 eventually turns posture into a real enum (today
-it is a single boolean, `ma_pre_close`, standing in for one posture value
-out of however many #132 ultimately enumerates), BOTH renderings live in
-THIS ONE FILE and must be edited together — that is the whole reason they
-are kept side by side here rather than inlined at their respective call
-sites.
+that, now over all four posture values plus "no engagement".
 """
 
 from __future__ import annotations
 
+from sqlalchemy import select
+
+from app.models.engagement import Engagement
 from app.models.observer import OBSERVER_NOISE
 from app.models.target import Target
 
@@ -110,42 +102,66 @@ PASSIVE_ONLY_PERMITTED_NOISE: frozenset[str] = frozenset({"silent", "third_party
 
 # DERIVED by subtraction from the full vocabulary, not written out as its
 # own literal set, so the permitted/denied sets can never drift out of
-# partition with each other or with `OBSERVER_NOISE` itself: adding a new
-# noise class to `OBSERVER_NOISE` automatically makes it a member of
-# EXACTLY one of these two sets (denied, by `observer_permitted`'s
-# fail-closed membership test below — see that function's docstring),
-# never both and never neither.
+# partition with each other or with `OBSERVER_NOISE` itself.
 PASSIVE_ONLY_DENIED_NOISE: frozenset[str] = OBSERVER_NOISE - PASSIVE_ONLY_PERMITTED_NOISE
+
+# planning#211 — the posture values that restrict traffic to passive-only.
+# `pre_close` is the original planning#193 case: an operator has not yet
+# closed on the acquisition and holds no authorisation to probe it.
+# `abandoned` is here too, and for a DIFFERENT reason: a fallen-through deal
+# is not "back to normal" — there was never any authorisation to begin
+# with, closing never happened, and nothing about the deal falling through
+# grants one retroactively. `abandoned` is TERMINAL (no transition out, see
+# `app/api/engagements.py`'s transition table) specifically so this
+# membership can never lapse by accident. `day_0`/`integrated` are the two
+# non-restricting (widened) states and are deliberately absent.
+RESTRICTING_POSTURES: frozenset[str] = frozenset({"pre_close", "abandoned"})
+
+
+def posture_restricts(posture: str | None) -> bool:
+    """`posture in RESTRICTING_POSTURES`. `None` (no engagement at all, or
+    an engagement whose posture somehow failed to load) means "nothing to
+    restrict" — `False`, not a fail-closed denial: the no-engagement case is
+    the ordinary, overwhelmingly common state (an owned target), and this
+    function must cost nothing to answer for it, the same reasoning
+    `passive_only_filter`/`is_passive_only` below have always applied.
+    """
+    return posture in RESTRICTING_POSTURES
 
 
 def passive_only_filter():
-    """SQL rendering of the passive-only posture predicate.
+    """SQL rendering of the passive-only posture predicate, over
+    `targets.engagement_id` joined through `engagements.posture`.
 
     Returns a fresh SQLAlchemy boolean expression on every call rather than
     a module-level constant, so a caller that composes it into a larger
-    `.filter(...)` chain (see
-    `probe_authorisation._resolve_ma_pre_close_ids`, which joins it against
-    `TargetAssetLink`) can never accidentally share or mutate one
-    expression object across queries.
+    `.filter(...)` chain (see `probe_authorisation._resolve_engagements`,
+    which joins it against `TargetAssetLink`) can never accidentally share
+    or mutate one expression object across queries.
 
     See `is_passive_only` below for the Python-side rendering of this same
-    predicate, and the module docstring's "Two renderings of one predicate"
-    section for why both exist and why planning#132 must edit them
-    together.
+    predicate, and the module docstring's "Two renderings" section for why
+    both exist and why they must be edited together.
     """
-    return Target.ma_pre_close == True  # noqa: E712
+    return Target.engagement_id.in_(
+        select(Engagement.id).where(Engagement.posture.in_(RESTRICTING_POSTURES))
+    )
 
 
 def is_passive_only(target_row) -> bool:
     """Python rendering of the same predicate, over one already-loaded
     `targets` row (or `None`, when no target row is in scope at all — a
     domain that was never added as a target still gets a definite `False`
-    here rather than raising).
+    here rather than raising) with its `.engagement` relationship
+    resolvable (lazy="select" — one extra query per call if not already
+    loaded, matching every other single-row lookup in this codebase).
 
     See `passive_only_filter` above for the SQL rendering of this same
     predicate.
     """
-    return bool(target_row is not None and target_row.ma_pre_close)
+    if target_row is None or target_row.engagement is None:
+        return False
+    return posture_restricts(target_row.engagement.posture)
 
 
 def observer_permitted(*, passive_only: bool, noise_class: str | None) -> bool:
@@ -153,25 +169,19 @@ def observer_permitted(*, passive_only: bool, noise_class: str | None) -> bool:
     allowed. The single function both `probe_authorisation._posture_cap`
     (asset-shaped) and `probe_authorisation.authorise_discovery`
     (domain-shaped) call to decide whether one observer may act against one
-    target — see the module docstring's "Why a shared POLICY, not one
-    shared CALLABLE" section for why there are exactly two callers and why
-    that is by design.
+    target.
 
     Not passive-only: permissive unconditionally — posture has nothing to
     say about an ordinary target, regardless of noise class.
 
     Passive-only: tests membership of `PASSIVE_ONLY_PERMITTED_NOISE`, NOT
-    absence from `PASSIVE_ONLY_DENIED_NOISE` — the two sets partition
-    `OBSERVER_NOISE` today (see that constant's derivation above), so this
-    distinction is invisible for any currently-seeded observer. It matters
-    for everything else: an unknown string, a NULL `noise_class`, or a
-    noise class added to `OBSERVER_NOISE` in some future migration before
-    anyone has deliberately decided it belongs in the permitted set — all
-    of these fail the membership test and are DENIED. That is the fail-
-    closed direction on purpose: a tool this function cannot positively
-    place in the permitted set does not get to act against a target we
-    hold no authorisation to touch, rather than being let through because
-    nothing on record says it is forbidden.
+    absence from `PASSIVE_ONLY_DENIED_NOISE` — an unknown string, a NULL
+    `noise_class`, or a noise class added to `OBSERVER_NOISE` in some future
+    migration before anyone has deliberately decided it belongs in the
+    permitted set all fail the membership test and are DENIED. That is the
+    fail-closed direction on purpose: a tool this function cannot
+    positively place in the permitted set does not get to act against a
+    target we hold no authorisation to touch.
     """
     if not passive_only:
         return True
