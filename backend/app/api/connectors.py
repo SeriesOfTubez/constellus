@@ -15,6 +15,7 @@ from app.connectors.banner_grab import BannerGrabConnector
 from app.connectors.httpx_probe import HttpxConnector
 from app.connectors.naabu import NaabuConnector
 from app.connectors.nuclei import NucleiConnector
+from app.connectors.openrouter import OpenRouterConnector
 from app.connectors.tlsx import TlsxConnector
 from app.connectors.shodan import ShodanConnector
 from app.connectors.tenable import TenableConnector
@@ -42,6 +43,7 @@ REGISTRY: dict = {
     "httpx_probe": HttpxConnector(),
     "tlsx": TlsxConnector(),
     "mailtrap": MailtrapConnector(),
+    "openrouter": OpenRouterConnector(),
 }
 
 
