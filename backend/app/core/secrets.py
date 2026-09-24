@@ -17,6 +17,22 @@ def set_db_override(key: str, value: Optional[str]) -> None:
         _db_overrides[key] = value
 
 
+def has_db_override(key: str) -> bool:
+    """True iff `key` has a value from the DB-stored connector-config
+    override layer specifically — NOT from an env var (planning#140, R5).
+
+    `get_secret` deliberately conflates the two layers (DB overrides env,
+    by design, everywhere else in this codebase) because most callers only
+    care whether a usable value exists at all. OpenRouterConnector.
+    is_configured() needs the opposite question answered: a value sitting
+    in `.env` must NOT count as "configured", because R5 requires the key
+    to come from `connector_configs` only — `os.environ`/`get_secret` are
+    off the table entirely for that one connector. `key in _db_overrides`
+    is exactly the DB-layer half of `get_secret`'s own lookup.
+    """
+    return key in _db_overrides
+
+
 def get_secret(key: str) -> Optional[str]:
     """
     Retrieve a secret. DB-stored connector config takes precedence over env vars,

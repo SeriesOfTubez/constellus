@@ -70,6 +70,7 @@ def start() -> None:
     _register_hygiene_scoring()
     _register_nightly_rescore()
     _register_run_reaper()
+    _register_llm_ledger_pruner()
 
 
 def _seed_default_connectors() -> None:
@@ -444,6 +445,43 @@ def _run_run_reaper() -> None:
             log.info("Stale-run sweep reaped %d run(s)", n)
     except Exception:
         log.error("Stranded scan-run reaper failed", exc_info=True)
+    finally:
+        db.close()
+
+
+def _register_llm_ledger_pruner() -> None:
+    """Register the daily `llm_calls` ledger retention job (planning#140
+    slice 1). Same shape as `_register_epss_refresher`: own `SessionLocal`,
+    log on failure, `coalesce=True, max_instances=1`. First run fires ~90s
+    after startup, matching the other daily jobs' stagger — nothing about
+    this job depends on any other daily job's output, so there's no
+    ordering requirement beyond not piling every daily job onto the exact
+    same instant on a fresh deploy.
+    """
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        _run_llm_ledger_prune,
+        trigger=IntervalTrigger(hours=24),
+        id="llm_ledger_pruner",
+        name="LLM call ledger daily retention",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=90),
+    )
+    log.info("Scheduled llm_ledger_pruner (every 24h; first run ~90s after start)")
+
+
+def _run_llm_ledger_prune() -> None:
+    from app.services import llm_connector
+
+    db = SessionLocal()
+    try:
+        deleted = llm_connector.prune_ledger(db)
+        log.info("LLM call ledger retention complete — %d row(s) deleted", deleted)
+    except Exception:
+        log.error("LLM call ledger retention failed", exc_info=True)
     finally:
         db.close()
 

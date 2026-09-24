@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings
 
 # Imported for its side effect: populates os.environ from the repo-root
@@ -15,6 +17,17 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://constellus:constellus@localhost:5432/constellus"
     secrets_provider: str = "env"
     secret_key: str = DEFAULT_SECRET_KEY
+    # planning#140 — deployment-wide LLM data-retention posture. `strict`
+    # (the only value for any shared/prod deployment) forces every
+    # OpenRouter request to carry zdr=true + data_collection=deny, no
+    # exceptions. `dev_permissive` lets a local dev machine route to
+    # cheap/free endpoints that may retain or train on prompts — never
+    # enough on its own: `app.services.llm_connector.effective_data_policy`
+    # forces `strict` back on regardless for any pre-close M&A target,
+    # via `app.services.posture.is_passive_only` (R3 — that module is the
+    # ONLY place pre-close posture is decided). A bad env value fails at
+    # `Settings()` construction (pydantic `Literal`), not at first LLM call.
+    llm_data_policy: Literal["strict", "dev_permissive"] = "strict"
 
 
 settings = Settings()

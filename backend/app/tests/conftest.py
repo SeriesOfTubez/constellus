@@ -34,6 +34,7 @@ from app.services import audit
 from app.services import cloud_ranges
 from app.services import domain_affinity
 from app.services import hosting_classifier
+from app.services import llm_connector
 from app.services import notification_dispatcher
 from app.services import origin_corroboration
 from app.services import probe_authorisation
@@ -47,6 +48,7 @@ _GUARDED_MODULES = [
     cloud_ranges,
     domain_affinity,
     hosting_classifier,
+    llm_connector,
     notification_dispatcher,
     origin_corroboration,
     probe_authorisation,

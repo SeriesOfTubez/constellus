@@ -22,9 +22,10 @@ const PHASE_META: Record<string, { label: string; description: string }> = {
   enrichment:   { label: "Enrichment",   description: "Asset context — cloud, firewall, vulnerability management" },
   scanning:     { label: "Scanning",     description: "Active vulnerability scanning" },
   notification: { label: "Notification", description: "Outbound alerts — email, chat, webhooks" },
+  inference:    { label: "Inference",    description: "LLM providers — role-routed, data-policy enforced" },
 }
 
-const PHASE_ORDER = ["discovery", "enrichment", "scanning", "notification"]
+const PHASE_ORDER = ["discovery", "enrichment", "scanning", "notification", "inference"]
 
 function ConnectorCard({ connector, onConfigure }: { connector: ConnectorSummary; onConfigure: (c: ConnectorSummary) => void }) {
   const qc = useQueryClient()

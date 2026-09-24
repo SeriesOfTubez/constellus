@@ -10,6 +10,10 @@ class ConnectorPhase(str, Enum):
     ENRICHMENT = "enrichment"
     SCANNING = "scanning"
     NOTIFICATION = "notification"
+    # planning#140 — LLM inference (OpenRouter). Its own phase rather than
+    # ENRICHMENT: it enriches nothing about a discovered asset by itself,
+    # it is a role-routed capability every future AI-core caller shares.
+    INFERENCE = "inference"
 
 
 class ConnectorStatus(str, Enum):

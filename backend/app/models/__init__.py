@@ -28,6 +28,7 @@ from app.models.asset_hygiene_score import AssetHygieneScore, GRADE_VALUES, BAND
 from app.models.score_history import ScoreHistory
 from app.models.hygiene_history import HygieneHistory
 from app.models.cloud_range import CloudRange, CloudRangeMeta
+from app.models.llm_call import LlmCall, ROLES as LLM_CALL_ROLES, DATA_POLICIES as LLM_CALL_DATA_POLICIES, STATUSES as LLM_CALL_STATUSES
 
 __all__ = [
     "User", "UserRole",
@@ -72,4 +73,8 @@ __all__ = [
     "HygieneHistory",
     "CloudRange",
     "CloudRangeMeta",
+    "LlmCall",
+    "LLM_CALL_ROLES",
+    "LLM_CALL_DATA_POLICIES",
+    "LLM_CALL_STATUSES",
 ]

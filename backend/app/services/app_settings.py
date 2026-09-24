@@ -1,6 +1,24 @@
+import json
+
 from sqlalchemy.orm import Session
 
 from app.models.app_settings import AppSetting
+
+# planning#140 — default role -> model-ladder bindings for
+# app.services.llm_connector. Chosen 2026-09-23 against live OpenRouter
+# rates; every model listed had >=1 endpoint that is BOTH ZDR and
+# structured-output-capable on that date; each role's primary and first
+# fallback are different vendors (governing constraint: no single-vendor
+# dependency; Claude allowed, never required). Rates are NOT recorded in
+# code — they change. A Python dict, not a JSON literal, so it stays
+# readable; `DEFAULTS["llm.role_bindings"]` below serialises it once.
+_LLM_ROLE_BINDINGS_DEFAULT = {
+    "classify": {"models": ["deepseek/deepseek-v4-flash", "z-ai/glm-5.3-flash", "google/gemini-2.5-flash-lite"], "max_tokens": 1024, "temperature": 0},
+    "extract":  {"models": ["z-ai/glm-5.3-flash", "deepseek/deepseek-v4-flash", "openai/gpt-5-mini"], "max_tokens": 4096, "temperature": 0},
+    "research": {"models": ["z-ai/glm-5.3", "moonshotai/kimi-k2.6", "deepseek/deepseek-v4-pro"], "max_tokens": 8192, "temperature": 0.2},
+    "judge":    {"models": ["deepseek/deepseek-v4-pro", "anthropic/claude-sonnet-5", "google/gemini-3.1-pro-preview"], "max_tokens": 4096, "temperature": 0},
+    "narrate":  {"models": ["google/gemini-3.8-flash", "moonshotai/kimi-k2.6", "z-ai/glm-5.3"], "max_tokens": 2048, "temperature": 0.4},
+}
 
 DEFAULTS = {
     "log_retention_days": "15",
@@ -31,6 +49,22 @@ DEFAULTS = {
     "org.logo_url": "",
     "org.brand_accent": "#8b7bf0",
     "org.name_color": "",
+    # planning#140 — role -> model-ladder bindings, see
+    # _LLM_ROLE_BINDINGS_DEFAULT above. app.services.llm_connector.
+    # load_bindings raises LLMConfigError on a stored value that fails to
+    # parse or is missing a role — it never silently falls back to this
+    # default once a value has been stored (a typo must not quietly route
+    # to a different model).
+    "llm.role_bindings": json.dumps(_LLM_ROLE_BINDINGS_DEFAULT),
+    # Daily USD budget. Compared against today's GROSSED-UP spend (raw
+    # ledger cost_usd x (1 + llm_connector.OPENROUTER_CREDIT_FEE_RATE), i.e.
+    # what the credits actually cost); at or above it, llm_connector
+    # refuses every new call outright.
+    "llm.daily_budget_usd": "5",
+    # Retention for the llm_calls ledger (app.services.llm_connector.
+    # prune_ledger) — high-volume telemetry, long retention, never the
+    # prompt/response content itself (R4).
+    "llm_ledger_retention_days": "400",
 }
 
 

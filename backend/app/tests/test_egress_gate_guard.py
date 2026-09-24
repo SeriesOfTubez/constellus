@@ -102,6 +102,9 @@ _EGRESS: dict[str, tuple[str, str, str | None]] = {
     "cloud_ranges.py": (
         "THIRD_PARTY", "provider range dataset mirror", None,
     ),
+    "llm_connector.py": (
+        "THIRD_PARTY", "LLM inference via OpenRouter, our own behalf", None,
+    ),
     "cpe_cve_sync.py": (
         "THIRD_PARTY", "CPE/CVE bulk data", None,
     ),
