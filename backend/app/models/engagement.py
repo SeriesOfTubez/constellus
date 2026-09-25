@@ -33,9 +33,13 @@ class Engagement(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     posture: Mapped[str] = mapped_column(String(20), nullable=False, default=EngagementPosture.PRE_CLOSE.value)
-    # No FK yet — L3 (planning#212) adds the entity-graph table this will
-    # eventually point at. Bare nullable uuid until then (migration 0059).
-    subject_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # FK added by migration 0061 (planning#212, L3) — RESTRICT, not SET
+    # NULL: deleting an entity out from under an engagement that attributes
+    # its subject must not silently strip that attribution (same rationale
+    # as `targets.engagement_id`'s own ON DELETE RESTRICT, migration 0059).
+    subject_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("org_entities.id", ondelete="RESTRICT"), nullable=True
+    )
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

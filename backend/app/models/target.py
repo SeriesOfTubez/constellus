@@ -64,3 +64,9 @@ class Target(Base):
         UUID(as_uuid=True), ForeignKey("engagements.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     engagement: Mapped["Engagement | None"] = relationship("Engagement", lazy="select")
+    # planning#212 (L3, migration 0061) — which corporate entity this target
+    # belongs to. ON DELETE RESTRICT, same rationale as engagement_id above:
+    # deleting an entity must not silently strip a target's attribution.
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("org_entities.id", ondelete="RESTRICT"), nullable=True, index=True
+    )

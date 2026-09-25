@@ -22,6 +22,7 @@ import Connectors from "@/pages/admin/Connectors"
 import Targets from "@/pages/admin/Targets"
 import Engagements from "@/pages/admin/Engagements"
 import EngagementDetail from "@/pages/admin/EngagementDetail"
+import EntityReview from "@/pages/admin/EntityReview"
 import Activity from "@/pages/admin/Activity"
 import Sso from "@/pages/admin/Sso"
 import Users from "@/pages/admin/Users"
@@ -97,6 +98,7 @@ export default function App() {
                 <Route path="/admin/targets" element={<Targets />} />
                 <Route path="/admin/engagements" element={<Engagements />} />
                 <Route path="/admin/engagements/:id" element={<EngagementDetail />} />
+                <Route path="/admin/entities" element={<EntityReview />} />
                 <Route path="/admin/activity" element={<Activity />} />
                 <Route path="/admin/logs" element={<Navigate to="/admin/activity" replace />} />
                 <Route path="/admin/sso" element={<Sso />} />
