@@ -47,6 +47,26 @@ endpoint satisfies zdr/data_collection/require_parameters") or
 `LLMUpstreamError`/`StructuredOutputFailed` (some other failure occurred) —
 it never quietly serves the request from a laxer policy.
 
+## R8 — strict never reaches web search (planning#215 rule 4)
+
+ZDR covers inference routing only. OpenRouter runs a web search when a
+slug carries the `:online` variant, or when the body carries `plugins` or
+`web_search_options`, and that search sends the query to a party ZDR never
+covers, and with the query the deal interest. So under `strict`:
+
+- `_precall` refuses the WHOLE call (`StrictPolicyRefused`: zero requests,
+  no ledger row, same as any other `LLMConfigError`) when ANY model the
+  call could reach is an `:online` slug. A clean primary does not excuse
+  an `:online` fallback: the ladder would reach it on the first 5xx.
+- `_attempt_model` re-checks the body it is about to send (slug AND keys)
+  as a backstop, so a future caller that adds `plugins` cannot skip the
+  first check.
+
+`dev_permissive` sends `:online` slugs unchanged: post-close research may
+search. ⚠ This covers only the variant and the two keys. Models that search
+natively whatever the request says (search-native model families,
+`openrouter/auto` routing to one) are NOT caught here.
+
 ## R2 — the structurer is a transformer, never a source
 
 `structured()`'s tier-1/tier-2 split (see "The three-tier ladder" below)
@@ -115,10 +135,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Generic, Literal, TypeVar
+from typing import Annotated, Any, Generic, Literal, TypeVar
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, StringConstraints, ValidationError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -183,7 +203,9 @@ class Role(str, Enum):
 
 
 class RoleBinding(BaseModel):
-    models: list[str] = Field(min_length=1)
+    # Non-empty, no whitespace: an OpenRouter slug never has either, and a
+    # padded " x/y:online " would otherwise slip past R8's variant check.
+    models: list[Annotated[str, StringConstraints(pattern=r"^\S+$")]] = Field(min_length=1)
     max_tokens: int = Field(gt=0)
     temperature: float = Field(ge=0, le=2)
 
@@ -235,6 +257,18 @@ class LLMNotConfigured(LLMError):
 class LLMConfigError(LLMError):
     """A stored configuration value (role bindings, or a `target_id` that
     does not resolve to a real `targets` row) is unusable."""
+
+
+class StrictPolicyRefused(LLMConfigError):
+    """R8: under `strict`, the call could reach an `:online` slug, or a
+    body about to be sent carries a web-search key. Refused before any
+    request. The binding is the config error here, which is why this
+    subclasses `LLMConfigError`."""
+
+    def __init__(self, role: str, reason: str) -> None:
+        super().__init__(f"Refused under strict data policy for role={role!r}: {reason}")
+        self.role = role
+        self.reason = reason
 
 
 class LLMBudgetExhausted(LLMError):
@@ -359,6 +393,31 @@ def _provider_block(policy: str, *, require_parameters: bool = False) -> dict[st
     if require_parameters:
         block["require_parameters"] = True
     return block
+
+
+# R8. Body keys that make OpenRouter run a web search for the request.
+_WEB_SEARCH_BODY_KEYS = ("plugins", "web_search_options")
+
+
+def _slug_enables_web_search(slug: str) -> bool:
+    """True when the slug carries OpenRouter's `:online` variant, anywhere
+    in its variant chain and in any case. A `:` in the vendor part (before
+    the `/`) is not a variant."""
+    _, _, model_part = slug.partition("/")
+    return "online" in (v.strip().lower() for v in model_part.split(":")[1:])
+
+
+def _refuse_web_search(policy: str, role: Role, *, models: list[str], body: dict[str, Any] | None = None) -> None:
+    """R8's one check, used both before the call (`models` = every model it
+    can reach) and before each send (`body`). Does nothing unless strict."""
+    if policy != "strict":
+        return
+    online = [m for m in models if _slug_enables_web_search(m)]
+    if online:
+        raise StrictPolicyRefused(role.value, f"`:online` slug(s) would run a web search: {online}")
+    keys = [k for k in _WEB_SEARCH_BODY_KEYS if body is not None and k in body]
+    if keys:
+        raise StrictPolicyRefused(role.value, f"request body carries web-search key(s): {keys}")
 
 
 def _response_format(schema: type[BaseModel]) -> dict[str, Any]:
@@ -584,6 +643,7 @@ def _resolve_scope(
 
 def _precall(
     db: Session, *, role: Role, target_id: uuid.UUID | None, engagement_id: uuid.UUID | None, task: str,
+    uses_extract: bool,
 ) -> tuple[str, dict[Role, RoleBinding], bool, str, uuid.UUID | None]:
     """Everything §5's "Pre-call, once per public call" section requires,
     shared by `complete()` and `structured()`. Returns
@@ -605,6 +665,14 @@ def _precall(
     resolved_engagement_id = engagement_row.id if engagement_row is not None else None
     passive_only = posture.posture_restricts(engagement_row.posture if engagement_row is not None else None)
     policy = effective_data_policy(engagement_row)
+
+    # 1b. R8, before anything else can happen: every model this call can
+    # reach, fallbacks included, plus the extract primary when `structured()`
+    # may run tier 2 on it.
+    reachable = list(bindings[role].models)
+    if uses_extract:
+        reachable.append(bindings[Role.EXTRACT].models[0])
+    _refuse_web_search(policy, role, models=reachable)
 
     # 2. Connector row + key (R5) — missing/disabled/empty key -> not_configured.
     row = connector_config.get_one(db, _CONNECTOR_ID)
@@ -747,6 +815,7 @@ def _attempt_model(
     billing refusal, or a rejected key is not fixed by trying a different
     model with the same account behind it.
     """
+    _refuse_web_search(policy, role, models=[model, str(body.get("model", ""))], body=body)  # R8 backstop
     attempt_in_model = 0
 
     def _record(status: str, **fields: Any) -> int:
@@ -906,7 +975,7 @@ def complete(
     `TypeError`, not a silent unscoped call. See `_resolve_scope` for how
     the two combine."""
     api_key, bindings, passive_only, policy, resolved_engagement_id = _precall(
-        db, role=role, target_id=target_id, engagement_id=engagement_id, task=task,
+        db, role=role, target_id=target_id, engagement_id=engagement_id, task=task, uses_extract=False,
     )
     binding = bindings[role]
 
@@ -970,7 +1039,7 @@ def structured(
     unscoped/"not_applicable". See `_resolve_scope` for how `target_id`
     and `engagement_id` combine."""
     api_key, bindings, passive_only, policy, resolved_engagement_id = _precall(
-        db, role=role, target_id=target_id, engagement_id=engagement_id, task=task,
+        db, role=role, target_id=target_id, engagement_id=engagement_id, task=task, uses_extract=True,
     )
     binding = bindings[role]
     extract_binding = bindings[Role.EXTRACT]
