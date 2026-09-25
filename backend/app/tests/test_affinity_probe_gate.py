@@ -57,6 +57,7 @@ from app.services import hosting_classifier as hc
 from app.services import shared_infra_verifier as siv
 from app.services.claim_emitter import get_current_claim, upsert_single_claim
 from app.tests import _decision_log, _docaddr
+from app.tests._engagement import cleanup_engagement, make_engagement
 
 _MODE_KEY = "probe_authorisation_mode"
 
@@ -93,11 +94,17 @@ def _mk_host_and_ip(db, ip: str) -> tuple[AssetCanonical, AssetCanonical]:
     return host, ip_asset
 
 
-def _mk_target(db, ma_pre_close: bool) -> Target:
+def _mk_target(db, pre_close: bool) -> Target:
+    """planning#211 — `pre_close=True` creates a real `pre_close` Engagement
+    and links the target to it (replaces the old boolean flag this
+    codebase used before planning#211). Callers pass the target's own
+    `.engagement_id` to `_cleanup` below so
+    the engagement is deleted after the target (FK is ON DELETE RESTRICT)."""
+    engagement_id = make_engagement(db, "pre_close").id if pre_close else None
     row = Target(
         id=uuid.uuid4(), type="domain",
         value=f"gate-target-{uuid.uuid4().hex[:10]}.example.com",
-        ma_pre_close=ma_pre_close,
+        engagement_id=engagement_id,
     )
     db.add(row)
     db.commit()
@@ -124,12 +131,17 @@ def _set_mode(db, value: str | None) -> None:
         app_settings.set_value(db, _MODE_KEY, value)
 
 
-def _cleanup(asset_ids: list[uuid.UUID], target_ids: list[uuid.UUID]) -> None:
+def _cleanup(
+    asset_ids: list[uuid.UUID], target_ids: list[uuid.UUID],
+    engagement_ids: list[uuid.UUID] | None = None,
+) -> None:
     """Decision rows and claims BEFORE the asset, never after —
     `authorisation_decisions.asset_canonical_id` and the claim tables are
     both `ON DELETE SET NULL`/keyed off the asset id, and deleting the asset
     first would silently orphan them instead of removing them (the exact
-    trap `test_zz_decision_log_hygiene.py` exists to catch)."""
+    trap `test_zz_decision_log_hygiene.py` exists to catch). Targets before
+    engagements, for the same FK reason (`targets.engagement_id` is ON
+    DELETE RESTRICT — planning#211)."""
     ids = [i for i in asset_ids if i is not None]
     db = SessionLocal()
     try:
@@ -145,6 +157,8 @@ def _cleanup(asset_ids: list[uuid.UUID], target_ids: list[uuid.UUID]) -> None:
             # CASCADE on both FKs) — no separate link cleanup needed.
             db.query(Target).filter(Target.id.in_(tids)).delete(synchronize_session=False)
         db.commit()
+        for eid in (engagement_ids or []):
+            cleanup_engagement(db, eid)
     finally:
         db.close()
 
@@ -196,11 +210,13 @@ def test_pre_close_asset_denied_under_both_modes():
     db = SessionLocal()
     asset_ids: list = []
     target_ids: list = []
+    engagement_ids: list = []
     try:
         host, ip_asset = _mk_host_and_ip(db, ip)
         asset_ids = [host.id, ip_asset.id]
-        target = _mk_target(db, ma_pre_close=True)
+        target = _mk_target(db, pre_close=True)
         target_ids = [target.id]
+        engagement_ids = [target.engagement_id]
         _link(db, target.id, ip_asset.id)
 
         apexes = {apex_domain(host.value)}
@@ -222,7 +238,7 @@ def test_pre_close_asset_denied_under_both_modes():
             restore()
             _set_mode(db, None)
     finally:
-        _cleanup(asset_ids, target_ids)
+        _cleanup(asset_ids, target_ids, engagement_ids)
         db.close()
 
 
@@ -338,11 +354,13 @@ def test_corroboration_candidates_denied_for_pre_close_ip():
     db = SessionLocal()
     asset_ids: list = []
     target_ids: list = []
+    engagement_ids: list = []
     try:
         ip_asset = _mk_asset(db, "ip_address", ip)
         asset_ids = [ip_asset.id]
-        target = _mk_target(db, ma_pre_close=True)
+        target = _mk_target(db, pre_close=True)
         target_ids = [target.id]
+        engagement_ids = [target.engagement_id]
         _link(db, target.id, ip_asset.id)
 
         calls, restore = _install_post_spy()
@@ -358,7 +376,7 @@ def test_corroboration_candidates_denied_for_pre_close_ip():
             restore()
             _set_mode(db, None)
     finally:
-        _cleanup(asset_ids, target_ids)
+        _cleanup(asset_ids, target_ids, engagement_ids)
         db.close()
 
 
@@ -398,14 +416,16 @@ def test_classify_ip_ownership_pre_close_makes_zero_network_calls():
     db = SessionLocal()
     asset_ids: list = []
     target_ids: list = []
+    engagement_ids: list = []
     range_ids: list = []
     original_dataset_state = hc.cloud_ranges.dataset_state
     original_corroborate = da.probe_corroboration_candidates
     try:
         host, ip_asset = _mk_host_and_ip(db, ip)
         asset_ids = [host.id, ip_asset.id]
-        target = _mk_target(db, ma_pre_close=True)
+        target = _mk_target(db, pre_close=True)
         target_ids = [target.id]
+        engagement_ids = [target.engagement_id]
         _link(db, target.id, ip_asset.id)
 
         # Phase D precondition 1: a matching cloud range. `hosting_for_match`
@@ -487,7 +507,7 @@ def test_classify_ip_ownership_pre_close_makes_zero_network_calls():
                 cdb.commit()
             finally:
                 cdb.close()
-        _cleanup(asset_ids, target_ids)
+        _cleanup(asset_ids, target_ids, engagement_ids)
         db.close()
 
 

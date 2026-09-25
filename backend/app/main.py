@@ -14,6 +14,7 @@ from app.api import connectors, scans, findings, assets, auth, users, saml, targ
 from app.api import audit
 from app.api import claims
 from app.api import edges
+from app.api import engagements
 from app.api import hygiene
 from app.api import monitoring
 from app.api import notifications
@@ -123,6 +124,7 @@ app.include_router(edges.router, prefix="/api/edges", tags=["edges"])
 app.include_router(claims.router, prefix="/api/claims", tags=["claims"])
 app.include_router(hygiene.router, prefix="/api/hygiene", tags=["hygiene"])
 app.include_router(audit.router, prefix="/api/audit", tags=["audit"])
+app.include_router(engagements.router, prefix="/api/engagements", tags=["engagements"])
 
 
 @app.get("/api/health")

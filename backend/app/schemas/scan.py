@@ -50,5 +50,10 @@ class ScanResponse(BaseModel):
     finding_count: int = 0
     port_scan_unauthorised_count: int = 0
     aggressiveness: str = "polite"
+    # planning#211 — see `app.models.scan.ScanRun.scope_target_engagements`
+    # for exact semantics. Exposed here because it is a plain JSONB column
+    # already on the row, the same cheap shape as `scope`/
+    # `port_scan_unauthorised_count` above — no extra query.
+    scope_target_engagements: list = []
 
     model_config = {"from_attributes": True}

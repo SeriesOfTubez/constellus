@@ -29,6 +29,7 @@ from app.models.score_history import ScoreHistory
 from app.models.hygiene_history import HygieneHistory
 from app.models.cloud_range import CloudRange, CloudRangeMeta
 from app.models.llm_call import LlmCall, ROLES as LLM_CALL_ROLES, DATA_POLICIES as LLM_CALL_DATA_POLICIES, STATUSES as LLM_CALL_STATUSES
+from app.models.engagement import Engagement, EngagementPosture
 
 __all__ = [
     "User", "UserRole",
@@ -77,4 +78,6 @@ __all__ = [
     "LLM_CALL_ROLES",
     "LLM_CALL_DATA_POLICIES",
     "LLM_CALL_STATUSES",
+    "Engagement",
+    "EngagementPosture",
 ]

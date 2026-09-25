@@ -19,7 +19,18 @@ import sys
 import time
 from pathlib import Path
 
-DENYLIST_PATH = Path(__file__).resolve().parent.parent / ".git" / "target-denylist.txt"
+def _git_common_dir() -> Path:
+    # The SHARED git dir, not `<repo>/.git`: in a `git worktree` checkout
+    # `.git` is a file, so a hard-coded `.git/` path made this hook fail
+    # closed there. Still inside git's own directory, so never tracked.
+    out = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=Path(__file__).resolve().parent, capture_output=True, text=True, check=True,
+    )
+    return Path(out.stdout.strip())
+
+
+DENYLIST_PATH = _git_common_dir() / "target-denylist.txt"
 STALE_AFTER_SECONDS = 24 * 3600
 
 

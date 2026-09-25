@@ -1,18 +1,33 @@
+import { useState } from "react"
 import { Link, useParams, useNavigate } from "react-router-dom"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { ChevronLeft, ShieldCheck, RefreshCw, Trash2 } from "lucide-react"
+import { ChevronLeft, ShieldCheck, RefreshCw, Trash2, SquareArrowOutUpRight } from "lucide-react"
 
 import { ConnectedEntities } from "@/components/ConnectedEntities"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Switch } from "@/components/ui/switch"
-import { api, type AggressivenessTier, type Target } from "@/lib/api"
+import { api, type AggressivenessTier, type Engagement, type Target } from "@/lib/api"
 import { displayName } from "@/lib/apex"
 import { relativeTime, relativeFuture } from "@/lib/time"
+
+const POSTURE_LABEL: Record<string, string> = {
+  pre_close: "Pre-close",
+  day_0: "Day 0",
+  integrated: "Integrated",
+  abandoned: "Abandoned",
+}
+// A target's own engagement is never `abandoned`-eligible to ATTACH to
+// (the API 409s it — engagements.py: "abandoned is terminal, nothing
+// joins it"), so the picker excludes it. Detaching FROM one is still
+// allowed (it just widens, like any other restricting-posture detach).
+const RESTRICTING_POSTURES = new Set(["pre_close", "abandoned"])
 
 const TIER_LABEL: Record<AggressivenessTier, string> = {
   stealth: "Stealth",
@@ -42,6 +57,188 @@ function sourceLabel(target: Target): string {
   if (target.verification_method === "txt_record") return "Manual (TXT-verified)"
   if (target.verification_method === "manual_acknowledgement") return "Manual (acknowledged)"
   return "Manual"
+}
+
+type EngagementPatchBody = { engagement_id?: string; clear_engagement?: boolean; authorisation_reference?: string }
+
+/** planning#211 — "Mark as M&A (pre-close)" / detach / show-current-engagement
+ * control. Kept deliberately small (#193's "dead simple" bar): a picker
+ * dialog for attaching (existing non-abandoned engagement, or type a name
+ * to create one), a single "Remove from engagement" action for detaching,
+ * and — only when detaching WIDENS (the current engagement restricts) — an
+ * inline reference field, since that's the one case the API actually
+ * requires it for (422 otherwise, surfaced via `onUpdate`'s own error
+ * handling in the caller). */
+function EngagementControl({
+  target,
+  isPending,
+  onUpdate,
+}: {
+  target: Target
+  isPending: boolean
+  onUpdate: (body: EngagementPatchBody) => void
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerMode, setPickerMode] = useState<"existing" | "new">("existing")
+  const [pickedId, setPickedId] = useState("")
+  const [newName, setNewName] = useState("")
+  const [detachRef, setDetachRef] = useState("")
+  const [detachOpen, setDetachOpen] = useState(false)
+  const qc = useQueryClient()
+
+  const { data: engagements } = useQuery({
+    queryKey: ["engagements"],
+    queryFn: () => api.get<Engagement[]>("/engagements/"),
+    enabled: pickerOpen,
+  })
+  const attachable = (engagements ?? []).filter(e => e.posture !== "abandoned" && e.id !== target.engagement?.id)
+
+  const createMutation = useMutation({
+    mutationFn: (name: string) => api.post<Engagement>("/engagements/", { name }),
+    onSuccess: (created) => {
+      qc.invalidateQueries({ queryKey: ["engagements"] })
+      onUpdate({ engagement_id: created.id })
+      setPickerOpen(false)
+      setNewName("")
+    },
+    onError: (e: { message?: string }) => toast.error(e?.message ?? "Failed to create engagement"),
+  })
+
+  const widensToDetach = !!target.engagement && RESTRICTING_POSTURES.has(target.engagement.posture)
+
+  function attach() {
+    if (pickerMode === "existing") {
+      if (!pickedId) return
+      onUpdate({ engagement_id: pickedId })
+      setPickerOpen(false)
+      setPickedId("")
+    } else {
+      if (!newName.trim()) return
+      createMutation.mutate(newName.trim())
+    }
+  }
+
+  function detach() {
+    if (widensToDetach) {
+      if (!detachRef.trim()) return
+      onUpdate({ clear_engagement: true, authorisation_reference: detachRef.trim() })
+      setDetachOpen(false)
+      setDetachRef("")
+    } else {
+      onUpdate({ clear_engagement: true })
+    }
+  }
+
+  if (target.engagement) {
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-2 h-8">
+          <Link
+            to={`/admin/engagements/${target.engagement.id}`}
+            className="inline-flex items-center gap-1 font-medium hover:underline group"
+          >
+            {target.engagement.name}
+            <SquareArrowOutUpRight className="h-3 w-3 text-muted-foreground group-hover:text-primary transition-colors" />
+          </Link>
+          <Badge variant="outline">{POSTURE_LABEL[target.engagement.posture] ?? target.engagement.posture}</Badge>
+        </div>
+        {widensToDetach ? (
+          <Button size="sm" variant="outline" disabled={isPending} onClick={() => setDetachOpen(true)}>
+            Remove from engagement
+          </Button>
+        ) : (
+          <Button size="sm" variant="outline" disabled={isPending} onClick={detach}>
+            Remove from engagement
+          </Button>
+        )}
+
+        <Dialog open={detachOpen} onOpenChange={setDetachOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Remove from {target.engagement.name}</DialogTitle>
+              <DialogDescription>
+                This target's engagement currently restricts traffic to passive-only. Removing it widens what this
+                system may do — an authorisation reference is required.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-1.5 py-1">
+              <Label className="text-sm">Authorisation reference</Label>
+              <Input
+                value={detachRef}
+                onChange={e => setDetachRef(e.target.value)}
+                placeholder="e.g. link to the authorising document"
+                autoFocus
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDetachOpen(false)}>Cancel</Button>
+              <Button disabled={!detachRef.trim() || isPending} onClick={detach}>Remove</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    )
+  }
+
+  return (
+    <div className="h-8 flex items-center">
+      <Button size="sm" variant="outline" disabled={isPending} onClick={() => setPickerOpen(true)}>
+        Mark as M&A (pre-close)
+      </Button>
+
+      <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Mark as M&A (pre-close)</DialogTitle>
+            <DialogDescription>
+              Choose an existing engagement, or create a new one. New engagements start in pre-close and restrict
+              all active probing and DNS enumeration until authorised further.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="flex gap-2 text-sm">
+              <Button size="sm" variant={pickerMode === "existing" ? "default" : "outline"} onClick={() => setPickerMode("existing")}>
+                Existing
+              </Button>
+              <Button size="sm" variant={pickerMode === "new" ? "default" : "outline"} onClick={() => setPickerMode("new")}>
+                New
+              </Button>
+            </div>
+            {pickerMode === "existing" ? (
+              <Select value={pickedId} onValueChange={setPickedId}>
+                <SelectTrigger className="h-8 text-sm w-full">
+                  <SelectValue placeholder={attachable.length ? "Choose an engagement" : "No engagements yet"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {attachable.map(e => (
+                    <SelectItem key={e.id} value={e.id}>
+                      {e.name} ({POSTURE_LABEL[e.posture] ?? e.posture})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input
+                placeholder="Engagement name"
+                value={newName}
+                onChange={e => setNewName(e.target.value)}
+                autoFocus
+              />
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPickerOpen(false)}>Cancel</Button>
+            <Button
+              disabled={isPending || createMutation.isPending || (pickerMode === "existing" ? !pickedId : !newName.trim())}
+              onClick={attach}
+            >
+              Mark as pre-close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
 }
 
 export default function TargetDetail() {
@@ -97,16 +294,20 @@ export default function TargetDetail() {
     onError: () => toast.error("Failed to update aggressiveness"),
   })
 
-  // planning#193 — pre-close M&A posture. Mirrors aggressivenessMutation
-  // above: same endpoint, same invalidation pair, same toast shape.
-  const maPreCloseMutation = useMutation({
-    mutationFn: (next: boolean) => api.patch(`/targets/${id}`, { ma_pre_close: next }),
+  // planning#211 — engagement membership. Mirrors aggressivenessMutation
+  // above: same endpoint, same invalidation pair. Errors surface the API's
+  // own text (403 "requires ADMIN" / 422 "authorisation_reference is
+  // required" / 409 "abandoned") rather than a generic message, since
+  // those are the actual reasons an operator needs to see.
+  const engagementMutation = useMutation({
+    mutationFn: (body: { engagement_id?: string; clear_engagement?: boolean; authorisation_reference?: string }) =>
+      api.patch(`/targets/${id}`, body),
     onSuccess: () => {
-      toast.success("Pre-close M&A posture updated")
+      toast.success("Engagement membership updated")
       qc.invalidateQueries({ queryKey: ["target-detail", id] })
       qc.invalidateQueries({ queryKey: ["targets"] })
     },
-    onError: () => toast.error("Failed to update pre-close M&A posture"),
+    onError: (e: { message?: string }) => toast.error(e?.message ?? "Failed to update engagement membership"),
   })
 
   if (isLoading) return (
@@ -149,7 +350,7 @@ export default function TargetDetail() {
               unverified
             </span>
           )}
-          {target.ma_pre_close && <Badge variant="warning">Passive-only</Badge>}
+          {target.passive_only && <Badge variant="warning">Passive-only</Badge>}
         </div>
         <h1 className="font-mono text-xl break-all leading-tight" title={target.value}>{displayName(target.value)}</h1>
 
@@ -240,18 +441,13 @@ export default function TargetDetail() {
             </SelectContent>
           </Select>
         </div>
-        <div className="space-y-1">
-          <p className="text-xs text-muted-foreground">Pre-close M&A (passive-only)</p>
-          <div className="flex items-center gap-2 h-8">
-            <Switch
-              checked={target.ma_pre_close}
-              onCheckedChange={(next) => maPreCloseMutation.mutate(next)}
-              disabled={maPreCloseMutation.isPending}
-            />
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Blocks all active probing and DNS enumeration. Passive discovery continues.
-          </p>
+        <div className="col-span-2 space-y-1">
+          <p className="text-xs text-muted-foreground">Engagement</p>
+          <EngagementControl
+            target={target}
+            isPending={engagementMutation.isPending}
+            onUpdate={(body) => engagementMutation.mutate(body)}
+          />
         </div>
         {target.notes && (
           <div className="col-span-2 space-y-0.5">

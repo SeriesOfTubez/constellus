@@ -28,7 +28,7 @@ just as happily against a bug that disabled them unconditionally, for every
 target, as it does against the feature working. So the skip case is paired
 with an ordinary-target control that asserts the same two tools ARE called
 under identical conditions. Both go through `_drive_pipeline`, which differs
-between them in exactly one input — `ma_pre_close` — so the pair actually
+between them in exactly one input — `pre_close` — so the pair actually
 isolates the posture flag rather than merely co-existing.
 
 Dev-DB caveat (same as test_phase3_gate.py / test_cidr_sweep.py): no
@@ -55,8 +55,8 @@ that helper's own docstring describes ("rows that carry a run id and
 therefore read as production evidence"). No assertion in either test
 function changed.
 
-Run with:  python -m app.tests.test_scan_executor_ma_pre_close
-       or: pytest app/tests/test_scan_executor_ma_pre_close.py
+Run with:  python -m app.tests.test_scan_executor_pre_close
+       or: pytest app/tests/test_scan_executor_pre_close.py
 """
 
 import uuid
@@ -67,6 +67,7 @@ from app.models.target import Target
 from app.services import scan_executor
 from app.services.discovery import bruteforce, dns_records, dns_resolve, dnsrecon, subfinder
 from app.tests import _decision_log
+from app.tests._engagement import cleanup_engagement, make_engagement
 
 
 def _mk_recorder(return_value):
@@ -84,14 +85,17 @@ def _mk_recorder(return_value):
     return _fn, calls
 
 
-def _drive_pipeline(domain: str, ma_pre_close: bool) -> dict[str, list]:
-    """Create one `targets` row with the given posture, monkeypatch every
-    discovery entry point the domain loop can reach, drive `_run_pipeline`
-    once, restore everything and delete the row. Returns the per-tool call
-    lists, keyed by tool name.
+def _drive_pipeline(domain: str, pre_close: bool) -> dict[str, list]:
+    """Create one `targets` row with the given posture — `pre_close=True`
+    creates a real `pre_close` `Engagement` and links the target to it
+    (planning#211; replaces the old boolean flag this codebase used
+    before planning#211) — monkeypatch
+    every discovery entry point the domain loop can reach, drive
+    `_run_pipeline` once, restore everything and delete the rows. Returns
+    the per-tool call lists, keyed by tool name.
 
     Factored out so the pre-close case and the ordinary-target control
-    differ in exactly ONE input — `ma_pre_close` — and nothing else. A
+    differ in exactly ONE input — `pre_close` — and nothing else. A
     control that re-stated the whole setup could drift from the case it is
     controlling for, which would quietly turn it back into no control at
     all.
@@ -106,6 +110,7 @@ def _drive_pipeline(domain: str, ma_pre_close: bool) -> dict[str, list]:
     """
     db = SessionLocal()
     target_id = None
+    engagement_id = None
 
     real = {
         "subfinder_available": subfinder.available,
@@ -130,7 +135,9 @@ def _drive_pipeline(domain: str, ma_pre_close: bool) -> dict[str, list]:
     scan_run_id = uuid.uuid4()
 
     try:
-        row = Target(id=uuid.uuid4(), type="domain", value=domain, ma_pre_close=ma_pre_close)
+        if pre_close:
+            engagement_id = make_engagement(db, "pre_close").id
+        row = Target(id=uuid.uuid4(), type="domain", value=domain, engagement_id=engagement_id)
         db.add(row)
         db.commit()
         target_id = row.id
@@ -168,6 +175,8 @@ def _drive_pipeline(domain: str, ma_pre_close: bool) -> dict[str, list]:
         if target_id is not None:
             db.query(Target).filter(Target.id == target_id).delete()
             db.commit()
+        if engagement_id is not None:
+            cleanup_engagement(db, engagement_id)
         db.close()
         _decision_log.cleanup_for_run(scan_run_id)
 
@@ -191,7 +200,7 @@ def test_dnsrecon_and_bruteforce_skipped_for_pre_close_target_passive_discovery_
     clauses so `options.get(...)` short-circuited first, this test would
     catch it: dnsrecon/bruteforce would run.
     """
-    calls = _drive_pipeline(f"pa193-discovery-{uuid.uuid4().hex[:10]}.example.test", ma_pre_close=True)
+    calls = _drive_pipeline(f"pa193-discovery-{uuid.uuid4().hex[:10]}.example.test", pre_close=True)
 
     assert calls["dnsrecon"] == [], (
         f"dnsrecon.run must not be called against a pre-close M&A target, even "
@@ -213,7 +222,7 @@ def test_ordinary_target_still_runs_dnsrecon_and_bruteforce():
     """The control for the test above, and the reason this file has two
     cases rather than one.
 
-    Identical inputs except `ma_pre_close=False`. Without this, a change
+    Identical inputs except `pre_close=False`. Without this, a change
     that disabled dnsrecon/bruteforce for EVERY target — a stray `and
     False`, a broken `options.get` default, a tier profile regression —
     would leave the skip test passing and green while the scanner had
@@ -221,7 +230,7 @@ def test_ordinary_target_still_runs_dnsrecon_and_bruteforce():
     tools DO fire here is what makes the pair a statement about the
     posture flag specifically.
     """
-    calls = _drive_pipeline(f"pa193-control-{uuid.uuid4().hex[:10]}.example.test", ma_pre_close=False)
+    calls = _drive_pipeline(f"pa193-control-{uuid.uuid4().hex[:10]}.example.test", pre_close=False)
 
     assert calls["dnsrecon"], "dnsrecon.run must still fire for an ordinary (non-pre-close) target"
     assert calls["bruteforce"], "bruteforce.run must still fire for an ordinary (non-pre-close) target"

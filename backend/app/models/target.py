@@ -5,7 +5,7 @@ from enum import Enum
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
@@ -50,10 +50,17 @@ class Target(Base):
     # template/global default. Resolution order is target > template > global,
     # implemented in app.services.aggressiveness.effective_for_target.
     aggressiveness: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    # planning#193 — pre-close M&A posture. True = passive-only: this
-    # system must do nothing the counterparty could notice, because we
-    # hold no authorisation to probe them yet. Enforced in TWO places
-    # (see planning#193's routing decision): the composed probe gate's
-    # `_posture_cap`, and the discovery phase's dnsrecon/bruteforce
-    # enablement. Not nullable — there is no "inherit" for this.
-    ma_pre_close: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # planning#211 — replaces the boolean flag this codebase used before.
+    # NULL = owned
+    # estate, unrestricted, byte-identical to a target that never had an
+    # engagement. `targets.value` is globally unique (uq_targets_value), so
+    # a target belongs to at most one engagement by construction — no
+    # cardinality rule needed. ON DELETE RESTRICT (migration 0059): deleting
+    # an engagement out from under a linked target would silently widen its
+    # posture, so the FK forces an explicit detach first. Posture itself is
+    # read off `self.engagement.posture` via `app.services.posture` — this
+    # column only carries the link, never a cached copy of the posture.
+    engagement_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("engagements.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    engagement: Mapped["Engagement | None"] = relationship("Engagement", lazy="select")

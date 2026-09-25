@@ -91,15 +91,16 @@ def test_viewer_cannot_patch_a_target():
     assert r.status_code == 403, f"VIEWER got {r.status_code}, expected 403: {r.text}"
 
 
-def test_viewer_cannot_set_ma_pre_close():
-    """planning#193 — `ma_pre_close` governs whether this system probes a
-    counterparty it may hold no authorisation to probe at all, on the same
-    ADMIN-gated route as `aggressiveness` above. Same guard, same defect
-    shape if this route ever regressed to bare `get_current_user`: the
-    local `_=None` convention would pass this test even against the bug
-    (this file's own docstring), which is why it belongs here."""
+def test_viewer_cannot_set_engagement_id():
+    """planning#211 — `engagement_id` (replacing the old posture boolean) governs
+    whether this system probes a counterparty it may hold no authorisation
+    to probe at all, on the same ADMIN-gated route as `aggressiveness`
+    above. Same guard, same defect shape if this route ever regressed to
+    bare `get_current_user`: the local `_=None` convention would pass this
+    test even against the bug (this file's own docstring), which is why it
+    belongs here."""
     r = _client(UserRole.VIEWER).patch(
-        f"/api/targets/{uuid.uuid4()}", json={"ma_pre_close": True}
+        f"/api/targets/{uuid.uuid4()}", json={"engagement_id": str(uuid.uuid4())}
     )
     assert r.status_code == 403, f"VIEWER got {r.status_code}, expected 403: {r.text}"
 

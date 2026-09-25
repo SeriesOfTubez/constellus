@@ -37,11 +37,13 @@ from app.models.app_settings import AppSetting
 from app.models.asset_canonical import AssetCanonical
 from app.models.asset_state import AssetState
 from app.models.authorisation_decision import AuthorisationDecision
+from app.models.engagement import Engagement
 from app.models.target import Target
 from app.models.target_asset_link import TargetAssetLink
 from app.services import app_settings
 from app.services import probe_authorisation as pa
 from app.tests import _decision_log
+from app.tests._engagement import make_engagement
 
 _MODE_KEY = "probe_authorisation_mode"
 
@@ -108,12 +110,18 @@ def _cleanup(values: list[str]) -> None:
         db.close()
 
 
-def _mk_target(db, value: str, ma_pre_close: bool) -> Target:
-    """planning#193 helper — a minimal `targets` row for linking to a
+def _mk_target(db, value: str, pre_close: bool) -> Target:
+    """planning#193/#211 helper — a minimal `targets` row for linking to a
     canonical asset via `TargetAssetLink`, mirroring `_mk_ip_asset`'s
     minimal-fields style above. `type="domain"` is arbitrary; `_posture_cap`
-    and `_resolve_ma_pre_close_ids` never read `.type`."""
-    row = Target(id=uuid.uuid4(), type="domain", value=value, ma_pre_close=ma_pre_close)
+    and `_resolve_engagements` never read `.type`. `pre_close=True` creates
+    a real `pre_close` `Engagement` and links the target to it — replaces
+    the old boolean flag this codebase used before planning#211.
+    `_cleanup_targets` below deletes the
+    engagement too, so callers don't need a separate engagement cleanup
+    call."""
+    engagement_id = make_engagement(db, "pre_close").id if pre_close else None
+    row = Target(id=uuid.uuid4(), type="domain", value=value, engagement_id=engagement_id)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -136,8 +144,20 @@ def _cleanup_targets(target_ids: list[uuid.UUID]) -> None:
         return
     db = SessionLocal()
     try:
+        # planning#211 — capture linked engagement ids BEFORE deleting the
+        # targets that reference them (the FK is ON DELETE RESTRICT), then
+        # delete those engagements too. `_mk_target` is the only creator of
+        # engagements in this file, so every one it made is reachable this
+        # way — no separate engagement-id bookkeeping needed at call sites.
+        engagement_ids = [
+            r[0] for r in db.query(Target.engagement_id).filter(Target.id.in_(ids)).all()
+            if r[0] is not None
+        ]
         db.query(Target).filter(Target.id.in_(ids)).delete(synchronize_session=False)
         db.commit()
+        if engagement_ids:
+            db.query(Engagement).filter(Engagement.id.in_(engagement_ids)).delete(synchronize_session=False)
+            db.commit()
     finally:
         db.close()
 
@@ -418,15 +438,15 @@ def test_posture_cap_receives_the_asset_and_can_decide_per_asset():
             asset = _mk_ip_asset(db, value)
             _set_state(db, asset.id, "direct_addressable")
 
-        def _per_asset_posture(db_, *, scope, asset_ref, canonical, ma_pre_close_ids, noise_class):
+        def _per_asset_posture(db_, *, scope, asset_ref, canonical, passive_ids, noise_class):
             # Record what actually arrived, then decide on it.
-            # `ma_pre_close_ids` and `noise_class` are both accepted
-            # (unused) purely to match the planning#193 / planning#196
+            # `passive_ids` and `noise_class` are both accepted (unused)
+            # purely to match the planning#193 / planning#196 / planning#211
             # signature `authorise_probes` now calls this function with —
             # a stand-in that dropped either would TypeError.
             seen.append((getattr(asset_ref, "value", None), canonical))
             if getattr(asset_ref, "value", None) == denied_value:
-                return pa.Cap(False, frozenset(), None, "posture:ma_pre_close")
+                return pa.Cap(False, frozenset(), None, "posture:passive_only")
             return pa.Cap(True, None, None, "posture:permissive")
 
         pa._posture_cap = _per_asset_posture
@@ -442,7 +462,7 @@ def test_posture_cap_receives_the_asset_and_can_decide_per_asset():
             "posture must be able to deny one asset while allowing another in "
             "the same batch — that is the M&A pre-close case"
         )
-        assert acquired.rule_fired == "posture:ma_pre_close"
+        assert acquired.rule_fired == "posture:passive_only"
 
         # The asset really arrived (not None), and the canonical came with it.
         assert {v for v, _ in seen} == {allowed_value, denied_value}
@@ -960,14 +980,14 @@ def test_posture_cap_denies_an_asset_linked_to_a_pre_close_target():
     target_id = None
     try:
         asset = _mk_ip_asset(db, v)
-        target = _mk_target(db, f"pa193-target-{suffix}.example.com", ma_pre_close=True)
+        target = _mk_target(db, f"pa193-target-{suffix}.example.com", pre_close=True)
         target_id = target.id  # captured before any later commit expires/detaches the row
         _link(db, target.id, asset.id)
 
-        ma_ids = pa._resolve_ma_pre_close_ids(db, {asset.id})
-        cap = pa._posture_cap(db, scope={}, asset_ref=None, canonical=asset, ma_pre_close_ids=ma_ids, noise_class="target_host")
+        engagement_resolution = pa._resolve_engagements(db, {asset.id})
+        cap = pa._posture_cap(db, scope={}, asset_ref=None, canonical=asset, passive_ids=engagement_resolution.passive_ids, noise_class="target_host")
         assert cap.allowed is False
-        assert cap.rule == "posture:ma_pre_close"
+        assert cap.rule == "posture:passive_only"
         assert cap.modes == frozenset()
     finally:
         db.close()
@@ -997,8 +1017,8 @@ def test_the_real_posture_cap_alone_flips_the_composed_verdict():
     `scan_authorisation_mode` unset (the scope cap's default short-circuit)
     and a real `direct_addressable` projection, which is the state the
     planning#148 measurement showed a live asset actually reaching. The only
-    thing that changes between the two halves is the target's
-    `ma_pre_close` flag.
+    thing that changes between the two halves is the target's engagement
+    posture.
     """
     suffix = uuid.uuid4().hex[:10]
     v = f"pa148-composed-{suffix}"
@@ -1010,7 +1030,7 @@ def test_the_real_posture_cap_alone_flips_the_composed_verdict():
 
         # Half 1 — an ordinary target. Scope open, probe-class open, posture
         # open: the composed verdict permits, and `ip` is among the modes.
-        target = _mk_target(db, f"pa148-target-{suffix}.example.com", ma_pre_close=False)
+        target = _mk_target(db, f"pa148-target-{suffix}.example.com", pre_close=False)
         target_id = target.id
         _link(db, target.id, asset.id)
 
@@ -1026,7 +1046,7 @@ def test_the_real_posture_cap_alone_flips_the_composed_verdict():
 
         # Half 2 — the SAME asset, same scope, same projection. Flip only the
         # posture input.
-        db.get(Target, target_id).ma_pre_close = True
+        db.get(Target, target_id).engagement_id = make_engagement(db, "pre_close").id
         db.commit()
 
         denied = pa.authorise_probes(
@@ -1037,7 +1057,7 @@ def test_the_real_posture_cap_alone_flips_the_composed_verdict():
             "the real posture cap must be able to deny an otherwise fully "
             "authorised asset on its own"
         )
-        assert denied.rule_fired == "posture:ma_pre_close"
+        assert denied.rule_fired == "posture:passive_only"
         assert denied.modes == frozenset(), (
             "a posture denial removes every addressing mode, it does not "
             "merely narrow them"
@@ -1057,15 +1077,17 @@ def test_posture_cap_permits_unlinked_and_ordinary_linked_assets():
     try:
         unlinked = _mk_ip_asset(db, v_unlinked)
         ordinary_asset = _mk_ip_asset(db, v_ordinary)
-        target = _mk_target(db, f"pa193-ordinary-target-{suffix}.example.com", ma_pre_close=False)
+        target = _mk_target(db, f"pa193-ordinary-target-{suffix}.example.com", pre_close=False)
         target_id = target.id  # captured before any later commit expires/detaches the row
         _link(db, target.id, ordinary_asset.id)
 
-        ma_ids = pa._resolve_ma_pre_close_ids(db, {unlinked.id, ordinary_asset.id})
-        assert ma_ids == frozenset(), "an ordinary target's link must not appear in the pre-close set"
+        engagement_resolution = pa._resolve_engagements(db, {unlinked.id, ordinary_asset.id})
+        assert engagement_resolution.passive_ids == frozenset(), (
+            "an ordinary target's link must not appear in the passive-only set"
+        )
 
         for asset in (unlinked, ordinary_asset):
-            cap = pa._posture_cap(db, scope={}, asset_ref=None, canonical=asset, ma_pre_close_ids=ma_ids, noise_class="target_host")
+            cap = pa._posture_cap(db, scope={}, asset_ref=None, canonical=asset, passive_ids=engagement_resolution.passive_ids, noise_class="target_host")
             assert cap.allowed is True, asset.value
             assert cap.rule == "posture:permissive", asset.value
     finally:
@@ -1086,17 +1108,17 @@ def test_posture_cap_any_link_wins_even_with_an_ordinary_target_also_linked():
     ordinary_target_id = None
     try:
         asset = _mk_ip_asset(db, v)
-        pre_close_target = _mk_target(db, f"pa193-preclose-{suffix}.example.com", ma_pre_close=True)
-        ordinary_target = _mk_target(db, f"pa193-ordinary2-{suffix}.example.com", ma_pre_close=False)
+        pre_close_target = _mk_target(db, f"pa193-preclose-{suffix}.example.com", pre_close=True)
+        ordinary_target = _mk_target(db, f"pa193-ordinary2-{suffix}.example.com", pre_close=False)
         # captured before any later commit expires/detaches these rows
         pre_close_target_id, ordinary_target_id = pre_close_target.id, ordinary_target.id
         _link(db, pre_close_target.id, asset.id)
         _link(db, ordinary_target.id, asset.id)
 
-        ma_ids = pa._resolve_ma_pre_close_ids(db, {asset.id})
-        cap = pa._posture_cap(db, scope={}, asset_ref=None, canonical=asset, ma_pre_close_ids=ma_ids, noise_class="target_host")
+        engagement_resolution = pa._resolve_engagements(db, {asset.id})
+        cap = pa._posture_cap(db, scope={}, asset_ref=None, canonical=asset, passive_ids=engagement_resolution.passive_ids, noise_class="target_host")
         assert cap.allowed is False, "one pre-close link must deny even with an ordinary target also linked"
-        assert cap.rule == "posture:ma_pre_close"
+        assert cap.rule == "posture:passive_only"
     finally:
         db.close()
         _cleanup([v])
@@ -1106,7 +1128,7 @@ def test_posture_cap_any_link_wins_even_with_an_ordinary_target_also_linked():
 def test_posture_cap_permissive_when_canonical_is_none():
     """Documents the deliberate hole `_posture_cap`'s docstring argues for:
     an asset that never resolved to a canonical row cannot be checked
-    against `ma_pre_close_ids` at all (there is no id to look up), and
+    against `passive_ids` at all (there is no id to look up), and
     `_posture_cap` does not deny on that basis — `_scope_cap`'s
     `scope:unresolved_asset` is what closes this case instead. Pinned here
     so a future change to this behaviour is made on purpose, not by
@@ -1120,7 +1142,7 @@ def test_posture_cap_permissive_when_canonical_is_none():
     """
     cap = pa._posture_cap(
         None, scope={}, asset_ref=None, canonical=None,
-        ma_pre_close_ids=frozenset({uuid.uuid4()}), noise_class="target_host",
+        passive_ids=frozenset({uuid.uuid4()}), noise_class="target_host",
     )
     assert cap.allowed is True
     assert cap.rule == "posture:permissive"
@@ -1129,7 +1151,7 @@ def test_posture_cap_permissive_when_canonical_is_none():
 def test_posture_denial_always_enforced_under_log_only():
     """The important one (spec case 5). Under `log_only`,
     `probe_authorisation_mode`'s graduated rollout does not apply to
-    `posture:ma_pre_close` — it narrows `permitted` regardless, exactly
+    `posture:passive_only` — it narrows `permitted` regardless, exactly
     like the connector-declaration check. An ordinary (non-posture) denial
     in the SAME call must NOT narrow `permitted` — only the posture axis
     is always-enforced, so this also guards against #193 accidentally
@@ -1148,7 +1170,7 @@ def test_posture_denial_always_enforced_under_log_only():
         scope_asset = _mk_ip_asset(db, v_scope)
         _set_state(db, scope_asset.id, "direct_addressable")
 
-        target = _mk_target(db, f"pa193-alwaysenf-target-{suffix}.example.com", ma_pre_close=True)
+        target = _mk_target(db, f"pa193-alwaysenf-target-{suffix}.example.com", pre_close=True)
         target_id = target.id  # captured before any later commit expires/detaches the row
         _link(db, target.id, posture_asset.id)
 
@@ -1173,7 +1195,7 @@ def test_posture_denial_always_enforced_under_log_only():
 
         permitted_values = {a.value for a in gate.permitted}
         assert v_posture not in permitted_values, (
-            "posture:ma_pre_close must narrow permitted even under log_only"
+            "posture:passive_only must narrow permitted even under log_only"
         )
         assert v_scope in permitted_values, (
             "an ordinary (non-posture) denial must NOT narrow permitted under "
@@ -1205,7 +1227,7 @@ def test_rule_fired_prefers_posture_when_both_scope_and_posture_deny():
     try:
         asset = _mk_ip_asset(db, v)
         _set_state(db, asset.id, "direct_addressable")
-        target = _mk_target(db, f"pa193-precedence-target-{suffix}.example.com", ma_pre_close=True)
+        target = _mk_target(db, f"pa193-precedence-target-{suffix}.example.com", pre_close=True)
         target_id = target.id  # captured before any later commit expires/detaches the row
         _link(db, target.id, asset.id)
 
@@ -1220,7 +1242,7 @@ def test_rule_fired_prefers_posture_when_both_scope_and_posture_deny():
 
         permission = gate.permissions[("ip_address", v)]
         assert permission.allowed is False
-        assert permission.rule_fired == "posture:ma_pre_close", (
+        assert permission.rule_fired == "posture:passive_only", (
             f"scope's denial must not win rule_fired over posture's: {permission.rule_fired!r}"
         )
         # Nothing is lost about scope's own verdict — it still rides the
@@ -1233,9 +1255,9 @@ def test_rule_fired_prefers_posture_when_both_scope_and_posture_deny():
         _cleanup_targets([target_id])
 
 
-def test_no_behaviour_change_when_nothing_is_ma_pre_close():
+def test_no_behaviour_change_when_nothing_is_passive_only():
     """Regression guard (spec case 7): "did we accidentally flip #148
-    early". With no `ma_pre_close` target anywhere in play, `log_only`
+    early". With no restricting-posture target anywhere in play, `log_only`
     must still return the fully unfiltered list with `enforced=False` —
     exactly what `test_log_only_does_not_narrow_but_logs_real_verdict`
     pins for the pre-#193 gate, replayed here to prove #193 didn't change
@@ -1288,7 +1310,7 @@ def _run():
         test_posture_cap_permissive_when_canonical_is_none,
         test_posture_denial_always_enforced_under_log_only,
         test_rule_fired_prefers_posture_when_both_scope_and_posture_deny,
-        test_no_behaviour_change_when_nothing_is_ma_pre_close,
+        test_no_behaviour_change_when_nothing_is_passive_only,
     ]
     for fn in tests:
         fn()

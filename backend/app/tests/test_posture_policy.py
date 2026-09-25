@@ -14,7 +14,7 @@ the load-bearing assertion for that claim, checked against the LIVE seeded
 fails loudly here instead of drifting unnoticed.
 
 Dev-DB caveat (same as `test_probe_authorisation.py` /
-`test_scan_executor_ma_pre_close.py`): no dedicated test database, no
+`test_scan_executor_pre_close.py`): no dedicated test database, no
 rollback. Every row this file creates is synthetic, prefixed `pa196-` plus
 a `uuid.uuid4().hex[:10]` suffix, and deleted by id in a `finally` block.
 Domain-shaped values use `.example.test` (RFC 2606 reserved TLD), never a
@@ -32,12 +32,14 @@ from types import SimpleNamespace
 
 from app.core.database import SessionLocal
 from app.models.authorisation_decision import AuthorisationDecision
+from app.models.engagement import EngagementPosture
 from app.models.observer import OBSERVER_NOISE, Observer
 from app.models.target import Target
 from app.services import posture
 from app.services import probe_authorisation as pa
 from app.services.discovery import bruteforce, cert_transparency, dns_records, dns_resolve, dnsrecon, subfinder
 from app.tests import _decision_log
+from app.tests._engagement import cleanup_engagement, make_engagement
 
 _DISCOVERY_MODULES = (subfinder, dns_resolve, dns_records, dnsrecon, bruteforce, cert_transparency)
 
@@ -118,38 +120,73 @@ def test_seeded_observers_reproduce_planning_193s_shipped_denial_set():
 def test_sql_and_python_renderings_of_the_predicate_agree():
     """The anti-drift guard for `posture.passive_only_filter()` (SQL) vs.
     `posture.is_passive_only()` (Python) — two renderings of ONE predicate,
-    per that module's docstring. A future planning#132 change (posture as
-    a real enum, not a single `ma_pre_close` boolean) must edit both
-    renderings together, in that one file; this test is what catches it
-    if it does not — a change to only one rendering makes this test fail
-    on whichever `targets` row exercises the rendering nobody touched.
+    per that module's docstring. planning#211 turned posture into a real
+    four-value enum; this fixture now covers a target in EACH of the four
+    postures plus one with NO engagement at all, so "agree" is asserted
+    over the whole new keyspace rather than the old boolean's two states —
+    a change to only one rendering makes this fail on whichever row
+    exercises the state nobody touched.
     """
     suffix = uuid.uuid4().hex[:10]
     db = SessionLocal()
-    pre_close_id = None
-    ordinary_id = None
+    target_ids: dict[str, uuid.UUID] = {}
+    engagement_ids: list[uuid.UUID] = []
     try:
-        pre_close = Target(id=uuid.uuid4(), type="domain", value=f"pa196-preclose-{suffix}.example.test", ma_pre_close=True)
-        ordinary = Target(id=uuid.uuid4(), type="domain", value=f"pa196-ordinary-{suffix}.example.test", ma_pre_close=False)
-        db.add_all([pre_close, ordinary])
-        db.commit()
-        pre_close_id, ordinary_id = pre_close.id, ordinary.id
+        # day_0/integrated need a satisfied CHECK constraint (authorised_at
+        # + authorisation_reference both non-null) — see migration 0059.
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        postures_and_auth = {
+            EngagementPosture.PRE_CLOSE.value: {},
+            EngagementPosture.DAY_0.value: {"authorised_at": now, "authorisation_reference": "pa196-ref"},
+            EngagementPosture.INTEGRATED.value: {"authorised_at": now, "authorisation_reference": "pa196-ref"},
+            EngagementPosture.ABANDONED.value: {},
+        }
+        for posture_value, extra in postures_and_auth.items():
+            engagement = make_engagement(db, posture_value, **extra)
+            engagement_ids.append(engagement.id)
+            t = Target(
+                id=uuid.uuid4(), type="domain",
+                value=f"pa196-{posture_value}-{suffix}.example.test",
+                engagement_id=engagement.id,
+            )
+            db.add(t)
+            db.commit()
+            target_ids[posture_value] = t.id
 
+        no_engagement = Target(
+            id=uuid.uuid4(), type="domain", value=f"pa196-none-{suffix}.example.test",
+        )
+        db.add(no_engagement)
+        db.commit()
+        target_ids["none"] = no_engagement.id
+
+        all_ids = list(target_ids.values())
         matched_ids = {
             r[0] for r in db.query(Target.id)
-            .filter(Target.id.in_([pre_close_id, ordinary_id]))
+            .filter(Target.id.in_(all_ids))
             .filter(posture.passive_only_filter())
             .all()
         }
-        assert matched_ids == {pre_close_id}, matched_ids
+        expected_restricting = {target_ids["pre_close"], target_ids["abandoned"]}
+        assert matched_ids == expected_restricting, matched_ids
 
-        assert posture.is_passive_only(pre_close) is True
-        assert posture.is_passive_only(ordinary) is False
+        rows_by_posture = {
+            key: db.get(Target, tid) for key, tid in target_ids.items()
+        }
+        assert posture.is_passive_only(rows_by_posture["pre_close"]) is True
+        assert posture.is_passive_only(rows_by_posture["abandoned"]) is True
+        assert posture.is_passive_only(rows_by_posture["day_0"]) is False
+        assert posture.is_passive_only(rows_by_posture["integrated"]) is False
+        assert posture.is_passive_only(rows_by_posture["none"]) is False
+        assert posture.is_passive_only(None) is False
     finally:
-        ids = [i for i in (pre_close_id, ordinary_id) if i is not None]
+        ids = list(target_ids.values())
         if ids:
             db.query(Target).filter(Target.id.in_(ids)).delete(synchronize_session=False)
             db.commit()
+        for eid in engagement_ids:
+            cleanup_engagement(db, eid)
         db.close()
 
 
@@ -186,21 +223,21 @@ def test_posture_cap_permits_a_pre_close_asset_for_a_silent_observer():
     substitute for a real `AssetCanonical` row here."""
     stub_id = uuid.uuid4()
     canonical = SimpleNamespace(id=stub_id)
-    ma_pre_close_ids = frozenset({stub_id})
+    passive_ids = frozenset({stub_id})
 
     silent_cap = pa._posture_cap(
         None, scope={}, asset_ref=None, canonical=canonical,
-        ma_pre_close_ids=ma_pre_close_ids, noise_class="silent",
+        passive_ids=passive_ids, noise_class="silent",
     )
     assert silent_cap.allowed is True
     assert silent_cap.rule == "posture:permissive"
 
     noisy_cap = pa._posture_cap(
         None, scope={}, asset_ref=None, canonical=canonical,
-        ma_pre_close_ids=ma_pre_close_ids, noise_class="target_host",
+        passive_ids=passive_ids, noise_class="target_host",
     )
     assert noisy_cap.allowed is False
-    assert noisy_cap.rule == "posture:ma_pre_close"
+    assert noisy_cap.rule == "posture:passive_only"
 
 
 # ── 7. the acceptance criterion ─────────────────────────────────────────────
@@ -215,10 +252,11 @@ def test_a_new_noisy_discovery_tool_is_denied_without_touching_the_discovery_pha
     throwaway `observers` rows this test invents on the spot, never wired
     into `scan_executor` at all.
 
-    `target_row` is a bare `SimpleNamespace(ma_pre_close=...)` —
-    `authorise_discovery` only ever reads `.ma_pre_close`, via
+    `target_row` is a bare `SimpleNamespace(engagement=...)` —
+    `authorise_discovery` only ever reads `.engagement.posture`, via
     `posture.is_passive_only`, so a real `Target` row is not needed to
-    exercise it here.
+    exercise it here (planning#211 re-key of the old bare-boolean
+    stand-in this test used before the engagement object existed).
     """
     suffix = uuid.uuid4().hex[:10]
     noisy_name = f"pa196-newtool-{suffix}"
@@ -244,8 +282,9 @@ def test_a_new_noisy_discovery_tool_is_denied_without_touching_the_discovery_pha
         db.commit()
         noisy_id, silent_id = noisy.id, silent.id
 
-        pre_close = SimpleNamespace(ma_pre_close=True)
-        ordinary = SimpleNamespace(ma_pre_close=False)
+        stub_engagement_id = uuid.uuid4()
+        pre_close = SimpleNamespace(engagement=SimpleNamespace(id=stub_engagement_id, posture="pre_close"))
+        ordinary = SimpleNamespace(engagement=None)
 
         # 1) the noisy tool is denied under the pre-close target, and a
         # decision row is written recording it.
@@ -262,12 +301,15 @@ def test_a_new_noisy_discovery_tool_is_denied_without_touching_the_discovery_pha
         assert len(rows) == 1, f"expected exactly one decision row for this run id, got {len(rows)}"
         row = rows[0]
         assert row.allowed is False
-        assert row.rule_fired == "posture:ma_pre_close"
+        assert row.rule_fired == "posture:passive_only"
         assert row.asset_canonical_id is None
         assert row.observer_id == noisy_id
         assert row.evidence_snapshot["scan_run_id"] == str(run_id)
         assert row.evidence_snapshot["decision_scope"] == "domain"
         assert row.evidence_snapshot["observer_noise_class"] == "target_infra"
+        assert row.evidence_snapshot["engagements"] == [
+            {"id": str(stub_engagement_id), "posture": "pre_close"}
+        ]
 
         # 2) a SECOND throwaway observer, this one silent, is permitted —
         # and writes NO row (permits are never logged, per
@@ -332,7 +374,8 @@ def test_an_undeclared_discovery_tool_is_denied_fail_closed():
     db = SessionLocal()
     try:
         assert pa.authorise_discovery(
-            db, observer_slug=None, target_row=SimpleNamespace(ma_pre_close=True),
+            db, observer_slug=None,
+            target_row=SimpleNamespace(engagement=SimpleNamespace(id=uuid.uuid4(), posture="pre_close")),
             domain=domain, scan_run_id=run_id,
         ) is False, "a tool that declares no OBSERVER must be denied under passive-only"
 
@@ -343,12 +386,12 @@ def test_an_undeclared_discovery_tool_is_denied_fail_closed():
         )
         assert len(rows) == 1, f"the denial must still be logged, got {len(rows)} row(s)"
         assert rows[0].observer_id is None, "no observers row resolved, so observer_id is NULL"
-        assert rows[0].rule_fired == "posture:ma_pre_close"
+        assert rows[0].rule_fired == "posture:passive_only"
         assert rows[0].evidence_snapshot["observer_noise_class"] is None
         assert rows[0].evidence_snapshot["decision_scope"] == "domain"
 
         assert pa.authorise_discovery(
-            db, observer_slug=None, target_row=SimpleNamespace(ma_pre_close=False),
+            db, observer_slug=None, target_row=SimpleNamespace(engagement=None),
             domain=domain, scan_run_id=run_id,
         ) is True, "an undeclared tool must be unaffected when posture has nothing to say"
     finally:

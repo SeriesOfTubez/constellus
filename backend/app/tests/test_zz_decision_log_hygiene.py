@@ -50,10 +50,11 @@ _BACKEND = pathlib.Path(__file__).resolve().parents[2]
 _DECISION_WRITING_TESTS = [
     "app/tests/test_asset_delete_with_decisions.py",
     "app/tests/test_cidr_sweep.py",
+    "app/tests/test_engagement_acceptance.py",
     "app/tests/test_phase3_gate.py",
     "app/tests/test_posture_policy.py",
     "app/tests/test_probe_authorisation.py",
-    "app/tests/test_scan_executor_ma_pre_close.py",
+    "app/tests/test_scan_executor_pre_close.py",
     "app/tests/test_scope_cap.py",
 ]
 

@@ -27,6 +27,7 @@ Requires DATABASE_URL (defaults to the standard local docker-compose value).
 
 import os
 import sys
+import subprocess
 from pathlib import Path
 
 os.environ.setdefault("DATABASE_URL", "postgresql://constellus:constellus@localhost:5432/constellus")
@@ -35,7 +36,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
 from sqlalchemy import create_engine, text  # noqa: E402
 
-OUTPUT_PATH = Path(__file__).resolve().parent.parent / ".git" / "target-denylist.txt"
+def _git_common_dir() -> Path:
+    # The SHARED git dir, not `<repo>/.git`: in a `git worktree` checkout
+    # `.git` is a file, so a hard-coded `.git/` path made this hook fail
+    # closed there. Still inside git's own directory, so never tracked.
+    out = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=Path(__file__).resolve().parent, capture_output=True, text=True, check=True,
+    )
+    return Path(out.stdout.strip())
+
+
+OUTPUT_PATH = _git_common_dir() / "target-denylist.txt"
 
 
 def main() -> None:

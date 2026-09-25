@@ -173,4 +173,5 @@ def _enrich(db: Session, run: ScanRun) -> ScanResponse:
         asset_count=run.asset_count,
         finding_count=run.finding_count,
         port_scan_unauthorised_count=run.port_scan_unauthorised_count,
+        scope_target_engagements=run.scope_target_engagements or [],
     )
