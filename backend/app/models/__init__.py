@@ -40,6 +40,7 @@ from app.models.entity_relation import (
     RELATION_STATUSES,
     GROUNDING_VALUES,
 )
+from app.models.entity_filing_event import EntityFilingEvent
 
 __all__ = [
     "User", "UserRole",
@@ -99,4 +100,5 @@ __all__ = [
     "DECISION_KINDS",
     "RELATION_STATUSES",
     "GROUNDING_VALUES",
+    "EntityFilingEvent",
 ]
