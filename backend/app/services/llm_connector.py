@@ -418,6 +418,13 @@ def _refuse_web_search(policy: str, role: Role, *, models: list[str], body: dict
     keys = [k for k in _WEB_SEARCH_BODY_KEYS if body is not None and k in body]
     if keys:
         raise StrictPolicyRefused(role.value, f"request body carries web-search key(s): {keys}")
+    # The third way OpenRouter enables search: a `tools` entry for its
+    # `openrouter:web_search` server tool. Matched on the substring so a
+    # renamed or versioned variant of the tool is refused too.
+    tools = (body or {}).get("tools") or []
+    search_tools = [t for t in tools if "web_search" in str((t or {}).get("type", "")).lower()]
+    if search_tools:
+        raise StrictPolicyRefused(role.value, f"request body carries a web-search server tool: {search_tools}")
 
 
 def _response_format(schema: type[BaseModel]) -> dict[str, Any]:

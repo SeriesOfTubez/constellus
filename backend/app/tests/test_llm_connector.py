@@ -1778,14 +1778,22 @@ def test_strict_structured_refuses_online_extract_primary_but_complete_does_not(
         db.close()
 
 
-@pytest.mark.parametrize("key", ["plugins", "web_search_options"])
+_WEB_SEARCH_BODIES = {
+    "plugins": [{"id": "web"}],
+    "web_search_options": {},
+    # OpenRouter's third way to enable search: its server tool.
+    "tools": [{"type": "openrouter:web_search"}],
+}
+
+
+@pytest.mark.parametrize("key", sorted(_WEB_SEARCH_BODIES))
 def test_send_backstop_refuses_web_search_body_key_under_strict_only(key):
     """The backstop in `_attempt_model` in isolation (no public caller builds
     these keys today, which is exactly why it is tested directly): a body
     carrying the key is never sent under strict, and IS sent otherwise."""
     suffix = uuid.uuid4().hex[:10]
     task = f"llm215-r4-{suffix}"
-    body = {"model": "fixture/model-a", "messages": [], key: [{"id": "web"}] if key == "plugins" else {}}
+    body = {"model": "fixture/model-a", "messages": [], key: _WEB_SEARCH_BODIES[key]}
 
     def _send(policy: str, scripted: _ScriptedTransport) -> dict:
         llmc._transport = scripted.transport
@@ -1810,6 +1818,31 @@ def test_send_backstop_refuses_web_search_body_key_under_strict_only(key):
     finally:
         _cleanup(task)
 
+
+
+def test_send_backstop_does_not_refuse_an_ordinary_function_tool_under_strict():
+    """The server-tool check matches web search only: a plain function tool
+    is sent under strict. A guard that over-refuses gets switched off."""
+    suffix = uuid.uuid4().hex[:10]
+    task = f"llm215-r4-fn-{suffix}"
+    body = {
+        "model": "fixture/model-a",
+        "messages": [],
+        "tools": [{"type": "function", "function": {"name": "lookup_filing", "parameters": {"type": "object"}}}],
+    }
+    twin = _ScriptedTransport([_ok_response()])
+    llmc._transport = twin.transport
+    try:
+        result = llmc._attempt_model(
+            None, api_key=_TEST_API_KEY, body=body, model="fixture/model-a", role=llmc.Role.RESEARCH,
+            task=task, target_id=None, engagement_id=None, passive_only=False, policy="strict", tier=1,
+            ledger_ids=[], attempt_counter=[0],
+        )
+        assert result["status"] == "ok"
+        assert len(twin.requests) == 1
+    finally:
+        llmc._transport = None
+        _cleanup(task)
 
 @pytest.mark.parametrize("bad", ["", " fixture/model-a:online", "fixture/model-a :online"])
 def test_role_binding_rejects_empty_or_whitespace_slug(bad):
