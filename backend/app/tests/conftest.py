@@ -39,6 +39,7 @@ from app.services import notification_dispatcher
 from app.services import origin_corroboration
 from app.services import probe_authorisation
 from app.services import scan_executor
+from app.services import sec_edgar
 from app.services import shared_infra_verifier
 from app.services import takeover_fingerprint
 from app.services import tenancy_enricher
@@ -53,6 +54,7 @@ _GUARDED_MODULES = [
     origin_corroboration,
     probe_authorisation,
     scan_executor,
+    sec_edgar,
     shared_infra_verifier,
     takeover_fingerprint,
     tenancy_enricher,

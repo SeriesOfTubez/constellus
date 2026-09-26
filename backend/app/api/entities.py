@@ -14,21 +14,25 @@ a Wayback fetcher, an LLM extractor calling `entity_graph.assert_relation`)
 is planning#213/#214/#215 — L4/L5, not this slice.
 """
 
+import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_role
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
+from app.models.entity_filing_event import EntityFilingEvent
 from app.models.entity_relation import EntityRelation, RELATION_STATUSES
 from app.models.evidence import EvidenceBlob, EvidenceFetch
 from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
 from app.models.user import User, UserRole
-from app.services import audit, entity_graph
+from app.services import audit, edgar_ingest, entity_graph
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -84,6 +88,25 @@ class RelationQueueItem(BaseModel):
 
 class DecisionRequest(BaseModel):
     status: str
+
+
+class EdgarIngestRequest(BaseModel):
+    cik: str
+
+
+class EdgarIngestAccepted(BaseModel):
+    status: str
+    cik: str
+
+
+class FilingEventResponse(BaseModel):
+    id: uuid.UUID
+    form: str
+    accession_number: str
+    filing_date: str
+    items: str
+    evidence_id: uuid.UUID
+    observer_name: str | None
 
 
 def _to_entity_response(e: OrgEntity) -> EntityResponse:
@@ -250,6 +273,59 @@ def decide_relation(
     )
 
 
+def _run_edgar_ingest(cik: str) -> None:
+    """The `BackgroundTasks` target. Opens its OWN `SessionLocal()` — the
+    request's session is closed by the time this runs, since
+    `BackgroundTasks` execute after the response is sent (synchronously,
+    in-process, under `TestClient`). Always closes the session, whatever
+    the outcome."""
+    db = SessionLocal()
+    try:
+        result = edgar_ingest.ingest_cik(db, cik)
+        log.info(
+            "edgar ingest complete cik=%s entity_id=%s pages_fetched=%d "
+            "former_names_asserted=%d former_names_skipped=%d events_inserted=%d "
+            "events_existing=%d malformed_skipped=%d denied=%s",
+            cik, result.entity_id, result.pages_fetched, result.former_names_asserted,
+            result.former_names_skipped, result.events_inserted, result.events_existing,
+            result.malformed_skipped, result.denied,
+        )
+    except Exception:
+        log.exception("edgar ingest failed for cik=%s", cik)
+    finally:
+        db.close()
+
+
+@router.post("/edgar-ingest", response_model=EdgarIngestAccepted, status_code=202)
+def edgar_ingest_requested(
+    request: Request,
+    data: EdgarIngestRequest,
+    background_tasks: BackgroundTasks,
+    _=Depends(require_role(UserRole.ADMIN)),
+):
+    """Declared ahead of `/{entity_id}/edges` and `/{entity_id}/filing-
+    events` below: `/edgar-ingest` has no path parameter, so it can never be
+    captured by either `/{entity_id}/...` route regardless of registration
+    order, but it is placed first anyway so that remains true by
+    inspection, not just by accident of FastAPI's route-matching rules."""
+    try:
+        normalised = edgar_ingest.normalise_cik(data.cik)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="cik must be 1 to 10 digits")
+
+    try:
+        edgar_ingest.require_user_agent()
+    except edgar_ingest.EdgarNotConfigured as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    audit.record_detail(request, cik=normalised)
+
+    # planning#134: this on-demand background task is one of the call sites
+    # the job queue retires.
+    background_tasks.add_task(_run_edgar_ingest, normalised)
+    return EdgarIngestAccepted(status="accepted", cik=normalised)
+
+
 @router.get("/{entity_id}/edges", response_model=list[EdgeResponse])
 def get_entity_edges(
     entity_id: uuid.UUID,
@@ -269,4 +345,39 @@ def get_entity_edges(
             sources=[EdgeSource(**s) for s in e["sources"]],
         )
         for e in edges
+    ]
+
+
+@router.get("/{entity_id}/filing-events", response_model=list[FilingEventResponse])
+def list_filing_events(
+    entity_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """Open to any authenticated user, matching #212's GET convention (this
+    module's own docstring) — reviewing what this system knows about a
+    counterparty's filings needs no ADMIN grant."""
+    entity = db.get(OrgEntity, entity_id)
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    rows = (
+        db.query(EntityFilingEvent)
+        .filter(EntityFilingEvent.entity_id == entity_id)
+        .order_by(EntityFilingEvent.filing_date.desc())
+        .all()
+    )
+    observer_ids = {r.observer_id for r in rows}
+    observers_by_id = {o.id: o for o in db.query(Observer).filter(Observer.id.in_(observer_ids)).all()}
+    return [
+        FilingEventResponse(
+            id=r.id,
+            form=r.form,
+            accession_number=r.accession_number,
+            filing_date=r.filing_date.isoformat(),
+            items=r.items,
+            evidence_id=r.evidence_id,
+            observer_name=(observers_by_id[r.observer_id].name if r.observer_id in observers_by_id else None),
+        )
+        for r in rows
     ]

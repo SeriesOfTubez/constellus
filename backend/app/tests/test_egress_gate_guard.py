@@ -111,6 +111,9 @@ _EGRESS: dict[str, tuple[str, str, str | None]] = {
     "saml.py": (
         "THIRD_PARTY", "IdP metadata for our own SSO config", None,
     ),
+    "sec_edgar.py": (
+        "THIRD_PARTY", "SEC EDGAR public filings, never the counterparty", None,
+    ),
 }
 
 

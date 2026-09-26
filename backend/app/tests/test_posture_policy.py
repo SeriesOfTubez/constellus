@@ -106,7 +106,10 @@ def test_seeded_observers_reproduce_planning_193s_shipped_denial_set():
         rows = db.query(Observer.name, Observer.noise_class).all()
     finally:
         db.close()
-    assert len(rows) == 23, f"expected 23 seeded observers, got {len(rows)}"
+    # 23 (migration 0039 + later additions) + 2 (`edgar_former_names`,
+    # `edgar_8k_items` — migration 0062, planning#213; both `noise_class=
+    # 'silent'`, so neither changes the denial set below).
+    assert len(rows) == 25, f"expected 25 seeded observers, got {len(rows)}"
 
     denied = {name for name, noise_class in rows if not posture.observer_permitted(passive_only=True, noise_class=noise_class)}
     assert denied == _PLANNING_193_DENIAL_SET, (

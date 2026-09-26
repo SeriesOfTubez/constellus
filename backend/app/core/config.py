@@ -29,6 +29,16 @@ class Settings(BaseSettings):
     # place restricting posture is decided). A bad env value fails at
     # `Settings()` construction (pydantic `Literal`), not at first LLM call.
     llm_data_policy: Literal["strict", "dev_permissive"] = "strict"
+    # planning#213 — SEC's fair-access policy requires a descriptive
+    # User-Agent identifying the requester and a real contact, or
+    # `www.sec.gov`/`data.sec.gov` 403 automated fetchers
+    # (https://www.sec.gov/os/webmaster-faq#developers). No default: this
+    # deployment's own contact address must never be hard-coded into a
+    # public repo. Left unset here (rather than validated eagerly) so a
+    # missing value never blocks ordinary app startup —
+    # `app.services.edgar_ingest.require_user_agent` enforces validity
+    # before ingest makes its first HTTP request, not before.
+    sec_user_agent: str | None = None
 
 
 settings = Settings()

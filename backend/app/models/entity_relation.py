@@ -34,6 +34,12 @@ class EntityRelation(Base):
     `app.services.entity_graph.project_edges` groups them into one edge with
     multiple sources for display.
 
+    ## Direction convention (planning#213 — #212 never defined one)
+
+    "subject `formerly_named` object" reads "subject was formerly named
+    object" — the SUBJECT is the entity under its CURRENT name, the OBJECT
+    is the `OrgEntity` row standing in for the retired name.
+
     ## The decision gate — `ck_entity_relations_decision` (migration 0061)
 
     Rejection always needs `decision_kind = 'person'`. Auto-confirmation

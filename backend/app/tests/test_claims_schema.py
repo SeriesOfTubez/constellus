@@ -69,7 +69,9 @@ def test_observers_seeded_with_23_rows_and_correct_addressing():
     finally:
         db.close()
     by_name = dict(rows)
-    assert len(by_name) == 23, f"expected 23 seeded observers, got {len(by_name)}: {sorted(by_name)}"
+    # 23 (migration 0039 + later additions) + 2 (`edgar_former_names`,
+    # `edgar_8k_items` — migration 0062, planning#213).
+    assert len(by_name) == 25, f"expected 25 seeded observers, got {len(by_name)}: {sorted(by_name)}"
     assert by_name["naabu"] == "ip"
     assert by_name["banner_grab"] == "ip"
     assert by_name["tlsx"] == "name"
@@ -134,6 +136,10 @@ _EXPECTED_NOISE_CLASSES = {
     "eol_enrichment": "silent",
     "cpe_normalizer": "silent",
     "dangling_dns_analyzer": "silent",
+    # migration 0062, planning#213 — both query data.sec.gov, never the
+    # counterparty, so both are `silent`.
+    "edgar_former_names": "silent",
+    "edgar_8k_items": "silent",
 }
 
 
@@ -148,7 +154,9 @@ def test_observers_noise_class_matches_the_planning_196_classification_map():
         db.close()
     by_name = dict(rows)
 
-    assert len(by_name) == 23, f"expected 23 seeded observers, got {len(by_name)}: {sorted(by_name)}"
+    # 23 (migration 0039 + later additions) + 2 (`edgar_former_names`,
+    # `edgar_8k_items` — migration 0062, planning#213).
+    assert len(by_name) == 25, f"expected 25 seeded observers, got {len(by_name)}: {sorted(by_name)}"
 
     bad_vocab = {name: nc for name, nc in by_name.items() if nc not in OBSERVER_NOISE}
     assert not bad_vocab, f"noise_class outside OBSERVER_NOISE: {bad_vocab}"
@@ -156,7 +164,9 @@ def test_observers_noise_class_matches_the_planning_196_classification_map():
     counts = {"target_host": 0, "target_infra": 0, "third_party_infra": 0, "silent": 0}
     for nc in by_name.values():
         counts[nc] += 1
-    assert counts == {"target_host": 8, "target_infra": 2, "third_party_infra": 3, "silent": 10}, counts
+    # `silent` is 12, not 10: migration 0062 (planning#213) added two more
+    # silent observers (`edgar_former_names`, `edgar_8k_items`).
+    assert counts == {"target_host": 8, "target_infra": 2, "third_party_infra": 3, "silent": 12}, counts
 
     assert by_name == _EXPECTED_NOISE_CLASSES, (
         f"only in table: {set(by_name) - set(_EXPECTED_NOISE_CLASSES)}; "
