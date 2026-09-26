@@ -89,6 +89,19 @@ class LlmCall(Base):
     target_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("targets.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # The engagement `app.services.llm_connector._resolve_scope` resolved
+    # for this call (planning#140 slice 2) — a SNAPSHOT, like `passive_only`
+    # below: it survives the target later moving to a different engagement,
+    # because it records what was in scope when THIS call was made, not
+    # what the target belongs to now. `ON DELETE SET NULL`, not RESTRICT
+    # like `targets.engagement_id`: an engagement can only be deleted once
+    # it has no member targets left (that FK is already RESTRICT), so a
+    # deleted engagement's historical spend simply drops into the unscoped
+    # (`NULL`) bucket `spend_summary`'s `by_engagement` reports under key
+    # `None` — accepted, not treated as a data-loss bug.
+    engagement_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("engagements.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     # SNAPSHOT at call time — the target's posture can change after the
     # fact, and this column must keep recording what was true when the
     # call was actually made, not what is true now.

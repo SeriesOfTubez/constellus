@@ -17,24 +17,23 @@ implement inference itself.
 No agentic research loop, no tool calling, no web-search/plugins, no job
 queue (planning#134 — `LLMRateLimited` is written the way it is, raising
 rather than escalating, specifically so a future queue can reschedule the
-call instead of burning another model's budget), no per-engagement
-anything (planning#132 has not landed an engagement object yet — see
-"Why posture, not an engagement, decides data policy" below), and no
-caller anywhere in the app. It stops at the connector + ledger.
+call instead of burning another model's budget), and no per-engagement
+spend cap (planning#140 slice 2 rolls spend up per engagement in
+`spend_summary`'s `by_engagement`, but the global daily budget stays the
+only limit — see that function). It stops at the connector + ledger.
 
-## Why posture, not an engagement, decides data policy
+## Data policy is derived from the resolved engagement (planning#140 slice 2)
 
-R3: pre-close is decided ONLY by `app.services.posture.is_passive_only`,
-never by a new rendering of "is this pre-close" and never by reading a
-target's engagement posture directly in this module. The real question
-this slice wants to ask is "is there an active engagement whose
-confidentiality requires the strict data policy" — planning#211 has since
-built the engagement object `is_passive_only` now reads
-(`target_row.engagement.posture`), but this module still calls
-`is_passive_only` exactly as before and does not read the engagement
-directly; the re-key onto `engagement_id`/a per-engagement data policy is
-planning#140 slice 2, deliberately not built here. When that slice lands,
-`effective_data_policy` is the one function that needs to change.
+`effective_data_policy` takes the `Engagement` that `_resolve_scope`
+resolved for this call (`None` when the call is unscoped) and returns
+`"strict"` iff `settings.llm_data_policy == "strict"` or
+`posture.posture_restricts(engagement.posture if engagement else None)` —
+the SAME predicate `app.services.posture` exports for every other
+posture-gated caller in this codebase (R3: there is no second rendering of
+"is this restricted" anywhere in this module). `_precall` resolves scope
+exactly once per call (`_resolve_scope`, below); `passive_only` and the
+effective policy both come from that one resolved engagement, never from a
+second lookup or a different predicate.
 
 ## R1 — no silent fallback to a non-compliant endpoint
 
@@ -124,6 +123,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.models.engagement import Engagement
 from app.models.llm_call import LlmCall
 from app.models.target import Target
 from app.services import app_settings, connector_config, posture
@@ -330,12 +330,17 @@ class StructuredResult(Generic[T]):
 
 # ── data policy ──────────────────────────────────────────────────────────────
 
-def effective_data_policy(passive_only: bool) -> str:
-    """`"strict"` if `settings.llm_data_policy == "strict"` OR the target
-    is passive-only (pre-close M&A, per `posture.is_passive_only`) —
-    dev_permissive is never enough on its own to relax a pre-close target
-    (R3). Otherwise `"dev_permissive"`."""
-    if settings.llm_data_policy == "strict" or passive_only:
+def effective_data_policy(engagement: Engagement | None) -> str:
+    """`"strict"` if `settings.llm_data_policy == "strict"` OR the resolved
+    engagement's posture restricts traffic to passive-only
+    (`posture.posture_restricts`, `None` reads as "no engagement, nothing
+    to restrict") — dev_permissive is never enough on its own to relax a
+    restricted engagement (R3). Otherwise `"dev_permissive"`. `engagement`
+    is whatever `_resolve_scope` resolved for this call; see the module
+    docstring's "Data policy is derived from the resolved engagement"
+    section."""
+    restricts = posture.posture_restricts(engagement.posture if engagement is not None else None)
+    if settings.llm_data_policy == "strict" or restricts:
         return "strict"
     return "dev_permissive"
 
@@ -385,6 +390,7 @@ def _write_ledger(
     role: str,
     task: str,
     target_id: uuid.UUID | None,
+    engagement_id: uuid.UUID | None,
     passive_only: bool,
     data_policy: str,
     requested_model: str,
@@ -412,6 +418,7 @@ def _write_ledger(
             role=role,
             task=task,
             target_id=target_id,
+            engagement_id=engagement_id,
             passive_only=passive_only,
             data_policy=data_policy,
             requested_model=requested_model,
@@ -450,10 +457,10 @@ def prune_ledger(db: Session) -> int:
 
 def spend_summary(db: Session, *, since: datetime, until: datetime) -> dict[str, Any]:
     """Aggregate RAW (not grossed-up) spend over `[since, until)`, plus the
-    fee rate and gross total, broken down by role/model/task, and the
-    passive-only-target subtotal. Read-side only — no API endpoint in this
-    slice; whether/how spend is exposed in the UI is an open decision for
-    slice 2."""
+    fee rate and gross total, broken down by role/model/task/engagement, and
+    the passive-only-target subtotal. Read-side only — no API endpoint yet;
+    the `by_engagement` roll-up (planning#140 slice 2) now exists, but
+    whether/how spend is exposed in the UI is still an open decision."""
     from sqlalchemy import func
 
     window = (LlmCall.created_at >= since, LlmCall.created_at < until)
@@ -480,6 +487,16 @@ def spend_summary(db: Session, *, since: datetime, until: datetime) -> dict[str,
         .filter(*window).group_by(LlmCall.task).all()
     }
 
+    # Keyed by `str(uuid)` for a scoped row, Python `None` (not the string
+    # "None") for the unscoped bucket — `LlmCall.engagement_id` itself is
+    # `NULL` for those rows, and `group_by` already groups all of them
+    # together under that one `NULL` key.
+    by_engagement = {
+        (str(engagement_id) if engagement_id is not None else None): Decimal(str(total))
+        for engagement_id, total in db.query(LlmCall.engagement_id, func.coalesce(func.sum(LlmCall.cost_usd), 0))
+        .filter(*window).group_by(LlmCall.engagement_id).all()
+    }
+
     passive_only_raw_usd = Decimal(str(
         db.query(func.coalesce(func.sum(LlmCall.cost_usd), 0))
         .filter(*window, LlmCall.passive_only == True)  # noqa: E712
@@ -494,6 +511,7 @@ def spend_summary(db: Session, *, since: datetime, until: datetime) -> dict[str,
         "by_role": by_role,
         "by_model": by_model,
         "by_task": by_task,
+        "by_engagement": by_engagement,
         "passive_only_raw_usd": passive_only_raw_usd,
     }
 
@@ -510,30 +528,83 @@ def _grossed_up_spend_today(db: Session) -> Decimal:
     return raw * (1 + OPENROUTER_CREDIT_FEE_RATE)
 
 
+# ── scope resolution ─────────────────────────────────────────────────────────
+
+def _resolve_scope(
+    db: Session, *, target_id: uuid.UUID | None, engagement_id: uuid.UUID | None,
+) -> Engagement | None:
+    """Resolve the `Engagement` in scope for this call, per the table in
+    planning#140 slice 2's spec:
+
+    | target_id | engagement_id | result                                   |
+    |-----------|----------------|------------------------------------------|
+    | None      | None           | `None` (unscoped)                        |
+    | set       | None           | `target.engagement` (may itself be `None`)|
+    | None      | set            | the `Engagement` row                     |
+    | set       | set            | target's `engagement_id` must EQUAL the given `engagement_id` |
+
+    A `target_id` that does not resolve to a `targets` row, or an
+    `engagement_id` that does not resolve to an `engagements` row, is an
+    `LLMConfigError` — never silently treated as unscoped (R6, the same
+    discipline the old target-only check already applied). A target/
+    engagement_id PAIR that disagree is ALSO an `LLMConfigError`: a mismatch
+    is scope confusion, and either side might be the one holding the
+    restricting posture, so there is no safe default to fall back to.
+    Raised before any ledger row or HTTP request, same as every other
+    `LLMConfigError` this module raises.
+
+    Why `engagement_id` without a `target_id` exists: the #215 research
+    loop works on an engagement's subject before any `targets` row exists.
+    That is the reason, and there is no caller yet.
+    """
+    if target_id is None:
+        if engagement_id is None:
+            return None
+        engagement_row = db.get(Engagement, engagement_id)
+        if engagement_row is None:
+            raise LLMConfigError(f"engagement_id={engagement_id} does not resolve to an engagements row")
+        return engagement_row
+
+    target_row = db.get(Target, target_id)
+    if target_row is None:
+        raise LLMConfigError(f"target_id={target_id} does not resolve to a targets row")
+
+    if engagement_id is None:
+        return target_row.engagement
+
+    if target_row.engagement_id != engagement_id:
+        raise LLMConfigError(
+            f"target_id={target_id} belongs to engagement_id={target_row.engagement_id!r}, "
+            f"which does not match the given engagement_id={engagement_id!r}"
+        )
+    return target_row.engagement
+
+
 # ── pre-call ─────────────────────────────────────────────────────────────────
 
-def _precall(db: Session, *, role: Role, target_id: uuid.UUID | None, task: str) -> tuple[str, dict[Role, RoleBinding], bool, str]:
+def _precall(
+    db: Session, *, role: Role, target_id: uuid.UUID | None, engagement_id: uuid.UUID | None, task: str,
+) -> tuple[str, dict[Role, RoleBinding], bool, str, uuid.UUID | None]:
     """Everything §5's "Pre-call, once per public call" section requires,
     shared by `complete()` and `structured()`. Returns
-    (api_key, bindings, passive_only, effective_policy)."""
+    (api_key, bindings, passive_only, effective_policy, resolved_engagement_id)."""
     bindings = load_bindings(db)  # LLMConfigError propagates untouched — zero requests, no ledger row.
     primary_model = bindings[role].models[0]
 
-    # 1. Resolve target + effective policy FIRST, before any ledger row can
-    # be written: every row snapshots `passive_only`/`data_policy`, and a
-    # `not_configured` row written ahead of this would record a pre-close
-    # target as `passive_only=False` under whatever the env var says - a
-    # false record in the one table spend-by-posture is read from. A
-    # target_id that does not exist is a config error, never treated as
-    # unscoped (R6).
-    if target_id is not None:
-        target_row = db.get(Target, target_id)
-        if target_row is None:
-            raise LLMConfigError(f"target_id={target_id} does not resolve to a targets row")
-    else:
-        target_row = None
-    passive_only = posture.is_passive_only(target_row)
-    policy = effective_data_policy(passive_only)
+    # 1. Resolve scope + effective policy FIRST, before any ledger row can
+    # be written: every row snapshots `passive_only`/`data_policy`/
+    # `engagement_id`, and a `not_configured` row written ahead of this
+    # would record a restricted engagement as `passive_only=False` under
+    # whatever the env var says - a false record in the one table
+    # spend-by-posture is read from. `_resolve_scope` raises `LLMConfigError`
+    # for an unresolvable target_id/engagement_id or a mismatched pair,
+    # never treats either as unscoped (R6).
+    # `passive_only` and `policy` both derive from this ONE resolved
+    # `engagement_row` via the same `posture.posture_restricts` (R3).
+    engagement_row = _resolve_scope(db, target_id=target_id, engagement_id=engagement_id)
+    resolved_engagement_id = engagement_row.id if engagement_row is not None else None
+    passive_only = posture.posture_restricts(engagement_row.posture if engagement_row is not None else None)
+    policy = effective_data_policy(engagement_row)
 
     # 2. Connector row + key (R5) — missing/disabled/empty key -> not_configured.
     row = connector_config.get_one(db, _CONNECTOR_ID)
@@ -542,8 +613,8 @@ def _precall(db: Session, *, role: Role, target_id: uuid.UUID | None, task: str)
         api_key = connector_config.get_decrypted_config(db, _CONNECTOR_ID).get("api_key")
     if not api_key:
         _write_ledger(
-            role=role.value, task=task, target_id=target_id, passive_only=passive_only,
-            data_policy=policy, requested_model=primary_model,
+            role=role.value, task=task, target_id=target_id, engagement_id=resolved_engagement_id,
+            passive_only=passive_only, data_policy=policy, requested_model=primary_model,
             tier=1, attempt=1, status="not_configured",
         )
         raise LLMNotConfigured(
@@ -558,8 +629,8 @@ def _precall(db: Session, *, role: Role, target_id: uuid.UUID | None, task: str)
     gross = _grossed_up_spend_today(db)
     if gross >= budget:
         _write_ledger(
-            role=role.value, task=task, target_id=target_id, passive_only=passive_only,
-            data_policy=policy, requested_model=primary_model, tier=1, attempt=1,
+            role=role.value, task=task, target_id=target_id, engagement_id=resolved_engagement_id,
+            passive_only=passive_only, data_policy=policy, requested_model=primary_model, tier=1, attempt=1,
             status="budget_refused",
         )
         raise LLMBudgetExhausted(
@@ -567,7 +638,7 @@ def _precall(db: Session, *, role: Role, target_id: uuid.UUID | None, task: str)
             f"{gross} >= budget {budget}"
         )
 
-    return api_key, bindings, passive_only, policy
+    return api_key, bindings, passive_only, policy, resolved_engagement_id
 
 
 # ── HTTP attempt (one model, with its own inline retries) ──────────────────
@@ -651,6 +722,7 @@ def _attempt_model(
     role: Role,
     task: str,
     target_id: uuid.UUID | None,
+    engagement_id: uuid.UUID | None,
     passive_only: bool,
     policy: str,
     tier: int,
@@ -680,9 +752,9 @@ def _attempt_model(
     def _record(status: str, **fields: Any) -> int:
         attempt_counter[0] += 1
         row_id = _write_ledger(
-            role=role.value, task=task, target_id=target_id, passive_only=passive_only,
-            data_policy=policy, requested_model=model, tier=tier, attempt=attempt_counter[0],
-            status=status, **fields,
+            role=role.value, task=task, target_id=target_id, engagement_id=engagement_id,
+            passive_only=passive_only, data_policy=policy, requested_model=model, tier=tier,
+            attempt=attempt_counter[0], status=status, **fields,
         )
         ledger_ids.append(row_id)
         return row_id
@@ -824,12 +896,18 @@ def _validate_and_ground(
 
 # ── public API ───────────────────────────────────────────────────────────────
 
-def complete(db: Session, *, role: Role, messages: list[dict], target_id: uuid.UUID | None, task: str) -> Completion:
+def complete(
+    db: Session, *, role: Role, messages: list[dict], target_id: uuid.UUID | None,
+    engagement_id: uuid.UUID | None, task: str,
+) -> Completion:
     """Tier 1 only — plain chat completion, model fallback across the
-    role's bound ladder, no structured-output validation. `target_id` has
-    no default (R6): omitting it is a `TypeError`, not a silent unscoped
-    call."""
-    api_key, bindings, passive_only, policy = _precall(db, role=role, target_id=target_id, task=task)
+    role's bound ladder, no structured-output validation. `target_id` and
+    `engagement_id` both have no default (R6): omitting either is a
+    `TypeError`, not a silent unscoped call. See `_resolve_scope` for how
+    the two combine."""
+    api_key, bindings, passive_only, policy, resolved_engagement_id = _precall(
+        db, role=role, target_id=target_id, engagement_id=engagement_id, task=task,
+    )
     binding = bindings[role]
 
     ledger_ids: list[int] = []
@@ -848,8 +926,8 @@ def complete(db: Session, *, role: Role, messages: list[dict], target_id: uuid.U
         }
         outcome = _attempt_model(
             db, api_key=api_key, body=body, model=model, role=role, task=task,
-            target_id=target_id, passive_only=passive_only, policy=policy, tier=tier,
-            ledger_ids=ledger_ids, attempt_counter=attempt_counter,
+            target_id=target_id, engagement_id=resolved_engagement_id, passive_only=passive_only,
+            policy=policy, tier=tier, ledger_ids=ledger_ids, attempt_counter=attempt_counter,
         )
         if outcome["status"] != "ok":
             attempts.append((model, outcome["status"]))
@@ -858,11 +936,11 @@ def complete(db: Session, *, role: Role, messages: list[dict], target_id: uuid.U
         resp_json = outcome["response_json"]
         attempt_counter[0] += 1
         row_id = _write_ledger(
-            role=role.value, task=task, target_id=target_id, passive_only=passive_only,
-            data_policy=policy, requested_model=model, tier=tier, attempt=attempt_counter[0],
-            status="ok", served_model=resp_json.get("model"), provider=resp_json.get("provider"),
-            generation_id=resp_json.get("id"), latency_ms=outcome.get("latency_ms"),
-            **_usage_fields(resp_json),
+            role=role.value, task=task, target_id=target_id, engagement_id=resolved_engagement_id,
+            passive_only=passive_only, data_policy=policy, requested_model=model, tier=tier,
+            attempt=attempt_counter[0], status="ok", served_model=resp_json.get("model"),
+            provider=resp_json.get("provider"), generation_id=resp_json.get("id"),
+            latency_ms=outcome.get("latency_ms"), **_usage_fields(resp_json),
         )
         ledger_ids.append(row_id)
         return Completion(
@@ -884,12 +962,16 @@ def complete(db: Session, *, role: Role, messages: list[dict], target_id: uuid.U
 
 def structured(
     db: Session, *, role: Role, messages: list[dict], schema: type[T], target_id: uuid.UUID | None,
-    task: str, source_text: str | None,
+    engagement_id: uuid.UUID | None, task: str, source_text: str | None,
 ) -> StructuredResult[T]:
-    """The three-tier ladder — see module docstring. `target_id` and
-    `source_text` both have no default (R6): a fact extraction that
-    forgets its span must not silently become "not_applicable"."""
-    api_key, bindings, passive_only, policy = _precall(db, role=role, target_id=target_id, task=task)
+    """The three-tier ladder — see module docstring. `target_id`,
+    `engagement_id` and `source_text` all have no default (R6): a fact
+    extraction that forgets its scope or its span must not silently become
+    unscoped/"not_applicable". See `_resolve_scope` for how `target_id`
+    and `engagement_id` combine."""
+    api_key, bindings, passive_only, policy, resolved_engagement_id = _precall(
+        db, role=role, target_id=target_id, engagement_id=engagement_id, task=task,
+    )
     binding = bindings[role]
     extract_binding = bindings[Role.EXTRACT]
     extract_primary = extract_binding.models[0]
@@ -914,8 +996,8 @@ def structured(
         }
         outcome1 = _attempt_model(
             db, api_key=api_key, body=body1, model=model, role=role, task=task,
-            target_id=target_id, passive_only=passive_only, policy=policy, tier=tier1,
-            ledger_ids=ledger_ids, attempt_counter=attempt_counter,
+            target_id=target_id, engagement_id=resolved_engagement_id, passive_only=passive_only,
+            policy=policy, tier=tier1, ledger_ids=ledger_ids, attempt_counter=attempt_counter,
         )
         if outcome1["status"] != "ok":
             attempts.append(f"{model} tier{tier1}: {outcome1['status']}")
@@ -929,11 +1011,11 @@ def structured(
 
         attempt_counter[0] += 1
         row1_id = _write_ledger(
-            role=role.value, task=task, target_id=target_id, passive_only=passive_only,
-            data_policy=policy, requested_model=model, tier=tier1, attempt=attempt_counter[0],
-            status=status1, served_model=resp1.get("model"), provider=resp1.get("provider"),
-            generation_id=resp1.get("id"), latency_ms=outcome1.get("latency_ms"),
-            ungrounded_fields=ungrounded1, **_usage_fields(resp1),
+            role=role.value, task=task, target_id=target_id, engagement_id=resolved_engagement_id,
+            passive_only=passive_only, data_policy=policy, requested_model=model, tier=tier1,
+            attempt=attempt_counter[0], status=status1, served_model=resp1.get("model"),
+            provider=resp1.get("provider"), generation_id=resp1.get("id"),
+            latency_ms=outcome1.get("latency_ms"), ungrounded_fields=ungrounded1, **_usage_fields(resp1),
         )
         ledger_ids.append(row1_id)
         saw_non_404 = True
@@ -964,8 +1046,8 @@ def structured(
         }
         outcome2 = _attempt_model(
             db, api_key=api_key, body=body2, model=extract_primary, role=role, task=task,
-            target_id=target_id, passive_only=passive_only, policy=policy, tier=tier2,
-            ledger_ids=ledger_ids, attempt_counter=attempt_counter,
+            target_id=target_id, engagement_id=resolved_engagement_id, passive_only=passive_only,
+            policy=policy, tier=tier2, ledger_ids=ledger_ids, attempt_counter=attempt_counter,
         )
         if outcome2["status"] != "ok":
             attempts.append(f"{extract_primary} tier{tier2}: {outcome2['status']}")
@@ -989,11 +1071,11 @@ def structured(
 
         attempt_counter[0] += 1
         row2_id = _write_ledger(
-            role=role.value, task=task, target_id=target_id, passive_only=passive_only,
-            data_policy=policy, requested_model=extract_primary, tier=tier2, attempt=attempt_counter[0],
-            status=status2, served_model=resp2.get("model"), provider=resp2.get("provider"),
-            generation_id=resp2.get("id"), latency_ms=outcome2.get("latency_ms"),
-            ungrounded_fields=ungrounded2, **_usage_fields(resp2),
+            role=role.value, task=task, target_id=target_id, engagement_id=resolved_engagement_id,
+            passive_only=passive_only, data_policy=policy, requested_model=extract_primary, tier=tier2,
+            attempt=attempt_counter[0], status=status2, served_model=resp2.get("model"),
+            provider=resp2.get("provider"), generation_id=resp2.get("id"),
+            latency_ms=outcome2.get("latency_ms"), ungrounded_fields=ungrounded2, **_usage_fields(resp2),
         )
         ledger_ids.append(row2_id)
         saw_non_404 = True

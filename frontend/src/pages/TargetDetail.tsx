@@ -106,6 +106,16 @@ function EngagementControl({
 
   const widensToDetach = !!target.engagement && RESTRICTING_POSTURES.has(target.engagement.posture)
 
+  const pickedEngagement = attachable.find(e => e.id === pickedId)
+  const confirmLabel =
+    pickerMode === "new"
+      ? "Create and mark as pre-close"
+      : !pickedEngagement
+        ? "Add to engagement"
+        : pickedEngagement.posture === "pre_close"
+          ? "Mark as pre-close"
+          : `Add to ${POSTURE_LABEL[pickedEngagement.posture] ?? pickedEngagement.posture} engagement`
+
   function attach() {
     if (pickerMode === "existing") {
       if (!pickedId) return
@@ -183,13 +193,13 @@ function EngagementControl({
   return (
     <div className="h-8 flex items-center">
       <Button size="sm" variant="outline" disabled={isPending} onClick={() => setPickerOpen(true)}>
-        Mark as M&A (pre-close)
+        Add to M&A engagement
       </Button>
 
       <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Mark as M&A (pre-close)</DialogTitle>
+            <DialogTitle>Add to M&A engagement</DialogTitle>
             <DialogDescription>
               Choose an existing engagement, or create a new one. New engagements start in pre-close and restrict
               all active probing and DNS enumeration until authorised further.
@@ -232,7 +242,7 @@ function EngagementControl({
               disabled={isPending || createMutation.isPending || (pickerMode === "existing" ? !pickedId : !newName.trim())}
               onClick={attach}
             >
-              Mark as pre-close
+              {confirmLabel}
             </Button>
           </DialogFooter>
         </DialogContent>

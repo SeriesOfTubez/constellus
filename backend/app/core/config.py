@@ -23,9 +23,10 @@ class Settings(BaseSettings):
     # exceptions. `dev_permissive` lets a local dev machine route to
     # cheap/free endpoints that may retain or train on prompts — never
     # enough on its own: `app.services.llm_connector.effective_data_policy`
-    # forces `strict` back on regardless for any pre-close M&A target,
-    # via `app.services.posture.is_passive_only` (R3 — that module is the
-    # ONLY place pre-close posture is decided). A bad env value fails at
+    # forces `strict` back on regardless when the call's resolved engagement
+    # restricts (`pre_close` or `abandoned`, via
+    # `app.services.posture.posture_restricts` — R3: that module is the ONLY
+    # place restricting posture is decided). A bad env value fails at
     # `Settings()` construction (pydantic `Literal`), not at first LLM call.
     llm_data_policy: Literal["strict", "dev_permissive"] = "strict"
 
