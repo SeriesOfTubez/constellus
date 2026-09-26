@@ -54,3 +54,7 @@ class EvidenceFetch(Base):
     )
     source_url: Mapped[str] = mapped_column(Text, nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # planning#216 (migration 0064): `person_supplied` = an excerpt a person
+    # pasted and attributed to `source_url`; nothing was fetched, and
+    # `fetched_at` is when it was supplied. Every other row is `fetched`.
+    origin: Mapped[str] = mapped_column(Text, nullable=False, default="fetched", server_default=text("'fetched'"))

@@ -1854,3 +1854,141 @@ def test_bare_section_excludes_part_ii_but_ends_on_a_real_all_caps_heading():
     finally:
         cleanup_cik(db, cik)
         db.close()
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# planning#216 — the filer's own website, read from the SAME primary 10-K
+# document the footnote reader already fetches.
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def _website_document(domain: str) -> str:
+    return text_block_html(
+        [
+            "Item 1. Business.",
+            f"Available Information. Our website address is www.{domain}. Information on it is not part of this report.",
+            "We also work with vendors such as www.vendor-cd216.example.",
+        ]
+    )
+
+
+def test_website_candidate_is_proposed_from_the_shared_primary_document_fetch():
+    from app.models.candidate_domain import CandidateDomain
+    from app.models.target import Target
+
+    db = SessionLocal()
+    cik = make_cik(db)
+    domain = f"holdings-{uuid.uuid4().hex[:8]}.example"
+    try:
+        a1, a2 = _accession(316), _accession(317)
+        recent = _annual_report_recent(
+            [
+                {"form": "10-K", "accession": a2, "filing_date": "2024-02-01"},
+                {"form": "10-K", "accession": a1, "filing_date": "2020-02-01"},
+            ]
+        )
+        body = _submissions(cik, recent=recent)
+        result, transport = _run_ingest2(
+            db, cik, body,
+            indexes={
+                a1: index_html([{"Document": "k2020.htm", "Type": "10-K"}]),
+                a2: index_html([{"Document": "k2024.htm", "Type": "10-K"}]),
+            },
+            documents={"k2020.htm": _website_document(domain), "k2024.htm": _website_document(domain)},
+        )
+
+        # One fetch per 10-K, shared by both readers — the website reader
+        # adds no request of its own.
+        leaves = [r.url.path.rsplit("/", 1)[-1] for r in transport.requests]
+        assert leaves.count("k2020.htm") == 1 and leaves.count("k2024.htm") == 1
+        assert result.website_candidates_proposed == 1
+        assert result.website_candidates_existing == 1
+
+        entity = db.execute(select(OrgEntity).where(OrgEntity.cik == cik)).scalar_one()
+        rows = db.execute(select(CandidateDomain).where(CandidateDomain.entity_id == entity.id)).scalars().all()
+        # The vendor domain is in the same document but not after an own-site anchor.
+        assert [r.domain for r in rows] == [domain]
+        row = rows[0]
+        assert (row.status, row.source, row.first_cited_on, row.last_cited_on) == (
+            "proposed", "edgar_10k_website", date(2020, 2, 1), date(2024, 2, 1),
+        )
+        # Cites the FIRST 10-K that named it (ingest runs oldest-first).
+        from app.models.evidence import EvidenceFetch
+
+        assert db.get(EvidenceFetch, row.evidence_id).source_url.endswith("/k2020.htm")
+        assert row.observer_id == _observer_by_name(db, "edgar_10k_website").id
+        # A candidate is never scope.
+        assert db.query(Target).filter(Target.value == domain).count() == 0
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+def test_posture_denies_website_signal_when_restricting_but_not_footnote(monkeypatch):
+    from app.models.candidate_domain import CandidateDomain
+
+    db = SessionLocal()
+    cik = make_cik(db)
+    engagement_id = None
+    throwaway_observer_id = None
+    domain = f"restricted-{uuid.uuid4().hex[:8]}.example"
+    try:
+        entity = OrgEntity(id=uuid.uuid4(), legal_name="Example Restricted Web Holdings", cik=cik)
+        db.add(entity)
+        db.commit()
+        throwaway = make_observer(db, noise_class="target_host")
+        throwaway_observer_id = throwaway.id
+        engagement_id = make_engagement(db, posture=EngagementPosture.PRE_CLOSE.value, subject_entity_id=entity.id).id
+        monkeypatch.setattr(edgar_ingest, "OBSERVER_WEBSITE", throwaway.name)
+
+        accession = _accession(318)
+        lines = ["Note 3 — Acquisitions"] + [f"Body line {i}" for i in range(12)] + [
+            f"Our website is www.{domain}."
+        ]
+        recent = _annual_report_recent([{"form": "10-K", "accession": accession, "filing_date": "2024-01-01"}])
+        result, _ = _run_ingest2(
+            db, cik, _submissions(cik, name="Example Restricted Web Holdings", recent=recent),
+            indexes={accession: index_html([{"Document": "f.htm", "Type": "10-K"}])},
+            documents={"f.htm": text_block_html(lines)},
+        )
+
+        assert throwaway.name in result.denied
+        assert result.website_candidates_proposed == 0
+        assert db.query(CandidateDomain).filter(CandidateDomain.entity_id == entity.id).count() == 0
+        # The footnote reader, NOT denied, still ran over the same document.
+        assert result.sections_stored == 1
+    finally:
+        cleanup_engagement(db, engagement_id)
+        cleanup_cik(db, cik)
+        cleanup_observer(db, throwaway_observer_id)
+        db.close()
+
+
+def test_posture_control_website_signal_runs_without_a_restricting_engagement(monkeypatch):
+    """Paired with the test above, minus the engagement — proves that
+    denial is not vacuous (the same document DOES yield a candidate)."""
+    db = SessionLocal()
+    cik = make_cik(db)
+    throwaway_observer_id = None
+    domain = f"unrestricted-{uuid.uuid4().hex[:8]}.example"
+    try:
+        throwaway = make_observer(db, noise_class="target_host")
+        throwaway_observer_id = throwaway.id
+        monkeypatch.setattr(edgar_ingest, "OBSERVER_WEBSITE", throwaway.name)
+
+        accession = _accession(319)
+        lines = ["Note 3 — Acquisitions"] + [f"Body line {i}" for i in range(12)] + [
+            f"Our website is www.{domain}."
+        ]
+        recent = _annual_report_recent([{"form": "10-K", "accession": accession, "filing_date": "2024-01-01"}])
+        result, _ = _run_ingest2(
+            db, cik, _submissions(cik, recent=recent),
+            indexes={accession: index_html([{"Document": "f.htm", "Type": "10-K"}])},
+            documents={"f.htm": text_block_html(lines)},
+        )
+        assert result.denied == []
+        assert result.website_candidates_proposed == 1
+    finally:
+        cleanup_cik(db, cik)
+        cleanup_observer(db, throwaway_observer_id)
+        db.close()

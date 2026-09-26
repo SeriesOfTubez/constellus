@@ -155,7 +155,7 @@ from app.models.entity_relation import EntityRelation
 from app.models.entity_subsidiary_listing import EntitySubsidiaryListing
 from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
-from app.services import edgar_html, entity_graph, posture, sec_edgar
+from app.services import candidate_domains, edgar_html, entity_graph, posture, sec_edgar
 
 log = logging.getLogger(__name__)
 
@@ -170,6 +170,9 @@ OBSERVER_FORMER_NAMES = "edgar_former_names"
 OBSERVER_8K_ITEMS = "edgar_8k_items"
 OBSERVER_EX21 = "edgar_ex21"
 OBSERVER_FOOTNOTE = "edgar_10k_footnote"
+# planning#216 (migration 0064) — the filer's own website, read from the
+# same primary 10-K document the footnote reader uses.
+OBSERVER_WEBSITE = "edgar_10k_website"
 
 # 10-K405 is the pre-2003 EDGAR form id for an on-time 10-K with the (now
 # retired) Item 405 box checked — still a plain annual report, so it is
@@ -239,6 +242,9 @@ class IngestResult:
     sections_stored: int = 0
     sections_existing: int = 0
     sections_not_found: int = 0
+    # planning#216: candidate domains from the 10-K's own website sentence.
+    website_candidates_proposed: int = 0
+    website_candidates_existing: int = 0
     oversize_skipped: int = 0
     # A document filename (from the index or the `primaryDocument` fallback)
     # that fails `sec_edgar.is_valid_filename` — never requested.
@@ -667,18 +673,22 @@ def _process_ex21_for_filing(
             result.subsidiaries_proposed += 1
 
 
-def _process_footnote_for_filing(
+def _process_primary_document_for_filing(
     db: Session,
     *,
     entity: OrgEntity,
     normalised_cik: str,
-    observer: Observer,
+    footnote_observer: Observer | None,
+    website_observer: Observer | None,
     index_rows: list[dict] | None,
     report: dict,
     result: IngestResult,
 ) -> None:
-    """Locate and store ONE 10-K's Business Combinations / Acquisitions
-    footnote. `index_rows` may be `None` (the index itself could not be
+    """Fetch ONE 10-K's primary document once, then run each permitted
+    reader over it: the Business Combinations / Acquisitions footnote
+    (`footnote_observer`) and the filer's own website sentence
+    (`website_observer`, planning#216). A `None` observer means that
+    reader is denied by posture (the caller decides). `index_rows` may be `None` (the index itself could not be
     fetched/parsed — see `ingest_cik`'s loop) — the submissions JSON's
     `primaryDocument` fallback needs no index at all.
 
@@ -745,6 +755,54 @@ def _process_footnote_for_filing(
     )
 
     lines = edgar_html.render_text_lines(doc_content.decode("utf-8", errors="replace"))
+    if website_observer is not None:
+        _propose_websites(
+            db, entity=entity, observer=website_observer, evidence_id=evidence.id, lines=lines, report=report, result=result
+        )
+    if footnote_observer is not None:
+        _store_footnote_section(
+            db, entity=entity, observer=footnote_observer, evidence_id=evidence.id, lines=lines, report=report, result=result
+        )
+
+
+def _propose_websites(
+    db: Session,
+    *,
+    entity: OrgEntity,
+    observer: Observer,
+    evidence_id: uuid.UUID,
+    lines: list[str],
+    report: dict,
+    result: IngestResult,
+) -> None:
+    """planning#216: every domain this 10-K names as the filer's own
+    website becomes (or re-cites) a PROPOSED candidate — never a target."""
+    for domain, quote in edgar_html.find_website_mentions(lines):
+        inserted = candidate_domains.propose_from_filing(
+            db,
+            entity_id=entity.id,
+            domain=domain,
+            observer=observer,
+            evidence_id=evidence_id,
+            quote=quote,
+            filing_date=report["filing_date"],
+        )
+        if inserted:
+            result.website_candidates_proposed += 1
+        else:
+            result.website_candidates_existing += 1
+
+
+def _store_footnote_section(
+    db: Session,
+    *,
+    entity: OrgEntity,
+    observer: Observer,
+    evidence_id: uuid.UUID,
+    lines: list[str],
+    report: dict,
+    result: IngestResult,
+) -> None:
     located = edgar_html.find_business_combinations_section(lines)
     if located is None:
         result.sections_not_found += 1
@@ -759,7 +817,7 @@ def _process_footnote_for_filing(
             id=uuid.uuid4(),
             entity_id=entity.id,
             observer_id=observer.id,
-            evidence_id=evidence.id,
+            evidence_id=evidence_id,
             accession_number=report["accession"],
             form=report["form"],
             filing_date=report["filing_date"],
@@ -804,11 +862,12 @@ def ingest_cik(db: Session, cik: str) -> IngestResult:
     events_observer = _load_observer(db, OBSERVER_8K_ITEMS)
     ex21_observer = _load_observer(db, OBSERVER_EX21)
     footnote_observer = _load_observer(db, OBSERVER_FOOTNOTE)
-    if None in (former_names_observer, events_observer, ex21_observer, footnote_observer):
+    website_observer = _load_observer(db, OBSERVER_WEBSITE)
+    if None in (former_names_observer, events_observer, ex21_observer, footnote_observer, website_observer):
         raise EdgarObserversMissing(
             f"seeded observers {OBSERVER_FORMER_NAMES!r}/{OBSERVER_8K_ITEMS!r}/"
-            f"{OBSERVER_EX21!r}/{OBSERVER_FOOTNOTE!r} not found "
-            "(migrations 0062/0063 not applied?) — refusing rather than creating them on the fly."
+            f"{OBSERVER_EX21!r}/{OBSERVER_FOOTNOTE!r}/{OBSERVER_WEBSITE!r} not found "
+            "(migrations 0062/0063/0064 not applied?) — refusing rather than creating them on the fly."
         )
 
     existing_entity = _existing_entity_by_cik(db, normalised_cik)
@@ -824,6 +883,9 @@ def ingest_cik(db: Session, cik: str) -> IngestResult:
     footnote_permitted = posture.observer_permitted(
         passive_only=passive_only, noise_class=footnote_observer.noise_class
     )
+    website_permitted = posture.observer_permitted(
+        passive_only=passive_only, noise_class=website_observer.noise_class
+    )
 
     denied: list[str] = []
     if not former_names_permitted:
@@ -834,11 +896,13 @@ def ingest_cik(db: Session, cik: str) -> IngestResult:
         denied.append(ex21_observer.name)
     if not footnote_permitted:
         denied.append(footnote_observer.name)
+    if not website_permitted:
+        denied.append(website_observer.name)
 
     result = IngestResult(entity_id=existing_entity.id if existing_entity else None, denied=denied)
 
-    if not any((former_names_permitted, events_permitted, ex21_permitted, footnote_permitted)):
-        # All FOUR signals denied — no HTTP request at all.
+    if not any((former_names_permitted, events_permitted, ex21_permitted, footnote_permitted, website_permitted)):
+        # All FIVE signals denied — no HTTP request at all.
         return result
 
     content, content_type, fetched_at, url = sec_edgar.fetch_submissions(normalised_cik)
@@ -863,7 +927,7 @@ def ingest_cik(db: Session, cik: str) -> IngestResult:
     # recent` (slice 2 spec §3 — widened from slice 1's "events-only"
     # condition, which former names alone still never triggers).
     pages: list[tuple[dict, uuid.UUID]] = []
-    if events_permitted or ex21_permitted or footnote_permitted:
+    if events_permitted or ex21_permitted or footnote_permitted or website_permitted:
         for file_entry in (data.get("filings", {}).get("files") or []):
             name = file_entry.get("name")
             page_content, page_content_type, page_fetched_at, page_url = sec_edgar.fetch_submissions_page(name)
@@ -894,7 +958,7 @@ def ingest_cik(db: Session, cik: str) -> IngestResult:
                 db, entity=entity, observer=events_observer, evidence_id=page_evidence_id, array=page_data, result=result
             )
 
-    if ex21_permitted or footnote_permitted:
+    if ex21_permitted or footnote_permitted or website_permitted:
         recent = data.get("filings", {}).get("recent") or {}
         annual_reports = _collect_annual_reports(recent, evidence_id=main_fetch.id)
         for page_data, page_evidence_id in pages:
@@ -960,12 +1024,13 @@ def ingest_cik(db: Session, cik: str) -> IngestResult:
                 # else: no index to locate the EX-21 by Type — nothing
                 # further to do for this filing's EX-21 signal.
 
-            if footnote_permitted:
-                _process_footnote_for_filing(
+            if footnote_permitted or website_permitted:
+                _process_primary_document_for_filing(
                     db,
                     entity=entity,
                     normalised_cik=normalised_cik,
-                    observer=footnote_observer,
+                    footnote_observer=footnote_observer if footnote_permitted else None,
+                    website_observer=website_observer if website_permitted else None,
                     index_rows=index_rows,
                     report=report,
                     result=result,

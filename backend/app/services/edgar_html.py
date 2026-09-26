@@ -373,3 +373,79 @@ def find_business_combinations_section(lines: list[str]) -> tuple[int, int, str,
             break
 
     return start, end, heading, match_count
+
+
+# ── the filer's own website, as the 10-K states it (planning#216) ──────────
+#
+# A 10-K almost always says where the filer publishes its SEC reports ("We
+# make available free of charge on our website at www.example.com …"),
+# usually in Item 1's "Available Information". That sentence is the filer
+# naming its OWN domain in a document it signed, so it is evidence, not a
+# guess — unlike SEC's own `website` / `investorWebsite` submissions fields,
+# which a live probe (2026-09-26) found empty on 50 of 50 filers.
+#
+# Anchor first, domain second: a domain is only taken from a short window
+# AFTER an anchor phrase that says the site is the filer's. A bare domain
+# anywhere else in a 10-K (a customer, a vendor, a regulator, a filing
+# agent) is never a candidate. This function never sees the filer's name,
+# and nothing here maps a name to a domain.
+
+_WEBSITE_ANCHOR_RE = re.compile(
+    r"\b(?:our|the\s+company[’']s|its)\s+"
+    r"(?:(?:corporate|investor(?:\s+relations)?|principal|primary)\s+)?"
+    r"(?:web\s?site|internet\s+(?:web\s?)?site|internet\s+address|home\s?page)\b",
+    re.IGNORECASE,
+)
+_WEBSITE_WINDOW = 160
+# `(?:https?://)?` then one or more labels then an alphabetic TLD. The
+# lookahead stops a sentence-final period, a path, or closing punctuation
+# from being read as part of the host.
+_WEBSITE_DOMAIN_RE = re.compile(
+    r"(?:https?://)?((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24})"
+    r"(?=$|[/\s,;:)\]\"'”’]|\.(?:$|[\s\"'”’)]))",
+    re.IGNORECASE,
+)
+_WEBSITE_EXCLUDED_SUFFIXES = (".gov",)
+_QUOTE_MAX = 500
+
+
+def _sentence_around(line: str, start: int, end: int) -> str:
+    """The sentence of `line` containing `[start, end)`, capped at
+    `_QUOTE_MAX` characters around that span. A sentence boundary is a
+    `.`/`!`/`?` followed by whitespace — a domain's own dots are never
+    followed by whitespace, so they never split it."""
+    left = max(line.rfind(". ", 0, start), line.rfind("! ", 0, start), line.rfind("? ", 0, start))
+    s = 0 if left < 0 else left + 2
+    rights = [i for i in (line.find(". ", end), line.find("! ", end), line.find("? ", end)) if i >= 0]
+    e = min(rights) + 1 if rights else len(line)
+    if e - s > _QUOTE_MAX:
+        s = max(s, start - (_QUOTE_MAX - (end - start)) // 2)
+        e = min(e, s + _QUOTE_MAX)
+    return line[s:e].strip()
+
+
+def find_website_mentions(lines: list[str]) -> list[tuple[str, str]]:
+    """Returns `(domain, quote)` pairs, one per distinct domain, in first-
+    mention order. `domain` is lowercased with a leading `www.` removed;
+    `quote` is the sentence it came from and always contains `domain`
+    case-insensitively (migration 0064's `ck_candidate_domains_quote_
+    contains_domain` depends on that). Only the FIRST domain after each
+    anchor is taken — "our website at www.a.com and the SEC's website at
+    www.sec.gov" must not yield the second."""
+    found: dict[str, str] = {}
+    for line in lines:
+        for anchor in _WEBSITE_ANCHOR_RE.finditer(line):
+            window_end = min(len(line), anchor.end() + _WEBSITE_WINDOW)
+            m = _WEBSITE_DOMAIN_RE.search(line, anchor.end(), window_end)
+            if m is None:
+                continue
+            host = m.group(1).lower()
+            if host.startswith("www."):
+                host = host[4:]
+            if "." not in host or host.endswith(_WEBSITE_EXCLUDED_SUFFIXES) or host in found:
+                continue
+            quote = _sentence_around(line, anchor.start(), m.end())
+            if host not in quote.lower():
+                continue
+            found[host] = quote
+    return list(found.items())

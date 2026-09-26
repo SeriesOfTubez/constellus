@@ -110,7 +110,8 @@ def test_seeded_observers_reproduce_planning_193s_shipped_denial_set():
     # `edgar_8k_items` — migration 0062, planning#213) + 2 (`edgar_ex21`,
     # `edgar_10k_footnote` — migration 0063, planning#213 slice 2); all
     # four `noise_class='silent'`, so none changes the denial set below.
-    assert len(rows) == 27, f"expected 27 seeded observers, got {len(rows)}"
+    # + 1 (`edgar_10k_website` — migration 0064, planning#216), also silent.
+    assert len(rows) == 28, f"expected 28 seeded observers, got {len(rows)}"
 
     denied = {name for name, noise_class in rows if not posture.observer_permitted(passive_only=True, noise_class=noise_class)}
     assert denied == _PLANNING_193_DENIAL_SET, (

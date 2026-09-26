@@ -71,8 +71,9 @@ def test_observers_seeded_with_23_rows_and_correct_addressing():
     by_name = dict(rows)
     # 23 (migration 0039 + later additions) + 2 (`edgar_former_names`,
     # `edgar_8k_items` — migration 0062, planning#213) + 2 (`edgar_ex21`,
-    # `edgar_10k_footnote` — migration 0063, planning#213 slice 2).
-    assert len(by_name) == 27, f"expected 27 seeded observers, got {len(by_name)}: {sorted(by_name)}"
+    # `edgar_10k_footnote` — migration 0063, planning#213 slice 2) + 1
+    # (`edgar_10k_website` — migration 0064, planning#216).
+    assert len(by_name) == 28, f"expected 28 seeded observers, got {len(by_name)}: {sorted(by_name)}"
     assert by_name["naabu"] == "ip"
     assert by_name["banner_grab"] == "ip"
     assert by_name["tlsx"] == "name"
@@ -145,6 +146,8 @@ _EXPECTED_NOISE_CLASSES = {
     # the counterparty, so both are `silent` too.
     "edgar_ex21": "silent",
     "edgar_10k_footnote": "silent",
+    # migration 0064, planning#216 — reads the same stored 10-K.
+    "edgar_10k_website": "silent",
 }
 
 
@@ -161,8 +164,9 @@ def test_observers_noise_class_matches_the_planning_196_classification_map():
 
     # 23 (migration 0039 + later additions) + 2 (`edgar_former_names`,
     # `edgar_8k_items` — migration 0062, planning#213) + 2 (`edgar_ex21`,
-    # `edgar_10k_footnote` — migration 0063, planning#213 slice 2).
-    assert len(by_name) == 27, f"expected 27 seeded observers, got {len(by_name)}: {sorted(by_name)}"
+    # `edgar_10k_footnote` — migration 0063, planning#213 slice 2) + 1
+    # (`edgar_10k_website` — migration 0064, planning#216).
+    assert len(by_name) == 28, f"expected 28 seeded observers, got {len(by_name)}: {sorted(by_name)}"
 
     bad_vocab = {name: nc for name, nc in by_name.items() if nc not in OBSERVER_NOISE}
     assert not bad_vocab, f"noise_class outside OBSERVER_NOISE: {bad_vocab}"
@@ -170,11 +174,12 @@ def test_observers_noise_class_matches_the_planning_196_classification_map():
     counts = {"target_host": 0, "target_infra": 0, "third_party_infra": 0, "silent": 0}
     for nc in by_name.values():
         counts[nc] += 1
-    # `silent` is 14, not 10: migration 0062 (planning#213 slice 1) added
+    # `silent` is 15, not 10: migration 0062 (planning#213 slice 1) added
     # two silent observers (`edgar_former_names`, `edgar_8k_items`), and
     # migration 0063 (planning#213 slice 2) added two more (`edgar_ex21`,
-    # `edgar_10k_footnote`).
-    assert counts == {"target_host": 8, "target_infra": 2, "third_party_infra": 3, "silent": 14}, counts
+    # `edgar_10k_footnote`), and migration 0064 (planning#216) one more
+    # (`edgar_10k_website`).
+    assert counts == {"target_host": 8, "target_infra": 2, "third_party_infra": 3, "silent": 15}, counts
 
     assert by_name == _EXPECTED_NOISE_CLASSES, (
         f"only in table: {set(by_name) - set(_EXPECTED_NOISE_CLASSES)}; "

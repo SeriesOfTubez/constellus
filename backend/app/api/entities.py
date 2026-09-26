@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_role
 from app.core.database import SessionLocal, get_db
+from app.models.candidate_domain import CandidateDomain
 from app.models.entity_filing_event import EntityFilingEvent
 from app.models.entity_filing_section import EntityFilingSection
 from app.models.entity_relation import EntityRelation, RELATION_STATUSES
@@ -32,7 +33,7 @@ from app.models.evidence import EvidenceBlob, EvidenceFetch
 from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
 from app.models.user import User, UserRole
-from app.services import audit, edgar_ingest, entity_graph
+from app.services import audit, candidate_domains, edgar_ingest, entity_graph
 
 log = logging.getLogger(__name__)
 
@@ -323,7 +324,8 @@ def _run_edgar_ingest(cik: str) -> None:
             "ex21_heading_rows_skipped=%d subsidiary_rows=%d subsidiaries_proposed=%d "
             "subsidiaries_skipped=%d sections_stored=%d sections_existing=%d "
             "sections_not_found=%d oversize_skipped=%d invalid_filename_skipped=%d "
-            "documents_not_found=%d documents_fetch_failed=%d denied=%s",
+            "documents_not_found=%d documents_fetch_failed=%d "
+            "website_candidates_proposed=%d website_candidates_existing=%d denied=%s",
             cik, result.entity_id, result.pages_fetched, result.former_names_asserted,
             result.former_names_skipped, result.events_inserted, result.events_existing,
             result.malformed_skipped,
@@ -331,7 +333,8 @@ def _run_edgar_ingest(cik: str) -> None:
             result.ex21_heading_rows_skipped, result.subsidiary_rows, result.subsidiaries_proposed,
             result.subsidiaries_skipped, result.sections_stored, result.sections_existing,
             result.sections_not_found, result.oversize_skipped, result.invalid_filename_skipped,
-            result.documents_not_found, result.documents_fetch_failed, result.denied,
+            result.documents_not_found, result.documents_fetch_failed,
+            result.website_candidates_proposed, result.website_candidates_existing, result.denied,
         )
     except Exception:
         log.exception("edgar ingest failed for cik=%s", cik)
@@ -507,3 +510,165 @@ def list_filing_sections(
         )
         for r in rows
     ]
+
+
+# ── candidate domains (planning#216, L6) ────────────────────────────────────
+#
+# Reads are open to any authenticated user (same as every read above);
+# add/accept/reject are ADMIN-only. There is deliberately no endpoint that
+# takes a company name: a candidate is added WITH its evidence, never looked
+# up — see `app.services.candidate_domains`' module docstring.
+
+
+class CandidateDomainResponse(BaseModel):
+    id: uuid.UUID
+    entity_id: uuid.UUID
+    domain: str
+    source: str
+    observer_name: str | None
+    quote: str
+    evidence_id: uuid.UUID
+    evidence_url: str
+    evidence_origin: str
+    first_cited_on: str | None
+    last_cited_on: str | None
+    status: str
+    decided_at: str | None
+    engagement_id: uuid.UUID | None
+    target_id: uuid.UUID | None
+    created_at: str
+
+
+class AddCandidateDomainRequest(BaseModel):
+    domain: str
+    source_url: str
+    excerpt: str
+    quote: str
+
+
+class AcceptCandidateDomainRequest(BaseModel):
+    engagement_id: uuid.UUID
+
+
+def _to_candidate_response(db: Session, c: CandidateDomain) -> CandidateDomainResponse:
+    observer = db.get(Observer, c.observer_id) if c.observer_id else None
+    fetch = db.get(EvidenceFetch, c.evidence_id)
+    return CandidateDomainResponse(
+        id=c.id,
+        entity_id=c.entity_id,
+        domain=c.domain,
+        source=c.source,
+        observer_name=observer.name if observer else None,
+        quote=c.quote,
+        evidence_id=c.evidence_id,
+        evidence_url=fetch.source_url if fetch else "",
+        evidence_origin=fetch.origin if fetch else "",
+        first_cited_on=c.first_cited_on.isoformat() if c.first_cited_on else None,
+        last_cited_on=c.last_cited_on.isoformat() if c.last_cited_on else None,
+        status=c.status,
+        decided_at=c.decided_at.isoformat() if c.decided_at else None,
+        engagement_id=c.engagement_id,
+        target_id=c.target_id,
+        created_at=c.created_at.isoformat(),
+    )
+
+
+def _candidate_http_error(exc: candidate_domains.CandidateError) -> HTTPException:
+    if isinstance(exc, candidate_domains.CandidateNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, candidate_domains.CandidateConflict):
+        return HTTPException(status_code=409, detail=str(exc))
+    return HTTPException(status_code=422, detail=str(exc))
+
+
+@router.get("/{entity_id}/candidate-domains", response_model=list[CandidateDomainResponse])
+def list_candidate_domains(
+    entity_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    if db.get(OrgEntity, entity_id) is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    rows = (
+        db.query(CandidateDomain)
+        .filter(CandidateDomain.entity_id == entity_id)
+        .order_by(CandidateDomain.domain)
+        .all()
+    )
+    return [_to_candidate_response(db, c) for c in rows]
+
+
+@router.post("/{entity_id}/candidate-domains", response_model=CandidateDomainResponse, status_code=201)
+def add_candidate_domain(
+    request: Request,
+    entity_id: uuid.UUID,
+    data: AddCandidateDomainRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    try:
+        candidate = candidate_domains.add_manual(
+            db,
+            entity_id=entity_id,
+            domain=data.domain,
+            source_url=data.source_url,
+            excerpt=data.excerpt,
+            quote=data.quote,
+            user=current_user,
+        )
+    except candidate_domains.CandidateError as exc:
+        raise _candidate_http_error(exc)
+    audit.record_detail(request, candidate_domain=str(candidate.id), entity=str(entity_id), source="person")
+    return _to_candidate_response(db, candidate)
+
+
+@router.post("/candidate-domains/{candidate_id}/accept", response_model=CandidateDomainResponse)
+def accept_candidate_domain(
+    request: Request,
+    candidate_id: uuid.UUID,
+    data: AcceptCandidateDomainRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Creates the target already inside the engagement (so it inherits
+    the engagement's posture), then queues the same initial discovery run
+    `POST /targets` does. That run is gated per observer by
+    `probe_authorisation.authorise_discovery`, so under a restricting
+    posture only passive sources execute."""
+    try:
+        result = candidate_domains.accept(
+            db, candidate_id=candidate_id, engagement_id=data.engagement_id, user=current_user
+        )
+    except candidate_domains.CandidateError as exc:
+        raise _candidate_http_error(exc)
+    audit.record_detail(
+        request,
+        candidate_domain=str(result.candidate.id),
+        decision={"from": "proposed", "to": "accepted"},
+        engagement=str(result.candidate.engagement_id),
+        target=str(result.target.id),
+        target_created=result.created,
+    )
+    if result.created:
+        from app.api.targets import _launch_initial_discovery
+
+        _launch_initial_discovery(db, result.target, current_user.id, background_tasks)
+    return _to_candidate_response(db, result.candidate)
+
+
+@router.post("/candidate-domains/{candidate_id}/reject", response_model=CandidateDomainResponse)
+def reject_candidate_domain(
+    request: Request,
+    candidate_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    try:
+        candidate = candidate_domains.reject(db, candidate_id=candidate_id, user=current_user)
+    except candidate_domains.CandidateError as exc:
+        raise _candidate_http_error(exc)
+    audit.record_detail(
+        request, candidate_domain=str(candidate.id), decision={"from": "proposed", "to": "rejected"}
+    )
+    return _to_candidate_response(db, candidate)

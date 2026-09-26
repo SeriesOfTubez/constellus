@@ -43,6 +43,7 @@ from app.models.entity_relation import (
 from app.models.entity_filing_event import EntityFilingEvent
 from app.models.entity_subsidiary_listing import EntitySubsidiaryListing
 from app.models.entity_filing_section import EntityFilingSection, SECTION_VALUES
+from app.models.candidate_domain import CandidateDomain, CANDIDATE_SOURCES, CANDIDATE_STATUSES
 
 __all__ = [
     "User", "UserRole",
@@ -106,4 +107,7 @@ __all__ = [
     "EntitySubsidiaryListing",
     "EntityFilingSection",
     "SECTION_VALUES",
+    "CandidateDomain",
+    "CANDIDATE_SOURCES",
+    "CANDIDATE_STATUSES",
 ]
