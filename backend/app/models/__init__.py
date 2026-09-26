@@ -41,6 +41,8 @@ from app.models.entity_relation import (
     GROUNDING_VALUES,
 )
 from app.models.entity_filing_event import EntityFilingEvent
+from app.models.entity_subsidiary_listing import EntitySubsidiaryListing
+from app.models.entity_filing_section import EntityFilingSection, SECTION_VALUES
 
 __all__ = [
     "User", "UserRole",
@@ -101,4 +103,7 @@ __all__ = [
     "RELATION_STATUSES",
     "GROUNDING_VALUES",
     "EntityFilingEvent",
+    "EntitySubsidiaryListing",
+    "EntityFilingSection",
+    "SECTION_VALUES",
 ]

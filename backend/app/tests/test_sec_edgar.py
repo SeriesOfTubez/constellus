@@ -312,3 +312,162 @@ def test_fetch_submissions_page_builds_the_allowlisted_url_and_validates_shape()
 
     assert url == "https://data.sec.gov/submissions/CIK9900000001-submissions-001.json"
     assert json.loads(content) == good_recent
+
+
+# ── planning#213 slice 2: www.sec.gov widening ──────────────────────────────
+
+_ACCESSION = "0000099999-24-000001"
+
+
+def _index_body() -> bytes:
+    return (
+        b"<html><body><table>"
+        b"<tr><td>Seq</td><td>Description</td><td>Document</td><td>Type</td><td>Size</td></tr>"
+        b"<tr><td>1</td><td>10-K</td><td>form10k.htm</td><td>10-K</td><td>4000000</td></tr>"
+        b"</table></body></html>"
+    )
+
+
+def test_filing_index_url_and_filing_document_url_use_the_unpadded_cik():
+    """The path CIK is `int(cik10)`, unlike `data.sec.gov`'s zero-padded
+    `CIK##########` form."""
+    index_url = sec_edgar.filing_index_url(_CIK, _ACCESSION)
+    doc_url = sec_edgar.filing_document_url(_CIK, _ACCESSION, "exhibit99.htm")
+    assert index_url == f"https://www.sec.gov/Archives/edgar/data/{int(_CIK)}/000009999924000001/{_ACCESSION}-index.htm"
+    assert doc_url == f"https://www.sec.gov/Archives/edgar/data/{int(_CIK)}/000009999924000001/exhibit99.htm"
+
+
+def test_fetch_filing_index_succeeds_on_www_host_with_a_type_header_table():
+    scripted = _ScriptedTransport([httpx.Response(200, content=_index_body())])
+    sec_edgar._transport = scripted.transport
+    try:
+        content, _, _, url = sec_edgar.fetch_filing_index(_CIK, _ACCESSION)
+    finally:
+        sec_edgar._transport = None
+
+    assert content == _index_body()
+    assert url.startswith("https://www.sec.gov/Archives/edgar/data/")
+    assert len(scripted.requests) == 1
+
+
+def test_fetch_filing_index_retries_a_body_with_no_type_header():
+    """A body lacking a `Type` header cell (an error page, or a
+    differently-shaped page) fails validation exactly like the JSON
+    validators do — retried, then succeeds."""
+    bad = b"<html><body>not an index page</body></html>"
+    good = _index_body()
+    scripted = _ScriptedTransport([httpx.Response(200, content=bad), httpx.Response(200, content=good)])
+    sec_edgar._transport = scripted.transport
+    sec_edgar._sleep = lambda _s: None
+    try:
+        content, _, _, _ = sec_edgar.fetch_filing_index(_CIK, _ACCESSION)
+    finally:
+        sec_edgar._transport = None
+        sec_edgar._sleep = __import__("time").sleep
+
+    assert content == good
+    assert len(scripted.requests) == 2
+
+
+def test_www_host_outside_the_archives_edgar_data_prefix_is_refused_with_zero_requests():
+    """Covers mutation M8 (slice 2 spec): removing this path-prefix check
+    would let this module fetch any other `www.sec.gov` surface (full-text
+    search, EDGAR's own UI) — not the tree slice 2 has any business
+    fetching."""
+    scripted = _ScriptedTransport([httpx.Response(200, content=b"whatever")])
+    sec_edgar._transport = scripted.transport
+    try:
+        with pytest.raises(ValueError):
+            sec_edgar._fetch("https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany", validate=lambda _b: True)
+    finally:
+        sec_edgar._transport = None
+    assert scripted.requests == []
+
+
+def test_a_third_host_is_still_refused_alongside_the_two_allowlisted_ones():
+    scripted = _ScriptedTransport([httpx.Response(200, content=b"whatever")])
+    sec_edgar._transport = scripted.transport
+    try:
+        with pytest.raises(ValueError):
+            sec_edgar._fetch("https://efts.sec.gov/LATEST/search-index", validate=lambda _b: True)
+    finally:
+        sec_edgar._transport = None
+    assert scripted.requests == []
+
+
+def test_filing_document_url_rejects_a_filename_with_a_slash_or_bad_shape():
+    for bad_name in ("../secret.htm", "a/b.htm", ".hidden.htm", "", "x" * 200):
+        with pytest.raises(ValueError):
+            sec_edgar.filing_document_url(_CIK, _ACCESSION, bad_name)
+
+
+def test_invalid_filing_document_filename_is_never_requested():
+    scripted = _ScriptedTransport([httpx.Response(200, content=b"whatever")])
+    sec_edgar._transport = scripted.transport
+    try:
+        with pytest.raises(ValueError):
+            sec_edgar.fetch_filing_document(_CIK, _ACCESSION, "../escape.htm")
+    finally:
+        sec_edgar._transport = None
+    assert scripted.requests == []
+
+
+def test_oversize_filing_document_raises_without_retry_and_is_never_returned():
+    """Covers mutation M7 (slice 2 spec): truncating instead of raising
+    would make this pass with a shortened `content` instead of raising."""
+    oversize = b"a" * (sec_edgar._MAX_EVIDENCE_BYTES + 1)
+    scripted = _ScriptedTransport([httpx.Response(200, content=oversize)])
+    sec_edgar._transport = scripted.transport
+    sec_edgar._sleep = lambda _s: (_ for _ in ()).throw(AssertionError("oversize must not sleep/retry"))
+    try:
+        with pytest.raises(sec_edgar.SecDocumentTooLarge):
+            sec_edgar.fetch_filing_document(_CIK, _ACCESSION, "bigfile.htm")
+    finally:
+        sec_edgar._transport = None
+        sec_edgar._sleep = __import__("time").sleep
+    assert len(scripted.requests) == 1
+
+
+def test_a_body_exactly_at_the_cap_is_accepted():
+    """The happy-path boundary for the oversize test above — proves the
+    cap is `> _MAX_EVIDENCE_BYTES`, not `>=`."""
+    at_cap = b"a" * sec_edgar._MAX_EVIDENCE_BYTES
+    scripted = _ScriptedTransport([httpx.Response(200, content=at_cap)])
+    sec_edgar._transport = scripted.transport
+    try:
+        content, _, _, _ = sec_edgar.fetch_filing_document(_CIK, _ACCESSION, "atcap.htm")
+    finally:
+        sec_edgar._transport = None
+    assert len(content) == sec_edgar._MAX_EVIDENCE_BYTES
+
+
+def test_filing_document_validator_ignores_error_marker_text_in_a_large_body():
+    """A legitimate, large document that happens to CONTAIN one of the
+    error-page marker strings (e.g. citing "503 Service Unavailable" in a
+    risk-factors section) must not be treated as an error page — only a
+    SHORT body plausibly is one (spec §2)."""
+    large_body = b"Item 1A. Risk Factors. " + b"filler " * 1000 + b"503 Service Unavailable" + b"filler " * 1000
+    assert len(large_body) >= 4096
+    scripted = _ScriptedTransport([httpx.Response(200, content=large_body)])
+    sec_edgar._transport = scripted.transport
+    try:
+        content, _, _, _ = sec_edgar.fetch_filing_document(_CIK, _ACCESSION, "bigrisk.htm")
+    finally:
+        sec_edgar._transport = None
+    assert content == large_body
+    assert len(scripted.requests) == 1
+
+
+def test_filing_document_validator_retries_a_short_body_with_an_error_marker():
+    bad = b"Undeclared Automated Tool"
+    good = b"<html>the real filing</html>"
+    scripted = _ScriptedTransport([httpx.Response(200, content=bad), httpx.Response(200, content=good)])
+    sec_edgar._transport = scripted.transport
+    sec_edgar._sleep = lambda _s: None
+    try:
+        content, _, _, _ = sec_edgar.fetch_filing_document(_CIK, _ACCESSION, "doc.htm")
+    finally:
+        sec_edgar._transport = None
+        sec_edgar._sleep = __import__("time").sleep
+    assert content == good
+    assert len(scripted.requests) == 2
