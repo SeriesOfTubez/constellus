@@ -125,7 +125,7 @@ mis-classification planning#198 already burned this codebase once for.
 Tests in this slice create and delete their own throwaway observers by id.
 
 Revision ID: 0061
-Revises: 0059
+Revises: 0060
 Create Date: 2026-09-24
 """
 
@@ -134,7 +134,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision = "0061"
-down_revision = "0059"
+down_revision = "0060"
 branch_labels = None
 depends_on = None
 
