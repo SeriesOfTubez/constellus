@@ -19,6 +19,7 @@ Run with:  backend/scripts/test.ps1 app/tests/test_edgar_ingest_api.py
 """
 
 import json
+import logging
 import uuid
 
 import httpx
@@ -179,6 +180,45 @@ def test_invalid_cik_gets_422():
         assert r.status_code == 422
     finally:
         _cleanup_user(uid)
+
+
+def test_ingest_complete_log_line_includes_the_slice2_and_planning220_counters(caplog):
+    """planning#220 (minor): the `edgar ingest complete` line only printed
+    slice-1 counters, so a live run's slice-2 outcome (and now the new
+    `documents_not_found`/`documents_fetch_failed` counters) could not be
+    read without a debugger. Only checks the field NAMES are present — the
+    values are exercised by `test_edgar_ingest.py`'s own counter
+    assertions."""
+    db_cik_holder = SessionLocal()
+    cik = make_cik(db_cik_holder)
+    db_cik_holder.close()
+
+    headers, admin_id = _make_user(UserRole.ADMIN.value)
+    recent = {"form": ["8-K"], "accessionNumber": ["9900000072-24-000072"], "filingDate": ["2024-01-01"], "items": ["2.01"]}
+    body = _submissions_body(cik, recent=recent)
+
+    def _handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    sec_edgar._transport = httpx.MockTransport(_handle)
+    client = TestClient(app)
+    try:
+        with caplog.at_level(logging.INFO, logger="app.api.entities"):
+            r = client.post("/api/entities/edgar-ingest", json={"cik": cik}, headers=headers)
+        assert r.status_code == 202, r.text
+
+        assert "edgar ingest complete" in caplog.text
+        assert "documents_not_found=" in caplog.text
+        assert "documents_fetch_failed=" in caplog.text
+        assert "sections_stored=" in caplog.text
+    finally:
+        sec_edgar._transport = None
+        db = SessionLocal()
+        try:
+            cleanup_cik(db, cik)
+        finally:
+            db.close()
+        _cleanup_user(admin_id)
 
 
 # ── GET /api/entities/{entity_id}/filing-events ─────────────────────────────

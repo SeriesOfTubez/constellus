@@ -24,8 +24,11 @@ a stdlib port of the research method's `extract_bc.js`: render an
 arbitrary 10-K document (including iXBRL, whose `ix:*` tags are just tags
 to an `HTMLParser` — their text is kept, nothing special-cased) to a flat
 list of stripped, non-empty lines, then locate the Business Combinations /
-Acquisitions footnote by **taking the LAST heading match** — the FIRST is
-almost always the table of contents (planning#213's decisions comment).
+Acquisitions footnote by **preferring a `Note N`/`N.`-prefixed match, LAST
+among those; otherwise the LAST bare match** (planning#220, defect 3,
+2026-09-26 — refined from the original "always take the LAST heading
+match" rule, which a live run showed can pick a bare table-cell column
+header instead of the actual note; see that function's own docstring).
 
 ## Cell text normalisation, one rule everywhere in this module
 
@@ -275,6 +278,14 @@ _HEADING_LINE_RE = re.compile(
 # heading, or the research script's all-caps heading rule.
 _NEXT_HEADING_RE = re.compile(r"^(note\s*\d+|\d+\s*[.:)])\s*[-–—.:]?\s*[A-Za-z]", re.IGNORECASE)
 _ALL_CAPS_HEADING_RE = re.compile(r"^[A-Z][A-Z ,&'\-]{5,60}$")
+# A per-PAGE running header (e.g. "PART II", "ITEM 8") — all-caps shaped
+# like a real heading, but it repeats on every page of the filing and must
+# never end a section on its own (planning#220 defect 4, the live run:
+# `PART II` recurred inside a note's body and truncated the stored section
+# at the next page break instead of the next note). Case-sensitive: a
+# lowercase "part ii" inside ordinary prose is not this filer's running
+# header convention and should not be specially excluded.
+_RUNNING_HEADER_RE = re.compile(r"^(PART\s+[IVX]+|ITEM\s+\d+[A-Z]?)\.?$")
 
 _MIN_BODY_LINES = 10
 _MAX_SECTION_LINES = 600
@@ -285,27 +296,68 @@ def find_business_combinations_section(lines: list[str]) -> tuple[int, int, str,
     the Business Combinations / Acquisitions footnote, or `None` if no
     heading line matches at all (the `sections_not_found` signal).
 
-    Takes the **LAST** matching line — the research method's own rule,
-    because the FIRST match in a 10-K is essentially always its table of
-    contents, not the footnote body. `end_line` is EXCLUSIVE: the first
-    line at least `_MIN_BODY_LINES` after `start_line` that looks like the
-    start of the NEXT note (by either heading shape), capped at
-    `start_line + _MAX_SECTION_LINES` lines so a heading match with no
-    discernible "next note" (e.g. the last footnote in the document) still
-    produces a bounded section rather than swallowing the rest of the
-    filing.
+    ## Start: prefer a numbered match, LAST among those; otherwise LAST bare
+       (planning#220 defect 3, decided by Jason 2026-09-26)
 
-    ⚠ Known limitation, carried into `entity_filing_sections`' own
-    docstring: the LAST match can land on a LATER, unrelated mention (a
-    subsequent-events note also titled "Acquisitions"). `heading_match_
-    count` is returned specifically so a reader can see that ambiguity —
-    this function extracts a CANDIDATE section, it does not verify one.
+    A plain "take the LAST match" rule (the research method's original
+    rule, kept for a document with no numbered match at all) picks a bare
+    table-cell column header over the real note heading on a live filing:
+    a goodwill roll-forward table's own "Acquisitions" column header,
+    rendered as its own line by this module's text renderer, sorts AFTER
+    the real `NOTE n — BUSINESS COMBINATIONS` heading it follows. A
+    `Note N` / `N.`-prefixed match is essentially always the actual note
+    heading (a table cell is never itself numbered that way), so when ANY
+    such match exists, this function takes the LAST *numbered* one —
+    still LAST, not FIRST, because a later numbered note can itself be
+    titled "Acquisitions" (a subsequent-events note, say) and the FIRST
+    match in a 10-K is still essentially always the table of contents.
+    Only when NO match carries a `Note N`/`N.` prefix does this fall back
+    to the original LAST-bare-match rule.
+
+    ## End: follows the shape of the start (planning#220 defect 4)
+
+    A NUMBERED start ends ONLY at the next `_NEXT_HEADING_RE` line (another
+    numbered/"Note N" heading) — the all-caps signal is ignored entirely
+    for a numbered start, because a numbered note's body can legitimately
+    contain an all-caps line (a page's running header, e.g. `PART II` or a
+    financial-statement caption like `CONSOLIDATED FINANCIAL STATEMENTS`)
+    that is not the start of the NEXT note. A BARE start still uses both
+    signals (there is no numbered shape to prefer), but a `_RUNNING_HEADER_
+    RE` line (`PART [IVX]+` / `ITEM n[A-Z]?`) never counts as the all-caps
+    end signal — a filer that repeats `PART II` on every page must not
+    truncate a bare-titled section at the next page break instead of the
+    next real heading. `end_line` is EXCLUSIVE, first checked at least
+    `_MIN_BODY_LINES` after `start_line`, capped at `start_line +
+    _MAX_SECTION_LINES` lines so a heading match with no discernible "next
+    note" (e.g. the last footnote in the document) still produces a
+    bounded section rather than swallowing the rest of the filing.
+
+    `heading_match_count` is `len(matches)` — EVERY line matching the
+    heading vocabulary, numbered or bare, anywhere in the document (used
+    for `start` selection or not). It is NOT scoped to the stored section.
+
+    ⚠ Known limitations, carried into `entity_filing_sections`' own
+    docstring:
+      - The LAST-numbered (or LAST-bare, when no numbered match exists)
+        rule can still land on a LATER, unrelated mention — e.g. a
+        numbered subsequent-events note ALSO titled "Acquisitions" still
+        wins over the real Business Combinations note by virtue of being
+        LAST among numbered matches.
+      - `_NEXT_HEADING_RE`'s `\\d+\\s*[.:)]` shape can match an ordinary
+        enumerated body line (e.g. `2. The Company acquired...`), which
+        would end a NUMBERED section early — this function extracts a
+        CANDIDATE section, it does not verify one, and `heading_match_
+        count` (plus a low body-line count relative to `_MAX_SECTION_
+        LINES`) is the signal a later reader has to notice this.
     """
-    matches = [i for i, line in enumerate(lines) if _HEADING_LINE_RE.match(line.strip())]
-    if not matches:
+    match_pairs = [(i, m) for i, line in enumerate(lines) if (m := _HEADING_LINE_RE.match(line.strip()))]
+    if not match_pairs:
         return None
 
-    start = matches[-1]
+    matches = [i for i, _m in match_pairs]
+    numbered = [i for i, m in match_pairs if m.group(1)]
+    start = numbered[-1] if numbered else matches[-1]
+    start_is_numbered = bool(numbered)
     heading = lines[start].strip()
     match_count = len(matches)
 
@@ -313,7 +365,10 @@ def find_business_combinations_section(lines: list[str]) -> tuple[int, int, str,
     end = limit
     for i in range(start + _MIN_BODY_LINES, limit):
         candidate = lines[i].strip()
-        if _NEXT_HEADING_RE.match(candidate) or _ALL_CAPS_HEADING_RE.match(candidate):
+        if _NEXT_HEADING_RE.match(candidate):
+            end = i
+            break
+        if not start_is_numbered and _ALL_CAPS_HEADING_RE.match(candidate) and not _RUNNING_HEADER_RE.match(candidate):
             end = i
             break
 

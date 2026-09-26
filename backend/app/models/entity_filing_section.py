@@ -12,18 +12,27 @@ SECTION_VALUES: frozenset[str] = frozenset({"business_combinations"})
 
 class EntityFilingSection(Base):
     """One row per located 10-K footnote section (planning#213, L4 slice 2)
-    — currently only `business_combinations`, located by "take the LAST
-    heading match" (the research method's rule: the FIRST match is usually
-    the table of contents).
+    — currently only `business_combinations`, located by preferring a
+    `Note N`/`N.`-prefixed heading match, LAST among those; only when NO
+    match is so prefixed does it fall back to the LAST bare match
+    (planning#220, defect 3, 2026-09-26 — refined from the original "always
+    take the LAST heading match" rule, which a live run showed can pick a
+    bare table-cell column header — e.g. a goodwill roll-forward table's
+    own "Acquisitions" column — over the actual note heading).
 
     **No relation is ever written from this table.** Naming the deal is
     planning#215's job, over this row's `text` and `heading_match_count`.
 
-    ## Known limitation (carried from the extraction method itself)
+    ## Known limitations (carried from the extraction method itself)
 
-    The LAST heading-match rule can land on a LATER, unrelated mention —
-    e.g. a subsequent-events note also titled "Acquisitions". This schema
-    stores `heading_match_count` specifically so a reader can see that
+    The LAST-numbered (or LAST-bare, when nothing is numbered) rule can
+    still land on a LATER, unrelated mention — e.g. a numbered
+    subsequent-events note ALSO titled "Acquisitions" still wins over the
+    real Business Combinations note by virtue of being LAST among numbered
+    matches. Separately, the section-end heuristic's numbered-heading shape
+    can match an ordinary enumerated body line (e.g. `2. The Company
+    acquired...`), ending a numbered section early. This schema stores
+    `heading_match_count` specifically so a reader can see the first
     ambiguity rather than trusting a single extracted section as fact. This
     is extraction for a later reader, not a verified claim.
     """
