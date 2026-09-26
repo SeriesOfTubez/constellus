@@ -145,7 +145,16 @@ class _EdgarTransport:
     filing documents (keyed by FILENAME) — the slice 2 superset of
     `_RoutedTransport`, routed by request PATH. Records every request
     received, so a test can assert exactly which document (by Type, never
-    by filename) was actually fetched."""
+    by filename) was actually fetched.
+
+    `document_statuses`/`index_statuses` (planning#220) let a test script a
+    non-200 response for a specific document filename / index accession —
+    the SAME status on every request to that leaf, which is sufficient to
+    exercise both a never-retried failure (403/404, one request) and an
+    exhausted-retry failure (429/5xx, `sec_edgar._MAX_ATTEMPTS` requests —
+    `sec_edgar._fetch`'s own retry loop calls this handler again each
+    attempt) without this transport needing to track attempt counts
+    itself."""
 
     def __init__(
         self,
@@ -154,11 +163,15 @@ class _EdgarTransport:
         pages: dict[str, dict] | None = None,
         indexes: dict[str, str] | None = None,
         documents: dict[str, str] | None = None,
+        document_statuses: dict[str, int] | None = None,
+        index_statuses: dict[str, int] | None = None,
     ):
         self.main_body = json.dumps(main_body).encode()
         self.pages = {name: json.dumps(body).encode() for name, body in (pages or {}).items()}
         self.indexes = {accession: body.encode() for accession, body in (indexes or {}).items()}
         self.documents = {filename: body.encode() for filename, body in (documents or {}).items()}
+        self.document_statuses = dict(document_statuses or {})
+        self.index_statuses = dict(index_statuses or {})
         self.requests: list[httpx.Request] = []
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
@@ -166,10 +179,14 @@ class _EdgarTransport:
         leaf = request.url.path.rsplit("/", 1)[-1]
         if leaf.endswith("-index.htm"):
             accession = leaf[: -len("-index.htm")]
+            if accession in self.index_statuses:
+                return httpx.Response(self.index_statuses[accession], content=b"scripted index error")
             body = self.indexes.get(accession)
             if body is None:
                 return httpx.Response(404, content=b"index not found")
             return httpx.Response(200, content=body)
+        if leaf in self.document_statuses:
+            return httpx.Response(self.document_statuses[leaf], content=b"scripted document error")
         if leaf in self.documents:
             return httpx.Response(200, content=self.documents[leaf])
         if leaf in self.pages:
@@ -189,8 +206,17 @@ def _run_ingest2(
     pages: dict[str, dict] | None = None,
     indexes: dict[str, str] | None = None,
     documents: dict[str, str] | None = None,
+    document_statuses: dict[str, int] | None = None,
+    index_statuses: dict[str, int] | None = None,
 ):
-    transport = _EdgarTransport(main_body=main_body, pages=pages, indexes=indexes, documents=documents)
+    transport = _EdgarTransport(
+        main_body=main_body,
+        pages=pages,
+        indexes=indexes,
+        documents=documents,
+        document_statuses=document_statuses,
+        index_statuses=index_statuses,
+    )
     sec_edgar._transport = transport.transport
     sec_edgar._sleep = lambda _s: None
     try:
@@ -1384,4 +1410,447 @@ def test_posture_control_ex21_signal_runs_without_a_restricting_engagement(monke
     finally:
         cleanup_cik(db, cik)
         cleanup_observer(db, throwaway_observer_id)
+        db.close()
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# planning#220 — live-run defects: 404 aborts ingest, iXBRL filename,
+# heading/section-end rules. Reuses `_EdgarTransport`'s `document_statuses`/
+# `index_statuses` (added for this issue) to script a specific document's
+# or index's HTTP status without needing a new transport class.
+# ═════════════════════════════════════════════════════════════════════════
+
+
+# ── defect 1: per-document failures skip and continue; 403/exhausted-429
+# still abort ─────────────────────────────────────────────────────────────
+
+def test_404_on_an_exhibit_is_skipped_and_a_later_filing_still_stores():
+    """The #220 blocker itself: the OLDER 10-K's EX-21 404s, and the ingest
+    must still reach and store the NEWER filing's listings and section."""
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        acc_old, acc_new = _accession(400), _accession(401)
+        idx_old = index_html([
+            {"Document": "oldsub.htm", "Type": "EX-21.1"},
+            {"Document": "oldform.htm", "Type": "10-K"},
+        ])
+        idx_new = index_html([
+            {"Document": "newsub.htm", "Type": "EX-21.1"},
+            {"Document": "newform.htm", "Type": "10-K"},
+        ])
+        new_ex21_body = html_table(tr("Name", "Jurisdiction"), tr("Example New Sub LLC", "Delaware"))
+        new_doc = text_block_html(["Note 4 — Business Combinations"] + [f"Body line {i}" for i in range(1, 12)])
+        recent = _annual_report_recent([
+            {"form": "10-K", "accession": acc_old, "filing_date": "2000-01-01"},
+            {"form": "10-K", "accession": acc_new, "filing_date": "2024-01-01"},
+        ])
+        body = _submissions(cik, recent=recent)
+        result, transport = _run_ingest2(
+            db, cik, body,
+            indexes={acc_old: idx_old, acc_new: idx_new},
+            documents={"oldform.htm": _no_bc_document(), "newsub.htm": new_ex21_body, "newform.htm": new_doc},
+            document_statuses={"oldsub.htm": 404},
+        )
+
+        assert result.documents_not_found == 1
+        assert result.documents_fetch_failed == 0
+
+        requested_leaves = {req.url.path.rsplit("/", 1)[-1] for req in transport.requests}
+        assert "oldsub.htm" in requested_leaves, "the 404'd exhibit must actually have been requested"
+
+        entity = db.execute(select(OrgEntity).where(OrgEntity.cik == cik)).scalar_one()
+        listings = _listings_for(db, entity.id)
+        assert any(l.name == "Example New Sub LLC" for l in listings), "the newer filing's EX-21 must still be stored"
+        sections = _sections_for(db, entity.id)
+        assert len(sections) == 1
+        assert sections[0].accession_number == acc_new
+        assert "Body line 1" in sections[0].text
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+def test_5xx_exhausted_on_an_exhibit_is_skipped_and_a_later_filing_still_stores():
+    """Same shape as the 404 test above, but a transient 5xx exhausted after
+    retries — `documents_fetch_failed`, not `documents_not_found`."""
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        acc_old, acc_new = _accession(402), _accession(403)
+        idx_old = index_html([
+            {"Document": "oldsub.htm", "Type": "EX-21.1"},
+            {"Document": "oldform.htm", "Type": "10-K"},
+        ])
+        idx_new = index_html([
+            {"Document": "newsub.htm", "Type": "EX-21.1"},
+            {"Document": "newform.htm", "Type": "10-K"},
+        ])
+        new_ex21_body = html_table(tr("Name", "Jurisdiction"), tr("Example Newer Sub LLC", "Delaware"))
+        new_doc = text_block_html(["Note 5 — Business Combinations"] + [f"Body line {i}" for i in range(1, 12)])
+        recent = _annual_report_recent([
+            {"form": "10-K", "accession": acc_old, "filing_date": "2001-01-01"},
+            {"form": "10-K", "accession": acc_new, "filing_date": "2024-02-02"},
+        ])
+        body = _submissions(cik, recent=recent)
+        result, transport = _run_ingest2(
+            db, cik, body,
+            indexes={acc_old: idx_old, acc_new: idx_new},
+            documents={"oldform.htm": _no_bc_document(), "newsub.htm": new_ex21_body, "newform.htm": new_doc},
+            document_statuses={"oldsub.htm": 503},
+        )
+
+        assert result.documents_fetch_failed == 1
+        assert result.documents_not_found == 0
+
+        requested_leaves = [req.url.path.rsplit("/", 1)[-1] for req in transport.requests]
+        assert requested_leaves.count("oldsub.htm") == sec_edgar._MAX_ATTEMPTS
+
+        entity = db.execute(select(OrgEntity).where(OrgEntity.cik == cik)).scalar_one()
+        assert any(l.name == "Example Newer Sub LLC" for l in _listings_for(db, entity.id))
+        assert len(_sections_for(db, entity.id)) == 1
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+def test_404_on_the_per_filing_index_counts_and_footnote_still_uses_primary_document():
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        accession = _accession(404)
+        doc = text_block_html(["Note 2 — Business Combinations"] + [f"Body {i}" for i in range(1, 12)])
+        recent = _annual_report_recent([
+            {"form": "10-K", "accession": accession, "filing_date": "2024-01-01", "primary_document": "fallback10k.htm"},
+        ])
+        body = _submissions(cik, recent=recent)
+        # No entry for `accession` in `indexes` — `_EdgarTransport` already
+        # 404s an unlisted index accession.
+        result, transport = _run_ingest2(db, cik, body, indexes={}, documents={"fallback10k.htm": doc})
+
+        assert result.documents_not_found == 1
+        assert result.sections_stored == 1
+        assert result.ex21_missing == 0  # never reached — no index to look up EX-21 by Type
+
+        requested_leaves = {req.url.path.rsplit("/", 1)[-1] for req in transport.requests}
+        assert "fallback10k.htm" in requested_leaves
+
+        entity = db.execute(select(OrgEntity).where(OrgEntity.cik == cik)).scalar_one()
+        section = _sections_for(db, entity.id)[0]
+        assert "Body 1" in section.text
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+def test_403_on_an_exhibit_aborts_ingest_before_the_later_filing():
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        acc_old, acc_new = _accession(405), _accession(406)
+        idx_old = index_html([
+            {"Document": "forbidden.htm", "Type": "EX-21.1"},
+            {"Document": "oldform.htm", "Type": "10-K"},
+        ])
+        idx_new = index_html([
+            {"Document": "newsub.htm", "Type": "EX-21.1"},
+            {"Document": "newform.htm", "Type": "10-K"},
+        ])
+        recent = _annual_report_recent([
+            {"form": "10-K", "accession": acc_old, "filing_date": "2000-01-01"},
+            {"form": "10-K", "accession": acc_new, "filing_date": "2024-01-01"},
+        ])
+        body = _submissions(cik, recent=recent)
+        transport = _EdgarTransport(
+            main_body=body,
+            indexes={acc_old: idx_old, acc_new: idx_new},
+            documents={
+                "oldform.htm": _no_bc_document(),
+                "newsub.htm": "MUST NEVER BE FETCHED",
+                "newform.htm": "MUST NEVER BE FETCHED",
+            },
+            document_statuses={"forbidden.htm": 403},
+        )
+        sec_edgar._transport = transport.transport
+        sec_edgar._sleep = lambda _s: None
+        try:
+            with pytest.raises(sec_edgar.SecForbidden):
+                edgar_ingest.ingest_cik(db, cik)
+        finally:
+            sec_edgar._transport = None
+            sec_edgar._sleep = __import__("time").sleep
+
+        requested_leaves = {req.url.path.rsplit("/", 1)[-1] for req in transport.requests}
+        assert "newsub.htm" not in requested_leaves
+        assert "newform.htm" not in requested_leaves
+        assert acc_new.replace("-", "") not in "".join(req.url.path for req in transport.requests)
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+def test_429_exhausted_on_an_exhibit_aborts_ingest_before_the_later_filing():
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        acc_old, acc_new = _accession(407), _accession(408)
+        idx_old = index_html([
+            {"Document": "ratelimited.htm", "Type": "EX-21.1"},
+            {"Document": "oldform.htm", "Type": "10-K"},
+        ])
+        idx_new = index_html([
+            {"Document": "newsub.htm", "Type": "EX-21.1"},
+            {"Document": "newform.htm", "Type": "10-K"},
+        ])
+        recent = _annual_report_recent([
+            {"form": "10-K", "accession": acc_old, "filing_date": "2000-06-01"},
+            {"form": "10-K", "accession": acc_new, "filing_date": "2024-03-03"},
+        ])
+        body = _submissions(cik, recent=recent)
+        transport = _EdgarTransport(
+            main_body=body,
+            indexes={acc_old: idx_old, acc_new: idx_new},
+            documents={
+                "oldform.htm": _no_bc_document(),
+                "newsub.htm": "MUST NEVER BE FETCHED",
+                "newform.htm": "MUST NEVER BE FETCHED",
+            },
+            document_statuses={"ratelimited.htm": 429},
+        )
+        sec_edgar._transport = transport.transport
+        sec_edgar._sleep = lambda _s: None
+        try:
+            with pytest.raises(sec_edgar.SecRateLimited):
+                edgar_ingest.ingest_cik(db, cik)
+        finally:
+            sec_edgar._transport = None
+            sec_edgar._sleep = __import__("time").sleep
+
+        requested_leaves = {req.url.path.rsplit("/", 1)[-1] for req in transport.requests}
+        assert "newsub.htm" not in requested_leaves
+        assert "newform.htm" not in requested_leaves
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+# ── defect 2: iXBRL viewer-token stripping + primaryDocument fallback ──────
+
+@pytest.mark.parametrize(
+    "cell,expected",
+    [
+        ("a.htm iXBRL", "a.htm"),
+        ("a.htm", "a.htm"),
+        ("iXBRL", "iXBRL"),
+        ("a.htm ixbrl", "a.htm ixbrl"),
+    ],
+)
+def test_document_filename_helper_cases(cell, expected):
+    assert edgar_ingest._document_filename(cell) == expected
+
+
+def test_ixbrl_document_cell_yields_the_filename_and_is_fetched():
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        accession = _accession(410)
+        idx = index_html([
+            {"Document": '<a href="/ix?doc=/Archives/edgar/data/1/2/x10k.htm">x10k.htm</a> <span>iXBRL</span>', "Type": "10-K"},
+        ])
+        doc = text_block_html(["Note 1 — Business Combinations"] + [f"Body {i}" for i in range(1, 12)])
+        recent = _annual_report_recent([{"form": "10-K", "accession": accession, "filing_date": "2024-01-01"}])
+        body = _submissions(cik, recent=recent)
+        result, transport = _run_ingest2(db, cik, body, indexes={accession: idx}, documents={"x10k.htm": doc})
+
+        assert result.sections_stored == 1
+        assert result.invalid_filename_skipped == 0
+        requested_leaves = {req.url.path.rsplit("/", 1)[-1] for req in transport.requests}
+        assert "x10k.htm" in requested_leaves
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+def test_invalid_document_cell_falls_back_to_primary_document():
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        accession = _accession(411)
+        idx = index_html([{"Document": "bad name!.htm", "Type": "10-K"}])
+        doc = text_block_html(["Note 1 — Business Combinations"] + [f"Body {i}" for i in range(1, 12)])
+        recent = _annual_report_recent([
+            {"form": "10-K", "accession": accession, "filing_date": "2024-01-01", "primary_document": "fallback.htm"},
+        ])
+        body = _submissions(cik, recent=recent)
+        result, transport = _run_ingest2(db, cik, body, indexes={accession: idx}, documents={"fallback.htm": doc})
+
+        assert result.sections_stored == 1
+        assert result.invalid_filename_skipped == 0
+        requested_leaves = [req.url.path.rsplit("/", 1)[-1] for req in transport.requests]
+        assert not any("bad name" in leaf for leaf in requested_leaves)
+        assert "fallback.htm" in requested_leaves
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+# ── defect 3: prefer a numbered heading match, LAST among those ───────────
+
+def test_bare_table_cell_acquisitions_after_the_real_note_is_not_picked():
+    """Live-run shape: a bare `Acquisitions` COLUMN HEADER in the following
+    note's goodwill roll-forward table must not beat the real, numbered
+    `NOTE n — BUSINESS COMBINATIONS` heading."""
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        accession = _accession(420)
+        idx = index_html([{"Document": "form10k.htm", "Type": "10-K"}])
+        before = ["TABLE OF CONTENTS", "Business Combinations", "NOTE 4 — BUSINESS COMBINATIONS"]
+        body_lines = [f"Body line {i}" for i in range(1, 13)]
+        p_before = "".join(f"<p>{l}</p>" for l in before + body_lines)
+        p_note5 = "<p>NOTE 5 — GOODWILL</p>"
+        # Each bare "Acquisitions" cell sits alone in its own <tr>/<table>
+        # so it renders as its OWN line — a real roll-forward table's
+        # header row space-joins its cells into one non-matching line, but
+        # the live defect (planning#220) was two SEPARATE such matches, so
+        # this fixture isolates each one to exercise the same code path
+        # deterministically.
+        goodwill_table = "<table><tr><td>Acquisitions</td></tr></table><table><tr><td>Acquisitions</td></tr></table>"
+        p_after = "<p>Goodwill body text that must not appear in the stored section.</p>"
+        doc = f"<html><body>{p_before}{p_note5}{goodwill_table}{p_after}</body></html>"
+
+        recent = _annual_report_recent([{"form": "10-K", "accession": accession, "filing_date": "2024-01-01"}])
+        submissions_body = _submissions(cik, recent=recent)
+        result, _ = _run_ingest2(db, cik, submissions_body, indexes={accession: idx}, documents={"form10k.htm": doc})
+
+        assert result.sections_stored == 1
+        entity = db.execute(select(OrgEntity).where(OrgEntity.cik == cik)).scalar_one()
+        section = _sections_for(db, entity.id)[0]
+        assert section.heading == "NOTE 4 — BUSINESS COMBINATIONS"
+        assert section.heading_match_count == 4
+        assert "Body line 1" in section.text
+        assert "Goodwill body text" not in section.text
+        assert "NOTE 5" not in section.text
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+def test_bare_only_document_still_takes_the_last_bare_match():
+    """No numbered match anywhere — the original LAST-bare-match rule still
+    applies unchanged."""
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        accession = _accession(421)
+        idx = index_html([{"Document": "form10k.htm", "Type": "10-K"}])
+        lines = (
+            ["Acquisitions"]
+            + [f"Filler {i}" for i in range(1, 11)]
+            + ["Business Combinations"]
+            + [f"Body {i}" for i in range(1, 12)]
+        )
+        doc = text_block_html(lines)
+        recent = _annual_report_recent([{"form": "10-K", "accession": accession, "filing_date": "2024-01-01"}])
+        body = _submissions(cik, recent=recent)
+        result, _ = _run_ingest2(db, cik, body, indexes={accession: idx}, documents={"form10k.htm": doc})
+
+        assert result.sections_stored == 1
+        entity = db.execute(select(OrgEntity).where(OrgEntity.cik == cik)).scalar_one()
+        section = _sections_for(db, entity.id)[0]
+        assert section.heading == "Business Combinations"
+        assert section.heading_match_count == 2
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+def test_multiple_numbered_matches_take_the_last_one():
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        accession = _accession(422)
+        idx = index_html([{"Document": "form10k.htm", "Type": "10-K"}])
+        lines = (
+            ["Note 3 — Acquisitions"]
+            + [f"Filler {i}" for i in range(1, 11)]
+            + ["Note 4 — Acquisitions"]
+            + [f"Body {i}" for i in range(1, 12)]
+        )
+        doc = text_block_html(lines)
+        recent = _annual_report_recent([{"form": "10-K", "accession": accession, "filing_date": "2024-01-01"}])
+        body = _submissions(cik, recent=recent)
+        result, _ = _run_ingest2(db, cik, body, indexes={accession: idx}, documents={"form10k.htm": doc})
+
+        assert result.sections_stored == 1
+        entity = db.execute(select(OrgEntity).where(OrgEntity.cik == cik)).scalar_one()
+        section = _sections_for(db, entity.id)[0]
+        assert section.heading == "Note 4 — Acquisitions"
+        assert section.heading_match_count == 2
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+# ── defect 4: section end follows the start's shape; running headers never
+# end a section ────────────────────────────────────────────────────────────
+
+def test_numbered_section_ignores_part_ii_and_all_caps_lines_ends_only_on_next_note():
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        accession = _accession(430)
+        idx = index_html([{"Document": "form10k.htm", "Type": "10-K"}])
+        lines = (
+            ["NOTE 6 — BUSINESS COMBINATIONS"]
+            + [f"Body line {i}" for i in range(1, 15)]
+            + ["PART II", "CONSOLIDATED FINANCIAL STATEMENTS"]
+            + [f"Body line {i}" for i in range(15, 25)]
+            + ["NOTE 7 — INCOME TAXES"]
+            + ["Unrelated tax body."]
+        )
+        doc = text_block_html(lines)
+        recent = _annual_report_recent([{"form": "10-K", "accession": accession, "filing_date": "2024-01-01"}])
+        body = _submissions(cik, recent=recent)
+        result, _ = _run_ingest2(db, cik, body, indexes={accession: idx}, documents={"form10k.htm": doc})
+
+        assert result.sections_stored == 1
+        entity = db.execute(select(OrgEntity).where(OrgEntity.cik == cik)).scalar_one()
+        section = _sections_for(db, entity.id)[0]
+        assert "PART II" in section.text
+        assert "CONSOLIDATED FINANCIAL STATEMENTS" in section.text
+        assert "Body line 20" in section.text
+        assert "Unrelated tax body." not in section.text
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+def test_bare_section_excludes_part_ii_but_ends_on_a_real_all_caps_heading():
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        accession = _accession(431)
+        idx = index_html([{"Document": "form10k.htm", "Type": "10-K"}])
+        lines = (
+            ["Business Combinations"]
+            + [f"Body line {i}" for i in range(1, 15)]
+            + ["PART II"]
+            + [f"Body line {i}" for i in range(15, 18)]
+            + ["GOODWILL AND INTANGIBLE ASSETS"]
+            + ["Goodwill text that must not appear."]
+        )
+        doc = text_block_html(lines)
+        recent = _annual_report_recent([{"form": "10-K", "accession": accession, "filing_date": "2024-01-01"}])
+        body = _submissions(cik, recent=recent)
+        result, _ = _run_ingest2(db, cik, body, indexes={accession: idx}, documents={"form10k.htm": doc})
+
+        assert result.sections_stored == 1
+        entity = db.execute(select(OrgEntity).where(OrgEntity.cik == cik)).scalar_one()
+        section = _sections_for(db, entity.id)[0]
+        assert "PART II" in section.text
+        assert "Body line 16" in section.text
+        assert "Goodwill text that must not appear." not in section.text
+    finally:
+        cleanup_cik(db, cik)
         db.close()

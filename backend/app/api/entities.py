@@ -318,10 +318,20 @@ def _run_edgar_ingest(cik: str) -> None:
         log.info(
             "edgar ingest complete cik=%s entity_id=%s pages_fetched=%d "
             "former_names_asserted=%d former_names_skipped=%d events_inserted=%d "
-            "events_existing=%d malformed_skipped=%d denied=%s",
+            "events_existing=%d malformed_skipped=%d "
+            "annual_reports_seen=%d ex21_docs=%d ex21_missing=%d ex21_unparsed=%d "
+            "ex21_heading_rows_skipped=%d subsidiary_rows=%d subsidiaries_proposed=%d "
+            "subsidiaries_skipped=%d sections_stored=%d sections_existing=%d "
+            "sections_not_found=%d oversize_skipped=%d invalid_filename_skipped=%d "
+            "documents_not_found=%d documents_fetch_failed=%d denied=%s",
             cik, result.entity_id, result.pages_fetched, result.former_names_asserted,
             result.former_names_skipped, result.events_inserted, result.events_existing,
-            result.malformed_skipped, result.denied,
+            result.malformed_skipped,
+            result.annual_reports_seen, result.ex21_docs, result.ex21_missing, result.ex21_unparsed,
+            result.ex21_heading_rows_skipped, result.subsidiary_rows, result.subsidiaries_proposed,
+            result.subsidiaries_skipped, result.sections_stored, result.sections_existing,
+            result.sections_not_found, result.oversize_skipped, result.invalid_filename_skipped,
+            result.documents_not_found, result.documents_fetch_failed, result.denied,
         )
     except Exception:
         log.exception("edgar ingest failed for cik=%s", cik)

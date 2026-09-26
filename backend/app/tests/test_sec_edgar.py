@@ -197,6 +197,67 @@ def test_404_raises_sec_not_found_without_retry():
     assert len(scripted.requests) == 1
 
 
+# ── planning#220 abort classes: SecForbidden / SecRateLimited ───────────────
+
+def test_403_raises_sec_forbidden_which_is_a_sec_fetch_error_subclass():
+    scripted = _ScriptedTransport([httpx.Response(403, content=b"forbidden")])
+    sec_edgar._transport = scripted.transport
+    try:
+        with pytest.raises(sec_edgar.SecForbidden) as exc_info:
+            sec_edgar.fetch_submissions(_CIK)
+    finally:
+        sec_edgar._transport = None
+
+    assert isinstance(exc_info.value, sec_edgar.SecFetchError)
+    assert len(scripted.requests) == 1
+
+
+def test_429_exhausted_raises_sec_rate_limited():
+    scripted = _ScriptedTransport([httpx.Response(429, content=b"slow down") for _ in range(5)])
+    sec_edgar._transport = scripted.transport
+    sec_edgar._sleep = lambda _s: None
+    try:
+        with pytest.raises(sec_edgar.SecRateLimited) as exc_info:
+            sec_edgar.fetch_submissions(_CIK)
+    finally:
+        sec_edgar._transport = None
+        sec_edgar._sleep = __import__("time").sleep
+
+    assert isinstance(exc_info.value, sec_edgar.SecFetchError)
+    assert len(scripted.requests) == 5
+
+
+def test_5xx_exhausted_raises_a_plain_sec_fetch_error_not_a_rate_limited_one():
+    """Distinguishes the two exhaustion shapes: only a FINAL-attempt 429
+    counts as `SecRateLimited` — an exhausted 5xx is ordinary transient
+    noise and must stay a plain `SecFetchError` (planning#220's per-document
+    handling treats these two very differently: one skips-and-continues,
+    the other aborts the whole ingest)."""
+    scripted = _ScriptedTransport([httpx.Response(503, content=b"nope") for _ in range(5)])
+    sec_edgar._transport = scripted.transport
+    sec_edgar._sleep = lambda _s: None
+    try:
+        with pytest.raises(sec_edgar.SecFetchError) as exc_info:
+            sec_edgar.fetch_submissions(_CIK)
+    finally:
+        sec_edgar._transport = None
+        sec_edgar._sleep = __import__("time").sleep
+
+    assert not isinstance(exc_info.value, sec_edgar.SecRateLimited)
+
+
+def test_404_raises_sec_not_found_which_is_not_a_sec_fetch_error():
+    scripted = _ScriptedTransport([httpx.Response(404, content=b"not found")])
+    sec_edgar._transport = scripted.transport
+    try:
+        with pytest.raises(sec_edgar.SecNotFound) as exc_info:
+            sec_edgar.fetch_submissions(_CIK)
+    finally:
+        sec_edgar._transport = None
+
+    assert not isinstance(exc_info.value, sec_edgar.SecFetchError)
+
+
 # ── host allowlist ───────────────────────────────────────────────────────────
 
 def test_non_allowlisted_host_raises_value_error_with_zero_requests():

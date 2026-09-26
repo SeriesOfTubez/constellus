@@ -67,16 +67,29 @@ capped at 5 attempts with backoff `min(30, 2 * 2**i)` seconds:
      Service Unavailable" as plain text, not JSON. A status check alone
      misses this shape entirely.
 
-403 is never retried (raises `SecFetchError` with a hint to check
-`SEC_USER_AGENT` — a wrong/missing User-Agent is the overwhelmingly likely
-cause and retrying it burns 5 attempts for a guaranteed-repeat failure). 404
-is never retried either (raises `SecNotFound` — the CIK does not exist;
-retrying cannot fix that). An oversize 200 body (over the 10 MiB evidence
-cap) is likewise never retried — raises `SecDocumentTooLarge`, a
-`SecFetchError` subclass, and is never truncated (slice 2; see that
-exception's own docstring). This function never returns an empty or
-partial result to its caller: every path either returns a validated
-`(bytes, str, datetime, str)` tuple or raises.
+403 is never retried (raises `SecForbidden`, a `SecFetchError` subclass,
+with a hint to check `SEC_USER_AGENT` — a wrong/missing User-Agent is the
+overwhelmingly likely cause and retrying it burns 5 attempts for a
+guaranteed-repeat failure). 404 is never retried either (raises
+`SecNotFound` — the CIK does not exist; retrying cannot fix that). An
+oversize 200 body (over the 10 MiB evidence cap) is likewise never retried
+— raises `SecDocumentTooLarge`, a `SecFetchError` subclass, and is never
+truncated (slice 2; see that exception's own docstring). This function
+never returns an empty or partial result to its caller: every path either
+returns a validated `(bytes, str, datetime, str)` tuple or raises.
+
+## Abort classes — planning#220, decided 2026-09-26
+
+`SecForbidden` (403) and `SecRateLimited` (a 429 whose FINAL retry attempt
+is still 429) are both `SecFetchError` subclasses, but `app.services.
+edgar_ingest`'s per-document loop deliberately re-raises them instead of
+counting-and-continuing like every other per-document failure: continuing
+after a 403 or an exhausted 429 would just keep hitting a SEC endpoint that
+has already told this client to stop (a wrong `SEC_USER_AGENT`, or genuine
+rate-limiting), across every remaining filing in a 20-to-30-year history.
+An exhausted 5xx/timeout, by contrast, stays a plain `SecFetchError` — that
+shape is what the retry loop above already treats as ordinary transient
+noise, and one flaky document should not abort an otherwise-healthy run.
 """
 
 from __future__ import annotations
@@ -165,6 +178,33 @@ class SecDocumentTooLarge(SecFetchError):
     and moves on to the next one; `entity_graph.store_evidence` is never
     called for these bytes, so the evidence hash-of-fetched-bytes invariant
     is never in question for a body this module never returns."""
+
+
+class SecForbidden(SecFetchError):
+    """HTTP 403 — SEC fair-access is refusing this client outright (almost
+    always a missing/invalid `SEC_USER_AGENT`). Never retried, same as
+    today's plain 403 handling. planning#220 (2026-09-26): the CALLER
+    (`app.services.edgar_ingest`'s per-document loop) ABORTS the whole
+    ingest on this exception rather than skipping-and-continuing, because
+    continuing would just keep hitting SEC with the same refused identity
+    across every remaining filing — a `SecFetchError` subclass so a caller
+    that only knows about the base class still treats it as a fetch
+    failure, but `edgar_ingest` checks for this subclass FIRST and
+    re-raises before its generic `except SecFetchError` skip-and-continue
+    clause ever sees it."""
+
+
+class SecRateLimited(SecFetchError):
+    """HTTP 429 whose FINAL retry attempt (after `_MAX_ATTEMPTS` exhausted
+    the backoff schedule) was still 429 — SEC's rate limiter has not backed
+    off within this module's own retry budget. planning#220 (2026-09-26):
+    the caller ABORTS the ingest on this exception, for the same reason as
+    `SecForbidden` — continuing would keep hammering an endpoint that has
+    just told this client, repeatedly, to slow down. An exhausted 5xx or
+    timeout is NOT this exception (it stays a plain `SecFetchError`,
+    skip-and-continue) — only a 429 whose last observed status was still
+    429 counts as "still rate limited", since a 5xx exhaustion is ordinary
+    transient noise, not a rate-limit signal."""
 
 
 def _check_allowlisted(url: str) -> None:
@@ -278,7 +318,7 @@ def _fetch(url: str, *, validate: Callable[[bytes], bool]) -> tuple[bytes, str, 
             raise SecFetchError(f"SEC EDGAR fetch of {url} failed after {attempt} attempts: {last_error}") from exc
 
         if resp.status_code == 403:
-            raise SecFetchError(
+            raise SecForbidden(
                 f"SEC EDGAR returned 403 for {url} — check that SEC_USER_AGENT is set to a "
                 "descriptive, valid contact string (SEC fair-access policy)."
             )
@@ -293,6 +333,13 @@ def _fetch(url: str, *, validate: Callable[[bytes], bool]) -> tuple[bytes, str, 
                     delay = _backoff_seconds(attempt)
                 _sleep(delay)
                 continue
+            if resp.status_code == 429:
+                # Only a FINAL attempt that was still 429 counts as
+                # "rate limited" — an exhausted 5xx stays a plain
+                # SecFetchError (see SecRateLimited's own docstring).
+                raise SecRateLimited(
+                    f"SEC EDGAR fetch of {url} failed after {attempt} attempts: {last_error}"
+                )
             raise SecFetchError(f"SEC EDGAR fetch of {url} failed after {attempt} attempts: {last_error}")
 
         if resp.status_code == 200:

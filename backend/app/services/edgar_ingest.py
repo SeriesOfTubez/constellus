@@ -39,15 +39,32 @@ same `app.services.sec_edgar` client, widened to that host.
     `acquired`, and — since the observer is ungranted — `assert_relation`
     never auto-confirms it either.
   - **The Business Combinations (or Acquisitions) footnote → a stored
-    section, NO relations at all.** Located by the research method's rule,
-    "take the LAST heading match" (the FIRST is almost always the table of
-    contents), over the PRIMARY 10-K document's own bytes as evidence.
-    Naming the deals in that text is planning#215's job.
+    section, NO relations at all.** Located by `edgar_html.find_business_
+    combinations_section`'s rule — prefer a `Note N`/`N.`-prefixed match,
+    LAST among those; otherwise the LAST bare match (planning#220 defect 3,
+    refined 2026-09-26 from the research method's original "always take
+    the LAST heading match", which a live run showed can pick a bare
+    table-cell column header instead of the real note — see that
+    function's own docstring) — over the PRIMARY 10-K document's own bytes
+    as evidence. Naming the deals in that text is planning#215's job.
   - **History = all 10-Ks** the submissions JSON lists (`filings.recent`
     plus every paged `files[]` entry), never just `recent`. `10-K/A`
     amendments are deliberately excluded (see `_collect_annual_reports`):
     they rarely carry their own EX-21 and would let a later amendment's
     filing_date beat the ORIGINAL 10-K's for "first appearance".
+  - **A per-document fetch failure skips that document and continues —
+    it does NOT abort the ingest** (planning#220 defect 1, decided
+    2026-09-26: a live run's first 10-K, from a filer with pre-2001
+    history, named a legacy EX-21 exhibit that 404s, and the un-caught
+    `SecNotFound` killed the whole run before it ever reached a modern
+    filing). `SecNotFound` counts `documents_not_found`; any other
+    exhausted `SecFetchError` (5xx/timeout) counts `documents_fetch_
+    failed`. The two exceptions are a 403 (`SecForbidden`) and an
+    exhausted 429 (`SecRateLimited`) — both **abort** `ingest_cik`, because
+    skip-and-continue would just keep hitting an endpoint that has already
+    told this client to stop, across every remaining filing. This applies
+    to the EX-21 exhibit fetch, the primary/footnote document fetch, AND
+    the per-filing `-index.htm` fetch alike (see each's own try/except).
 
 `app.services.edgar_html` does all the stdlib `html.parser` work (the
 documents-table locate, the EX-21 row parse, and the text-rendering +
@@ -227,6 +244,19 @@ class IngestResult:
     # that fails `sec_edgar.is_valid_filename` — never requested.
     invalid_filename_skipped: int = 0
 
+    # ── planning#220 (2026-09-26): per-document fetch failures that skip
+    # and continue, rather than aborting the whole ingest (defect 1) ──────
+    # A per-document fetch (EX-21 exhibit, primary/footnote doc, or the
+    # filing's own -index.htm) that 404s. `SecNotFound` is not a
+    # `SecFetchError` subclass, so it is counted separately from
+    # `documents_fetch_failed` below.
+    documents_not_found: int = 0
+    # A per-document fetch that exhausted retries with a plain
+    # `SecFetchError` (5xx/timeout exhaustion). A 403 (`SecForbidden`) or an
+    # exhausted 429 (`SecRateLimited`) is NEVER counted here — both abort
+    # the whole ingest instead (see `ingest_cik`'s module docstring).
+    documents_fetch_failed: int = 0
+
 
 def normalise_cik(cik: str) -> str:
     """`^[0-9]{1,10}$`, then zero-padded to 10 digits. Anything else raises
@@ -257,6 +287,29 @@ def require_user_agent() -> None:
             "SEC_USER_AGENT is set but invalid: it must be non-empty after "
             "stripping, contain '@', and be at most 200 characters."
         )
+
+
+def _document_filename(cell: str) -> str:
+    """planning#220 defect 2 (2026-09-26): an index `Document` cell for an
+    inline-XBRL filing's main document renders as `<a href="/ix?doc=...">
+    x10k.htm</a> <span>iXBRL</span>` — the viewer link's OWN visible text
+    (the real filename) plus the trailing `iXBRL` badge both land in the
+    same rendered table cell (`app.services.edgar_html`'s row collector
+    space-joins a row's cell text), so the cell reads `"x10k.htm iXBRL"`,
+    not the bare filename. Strip whitespace; if the cell has 2+
+    whitespace-separated tokens and the LAST token is EXACTLY `iXBRL`
+    (case-sensitive — EDGAR's own viewer badge is always this exact
+    casing, not `ixbrl` or `IXBRL`), return the text before it, stripped.
+    Otherwise return the stripped cell unchanged — nothing else is
+    stripped, so an ordinary non-iXBRL filename (`form10k.htm`) or a
+    single-token oddity (a cell reading only `iXBRL`, with no filename at
+    all) both pass through untouched, and `is_valid_filename` is left to
+    reject whatever comes out the other end."""
+    stripped = cell.strip()
+    tokens = stripped.split()
+    if len(tokens) >= 2 and tokens[-1] == "iXBRL":
+        return stripped[: -len(tokens[-1])].strip()
+    return stripped
 
 
 def _parse_event_date(raw: str | None) -> tuple[date | None, str]:
@@ -487,18 +540,32 @@ def _process_ex21_for_filing(
     # different subsidiaries); the listing key carries `exhibit_type`, so
     # their rows never collide.
     for chosen in ex21_index_rows:
-        filename = (chosen.get("Document") or "").strip()
+        raw_document = (chosen.get("Document") or "").strip()
+        filename = _document_filename(raw_document) if raw_document else ""
         exhibit_type = (chosen.get("Type") or "").strip()
         if not sec_edgar.is_valid_filename(filename):
             result.invalid_filename_skipped += 1
             continue
 
+        # ── planning#220 defect 1 (2026-09-26): per-document fetch
+        # failures skip and continue; a 403/exhausted-429 aborts the whole
+        # ingest instead. ORDER MATTERS: SecDocumentTooLarge and the two
+        # abort classes are all SecFetchError subclasses, so the abort
+        # re-raise must come before the generic SecFetchError catch-all.
         try:
             doc_content, _doc_ct, doc_fetched_at, doc_url = sec_edgar.fetch_filing_document(
                 normalised_cik, report["accession"], filename
             )
         except sec_edgar.SecDocumentTooLarge:
             result.oversize_skipped += 1
+            continue
+        except (sec_edgar.SecForbidden, sec_edgar.SecRateLimited):
+            raise
+        except sec_edgar.SecNotFound:
+            result.documents_not_found += 1
+            continue
+        except sec_edgar.SecFetchError:
+            result.documents_fetch_failed += 1
             continue
 
         evidence = entity_graph.store_evidence(
@@ -613,31 +680,64 @@ def _process_footnote_for_filing(
     """Locate and store ONE 10-K's Business Combinations / Acquisitions
     footnote. `index_rows` may be `None` (the index itself could not be
     fetched/parsed — see `ingest_cik`'s loop) — the submissions JSON's
-    `primaryDocument` fallback needs no index at all."""
-    filename: str | None = None
+    `primaryDocument` fallback needs no index at all.
+
+    planning#220 defect 2 (2026-09-26): the index `Document` cell goes
+    through `_document_filename` first (stripping a trailing iXBRL viewer
+    token — see that helper's docstring). If the result is empty OR fails
+    `is_valid_filename`, `report["primary_document"]` is tried next.
+    `invalid_filename_skipped` is counted only when a NON-EMPTY filename
+    (the index cell OR the fallback) is invalid; `sections_not_found` is
+    counted when there is no usable filename anywhere. A filename that
+    fails `is_valid_filename` is NEVER requested."""
+    filename = ""
     if index_rows is not None:
         for row in index_rows:
             if (row.get("Type") or "").strip() == report["form"]:
-                filename = (row.get("Document") or "").strip()
+                raw_document = (row.get("Document") or "").strip()
+                filename = _document_filename(raw_document) if raw_document else ""
                 break
 
-    if not filename:
-        fallback = report.get("primary_document")
+    if not filename or not sec_edgar.is_valid_filename(filename):
+        fallback_raw = report.get("primary_document")
+        fallback = fallback_raw.strip() if isinstance(fallback_raw, str) else ""
         if not fallback:
-            result.sections_not_found += 1
+            # Nothing usable from either source. If the index cell DID
+            # produce a non-empty (but invalid) name and there is simply no
+            # primaryDocument to fall back to, that is still an invalid
+            # filename we found and refused to request — not "nothing was
+            # found at all" — so it is counted as invalid_filename_skipped,
+            # matching that counter's own general meaning ("from the index
+            # or the fallback"). Only a truly empty index resolution with
+            # no fallback counts as sections_not_found (today's behaviour).
+            # See the report's answer 3 — the spec names only the other two
+            # branches explicitly.
+            if filename:
+                result.invalid_filename_skipped += 1
+            else:
+                result.sections_not_found += 1
+            return
+        if not sec_edgar.is_valid_filename(fallback):
+            result.invalid_filename_skipped += 1
             return
         filename = fallback
 
-    if not sec_edgar.is_valid_filename(filename):
-        result.invalid_filename_skipped += 1
-        return
-
+    # ── planning#220 defect 1 (2026-09-26): see `_process_ex21_for_filing`'s
+    # identical comment — order matters, abort classes re-raise first.
     try:
         doc_content, _doc_ct, doc_fetched_at, doc_url = sec_edgar.fetch_filing_document(
             normalised_cik, report["accession"], filename
         )
     except sec_edgar.SecDocumentTooLarge:
         result.oversize_skipped += 1
+        return
+    except (sec_edgar.SecForbidden, sec_edgar.SecRateLimited):
+        raise
+    except sec_edgar.SecNotFound:
+        result.documents_not_found += 1
+        return
+    except sec_edgar.SecFetchError:
+        result.documents_fetch_failed += 1
         return
 
     evidence = entity_graph.store_evidence(
@@ -686,7 +786,17 @@ def ingest_cik(db: Session, cik: str) -> IngestResult:
     """Fetch and ingest one CIK's submissions JSON. Never touches
     `targets`, domains or scans, and never maps a name to an entity except
     the scoped lookups in `_process_former_names` (over `entity_relations`)
-    and `_process_ex21_for_filing` (over `entity_subsidiary_listings`)."""
+    and `_process_ex21_for_filing` (over `entity_subsidiary_listings`).
+
+    Per-document fetch failures (an EX-21 exhibit, a primary/footnote
+    document, or one filing's own index page) are skipped and counted —
+    `documents_not_found` / `documents_fetch_failed` on the returned
+    `IngestResult` — rather than raised (planning#220 defect 1). The two
+    exceptions still propagate out of this function and ABORT the ingest:
+    `sec_edgar.SecForbidden` (403) and `sec_edgar.SecRateLimited` (429
+    exhausted), plus anything raised fetching the submissions JSON or its
+    paged continuations (unchanged from slice 1 — that happens before the
+    per-filing loop this paragraph describes)."""
     normalised_cik = normalise_cik(cik)
     require_user_agent()
 
@@ -820,6 +930,20 @@ def ingest_cik(db: Session, cik: str) -> IngestResult:
                 # tries the `primaryDocument` fallback below; EX-21 has none
                 # and is simply skipped for this filing).
                 result.oversize_skipped += 1
+                index_rows = None
+            except (sec_edgar.SecForbidden, sec_edgar.SecRateLimited):
+                # planning#220 defect 1: abort the whole ingest, same as a
+                # per-document 403/exhausted-429 — see the module docstring.
+                raise
+            except sec_edgar.SecNotFound:
+                # planning#220 (the #220 blocker itself, live-run observed
+                # on an exhibit rather than the index, but the same shape):
+                # skip this filing's index, carry on exactly as the
+                # oversize-index path above does.
+                result.documents_not_found += 1
+                index_rows = None
+            except sec_edgar.SecFetchError:
+                result.documents_fetch_failed += 1
                 index_rows = None
 
             if ex21_permitted:
