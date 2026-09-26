@@ -61,11 +61,16 @@ def store_evidence(
     content_type: str,
     source_url: str,
     fetched_at: datetime,
+    origin: Literal["fetched", "person_supplied"] = "fetched",
 ) -> EvidenceFetch:
     """Store `content` (deduplicated by sha256) and record this
     (source_url, content, fetched_at) observation. Idempotent: re-storing
     the same bytes from the same URL returns the existing fetch row rather
-    than creating a duplicate."""
+    than creating a duplicate — including its existing `origin`.
+
+    `origin="person_supplied"` (planning#216) is for an excerpt a person
+    pasted and attributed to `source_url`: nothing was fetched, and
+    `fetched_at` is when it was supplied."""
     import hashlib
 
     digest = hashlib.sha256(content).digest()
@@ -79,7 +84,7 @@ def store_evidence(
     fetch_id = uuid.uuid4()
     inserted_id = db.execute(
         pg_insert(EvidenceFetch.__table__)
-        .values(id=fetch_id, sha256=digest, source_url=source_url, fetched_at=fetched_at)
+        .values(id=fetch_id, sha256=digest, source_url=source_url, fetched_at=fetched_at, origin=origin)
         .on_conflict_do_nothing(constraint="uq_evidence_fetches_source_url_sha256")
         .returning(EvidenceFetch.id)
     ).scalar()
