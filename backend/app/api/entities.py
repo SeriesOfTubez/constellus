@@ -14,8 +14,10 @@ a Wayback fetcher, an LLM extractor calling `entity_graph.assert_relation`)
 is planning#213/#214/#215 — L4/L5, not this slice.
 """
 
+import dataclasses
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -27,6 +29,7 @@ from app.core.database import SessionLocal, get_db
 from app.models.candidate_domain import CandidateDomain
 from app.models.entity_filing_event import EntityFilingEvent
 from app.models.entity_filing_section import EntityFilingSection
+from app.models.entity_ingest_run import EntityIngestRun
 from app.models.entity_relation import EntityRelation, RELATION_STATUSES
 from app.models.entity_subsidiary_listing import EntitySubsidiaryListing
 from app.models.evidence import EvidenceBlob, EvidenceFetch
@@ -55,6 +58,8 @@ class CreateEntityRequest(BaseModel):
 
 
 class EdgeSource(BaseModel):
+    relation_id: uuid.UUID
+    evidence_id: uuid.UUID
     observer: str | None
     trust: str | None
     status: str
@@ -100,6 +105,21 @@ class EdgarIngestRequest(BaseModel):
 class EdgarIngestAccepted(BaseModel):
     status: str
     cik: str
+    run_id: uuid.UUID
+
+
+class IngestRunResponse(BaseModel):
+    id: uuid.UUID
+    cik: str
+    status: str
+    # Resolved from `cik` at read time — see migration 0065's docstring.
+    entity_id: uuid.UUID | None
+    entity_name: str | None
+    result: dict | None
+    error: str | None
+    created_at: str
+    started_at: str | None
+    finished_at: str | None
 
 
 class FilingEventResponse(BaseModel):
@@ -307,12 +327,18 @@ def decide_relation(
     )
 
 
-def _run_edgar_ingest(cik: str) -> None:
+def _run_edgar_ingest(run_id: uuid.UUID, cik: str) -> None:
     """The `BackgroundTasks` target. Opens its OWN `SessionLocal()` — the
     request's session is closed by the time this runs, since
     `BackgroundTasks` execute after the response is sent (synchronously,
     in-process, under `TestClient`). Always closes the session, whatever
-    the outcome."""
+    the outcome.
+
+    The run row (planning#219) is written through a SECOND session, never
+    the ingest's: `ingest_cik` commits (and may roll back) its own work
+    part-way through, and a failure must still be recordable after the
+    ingest session is in an unknown state."""
+    _mark_run(run_id, status="running", started_at=datetime.now(timezone.utc))
     db = SessionLocal()
     try:
         result = edgar_ingest.ingest_cik(db, cik)
@@ -336,8 +362,30 @@ def _run_edgar_ingest(cik: str) -> None:
             result.documents_not_found, result.documents_fetch_failed,
             result.website_candidates_proposed, result.website_candidates_existing, result.denied,
         )
-    except Exception:
+        counts = dataclasses.asdict(result)
+        counts.pop("entity_id", None)
+        _mark_run(run_id, status="succeeded", result=counts, finished_at=datetime.now(timezone.utc))
+    except Exception as exc:
         log.exception("edgar ingest failed for cik=%s", cik)
+        # Class name + message only, truncated: enough for the person who
+        # asked to see WHY (403, 429, observers missing), never a traceback.
+        _mark_run(
+            run_id, status="failed", error=f"{type(exc).__name__}: {exc}"[:500], finished_at=datetime.now(timezone.utc)
+        )
+    finally:
+        db.close()
+
+
+def _mark_run(run_id: uuid.UUID, **fields) -> None:
+    """Best effort: a failure to record the run's status must not mask the
+    ingest's own outcome. A row left `running` by this is failed later by
+    `run_reaper.reap_stale_ingest_runs`."""
+    db = SessionLocal()
+    try:
+        db.query(EntityIngestRun).filter(EntityIngestRun.id == run_id).update(fields, synchronize_session=False)
+        db.commit()
+    except Exception:
+        log.exception("failed to record ingest run %s status %s", run_id, fields.get("status"))
     finally:
         db.close()
 
@@ -347,7 +395,8 @@ def edgar_ingest_requested(
     request: Request,
     data: EdgarIngestRequest,
     background_tasks: BackgroundTasks,
-    _=Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
 ):
     """Declared ahead of `/{entity_id}/edges` and `/{entity_id}/filing-
     events` below: `/edgar-ingest` has no path parameter, so it can never be
@@ -364,12 +413,63 @@ def edgar_ingest_requested(
     except edgar_ingest.EdgarNotConfigured as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
-    audit.record_detail(request, cik=normalised)
+    run = EntityIngestRun(cik=normalised, status="queued", requested_by_id=current_user.id)
+    db.add(run)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # `uq_entity_ingest_runs_active_cik` (migration 0065).
+        raise HTTPException(status_code=409, detail="an ingest for this CIK is already queued or running")
+
+    audit.record_detail(request, cik=normalised, run_id=str(run.id))
 
     # planning#134: this on-demand background task is one of the call sites
     # the job queue retires.
-    background_tasks.add_task(_run_edgar_ingest, normalised)
-    return EdgarIngestAccepted(status="accepted", cik=normalised)
+    background_tasks.add_task(_run_edgar_ingest, run.id, normalised)
+    return EdgarIngestAccepted(status="accepted", cik=normalised, run_id=run.id)
+
+
+def _to_run_response(run: EntityIngestRun, entity: OrgEntity | None) -> IngestRunResponse:
+    return IngestRunResponse(
+        id=run.id,
+        cik=run.cik,
+        status=run.status,
+        entity_id=entity.id if entity else None,
+        entity_name=entity.legal_name if entity else None,
+        result=run.result,
+        error=run.error,
+        created_at=run.created_at.isoformat(),
+        started_at=run.started_at.isoformat() if run.started_at else None,
+        finished_at=run.finished_at.isoformat() if run.finished_at else None,
+    )
+
+
+@router.get("/edgar-ingest/runs", response_model=list[IngestRunResponse])
+def list_ingest_runs(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """Newest first. Open to any authenticated user, like every read here."""
+    limit = max(1, min(limit, 100))
+    runs = db.query(EntityIngestRun).order_by(EntityIngestRun.created_at.desc()).limit(limit).all()
+    ciks = {r.cik for r in runs}
+    entities = {e.cik: e for e in db.query(OrgEntity).filter(OrgEntity.cik.in_(ciks)).all()} if ciks else {}
+    return [_to_run_response(r, entities.get(r.cik)) for r in runs]
+
+
+@router.get("/edgar-ingest/runs/{run_id}", response_model=IngestRunResponse)
+def get_ingest_run(
+    run_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    run = db.get(EntityIngestRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Ingest run not found")
+    entity = db.query(OrgEntity).filter(OrgEntity.cik == run.cik).one_or_none()
+    return _to_run_response(run, entity)
 
 
 @router.get("/{entity_id}/edges", response_model=list[EdgeResponse])

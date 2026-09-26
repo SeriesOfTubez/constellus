@@ -61,6 +61,13 @@ def cleanup_cik(db, cik: str | None) -> None:
     if cik is None:
         return
 
+    # planning#219: every POST /edgar-ingest leaves a run row keyed by the
+    # zero-padded CIK (no FK to the entity, so order does not matter).
+    from app.models.entity_ingest_run import EntityIngestRun
+
+    db.query(EntityIngestRun).filter(EntityIngestRun.cik == cik.zfill(10)).delete(synchronize_session=False)
+    db.commit()
+
     entity = db.execute(select(OrgEntity).where(OrgEntity.cik == cik)).scalar_one_or_none()
 
     other_entity_ids: set[uuid.UUID] = set()

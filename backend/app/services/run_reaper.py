@@ -102,3 +102,67 @@ def reap_stale(db: Session, now: datetime | None = None) -> int:
         now,
     )
     return n
+
+
+# ── EDGAR ingest runs (planning#219) ────────────────────────────────────────
+#
+# Same two rules as scan runs, for the same reasons: an ingest is a FastAPI
+# BackgroundTask in this process, so at startup every unfinished row is
+# stranded; and `_mark_run` is best-effort, so a live process can still leave
+# one `running`. Here it matters more than for scans — an unfinished row holds
+# `uq_entity_ingest_runs_active_cik` and blocks every re-ingest of that CIK.
+#
+# An ingest is minutes (one submissions fetch plus a few documents per 10-K
+# under the SEC's rate limit), never hours, so the age limits are far tighter
+# than scans' and still generous.
+INGEST_RUNNING_TIMEOUT = timedelta(hours=2)
+INGEST_QUEUED_TIMEOUT = timedelta(hours=1)
+
+
+def _reap_ingest_runs(db: Session, runs: list, reason: str, now: datetime) -> int:
+    if not runs:
+        return 0
+    for run in runs:
+        log.warning("Reaping stranded EDGAR ingest run %s (was %s): %s", run.id, run.status, reason)
+        run.status = "failed"
+        run.started_at = run.started_at or now
+        run.finished_at = now
+        run.error = reason
+    db.commit()
+    return len(runs)
+
+
+def reap_ingest_runs_at_startup(db: Session, now: datetime | None = None) -> int:
+    """Fail every unfinished ingest run. Call once, at startup only."""
+    from app.models.entity_ingest_run import INGEST_RUN_ACTIVE, EntityIngestRun
+
+    now = now or datetime.now(timezone.utc)
+    runs = db.query(EntityIngestRun).filter(EntityIngestRun.status.in_(INGEST_RUN_ACTIVE)).all()
+    return _reap_ingest_runs(
+        db, runs,
+        "Backend restarted while this ingest was still unfinished; "
+        "the process executing it no longer exists.",
+        now,
+    )
+
+
+def reap_stale_ingest_runs(db: Session, now: datetime | None = None) -> int:
+    """Fail ingest runs older than their timeout."""
+    from app.models.entity_ingest_run import EntityIngestRun
+
+    now = now or datetime.now(timezone.utc)
+    running = [
+        r for r in db.query(EntityIngestRun).filter(EntityIngestRun.status == "running").all()
+        if now - (r.started_at or r.created_at) > INGEST_RUNNING_TIMEOUT
+    ]
+    n = _reap_ingest_runs(
+        db, running, f"Ingest exceeded {INGEST_RUNNING_TIMEOUT} running without completing; presumed stranded.", now
+    )
+    queued = [
+        r for r in db.query(EntityIngestRun).filter(EntityIngestRun.status == "queued").all()
+        if now - r.created_at > INGEST_QUEUED_TIMEOUT
+    ]
+    n += _reap_ingest_runs(
+        db, queued, f"Ingest sat queued for more than {INGEST_QUEUED_TIMEOUT} without starting; presumed never launched.", now
+    )
+    return n

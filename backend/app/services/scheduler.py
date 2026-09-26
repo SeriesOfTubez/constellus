@@ -440,9 +440,13 @@ def _run_run_reaper() -> None:
             _reaper_started = True
             n = run_reaper.reap_at_startup(db)
             log.info("Startup stranded-run sweep reaped %d run(s)", n)
+            n = run_reaper.reap_ingest_runs_at_startup(db)
+            log.info("Startup stranded-ingest sweep reaped %d run(s)", n)
         else:
             n = run_reaper.reap_stale(db)
             log.info("Stale-run sweep reaped %d run(s)", n)
+            n = run_reaper.reap_stale_ingest_runs(db)
+            log.info("Stale-ingest sweep reaped %d run(s)", n)
     except Exception:
         log.error("Stranded scan-run reaper failed", exc_info=True)
     finally:
