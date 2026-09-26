@@ -1608,3 +1608,250 @@ def test_spend_summary_by_engagement_buckets_correctly():
         cleanup_engagement(db, eng_a.id if eng_a is not None else None)
         cleanup_engagement(db, eng_b.id if eng_b is not None else None)
         db.close()
+
+
+# ── R8: strict never reaches web search (planning#215 rule 4) ───────────────
+# Every refusal below has a twin that SENDS under dev_permissive (or an
+# unrestricted scope) with the same binding, so a guard that refused
+# everything, or a fixture that never reached the check, fails the twin
+# instead of passing vacuously.
+
+def _bind(db, role: str, models: list[str]) -> None:
+    custom = copy.deepcopy(app_settings._LLM_ROLE_BINDINGS_DEFAULT)
+    custom[role] = {"models": models, "max_tokens": 64, "temperature": 0}
+    app_settings.set_value(db, "llm.role_bindings", json.dumps(custom))
+
+
+@pytest.mark.parametrize("slug, expected", [
+    ("fixture/model-a:online", True),
+    ("fixture/model-a:ONLINE", True),
+    ("fixture/model-a:free:online", True),
+    ("fixture/model-a:online:free", True),
+    ("fixture/model-a", False),
+    ("fixture/model-a:free", False),
+    ("fixture/online-model", False),
+    ("online:vendor/model-a", False),
+])
+def test_slug_enables_web_search(slug, expected):
+    assert llmc._slug_enables_web_search(slug) is expected
+
+
+def test_strict_refuses_online_primary_zero_requests_and_permissive_twin_sends():
+    suffix = uuid.uuid4().hex[:10]
+    task = f"llm215-r1-{suffix}"
+    db = SessionLocal()
+    snapshot = _configure_openrouter(db)
+    bindings_snapshot = _snapshot_app_setting(db, "llm.role_bindings")
+    prior_policy = settings.llm_data_policy
+    try:
+        _bind(db, "classify", ["fixture/model-a:online"])
+        messages = [{"role": "user", "content": "hi"}]
+
+        settings.llm_data_policy = "strict"
+        scripted = _ScriptedTransport([])
+        llmc._transport = scripted.transport
+        try:
+            with pytest.raises(llmc.StrictPolicyRefused):
+                llmc.complete(
+                    db, role=llmc.Role.CLASSIFY, messages=messages, target_id=None, engagement_id=None, task=task,
+                )
+        finally:
+            llmc._transport = None
+        assert scripted.requests == []
+        assert db.query(LlmCall).filter(LlmCall.task == task).count() == 0
+
+        settings.llm_data_policy = "dev_permissive"
+        twin = _ScriptedTransport([_ok_response(model="fixture/model-a:online")])
+        llmc._transport = twin.transport
+        try:
+            llmc.complete(
+                db, role=llmc.Role.CLASSIFY, messages=messages, target_id=None, engagement_id=None, task=task,
+            )
+        finally:
+            llmc._transport = None
+        assert [json.loads(r.content)["model"] for r in twin.requests] == ["fixture/model-a:online"]
+    finally:
+        settings.llm_data_policy = prior_policy
+        _cleanup(task)
+        _restore_app_setting(db, "llm.role_bindings", bindings_snapshot)
+        _restore_openrouter(snapshot)
+        db.close()
+
+
+def test_pre_close_engagement_refuses_online_fallback_behind_clean_primary():
+    """Strict derived from the ENGAGEMENT (env says dev_permissive), and the
+    `:online` slug is only the FALLBACK. The twin is a no-engagement target
+    under the same env, where the ladder really does reach that fallback."""
+    suffix = uuid.uuid4().hex[:10]
+    task = f"llm215-r2-{suffix}"
+    db = SessionLocal()
+    snapshot = _configure_openrouter(db)
+    bindings_snapshot = _snapshot_app_setting(db, "llm.role_bindings")
+    prior_policy = settings.llm_data_policy
+    prior_sleep = llmc._sleep
+    restricted = plain = None
+    try:
+        settings.llm_data_policy = "dev_permissive"
+        _bind(db, "classify", ["fixture/model-a", "fixture/model-b:online"])
+        restricted = _make_target(db, suffix=f"r2a-{suffix}", pre_close=True)
+        plain = _make_target(db, suffix=f"r2b-{suffix}")
+        messages = [{"role": "user", "content": "hi"}]
+
+        scripted = _ScriptedTransport([])
+        llmc._transport = scripted.transport
+        try:
+            with pytest.raises(llmc.StrictPolicyRefused):
+                llmc.complete(
+                    db, role=llmc.Role.CLASSIFY, messages=messages, target_id=restricted.id,
+                    engagement_id=None, task=task,
+                )
+        finally:
+            llmc._transport = None
+        assert scripted.requests == []
+
+        # model-a exhausts its 5xx retries (1 + _MAX_5XX_RETRIES), then the
+        # ladder falls back to model-b:online.
+        twin = _ScriptedTransport(
+            [_error_response(500)] * (1 + llmc._MAX_5XX_RETRIES) + [_ok_response(model="fixture/model-b:online")]
+        )
+        llmc._transport = twin.transport
+        llmc._sleep = lambda _s: None
+        try:
+            llmc.complete(
+                db, role=llmc.Role.CLASSIFY, messages=messages, target_id=plain.id, engagement_id=None, task=task,
+            )
+        finally:
+            llmc._transport = None
+            llmc._sleep = prior_sleep
+        assert json.loads(twin.requests[-1].content)["model"] == "fixture/model-b:online"
+    finally:
+        settings.llm_data_policy = prior_policy
+        _cleanup(task)
+        _delete_target(restricted)
+        _delete_target(plain)
+        _restore_app_setting(db, "llm.role_bindings", bindings_snapshot)
+        _restore_openrouter(snapshot)
+        db.close()
+
+
+def test_strict_structured_refuses_online_extract_primary_but_complete_does_not():
+    """`structured()` can reach the extract primary (tier 2); `complete()`
+    cannot, so the same bindings refuse one and send the other."""
+    suffix = uuid.uuid4().hex[:10]
+    task = f"llm215-r3-{suffix}"
+    db = SessionLocal()
+    snapshot = _configure_openrouter(db)
+    bindings_snapshot = _snapshot_app_setting(db, "llm.role_bindings")
+    prior_policy = settings.llm_data_policy
+    try:
+        settings.llm_data_policy = "strict"
+        _bind(db, "extract", ["fixture/extractor:online"])
+        messages = [{"role": "user", "content": "hi"}]
+
+        scripted = _ScriptedTransport([])
+        llmc._transport = scripted.transport
+        try:
+            with pytest.raises(llmc.StrictPolicyRefused):
+                llmc.structured(
+                    db, role=llmc.Role.CLASSIFY, messages=messages, schema=_Fact, target_id=None,
+                    engagement_id=None, task=task, source_text=_GROUND_SPAN,
+                )
+        finally:
+            llmc._transport = None
+        assert scripted.requests == []
+
+        twin = _ScriptedTransport([_ok_response()])
+        llmc._transport = twin.transport
+        try:
+            llmc.complete(
+                db, role=llmc.Role.CLASSIFY, messages=messages, target_id=None, engagement_id=None, task=task,
+            )
+        finally:
+            llmc._transport = None
+        assert len(twin.requests) == 1
+        assert ":online" not in json.loads(twin.requests[0].content)["model"]
+    finally:
+        settings.llm_data_policy = prior_policy
+        _cleanup(task)
+        _restore_app_setting(db, "llm.role_bindings", bindings_snapshot)
+        _restore_openrouter(snapshot)
+        db.close()
+
+
+_WEB_SEARCH_BODIES = {
+    "plugins": [{"id": "web"}],
+    "web_search_options": {},
+    # OpenRouter's third way to enable search: its server tool.
+    "tools": [{"type": "openrouter:web_search"}],
+}
+
+
+@pytest.mark.parametrize("key", sorted(_WEB_SEARCH_BODIES))
+def test_send_backstop_refuses_web_search_body_key_under_strict_only(key):
+    """The backstop in `_attempt_model` in isolation (no public caller builds
+    these keys today, which is exactly why it is tested directly): a body
+    carrying the key is never sent under strict, and IS sent otherwise."""
+    suffix = uuid.uuid4().hex[:10]
+    task = f"llm215-r4-{suffix}"
+    body = {"model": "fixture/model-a", "messages": [], key: _WEB_SEARCH_BODIES[key]}
+
+    def _send(policy: str, scripted: _ScriptedTransport) -> dict:
+        llmc._transport = scripted.transport
+        try:
+            return llmc._attempt_model(
+                None, api_key=_TEST_API_KEY, body=body, model="fixture/model-a", role=llmc.Role.RESEARCH,
+                task=task, target_id=None, engagement_id=None, passive_only=False, policy=policy, tier=1,
+                ledger_ids=[], attempt_counter=[0],
+            )
+        finally:
+            llmc._transport = None
+
+    try:
+        refused = _ScriptedTransport([])
+        with pytest.raises(llmc.StrictPolicyRefused):
+            _send("strict", refused)
+        assert refused.requests == []
+
+        twin = _ScriptedTransport([_ok_response()])
+        assert _send("dev_permissive", twin)["status"] == "ok"
+        assert key in json.loads(twin.requests[0].content)
+    finally:
+        _cleanup(task)
+
+
+
+def test_send_backstop_does_not_refuse_an_ordinary_function_tool_under_strict():
+    """The server-tool check matches web search only: a plain function tool
+    is sent under strict. A guard that over-refuses gets switched off."""
+    suffix = uuid.uuid4().hex[:10]
+    task = f"llm215-r4-fn-{suffix}"
+    body = {
+        "model": "fixture/model-a",
+        "messages": [],
+        "tools": [{"type": "function", "function": {"name": "lookup_filing", "parameters": {"type": "object"}}}],
+    }
+    twin = _ScriptedTransport([_ok_response()])
+    llmc._transport = twin.transport
+    try:
+        result = llmc._attempt_model(
+            None, api_key=_TEST_API_KEY, body=body, model="fixture/model-a", role=llmc.Role.RESEARCH,
+            task=task, target_id=None, engagement_id=None, passive_only=False, policy="strict", tier=1,
+            ledger_ids=[], attempt_counter=[0],
+        )
+        assert result["status"] == "ok"
+        assert len(twin.requests) == 1
+    finally:
+        llmc._transport = None
+        _cleanup(task)
+
+@pytest.mark.parametrize("bad", ["", " fixture/model-a:online", "fixture/model-a :online"])
+def test_role_binding_rejects_empty_or_whitespace_slug(bad):
+    db = SessionLocal()
+    bindings_snapshot = _snapshot_app_setting(db, "llm.role_bindings")
+    try:
+        _bind(db, "research", [bad])
+        with pytest.raises(llmc.LLMConfigError, match="research"):
+            llmc.load_bindings(db)
+    finally:
+        _restore_app_setting(db, "llm.role_bindings", bindings_snapshot)
+        db.close()
