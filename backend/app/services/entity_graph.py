@@ -226,6 +226,8 @@ def project_edges(db: Session, *, entity_id: uuid.UUID | None = None) -> list[di
         fetch = fetches_by_id.get(r.evidence_id)
         edge["sources"].append(
             {
+                "relation_id": r.id,
+                "evidence_id": r.evidence_id,
                 "observer": observer.name if observer else None,
                 "trust": observer.trust if observer else None,
                 "status": r.status,

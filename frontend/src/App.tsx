@@ -23,6 +23,8 @@ import Targets from "@/pages/admin/Targets"
 import Engagements from "@/pages/admin/Engagements"
 import EngagementDetail from "@/pages/admin/EngagementDetail"
 import EntityReview from "@/pages/admin/EntityReview"
+import Entities from "@/pages/Entities"
+import EntityDetail from "@/pages/EntityDetail"
 import Activity from "@/pages/admin/Activity"
 import Sso from "@/pages/admin/Sso"
 import Users from "@/pages/admin/Users"
@@ -90,6 +92,8 @@ export default function App() {
               <Route path="/assets/:id" element={<AssetDetail />} />
               <Route path="/targets/:id" element={<TargetDetail />} />
               <Route path="/explore" element={<Explore />} />
+              <Route path="/entities" element={<Entities />} />
+              <Route path="/entities/:id" element={<EntityDetail />} />
               <Route path="/scans" element={<Navigate to="/admin/activity" replace />} />
 
               <Route element={<ProtectedRoute roles={["admin", "integration_admin"]} />}>

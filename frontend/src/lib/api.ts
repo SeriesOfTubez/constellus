@@ -319,6 +319,96 @@ export type EntityRelationQueueItem = {
   grounding: "verified" | "not_applicable" | null
 }
 
+// planning#219 — the entity page's read models (`app/api/entities.py`).
+export type EntityRelationKind = EntityRelationQueueItem["relation"]
+
+export type EntityEdgeSource = {
+  relation_id: string
+  evidence_id: string
+  observer: string | null
+  trust: string | null
+  status: EntityRelationStatus
+  evidence_url: string | null
+  fetched_at: string | null
+  event_date: string | null
+  precision: "day" | "month" | "year" | "unknown"
+}
+
+export type EntityEdge = {
+  subject: string
+  object: string
+  relation: EntityRelationKind
+  confirmed: boolean
+  sources: EntityEdgeSource[]
+}
+
+export type EntityIngestRun = {
+  id: string
+  cik: string
+  status: "queued" | "running" | "succeeded" | "failed"
+  entity_id: string | null
+  entity_name: string | null
+  result: Record<string, number | string[]> | null
+  error: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export type EntityFilingEvent = {
+  id: string
+  form: string
+  accession_number: string
+  filing_date: string
+  items: string
+  evidence_id: string
+  observer_name: string | null
+}
+
+export type SubsidiaryListingGroup = {
+  accession_number: string
+  filing_date: string
+  report_date: string | null
+  exhibit_type: string
+  evidence_id: string
+  rows: { name: string; jurisdiction: string | null; subsidiary_entity_id: string | null }[]
+}
+
+export type EntityFilingSection = {
+  id: string
+  accession_number: string
+  form: string
+  filing_date: string
+  report_date: string | null
+  section: string
+  extraction: string
+  heading: string
+  heading_match_count: number
+  start_line: number
+  end_line: number
+  text: string
+  evidence_id: string
+}
+
+export type CandidateDomain = {
+  id: string
+  entity_id: string
+  domain: string
+  source: "edgar_10k_website" | "person"
+  observer_name: string | null
+  quote: string
+  evidence_id: string
+  evidence_url: string
+  evidence_origin: "fetched" | "person_supplied"
+  first_cited_on: string | null
+  last_cited_on: string | null
+  status: "proposed" | "accepted" | "rejected"
+  decided_at: string | null
+  engagement_id: string | null
+  target_id: string | null
+  created_at: string
+}
+
 export type Target = {
   id: string
   type: "domain" | "ip" | "cidr"

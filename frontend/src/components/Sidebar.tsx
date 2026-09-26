@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Globe,
   Network,
+  Building2,
   HelpCircle,
   Settings,
   ChevronLeft,
@@ -31,6 +32,7 @@ const NAV = [
   { to: "/findings",  label: "Findings",  icon: AlertTriangle },
   { to: "/assets",    label: "Assets",    icon: Globe },
   { to: "/explore",   label: "Explore",   icon: Network },
+  { to: "/entities",  label: "Entities",  icon: Building2 },
 ]
 
 // One item shape, two modes. Collapsed items are a fixed 40×40 square; their
