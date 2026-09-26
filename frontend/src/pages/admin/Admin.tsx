@@ -2,7 +2,7 @@ import { Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import {
   Activity, Bell, Briefcase, Building2, ChevronRight, ClipboardList, GitBranch,
-  Globe, KeyRound, Plug, Server, Settings2,
+  Globe, KeyRound, Network, Plug, Server, Settings2,
   ShieldCheck, Smartphone, Tags, Target as TargetIcon, Users,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
@@ -47,6 +47,7 @@ const CATEGORIES: AdminCategory[] = [
     items: [
       { label: "Targets",      description: "Domains and IP ranges to monitor",         to: "/admin/targets",      icon: TargetIcon, statsKey: "targets" },
       { label: "Engagements",  description: "M&A posture, authorisation, member targets", to: "/admin/engagements", icon: Briefcase,  statsKey: "engagements" },
+      { label: "Entity Review", description: "Proposed corporate-entity relationships awaiting a decision", to: "/admin/entities", icon: Network, statsKey: "entities" },
       { label: "Connectors",   description: "Third-party integrations",                 to: "/admin/connectors",   icon: Plug,       statsKey: "connectors" },
     ],
   },
@@ -142,6 +143,7 @@ export default function Admin() {
   const { data: users }       = useQuery({ queryKey: ["users"],       queryFn: () => api.get<unknown[]>("/users/"),        staleTime: 60_000 })
   const { data: targets }     = useQuery({ queryKey: ["targets"],     queryFn: () => api.get<unknown[]>("/targets/"),      staleTime: 60_000 })
   const { data: engagements } = useQuery({ queryKey: ["engagements"], queryFn: () => api.get<unknown[]>("/engagements/"),  staleTime: 60_000 })
+  const { data: proposedRelations } = useQuery({ queryKey: ["entity-relations", "proposed"], queryFn: () => api.get<unknown[]>("/entities/relations?status=proposed"), staleTime: 60_000 })
   const { data: connectors }  = useQuery({ queryKey: ["connectors"],  queryFn: () => api.get<unknown[]>("/connectors/"),  staleTime: 60_000 })
   const { data: tagRules }    = useQuery({ queryKey: ["tag-rules"],   queryFn: () => api.get<unknown[]>("/tags/rules"),   staleTime: 60_000 })
 
@@ -149,6 +151,7 @@ export default function Admin() {
     users:        users?.length,
     targets:      targets?.length,
     engagements:  engagements?.length,
+    entities:     proposedRelations?.length,
     connectors:   connectors?.length,
     "tag-rules":  tagRules?.length,
   }

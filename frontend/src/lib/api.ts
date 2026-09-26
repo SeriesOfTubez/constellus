@@ -286,6 +286,37 @@ export type Engagement = {
   authorised_by: string | null
   created_at: string
   member_targets: { id: string; value: string; type: Target["type"] }[]
+  // planning#212 (L3) — the corporate entity this engagement's subject is
+  // attributed to.
+  subject_entity_id: string | null
+}
+
+// planning#212 (L3) — the corporate entity graph.
+export type OrgEntity = {
+  id: string
+  legal_name: string
+  cik: string | null
+  lei: string | null
+  created_at: string
+}
+
+export type EntityRelationStatus = "proposed" | "confirmed" | "rejected"
+
+export type EntityRelationQueueItem = {
+  id: string
+  subject_id: string
+  object_id: string
+  relation: "acquired" | "subsidiary_of" | "dba" | "formerly_named"
+  event_date: string | null
+  event_date_precision: "day" | "month" | "year" | "unknown"
+  status: EntityRelationStatus
+  quote: string
+  evidence_id: string
+  evidence_url: string
+  fetched_at: string
+  observer_name: string | null
+  observer_trust: string | null
+  grounding: "verified" | "not_applicable" | null
 }
 
 export type Target = {
@@ -310,6 +341,8 @@ export type Target = {
   passive_only: boolean
   last_scanned_at: string | null
   next_scan_at: string | null
+  // planning#212 (L3) — the corporate entity this target is attributed to.
+  entity_id: string | null
 }
 
 // Shared-infra verification evidence bundle (migrations 0036/0037, epic#81

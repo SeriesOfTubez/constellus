@@ -48,6 +48,9 @@ class TargetResponse(BaseModel):
     passive_only: bool
     last_scanned_at: str | None
     next_scan_at: str | None
+    # planning#212 (L3) — the corporate entity this target has been
+    # attributed to, if any. Set via PATCH (ADMIN only); never inferred here.
+    entity_id: uuid.UUID | None = None
 
     model_config = {"from_attributes": True}
 
@@ -73,6 +76,12 @@ class TargetPatch(BaseModel):
     # Required only when the membership change WIDENS traffic (§
     # `patch_target`'s docstring) — non-blank after `.strip()`, or 422.
     authorisation_reference: str | None = None
+    # planning#212 (L3) — which corporate entity this target belongs to.
+    # Setting it is ADMIN-only (checked in the handler, same pattern as the
+    # widening rule above — the route-level pair stays ADMIN+INTEGRATION_ADMIN
+    # for every OTHER field this patch touches). No sentinel/clear field:
+    # this slice only assigns an entity, it does not detach one.
+    entity_id: uuid.UUID | None = None
 
 
 class AcknowledgeRequest(BaseModel):
@@ -527,6 +536,25 @@ def patch_target(
     was_aggressiveness = target.aggressiveness
     was_notes = target.notes
     was_engagement_id = target.engagement_id
+    was_entity_id = target.entity_id
+
+    if data.entity_id is not None:
+        # planning#212 — ADMIN only, checked here rather than at the route
+        # dependency: every OTHER field this patch touches keeps the
+        # existing (ADMIN, INTEGRATION_ADMIN) pair, same reasoning as the
+        # widening rule below (whether a given request touches attribution
+        # cannot be expressed at the dependency level).
+        if current_user.role != UserRole.ADMIN.value:
+            raise HTTPException(
+                status_code=403,
+                detail="setting a target's entity requires ADMIN",
+            )
+        from app.models.org_entity import OrgEntity
+
+        entity = db.get(OrgEntity, data.entity_id)
+        if entity is None:
+            raise HTTPException(status_code=422, detail="entity not found")
+        target.entity_id = entity.id
 
     if data.clear_aggressiveness:
         target.aggressiveness = None
@@ -586,6 +614,11 @@ def patch_target(
         changes["aggressiveness"] = {"from": was_aggressiveness, "to": target.aggressiveness}
     if was_notes != target.notes:
         changes["notes"] = {"changed": True}
+    if was_entity_id != target.entity_id:
+        changes["entity"] = {
+            "from": str(was_entity_id) if was_entity_id else None,
+            "to": str(target.entity_id) if target.entity_id else None,
+        }
     if was_engagement_id != target.engagement_id:
         changes["engagement"] = {
             "from": str(was_engagement_id) if was_engagement_id else None,
@@ -653,6 +686,7 @@ def _to_response(
         passive_only=posture.is_passive_only(t),
         last_scanned_at=last_scanned_at,
         next_scan_at=next_scan_at,
+        entity_id=t.entity_id,
     )
 
 

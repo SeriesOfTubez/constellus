@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Text, text
+from sqlalchemy import Boolean, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -81,6 +81,16 @@ class Observer(Base):
     "did this observer send traffic to the target". `addressing` is
     deliberately untouched by that migration — it keeps deciding claim
     authorisation and carries no noise information itself.
+
+    `confirms_relations` (migration 0061, planning#212) is a THIRD,
+    independent axis for the entity graph: may a relation asserted by this
+    observer auto-confirm without a person deciding it. It is per-observer,
+    not derived from `trust`, because `trust = 'observed'` alone cannot
+    express "SEC filing yes, Wayback capture no" — both are `observed`.
+    `ck_observers_inferred_never_confirms` guarantees it can never be `true`
+    for an `inferred` observer, and `uq_observers_id_confirms_relations`
+    lets `entity_relations` pin a denormalised copy of this column to this
+    row with a composite FK (see that migration's docstring).
     """
 
     __tablename__ = "observers"
@@ -92,3 +102,4 @@ class Observer(Base):
     addressing: Mapped[str] = mapped_column(Text, nullable=False)
     noise_class: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
+    confirms_relations: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))

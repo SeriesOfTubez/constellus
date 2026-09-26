@@ -86,6 +86,9 @@ class EngagementResponse(BaseModel):
     authorised_by: str | None
     created_at: str
     member_targets: list[MemberTarget]
+    # planning#212 (L3) — the corporate entity this engagement's subject is
+    # attributed to, if any. Set via PATCH (ADMIN only); never inferred here.
+    subject_entity_id: uuid.UUID | None = None
 
 
 class CreateEngagementRequest(BaseModel):
@@ -95,6 +98,10 @@ class CreateEngagementRequest(BaseModel):
 class TransitionRequest(BaseModel):
     to: str
     authorisation_reference: str | None = None
+
+
+class EngagementPatch(BaseModel):
+    subject_entity_id: uuid.UUID | None = None
 
 
 def _member_targets(db: Session, engagement_id: uuid.UUID) -> list[MemberTarget]:
@@ -125,6 +132,7 @@ def _to_response(db: Session, e: Engagement) -> EngagementResponse:
         authorised_by=_authorised_by_email(db, e.authorised_by_id),
         created_at=e.created_at.isoformat(),
         member_targets=_member_targets(db, e.id),
+        subject_entity_id=e.subject_entity_id,
     )
 
 
@@ -170,6 +178,7 @@ def list_engagements(
             authorised_by=email_by_id.get(e.authorised_by_id) if e.authorised_by_id else None,
             created_at=e.created_at.isoformat(),
             member_targets=targets_by_engagement.get(e.id, []),
+            subject_entity_id=e.subject_entity_id,
         )
         for e in engagements
     ]
@@ -207,6 +216,44 @@ def create_engagement(
     db.add(engagement)
     db.commit()
     db.refresh(engagement)
+    return _to_response(db, engagement)
+
+
+@router.patch("/{engagement_id}", response_model=EngagementResponse)
+def patch_engagement(
+    request: Request,
+    engagement_id: uuid.UUID,
+    data: EngagementPatch,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(UserRole.ADMIN)),
+):
+    """planning#212 (L3) — the only field this route currently accepts is
+    `subject_entity_id`, ADMIN-only (unlike the rest of this module's reads,
+    which are open to any authenticated user). No sentinel/clear field:
+    this slice only assigns an entity, it does not detach one."""
+    engagement = db.get(Engagement, engagement_id)
+    if not engagement:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+
+    if data.subject_entity_id is not None:
+        from app.models.org_entity import OrgEntity
+
+        entity = db.get(OrgEntity, data.subject_entity_id)
+        if entity is None:
+            raise HTTPException(status_code=422, detail="entity not found")
+        was_entity_id = engagement.subject_entity_id
+        engagement.subject_entity_id = entity.id
+        db.commit()
+        db.refresh(engagement)
+        audit.record_detail(
+            request,
+            engagement=str(engagement.id),
+            subject_entity={
+                "from": str(was_entity_id) if was_entity_id else None,
+                "to": str(entity.id),
+            },
+        )
+
     return _to_response(db, engagement)
 
 
