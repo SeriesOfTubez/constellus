@@ -34,7 +34,7 @@ from app.models.entity_filing_event import EntityFilingEvent
 from app.models.org_entity import OrgEntity
 from app.models.user import User, UserRole
 from app.services import sec_edgar
-from app.tests._edgar import cleanup_cik, make_cik
+from app.tests._edgar import cleanup_cik, html_table, index_html, make_cik, text_block_html, tr
 
 _UA = "planning213-api-tests contact@example.invalid"
 
@@ -225,6 +225,82 @@ def test_get_filing_events_returns_them_newest_first_for_any_authenticated_user(
         assert items[0]["filing_date"] > items[1]["filing_date"]
         assert {i["accession_number"] for i in items} == {"9900000051-24-000051", "9900000052-24-000052"}
         assert all(i["observer_name"] == "edgar_8k_items" for i in items)
+    finally:
+        sec_edgar._transport = None
+        db = SessionLocal()
+        try:
+            cleanup_cik(db, cik)
+        finally:
+            db.close()
+        _cleanup_user(admin_id)
+        _cleanup_user(viewer_id)
+
+
+# ── GET /api/entities/{entity_id}/subsidiary-listings + /filing-sections ────
+# (planning#213 slice 2)
+
+def test_get_subsidiary_listings_and_filing_sections_work_for_a_viewer():
+    db_cik_holder = SessionLocal()
+    cik = make_cik(db_cik_holder)
+    db_cik_holder.close()
+
+    admin_headers, admin_id = _make_user(UserRole.ADMIN.value)
+    # See module docstring: no `analyst` role exists; VIEWER is the closest
+    # real substitute for "any authenticated user, read-only".
+    viewer_headers, viewer_id = _make_user(UserRole.VIEWER.value)
+
+    accession = "9900000060-24-000060"
+    idx = index_html([
+        {"Document": "subs.htm", "Type": "EX-21.1"},
+        {"Document": "form10k.htm", "Type": "10-K"},
+    ])
+    ex21_body = html_table(tr("Name", "Jurisdiction"), tr("Example API Sub LLC", "Delaware"))
+    footnote_doc = text_block_html(["Note 3 - Business Combinations"] + [f"Body {i}" for i in range(1, 12)])
+    recent = {"form": ["10-K"], "accessionNumber": [accession], "filingDate": ["2024-03-01"], "items": [""]}
+    body = _submissions_body(cik, recent=recent)
+
+    def _handle(request: httpx.Request) -> httpx.Response:
+        leaf = request.url.path.rsplit("/", 1)[-1]
+        if leaf.endswith("-index.htm"):
+            return httpx.Response(200, content=idx.encode())
+        if leaf == "subs.htm":
+            return httpx.Response(200, content=ex21_body.encode())
+        if leaf == "form10k.htm":
+            return httpx.Response(200, content=footnote_doc.encode())
+        return httpx.Response(200, content=body)
+
+    sec_edgar._transport = httpx.MockTransport(_handle)
+    client = TestClient(app)
+    try:
+        r = client.post("/api/entities/edgar-ingest", json={"cik": cik}, headers=admin_headers)
+        assert r.status_code == 202, r.text
+
+        db = SessionLocal()
+        try:
+            entity = db.query(OrgEntity).filter(OrgEntity.cik == cik).one()
+            entity_id = entity.id
+        finally:
+            db.close()
+
+        r2 = client.get(f"/api/entities/{entity_id}/subsidiary-listings", headers=viewer_headers)
+        assert r2.status_code == 200, r2.text
+        groups = r2.json()
+        assert len(groups) == 1
+        group = groups[0]
+        assert group["accession_number"] == accession
+        assert group["exhibit_type"] == "EX-21.1"
+        assert len(group["rows"]) == 1
+        assert group["rows"][0]["name"] == "Example API Sub LLC"
+        assert group["rows"][0]["jurisdiction"] == "Delaware"
+        assert group["rows"][0]["subsidiary_entity_id"] is not None
+
+        r3 = client.get(f"/api/entities/{entity_id}/filing-sections", headers=viewer_headers)
+        assert r3.status_code == 200, r3.text
+        sections = r3.json()
+        assert len(sections) == 1
+        assert sections[0]["section"] == "business_combinations"
+        assert sections[0]["heading"] == "Note 3 - Business Combinations"
+        assert "Body 1" in sections[0]["text"]
     finally:
         sec_edgar._transport = None
         db = SessionLocal()

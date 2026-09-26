@@ -25,7 +25,9 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_role
 from app.core.database import SessionLocal, get_db
 from app.models.entity_filing_event import EntityFilingEvent
+from app.models.entity_filing_section import EntityFilingSection
 from app.models.entity_relation import EntityRelation, RELATION_STATUSES
+from app.models.entity_subsidiary_listing import EntitySubsidiaryListing
 from app.models.evidence import EvidenceBlob, EvidenceFetch
 from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
@@ -107,6 +109,37 @@ class FilingEventResponse(BaseModel):
     items: str
     evidence_id: uuid.UUID
     observer_name: str | None
+
+
+class SubsidiaryListingRow(BaseModel):
+    name: str
+    jurisdiction: str | None
+    subsidiary_entity_id: uuid.UUID | None
+
+
+class SubsidiaryListingGroup(BaseModel):
+    accession_number: str
+    filing_date: str
+    report_date: str | None
+    exhibit_type: str
+    evidence_id: uuid.UUID
+    rows: list[SubsidiaryListingRow]
+
+
+class FilingSectionResponse(BaseModel):
+    id: uuid.UUID
+    accession_number: str
+    form: str
+    filing_date: str
+    report_date: str | None
+    section: str
+    extraction: str
+    heading: str
+    heading_match_count: int
+    start_line: int
+    end_line: int
+    text: str
+    evidence_id: uuid.UUID
 
 
 def _to_entity_response(e: OrgEntity) -> EntityResponse:
@@ -378,6 +411,89 @@ def list_filing_events(
             items=r.items,
             evidence_id=r.evidence_id,
             observer_name=(observers_by_id[r.observer_id].name if r.observer_id in observers_by_id else None),
+        )
+        for r in rows
+    ]
+
+
+@router.get("/{entity_id}/subsidiary-listings", response_model=list[SubsidiaryListingGroup])
+def list_subsidiary_listings(
+    entity_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """Open to any authenticated user (same GET convention as #212/#213
+    slice 1). Rows are grouped by `accession_number` — newest filing
+    first — each group carrying that EX-21's `rows[{name, jurisdiction,
+    subsidiary_entity_id}]` in stored (`row_index`) order. This is planning
+    #213 slice 2's snapshot surface: the year-over-year diff a caller wants
+    is a comparison ACROSS groups here, never a stored computation (see
+    migration 0063's docstring)."""
+    entity = db.get(OrgEntity, entity_id)
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    rows = (
+        db.query(EntitySubsidiaryListing)
+        .filter(EntitySubsidiaryListing.filer_entity_id == entity_id)
+        .order_by(EntitySubsidiaryListing.filing_date.desc(), EntitySubsidiaryListing.row_index.asc())
+        .all()
+    )
+
+    groups: dict[str, SubsidiaryListingGroup] = {}
+    order: list[str] = []
+    for r in rows:
+        if r.accession_number not in groups:
+            groups[r.accession_number] = SubsidiaryListingGroup(
+                accession_number=r.accession_number,
+                filing_date=r.filing_date.isoformat(),
+                report_date=r.report_date.isoformat() if r.report_date else None,
+                exhibit_type=r.exhibit_type,
+                evidence_id=r.evidence_id,
+                rows=[],
+            )
+            order.append(r.accession_number)
+        groups[r.accession_number].rows.append(
+            SubsidiaryListingRow(name=r.name, jurisdiction=r.jurisdiction, subsidiary_entity_id=r.subsidiary_entity_id)
+        )
+    return [groups[k] for k in order]
+
+
+@router.get("/{entity_id}/filing-sections", response_model=list[FilingSectionResponse])
+def list_filing_sections(
+    entity_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """Open to any authenticated user. Returns metadata plus the extracted
+    `text` for each stored section (currently only `business_
+    combinations`) — planning#215 reads this, a person reads this, nothing
+    here is a relation."""
+    entity = db.get(OrgEntity, entity_id)
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    rows = (
+        db.query(EntityFilingSection)
+        .filter(EntityFilingSection.entity_id == entity_id)
+        .order_by(EntityFilingSection.filing_date.desc())
+        .all()
+    )
+    return [
+        FilingSectionResponse(
+            id=r.id,
+            accession_number=r.accession_number,
+            form=r.form,
+            filing_date=r.filing_date.isoformat(),
+            report_date=r.report_date.isoformat() if r.report_date else None,
+            section=r.section,
+            extraction=r.extraction,
+            heading=r.heading,
+            heading_match_count=r.heading_match_count,
+            start_line=r.start_line,
+            end_line=r.end_line,
+            text=r.text,
+            evidence_id=r.evidence_id,
         )
         for r in rows
     ]

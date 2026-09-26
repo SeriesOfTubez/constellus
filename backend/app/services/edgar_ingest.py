@@ -17,11 +17,62 @@ the one function that is allowed to write it:
     disposition", so there is no object entity and no direction to assert.
     A person, or #214/#215, supplies the counterparty later.**
 
-`www.sec.gov` is never fetched by this slice — only `data.sec.gov`, via
-`app.services.sec_edgar`. Full-text search, the 10-K Business Combinations
-footnote and the target's own EX-21 diff are explicitly OUT of scope here
-(slice 2, an ungranted observer — a heuristic parse is proposed-only, never
-auto-confirmed the way this slice's SEC-filing observer is).
+`www.sec.gov` is never fetched by slice 1 — only `data.sec.gov`, via
+`app.services.sec_edgar`.
+
+## Slice 2 (planning#213, 2026-09-25 decisions): EX-21 + the Business
+   Combinations footnote
+
+Two more observers, both **ungranted** (`confirms_relations=false`, unlike
+`edgar_former_names`): `edgar_ex21` and `edgar_10k_footnote`, both fetching
+`www.sec.gov` — the HTML filing index and the documents it lists — via the
+same `app.services.sec_edgar` client, widened to that host.
+
+  - **EX-21 → a snapshot plus one proposal.** Each 10-K's EX-21 exhibit
+    rows are stored VERBATIM in `entity_subsidiary_listings` (never a
+    diff — the year-over-year comparison is a query over these rows). Per
+    distinct (filer, exact name, exact jurisdiction), exactly ONE
+    `subsidiary_of` relation is proposed, at its FIRST appearance across
+    all 10-Ks (processed **oldest filing_date first**, so "first" is well
+    defined), citing that EX-21 as evidence. A new row may be an
+    acquisition OR a newly formed subsidiary, so nothing is labelled
+    `acquired`, and — since the observer is ungranted — `assert_relation`
+    never auto-confirms it either.
+  - **The Business Combinations (or Acquisitions) footnote → a stored
+    section, NO relations at all.** Located by the research method's rule,
+    "take the LAST heading match" (the FIRST is almost always the table of
+    contents), over the PRIMARY 10-K document's own bytes as evidence.
+    Naming the deals in that text is planning#215's job.
+  - **History = all 10-Ks** the submissions JSON lists (`filings.recent`
+    plus every paged `files[]` entry), never just `recent`. `10-K/A`
+    amendments are deliberately excluded (see `_collect_annual_reports`):
+    they rarely carry their own EX-21 and would let a later amendment's
+    filing_date beat the ORIGINAL 10-K's for "first appearance".
+
+`app.services.edgar_html` does all the stdlib `html.parser` work (the
+documents-table locate, the EX-21 row parse, and the text-rendering +
+heading-match port of the research method's `extract_bc.js`) — this module
+stays orchestration: which filings, which documents, which rows get
+written where, and the same "never a raw insert, never an upsert that sets
+status" discipline slice 1 established.
+
+## The scoped-exact-reuse rule extends to EX-21, over a DIFFERENT table
+
+`formerly_named`'s reuse lookup (below) queries `entity_relations` itself.
+EX-21's reuse lookup queries `entity_subsidiary_listings` instead — the
+prior row's `subsidiary_entity_id`, scoped by `filer_entity_id` AND exact
+`(name, jurisdiction)` (NULL jurisdiction matching NULL via `IS NOT
+DISTINCT FROM`) — because a subsidiary's identity here is "this filer once
+listed this exact name at this exact jurisdiction", not "this filer once
+asserted a relation to this name" (a listing row can exist with NO relation
+at all, for a heading or self-name row that was never stored, or for a
+relation a person later rejected — the relation's status is irrelevant to
+whether the SAME subsidiary identity is reused next year). The
+status-blind "does a relation already exist" skip (same shape as slice 1's
+§4.7) is a SEPARATE check, over `entity_relations`, keyed on (subject=
+subsidiary entity, object=filer, relation, observer) — not filtered by
+evidence, so a person's rejection survives a re-ingest here exactly as it
+does for `formerly_named`.
 
 ## Former-name entity reuse is scoped and exact — read this before touching
    step 4 below
@@ -82,10 +133,12 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.engagement import Engagement
 from app.models.entity_filing_event import EntityFilingEvent
+from app.models.entity_filing_section import EntityFilingSection
 from app.models.entity_relation import EntityRelation
+from app.models.entity_subsidiary_listing import EntitySubsidiaryListing
 from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
-from app.services import entity_graph, posture, sec_edgar
+from app.services import edgar_html, entity_graph, posture, sec_edgar
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +151,22 @@ log = logging.getLogger(__name__)
 # API layer (`app/api/entities.py`'s posture test hook) needs to name one.
 OBSERVER_FORMER_NAMES = "edgar_former_names"
 OBSERVER_8K_ITEMS = "edgar_8k_items"
+OBSERVER_EX21 = "edgar_ex21"
+OBSERVER_FOOTNOTE = "edgar_10k_footnote"
+
+# 10-K405 is the pre-2003 EDGAR form id for an on-time 10-K with the (now
+# retired) Item 405 box checked — still a plain annual report, so it is
+# processed identically to "10-K". `10-K/A` (any amendment) is deliberately
+# EXCLUDED: an amendment rarely carries its own EX-21, and including it
+# risks a LATER amendment's filing_date winning "first appearance" over the
+# ORIGINAL 10-K's earlier one for a subsidiary that was already listed
+# there (planning#213 slice 2 spec, §3).
+ANNUAL_REPORT_FORMS: frozenset[str] = frozenset({"10-K", "10-K405"})
+
+# Versioned so a future extraction rewrite is never confused with this
+# one's documented limitation (see `EntityFilingSection`'s docstring): the
+# LAST heading match can land on a later, unrelated mention.
+SECTION_EXTRACTION_METHOD = "last_heading_match_v1"
 
 # 2.01 = Completion of Acquisition or Disposition of Assets (covers BOTH
 # directions — this is exactly why an 8-K becomes an event, not a labelled
@@ -133,6 +202,30 @@ class IngestResult:
     events_existing: int = 0
     malformed_skipped: int = 0
     denied: list[str] = field(default_factory=list)
+
+    # ── slice 2 (planning#213, 2026-09-25) ──────────────────────────────────
+    annual_reports_seen: int = 0
+    ex21_docs: int = 0
+    ex21_missing: int = 0
+    # Not named in the spec's own §3 field enumeration, but §4 explicitly
+    # requires counting it ("count ex21_unparsed") and a required test
+    # (§7) asserts it — a spec inconsistency resolved conservatively by
+    # adding the field rather than dropping the count. See the report's
+    # answer 3.
+    ex21_unparsed: int = 0
+    # Same story: §4 says heading/self-name rows are "not stored... Count
+    # them in the result" but names no field. Added for the same reason.
+    ex21_heading_rows_skipped: int = 0
+    subsidiary_rows: int = 0
+    subsidiaries_proposed: int = 0
+    subsidiaries_skipped: int = 0
+    sections_stored: int = 0
+    sections_existing: int = 0
+    sections_not_found: int = 0
+    oversize_skipped: int = 0
+    # A document filename (from the index or the `primaryDocument` fallback)
+    # that fails `sec_edgar.is_valid_filename` — never requested.
+    invalid_filename_skipped: int = 0
 
 
 def normalise_cik(cik: str) -> str:
@@ -173,6 +266,62 @@ def _parse_event_date(raw: str | None) -> tuple[date | None, str]:
         return datetime.strptime(raw, "%Y-%m-%d").date(), "day"
     except (ValueError, TypeError):
         return None, "unknown"
+
+
+def _parse_date_only(raw: str | None) -> date | None:
+    """`filing_date`/`report_date` need a plain `date | None`, not the
+    `(date, precision)` pair `_parse_event_date` returns for a relation's
+    `event_date` — both tables' date columns carry no precision column of
+    their own."""
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def _collect_annual_reports(array: dict, *, evidence_id: uuid.UUID) -> list[dict]:
+    """Extract 10-K/10-K405 entries (excluding `/A` amendments — see
+    `ANNUAL_REPORT_FORMS`'s own comment) from ONE parallel-array block
+    (`filings.recent`, or one paged `files[]` entry's already-parsed JSON).
+    Each returned dict carries `evidence_id` (the fetch that CONTAINED this
+    entry — the main submissions fetch for `recent`, that page's own fetch
+    for a page — mirroring `_process_filing_array`'s per-array evidence_id
+    parameter) so the caller can sort ALL of them together, across
+    `recent` and every page, before deciding processing order. A row whose
+    `filing_date` fails to parse is silently dropped — not spelled out by
+    the spec's malformed-row handling (which only names the 8-K accession
+    CHECK), but "first appearance" ordering has no sensible fallback for an
+    unparseable date, so dropping it (rather than crashing the whole
+    ingest, or sorting it arbitrarily) is the conservative reading;
+    documented in the report's answer 3."""
+    forms = array.get("form") or []
+    accessions = array.get("accessionNumber") or []
+    filing_dates = array.get("filingDate") or []
+    report_dates = array.get("reportDate") or []
+    primary_docs = array.get("primaryDocument") or []
+    n = min(len(forms), len(accessions), len(filing_dates))
+
+    out: list[dict] = []
+    for i in range(n):
+        form = forms[i]
+        if form not in ANNUAL_REPORT_FORMS:
+            continue
+        filing_date_val = _parse_date_only(filing_dates[i])
+        if filing_date_val is None:
+            continue
+        out.append(
+            {
+                "form": form,
+                "accession": accessions[i],
+                "filing_date": filing_date_val,
+                "report_date": _parse_date_only(report_dates[i]) if i < len(report_dates) else None,
+                "primary_document": primary_docs[i] if i < len(primary_docs) else None,
+                "evidence_id": evidence_id,
+            }
+        )
+    return out
 
 
 def _load_observer(db: Session, name: str) -> Observer | None:
@@ -313,19 +462,243 @@ def _process_filing_array(
             result.events_existing += 1
 
 
+def _process_ex21_for_filing(
+    db: Session,
+    *,
+    entity: OrgEntity,
+    normalised_cik: str,
+    observer: Observer,
+    index_rows: list[dict],
+    report: dict,
+    result: IngestResult,
+) -> None:
+    """Locate and process ONE 10-K's EX-21 exhibit, given its ALREADY
+    fetched and parsed documents-table index (`index_rows`, never `None`
+    here — the caller only invokes this when the index was fetched and
+    parsed successfully). `report` is one entry from
+    `_collect_annual_reports`. Located **by the index `Type` cell,
+    NEVER by filename** — a filer can name the exhibit file anything."""
+    ex21_index_rows = [r for r in index_rows if (r.get("Type") or "").strip().startswith("EX-21")]
+    if not ex21_index_rows:
+        result.ex21_missing += 1
+        return
+
+    # EVERY EX-21-typed row is processed (an EX-21.1 and an EX-21.2 can list
+    # different subsidiaries); the listing key carries `exhibit_type`, so
+    # their rows never collide.
+    for chosen in ex21_index_rows:
+        filename = (chosen.get("Document") or "").strip()
+        exhibit_type = (chosen.get("Type") or "").strip()
+        if not sec_edgar.is_valid_filename(filename):
+            result.invalid_filename_skipped += 1
+            continue
+
+        try:
+            doc_content, _doc_ct, doc_fetched_at, doc_url = sec_edgar.fetch_filing_document(
+                normalised_cik, report["accession"], filename
+            )
+        except sec_edgar.SecDocumentTooLarge:
+            result.oversize_skipped += 1
+            continue
+
+        evidence = entity_graph.store_evidence(
+            db, content=doc_content, content_type="text/html", source_url=doc_url, fetched_at=doc_fetched_at
+        )
+        result.ex21_docs += 1
+
+        rows = edgar_html.parse_ex21_rows(doc_content.decode("utf-8", errors="replace"))
+        if rows is None:
+            # No <tr> at all — a plain paragraph/`<pre>` list. Guessing at
+            # paragraph parsing is explicitly out of scope for this slice.
+            result.ex21_unparsed += 1
+            continue
+
+        row_index = 0
+        for cells in rows:
+            name = cells[0]
+            if edgar_html.is_heading_row(cells) or name == entity.legal_name:
+                result.ex21_heading_rows_skipped += 1
+                continue
+
+            jurisdiction = cells[1] if len(cells) >= 2 else None
+            this_row_index = row_index
+            row_index += 1
+
+            # ── scoped exact reuse, over entity_subsidiary_listings (see module
+            # docstring's "The scoped-exact-reuse rule extends to EX-21") ───────
+            existing_subsidiary_id = db.execute(
+                select(EntitySubsidiaryListing.subsidiary_entity_id)
+                .where(
+                    EntitySubsidiaryListing.filer_entity_id == entity.id,
+                    EntitySubsidiaryListing.name == name,
+                    EntitySubsidiaryListing.jurisdiction.is_not_distinct_from(jurisdiction),
+                    EntitySubsidiaryListing.subsidiary_entity_id.is_not(None),
+                )
+                .limit(1)
+            ).scalar()
+
+            if existing_subsidiary_id is not None:
+                subsidiary_id = existing_subsidiary_id
+            else:
+                subsidiary_id = uuid.uuid4()
+                db.add(OrgEntity(id=subsidiary_id, legal_name=name, cik=None))
+                db.commit()
+
+            inserted_listing_id = db.execute(
+                pg_insert(EntitySubsidiaryListing.__table__)
+                .values(
+                    id=uuid.uuid4(),
+                    filer_entity_id=entity.id,
+                    observer_id=observer.id,
+                    evidence_id=evidence.id,
+                    accession_number=report["accession"],
+                    exhibit_type=exhibit_type,
+                    filing_date=report["filing_date"],
+                    report_date=report["report_date"],
+                    row_index=this_row_index,
+                    name=name,
+                    jurisdiction=jurisdiction,
+                    cells=cells,
+                    subsidiary_entity_id=subsidiary_id,
+                )
+                .on_conflict_do_nothing(constraint="uq_entity_subsidiary_listings_filer_accession_exhibit_row")
+                .returning(EntitySubsidiaryListing.id)
+            ).scalar()
+            db.commit()
+            if inserted_listing_id is not None:
+                result.subsidiary_rows += 1
+
+            # ── status-blind skip (§4.3 — same shape as slice 1's §4.7 for
+            # formerly_named): ANY existing row on this exact tuple, whatever
+            # its status or evidence, suppresses a repeat proposal. This is
+            # what keeps a person's rejection from being silently re-proposed
+            # the next time this subsidiary's name reappears in a later year's
+            # EX-21 (mutation M1 removes this and must fail a test).
+            already = db.execute(
+                select(EntityRelation.id).where(
+                    EntityRelation.subject_id == subsidiary_id,
+                    EntityRelation.object_id == entity.id,
+                    EntityRelation.relation == "subsidiary_of",
+                    EntityRelation.observer_id == observer.id,
+                )
+            ).first()
+            if already is not None:
+                result.subsidiaries_skipped += 1
+                continue
+
+            entity_graph.assert_relation(
+                db,
+                subject_id=subsidiary_id,
+                object_id=entity.id,
+                relation="subsidiary_of",
+                observer_id=observer.id,
+                evidence_id=evidence.id,
+                quote=" | ".join(cells),
+                event_date=report["report_date"] or report["filing_date"],
+                event_date_precision="day",
+            )
+            result.subsidiaries_proposed += 1
+
+
+def _process_footnote_for_filing(
+    db: Session,
+    *,
+    entity: OrgEntity,
+    normalised_cik: str,
+    observer: Observer,
+    index_rows: list[dict] | None,
+    report: dict,
+    result: IngestResult,
+) -> None:
+    """Locate and store ONE 10-K's Business Combinations / Acquisitions
+    footnote. `index_rows` may be `None` (the index itself could not be
+    fetched/parsed — see `ingest_cik`'s loop) — the submissions JSON's
+    `primaryDocument` fallback needs no index at all."""
+    filename: str | None = None
+    if index_rows is not None:
+        for row in index_rows:
+            if (row.get("Type") or "").strip() == report["form"]:
+                filename = (row.get("Document") or "").strip()
+                break
+
+    if not filename:
+        fallback = report.get("primary_document")
+        if not fallback:
+            result.sections_not_found += 1
+            return
+        filename = fallback
+
+    if not sec_edgar.is_valid_filename(filename):
+        result.invalid_filename_skipped += 1
+        return
+
+    try:
+        doc_content, _doc_ct, doc_fetched_at, doc_url = sec_edgar.fetch_filing_document(
+            normalised_cik, report["accession"], filename
+        )
+    except sec_edgar.SecDocumentTooLarge:
+        result.oversize_skipped += 1
+        return
+
+    evidence = entity_graph.store_evidence(
+        db, content=doc_content, content_type="text/html", source_url=doc_url, fetched_at=doc_fetched_at
+    )
+
+    lines = edgar_html.render_text_lines(doc_content.decode("utf-8", errors="replace"))
+    located = edgar_html.find_business_combinations_section(lines)
+    if located is None:
+        result.sections_not_found += 1
+        return
+
+    start, end, heading, match_count = located
+    text = "\n".join(lines[start:end])
+
+    inserted_id = db.execute(
+        pg_insert(EntityFilingSection.__table__)
+        .values(
+            id=uuid.uuid4(),
+            entity_id=entity.id,
+            observer_id=observer.id,
+            evidence_id=evidence.id,
+            accession_number=report["accession"],
+            form=report["form"],
+            filing_date=report["filing_date"],
+            report_date=report["report_date"],
+            section="business_combinations",
+            extraction=SECTION_EXTRACTION_METHOD,
+            heading=heading,
+            heading_match_count=match_count,
+            start_line=start,
+            end_line=end,
+            text=text,
+        )
+        .on_conflict_do_nothing(constraint="uq_entity_filing_sections_entity_accession_section")
+        .returning(EntityFilingSection.id)
+    ).scalar()
+    db.commit()
+    if inserted_id is not None:
+        result.sections_stored += 1
+    else:
+        result.sections_existing += 1
+
+
 def ingest_cik(db: Session, cik: str) -> IngestResult:
     """Fetch and ingest one CIK's submissions JSON. Never touches
     `targets`, domains or scans, and never maps a name to an entity except
-    the scoped lookup in `_process_former_names`."""
+    the scoped lookups in `_process_former_names` (over `entity_relations`)
+    and `_process_ex21_for_filing` (over `entity_subsidiary_listings`)."""
     normalised_cik = normalise_cik(cik)
     require_user_agent()
 
     former_names_observer = _load_observer(db, OBSERVER_FORMER_NAMES)
     events_observer = _load_observer(db, OBSERVER_8K_ITEMS)
-    if former_names_observer is None or events_observer is None:
+    ex21_observer = _load_observer(db, OBSERVER_EX21)
+    footnote_observer = _load_observer(db, OBSERVER_FOOTNOTE)
+    if None in (former_names_observer, events_observer, ex21_observer, footnote_observer):
         raise EdgarObserversMissing(
-            f"seeded observers {OBSERVER_FORMER_NAMES!r}/{OBSERVER_8K_ITEMS!r} not found "
-            "(migration 0062 not applied?) — refusing rather than creating them on the fly."
+            f"seeded observers {OBSERVER_FORMER_NAMES!r}/{OBSERVER_8K_ITEMS!r}/"
+            f"{OBSERVER_EX21!r}/{OBSERVER_FOOTNOTE!r} not found "
+            "(migrations 0062/0063 not applied?) — refusing rather than creating them on the fly."
         )
 
     existing_entity = _existing_entity_by_cik(db, normalised_cik)
@@ -337,17 +710,25 @@ def ingest_cik(db: Session, cik: str) -> IngestResult:
     events_permitted = posture.observer_permitted(
         passive_only=passive_only, noise_class=events_observer.noise_class
     )
+    ex21_permitted = posture.observer_permitted(passive_only=passive_only, noise_class=ex21_observer.noise_class)
+    footnote_permitted = posture.observer_permitted(
+        passive_only=passive_only, noise_class=footnote_observer.noise_class
+    )
 
     denied: list[str] = []
     if not former_names_permitted:
         denied.append(former_names_observer.name)
     if not events_permitted:
         denied.append(events_observer.name)
+    if not ex21_permitted:
+        denied.append(ex21_observer.name)
+    if not footnote_permitted:
+        denied.append(footnote_observer.name)
 
     result = IngestResult(entity_id=existing_entity.id if existing_entity else None, denied=denied)
 
-    if not former_names_permitted and not events_permitted:
-        # Both signals denied — no HTTP request at all.
+    if not any((former_names_permitted, events_permitted, ex21_permitted, footnote_permitted)):
+        # All FOUR signals denied — no HTTP request at all.
         return result
 
     content, content_type, fetched_at, url = sec_edgar.fetch_submissions(normalised_cik)
@@ -367,14 +748,12 @@ def ingest_cik(db: Session, cik: str) -> IngestResult:
     entity = db.execute(select(OrgEntity).where(OrgEntity.cik == normalised_cik)).scalar_one()
     result.entity_id = entity.id
 
-    # ── paged filings.files[] — fetched only if the events signal is
-    # permitted: the pages exist solely to extend 8-K item coverage past
-    # `filings.recent`, and formerNames never needs them. Not spelled out in
-    # the spec (which says "fetch each files[] page" unconditionally except
-    # when BOTH signals are denied) — a deliberate, more conservative
-    # reading, documented in the report's answer 3.
+    # ── paged filings.files[] — fetched when ANY of 8-K / EX-21 / footnote
+    # is permitted: all three need the full filing history past `filings.
+    # recent` (slice 2 spec §3 — widened from slice 1's "events-only"
+    # condition, which former names alone still never triggers).
     pages: list[tuple[dict, uuid.UUID]] = []
-    if events_permitted:
+    if events_permitted or ex21_permitted or footnote_permitted:
         for file_entry in (data.get("filings", {}).get("files") or []):
             name = file_entry.get("name")
             page_content, page_content_type, page_fetched_at, page_url = sec_edgar.fetch_submissions_page(name)
@@ -404,5 +783,68 @@ def ingest_cik(db: Session, cik: str) -> IngestResult:
             _process_filing_array(
                 db, entity=entity, observer=events_observer, evidence_id=page_evidence_id, array=page_data, result=result
             )
+
+    if ex21_permitted or footnote_permitted:
+        recent = data.get("filings", {}).get("recent") or {}
+        annual_reports = _collect_annual_reports(recent, evidence_id=main_fetch.id)
+        for page_data, page_evidence_id in pages:
+            annual_reports.extend(_collect_annual_reports(page_data, evidence_id=page_evidence_id))
+        # "First appearance" (§4) needs a total order across ALL 10-Ks —
+        # recent plus every page — not per-array. `list.sort` is stable, so
+        # same-date entries keep their (recent-before-pages) discovery
+        # order rather than being reshuffled arbitrarily.
+        annual_reports.sort(key=lambda r: r["filing_date"])
+
+        for report in annual_reports:
+            result.annual_reports_seen += 1
+            accession = report["accession"]
+            if not isinstance(accession, str) or not _ACCESSION_RE.match(accession):
+                # Same conservative treatment as the 8-K malformed-accession
+                # skip (§4's malformed-row handling only names that CHECK
+                # explicitly) — an annual report entry whose own accession
+                # cannot build a valid URL is silently skipped rather than
+                # raising. Documented in the report's answer 3.
+                continue
+
+            index_rows: list[dict] | None = None
+            try:
+                index_content, _idx_ct, _idx_fetched_at, _idx_url = sec_edgar.fetch_filing_index(
+                    normalised_cik, accession
+                )
+                index_rows = edgar_html.parse_index_table(index_content.decode("utf-8", errors="replace"))
+            except sec_edgar.SecDocumentTooLarge:
+                # The INDEX page itself was oversize — vanishingly unlikely
+                # in practice (real index pages are tiny) and untested;
+                # documented in the report's answer 3. Both signals fall
+                # back to whatever they can do without it (footnote still
+                # tries the `primaryDocument` fallback below; EX-21 has none
+                # and is simply skipped for this filing).
+                result.oversize_skipped += 1
+                index_rows = None
+
+            if ex21_permitted:
+                if index_rows is not None:
+                    _process_ex21_for_filing(
+                        db,
+                        entity=entity,
+                        normalised_cik=normalised_cik,
+                        observer=ex21_observer,
+                        index_rows=index_rows,
+                        report=report,
+                        result=result,
+                    )
+                # else: no index to locate the EX-21 by Type — nothing
+                # further to do for this filing's EX-21 signal.
+
+            if footnote_permitted:
+                _process_footnote_for_filing(
+                    db,
+                    entity=entity,
+                    normalised_cik=normalised_cik,
+                    observer=footnote_observer,
+                    index_rows=index_rows,
+                    report=report,
+                    result=result,
+                )
 
     return result
