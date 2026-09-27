@@ -235,6 +235,8 @@ def project_edges(db: Session, *, entity_id: uuid.UUID | None = None) -> list[di
                 "fetched_at": fetch.fetched_at.isoformat() if fetch else None,
                 "event_date": r.event_date.isoformat() if r.event_date else None,
                 "precision": r.event_date_precision,
+                "quote": r.quote,
+                "grounding": r.grounding,
             }
         )
     return list(edges.values())

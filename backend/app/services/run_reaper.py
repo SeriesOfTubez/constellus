@@ -104,7 +104,11 @@ def reap_stale(db: Session, now: datetime | None = None) -> int:
     return n
 
 
-# ── EDGAR ingest runs (planning#219) ────────────────────────────────────────
+# ── EDGAR ingest runs (planning#219) and AI acquisition reads (#218) ─────────
+#
+# Both kinds live in `entity_ingest_runs` (migration 0066's `kind`), so these
+# sweeps cover both. An AI read is one LLM call per stored section, so it is
+# minutes too, and the same limits fit it.
 #
 # Same two rules as scan runs, for the same reasons: an ingest is a FastAPI
 # BackgroundTask in this process, so at startup every unfinished row is

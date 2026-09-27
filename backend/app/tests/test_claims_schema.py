@@ -72,8 +72,9 @@ def test_observers_seeded_with_23_rows_and_correct_addressing():
     # 23 (migration 0039 + later additions) + 2 (`edgar_former_names`,
     # `edgar_8k_items` — migration 0062, planning#213) + 2 (`edgar_ex21`,
     # `edgar_10k_footnote` — migration 0063, planning#213 slice 2) + 1
-    # (`edgar_10k_website` — migration 0064, planning#216).
-    assert len(by_name) == 28, f"expected 28 seeded observers, got {len(by_name)}: {sorted(by_name)}"
+    # (`edgar_10k_website` — migration 0064, planning#216) + 1
+    # (`llm_acquisition_reader` — migration 0066, planning#218).
+    assert len(by_name) == 29, f"expected 29 seeded observers, got {len(by_name)}: {sorted(by_name)}"
     assert by_name["naabu"] == "ip"
     assert by_name["banner_grab"] == "ip"
     assert by_name["tlsx"] == "name"
@@ -148,6 +149,7 @@ _EXPECTED_NOISE_CLASSES = {
     "edgar_10k_footnote": "silent",
     # migration 0064, planning#216 — reads the same stored 10-K.
     "edgar_10k_website": "silent",
+    "llm_acquisition_reader": "silent",
 }
 
 
@@ -165,8 +167,9 @@ def test_observers_noise_class_matches_the_planning_196_classification_map():
     # 23 (migration 0039 + later additions) + 2 (`edgar_former_names`,
     # `edgar_8k_items` — migration 0062, planning#213) + 2 (`edgar_ex21`,
     # `edgar_10k_footnote` — migration 0063, planning#213 slice 2) + 1
-    # (`edgar_10k_website` — migration 0064, planning#216).
-    assert len(by_name) == 28, f"expected 28 seeded observers, got {len(by_name)}: {sorted(by_name)}"
+    # (`edgar_10k_website` — migration 0064, planning#216) + 1
+    # (`llm_acquisition_reader` — migration 0066, planning#218).
+    assert len(by_name) == 29, f"expected 29 seeded observers, got {len(by_name)}: {sorted(by_name)}"
 
     bad_vocab = {name: nc for name, nc in by_name.items() if nc not in OBSERVER_NOISE}
     assert not bad_vocab, f"noise_class outside OBSERVER_NOISE: {bad_vocab}"
@@ -177,9 +180,10 @@ def test_observers_noise_class_matches_the_planning_196_classification_map():
     # `silent` is 15, not 10: migration 0062 (planning#213 slice 1) added
     # two silent observers (`edgar_former_names`, `edgar_8k_items`), and
     # migration 0063 (planning#213 slice 2) added two more (`edgar_ex21`,
-    # `edgar_10k_footnote`), and migration 0064 (planning#216) one more
-    # (`edgar_10k_website`).
-    assert counts == {"target_host": 8, "target_infra": 2, "third_party_infra": 3, "silent": 15}, counts
+    # `edgar_10k_footnote`), migration 0064 (planning#216) one more
+    # (`edgar_10k_website`), and migration 0066 (planning#218) one more
+    # (`llm_acquisition_reader`).
+    assert counts == {"target_host": 8, "target_infra": 2, "third_party_infra": 3, "silent": 16}, counts
 
     assert by_name == _EXPECTED_NOISE_CLASSES, (
         f"only in table: {set(by_name) - set(_EXPECTED_NOISE_CLASSES)}; "

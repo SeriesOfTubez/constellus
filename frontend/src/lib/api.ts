@@ -332,6 +332,8 @@ export type EntityEdgeSource = {
   fetched_at: string | null
   event_date: string | null
   precision: "day" | "month" | "year" | "unknown"
+  quote: string
+  grounding: "verified" | "not_applicable" | null
 }
 
 export type EntityEdge = {
@@ -345,6 +347,7 @@ export type EntityEdge = {
 export type EntityIngestRun = {
   id: string
   cik: string
+  kind: "edgar_ingest" | "acquisition_read"
   status: "queued" | "running" | "succeeded" | "failed"
   entity_id: string | null
   entity_name: string | null
