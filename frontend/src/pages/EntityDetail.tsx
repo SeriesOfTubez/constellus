@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea"
 import {
   api,
   type CandidateDomain,
+  type DroppedAcquisition,
   type Engagement,
   type EntityEdge,
   type EntityEdgeSource,
@@ -121,6 +122,8 @@ function readSummary(run: EntityIngestRun): string {
   ]
   if (n("items_existing")) parts.push(`${n("items_existing")} already known`)
   if (n("items_ungrounded")) parts.push(`${n("items_ungrounded")} dropped (not in the text)`)
+  if (n("items_filtered")) parts.push(`${n("items_filtered")} filtered`)
+  if (n("names_from_variant")) parts.push(`${n("names_from_variant")} matched by a shorter name`)
   if (n("sections_failed")) parts.push(`${n("sections_failed")} sections failed`)
   if (n("sections_truncated")) parts.push(`${n("sections_truncated")} cut to fit`)
   parts.push(`LLM cost $${n("cost_usd").toFixed(4)} over ${n("calls")} calls`)
@@ -132,6 +135,32 @@ const READ_BADGE: Record<EntityIngestRun["status"], "default" | "secondary" | "d
   running: "secondary",
   succeeded: "default",
   failed: "destructive",
+}
+
+// planning#235 — the reader's own account of what it read but did not
+// propose. Parsed defensively: `result` is not a typed API response, and
+// these strings are copied from a public filing, never trusted as markup.
+const DROPPED_REASON_LABEL: Record<string, string> = {
+  filtered: "not a named business",
+  quote_not_in_text: "quote not found in the section",
+  name_not_in_quote: "name not in its quote",
+}
+
+function isDroppedAcquisition(v: unknown): v is DroppedAcquisition {
+  if (typeof v !== "object" || v === null) return false
+  const r = v as Record<string, unknown>
+  return typeof r.name === "string" && typeof r.reason === "string" && typeof r.filing_date === "string"
+}
+
+function droppedItems(run: EntityIngestRun): DroppedAcquisition[] {
+  const v = run.result?.dropped_items
+  if (!Array.isArray(v)) return []
+  return (v as unknown[]).filter(isDroppedAcquisition)
+}
+
+function droppedItemsOmitted(run: EntityIngestRun): number {
+  const v = run.result?.dropped_items_omitted
+  return typeof v === "number" ? v : 0
 }
 
 function AcquisitionReadPanel({ isAdmin, run, hasSections, busy, onStart }: {
@@ -159,11 +188,32 @@ function AcquisitionReadPanel({ isAdmin, run, hasSections, busy, onStart }: {
         </div>
       )}
       {run && (
-        <div className="flex flex-wrap items-center gap-2 text-xs" title={JSON.stringify(run.result ?? {}, null, 1)}>
-          <span className="text-muted-foreground">Last AI read</span>
-          <Badge variant={READ_BADGE[run.status]}>{run.status}</Badge>
-          <span className="text-muted-foreground">{readSummary(run)}</span>
-          {run.error && <span className="text-destructive">{run.error}</span>}
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2 text-xs" title={JSON.stringify(run.result ?? {}, null, 1)}>
+            <span className="text-muted-foreground">Last AI read</span>
+            <Badge variant={READ_BADGE[run.status]}>{run.status}</Badge>
+            <span className="text-muted-foreground">{readSummary(run)}</span>
+            {run.error && <span className="text-destructive">{run.error}</span>}
+          </div>
+          {droppedItems(run).length > 0 && (
+            <details className="text-xs">
+              <summary className="cursor-pointer text-muted-foreground">
+                Show {droppedItems(run).length + droppedItemsOmitted(run)} dropped
+              </summary>
+              <ul className="mt-1 space-y-0.5 pl-3">
+                {droppedItems(run).map((d, i) => (
+                  <li key={i} className="flex flex-wrap items-baseline gap-x-1.5">
+                    <span className="font-medium">{d.name}</span>
+                    <span className="text-muted-foreground">{DROPPED_REASON_LABEL[d.reason] ?? d.reason}</span>
+                    <span className="text-muted-foreground">10-K {d.filing_date.slice(0, 4)}</span>
+                  </li>
+                ))}
+              </ul>
+              {droppedItemsOmitted(run) > 0 && (
+                <p className="mt-0.5 text-muted-foreground">…and {droppedItemsOmitted(run)} more not listed</p>
+              )}
+            </details>
+          )}
         </div>
       )}
     </div>

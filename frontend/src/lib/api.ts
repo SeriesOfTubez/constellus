@@ -344,6 +344,13 @@ export type EntityEdge = {
   sources: EntityEdgeSource[]
 }
 
+// planning#235: one entry per business the reader read but did not propose.
+export type DroppedAcquisition = {
+  name: string
+  reason: "filtered" | "quote_not_in_text" | "name_not_in_quote"
+  filing_date: string
+}
+
 export type EntityIngestRun = {
   id: string
   cik: string
@@ -351,7 +358,7 @@ export type EntityIngestRun = {
   status: "queued" | "running" | "succeeded" | "failed"
   entity_id: string | null
   entity_name: string | null
-  result: Record<string, number | string[]> | null
+  result: Record<string, number | string[] | DroppedAcquisition[]> | null
   error: string | null
   created_at: string
   started_at: string | null
