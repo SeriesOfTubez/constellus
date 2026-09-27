@@ -11,6 +11,9 @@ from app.core.database import Base
 # pattern as `candidate_domain.py`).
 INGEST_RUN_STATUSES: frozenset[str] = frozenset({"queued", "running", "succeeded", "failed"})
 INGEST_RUN_ACTIVE: tuple[str, ...] = ("queued", "running")
+# Migration 0066 (planning#218): what the run does. The active-run guard is
+# per (kind, cik), so an AI read and an EDGAR ingest of one filer may overlap.
+INGEST_RUN_KINDS: frozenset[str] = frozenset({"edgar_ingest", "acquisition_read"})
 
 
 class EntityIngestRun(Base):
@@ -23,6 +26,9 @@ class EntityIngestRun(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("uuidv7()"))
     cik: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(
+        Text, nullable=False, default="edgar_ingest", server_default=text("'edgar_ingest'")
+    )
     status: Mapped[str] = mapped_column(Text, nullable=False, default="queued", server_default=text("'queued'"))
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

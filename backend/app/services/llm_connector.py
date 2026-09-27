@@ -972,6 +972,17 @@ def _validate_and_ground(
 
 # ── public API ───────────────────────────────────────────────────────────────
 
+def is_configured(db: Session) -> bool:
+    """True iff the OpenRouter connector row is enabled and holds an API key,
+    the same test `_precall` applies (R5). For a caller that wants to refuse
+    before queueing work (planning#218's run button): it sends nothing and
+    writes no ledger row. `_precall` still re-checks on every call."""
+    row = connector_config.get_one(db, _CONNECTOR_ID)
+    if row is None or not row.enabled:
+        return False
+    return bool(connector_config.get_decrypted_config(db, _CONNECTOR_ID).get("api_key"))
+
+
 def complete(
     db: Session, *, role: Role, messages: list[dict], target_id: uuid.UUID | None,
     engagement_id: uuid.UUID | None, task: str,

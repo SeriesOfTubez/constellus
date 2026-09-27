@@ -9,9 +9,10 @@ identity other data will attach to, and deciding a relation is exactly the
 "a person confirms/rejects" act migration 0061's CHECK constraint exists to
 require evidence of.
 
-**No endpoint here creates a relation.** Ingestion (an SEC-filing fetcher,
-a Wayback fetcher, an LLM extractor calling `entity_graph.assert_relation`)
-is planning#213/#214/#215 — L4/L5, not this slice.
+**No endpoint here writes a relation directly.** Relations come from the
+background runs these endpoints queue (`/edgar-ingest`, planning#213, and
+`/{id}/acquisition-read`, planning#218), each through
+`entity_graph.assert_relation`; a person's decision goes through `decide`.
 """
 
 import dataclasses
@@ -36,7 +37,7 @@ from app.models.evidence import EvidenceBlob, EvidenceFetch
 from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
 from app.models.user import User, UserRole
-from app.services import audit, candidate_domains, edgar_ingest, entity_graph
+from app.services import acquisition_reader, audit, candidate_domains, edgar_ingest, entity_graph, llm_connector
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +68,11 @@ class EdgeSource(BaseModel):
     fetched_at: str | None
     event_date: str | None
     precision: str
+    # planning#218: a reviewer deciding an AI proposal needs the sentence it
+    # rests on. For `llm_acquisition_reader` the quote was checked against
+    # the EXTRACTED section text, not the raw filing `evidence_url` opens.
+    quote: str
+    grounding: str | None
 
 
 class EdgeResponse(BaseModel):
@@ -111,6 +117,7 @@ class EdgarIngestAccepted(BaseModel):
 class IngestRunResponse(BaseModel):
     id: uuid.UUID
     cik: str
+    kind: str
     status: str
     # Resolved from `cik` at read time — see migration 0065's docstring.
     entity_id: uuid.UUID | None
@@ -419,7 +426,7 @@ def edgar_ingest_requested(
         db.commit()
     except IntegrityError:
         db.rollback()
-        # `uq_entity_ingest_runs_active_cik` (migration 0065).
+        # `uq_entity_ingest_runs_active_kind_cik` (migrations 0065/0066).
         raise HTTPException(status_code=409, detail="an ingest for this CIK is already queued or running")
 
     audit.record_detail(request, cik=normalised, run_id=str(run.id))
@@ -434,6 +441,7 @@ def _to_run_response(run: EntityIngestRun, entity: OrgEntity | None) -> IngestRu
     return IngestRunResponse(
         id=run.id,
         cik=run.cik,
+        kind=run.kind,
         status=run.status,
         entity_id=entity.id if entity else None,
         entity_name=entity.legal_name if entity else None,
@@ -453,7 +461,14 @@ def list_ingest_runs(
 ):
     """Newest first. Open to any authenticated user, like every read here."""
     limit = max(1, min(limit, 100))
-    runs = db.query(EntityIngestRun).order_by(EntityIngestRun.created_at.desc()).limit(limit).all()
+    # EDGAR ingests only: an AI read has its own list under the entity.
+    runs = (
+        db.query(EntityIngestRun)
+        .filter(EntityIngestRun.kind == "edgar_ingest")
+        .order_by(EntityIngestRun.created_at.desc())
+        .limit(limit)
+        .all()
+    )
     ciks = {r.cik for r in runs}
     entities = {e.cik: e for e in db.query(OrgEntity).filter(OrgEntity.cik.in_(ciks)).all()} if ciks else {}
     return [_to_run_response(r, entities.get(r.cik)) for r in runs]
@@ -470,6 +485,96 @@ def get_ingest_run(
         raise HTTPException(status_code=404, detail="Ingest run not found")
     entity = db.query(OrgEntity).filter(OrgEntity.cik == run.cik).one_or_none()
     return _to_run_response(run, entity)
+
+
+# ── AI acquisition read (planning#218) ──────────────────────────────────────
+
+def _run_acquisition_read(run_id: uuid.UUID, entity_id: uuid.UUID) -> None:
+    """The `BackgroundTasks` target, same shape as `_run_edgar_ingest`: its
+    own session for the work, `_mark_run` (a second session) for the record.
+    A run-fatal error keeps the proposals already written and records the
+    counts so far beside the error."""
+    _mark_run(run_id, status="running", started_at=datetime.now(timezone.utc))
+    db = SessionLocal()
+    try:
+        result = acquisition_reader.read_acquisitions(db, entity_id=entity_id, run_id=run_id)
+        _mark_run(run_id, status="succeeded", result=result.as_dict(), finished_at=datetime.now(timezone.utc))
+    except acquisition_reader.AcquisitionReadStopped as exc:
+        log.warning("acquisition read %s stopped: %s", run_id, exc)
+        _mark_run(
+            run_id, status="failed", result=exc.result.as_dict(), error=str(exc)[:500],
+            finished_at=datetime.now(timezone.utc),
+        )
+    except Exception as exc:
+        log.exception("acquisition read %s failed for entity_id=%s", run_id, entity_id)
+        # Class + message only: never section text, never a traceback.
+        _mark_run(
+            run_id, status="failed", error=f"{type(exc).__name__}: {exc}"[:500], finished_at=datetime.now(timezone.utc)
+        )
+    finally:
+        db.close()
+
+
+@router.post("/{entity_id}/acquisition-read", response_model=IngestRunResponse, status_code=202)
+def acquisition_read_requested(
+    entity_id: uuid.UUID,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Queue an AI read of this filer's stored Business Combinations
+    sections. Every refusal happens HERE, before a run row exists or any
+    request is sent: unknown entity (404), no CIK or no stored section, the
+    LLM connector unconfigured, or a read of this filer already active (409)."""
+    entity = db.get(OrgEntity, entity_id)
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    if not entity.cik:
+        raise HTTPException(status_code=409, detail="only an SEC filer (an entity with a CIK) has sections to read")
+    if not acquisition_reader.stored_sections(db, entity_id):
+        raise HTTPException(
+            status_code=409, detail="no Business Combinations section is stored for this entity; map it from EDGAR first"
+        )
+    if not llm_connector.is_configured(db):
+        raise HTTPException(status_code=409, detail="the OpenRouter connector is not configured or not enabled")
+
+    run = EntityIngestRun(cik=entity.cik, kind="acquisition_read", status="queued", requested_by_id=current_user.id)
+    db.add(run)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="an AI read of this entity is already queued or running")
+
+    audit.record_detail(request, entity_id=str(entity_id), run_id=str(run.id))
+    # planning#134: another on-demand background task the job queue retires.
+    background_tasks.add_task(_run_acquisition_read, run.id, entity_id)
+    return _to_run_response(run, entity)
+
+
+@router.get("/{entity_id}/acquisition-read/runs", response_model=list[IngestRunResponse])
+def list_acquisition_read_runs(
+    entity_id: uuid.UUID,
+    limit: int = 10,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """Newest first. Open to any authenticated user, like every read here."""
+    entity = db.get(OrgEntity, entity_id)
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    if not entity.cik:
+        return []
+    limit = max(1, min(limit, 50))
+    runs = (
+        db.query(EntityIngestRun)
+        .filter(EntityIngestRun.kind == "acquisition_read", EntityIngestRun.cik == entity.cik)
+        .order_by(EntityIngestRun.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [_to_run_response(r, entity) for r in runs]
 
 
 @router.get("/{entity_id}/edges", response_model=list[EdgeResponse])

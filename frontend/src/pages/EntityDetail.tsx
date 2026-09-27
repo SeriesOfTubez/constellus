@@ -1,8 +1,8 @@
-import { useMemo, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { Link, useParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Check, ChevronLeft, Loader2, Plus, SquareArrowOutUpRight, X } from "lucide-react"
+import { Check, ChevronLeft, Loader2, Plus, Sparkles, SquareArrowOutUpRight, X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -20,6 +20,7 @@ import {
   type EntityEdgeSource,
   type EntityFilingEvent,
   type EntityFilingSection,
+  type EntityIngestRun,
   type OrgEntity,
   type SubsidiaryListingGroup,
 } from "@/lib/api"
@@ -108,6 +109,67 @@ function citationIsStale(lastCited: string | null): boolean {
 
 // ── page ─────────────────────────────────────────────────────────────────────
 
+// planning#218 — the few counters worth a glance; the full result is on the
+// status line's title.
+function readSummary(run: EntityIngestRun): string {
+  const r = run.result
+  if (!r) return ""
+  const n = (k: string) => (typeof r[k] === "number" ? (r[k] as number) : 0)
+  const parts = [
+    `${n("sections_read")}/${n("sections_total")} sections read`,
+    `${n("proposed")} proposed`,
+  ]
+  if (n("items_existing")) parts.push(`${n("items_existing")} already known`)
+  if (n("items_ungrounded")) parts.push(`${n("items_ungrounded")} dropped (not in the text)`)
+  if (n("sections_failed")) parts.push(`${n("sections_failed")} sections failed`)
+  if (n("sections_truncated")) parts.push(`${n("sections_truncated")} cut to fit`)
+  parts.push(`LLM cost $${n("cost_usd").toFixed(4)} over ${n("calls")} calls`)
+  return parts.join(" · ")
+}
+
+const READ_BADGE: Record<EntityIngestRun["status"], "default" | "secondary" | "destructive" | "outline"> = {
+  queued: "outline",
+  running: "secondary",
+  succeeded: "default",
+  failed: "destructive",
+}
+
+function AcquisitionReadPanel({ isAdmin, run, hasSections, busy, onStart }: {
+  isAdmin: boolean
+  run: EntityIngestRun | undefined
+  hasSections: boolean
+  busy: boolean
+  onStart: () => void
+}) {
+  return (
+    <div className="rounded-lg border bg-card p-3 space-y-2 text-sm">
+      {isAdmin && (
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            size="sm" variant="outline" disabled={!hasSections || busy} onClick={onStart}
+            title={hasSections ? undefined : "No Business Combinations section is stored yet. Map this company from EDGAR first."}
+          >
+            {busy ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1.5" />}
+            Read acquisitions with AI
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            Proposals only. Each name and quote is checked against the stored Business Combinations
+            section; a person confirms or rejects every one.
+          </span>
+        </div>
+      )}
+      {run && (
+        <div className="flex flex-wrap items-center gap-2 text-xs" title={JSON.stringify(run.result ?? {}, null, 1)}>
+          <span className="text-muted-foreground">Last AI read</span>
+          <Badge variant={READ_BADGE[run.status]}>{run.status}</Badge>
+          <span className="text-muted-foreground">{readSummary(run)}</span>
+          {run.error && <span className="text-destructive">{run.error}</span>}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function EntityDetail() {
   const { id = "" } = useParams<{ id: string }>()
   const qc = useQueryClient()
@@ -151,6 +213,25 @@ export default function EntityDetail() {
     enabled: !!id,
   })
 
+  // planning#218: the AI read of this filer's stored Business Combinations
+  // sections. Polls only while a run is in flight.
+  const { data: readRuns } = useQuery({
+    queryKey: ["entity-acquisition-reads", id],
+    queryFn: () => api.get<EntityIngestRun[]>(`/entities/${id}/acquisition-read/runs?limit=1`),
+    enabled: !!id,
+    refetchInterval: q =>
+      (q.state.data ?? []).some(r => r.status === "queued" || r.status === "running") ? 3000 : false,
+  })
+  const lastRead = readRuns?.[0]
+  const readActive = lastRead?.status === "queued" || lastRead?.status === "running"
+  // A finished read creates entities and proposals: refresh both once.
+  const finishedReadId = lastRead?.finished_at ? lastRead.id : ""
+  useEffect(() => {
+    if (!finishedReadId) return
+    qc.invalidateQueries({ queryKey: ["entities"] })
+    qc.invalidateQueries({ queryKey: ["entity-edges", id] })
+  }, [finishedReadId, id, qc])
+
   const subjectOf = (engagements ?? []).filter(e => e.subject_entity_id === id)
   const engagementName = useMemo(() => new Map((engagements ?? []).map(e => [e.id, e.name])), [engagements])
 
@@ -178,6 +259,15 @@ export default function EntityDetail() {
       qc.invalidateQueries({ queryKey: ["entity-relations"] })
     },
     onError: (e: { message?: string }) => toast.error(e?.message ?? "Failed to record decision"),
+  })
+
+  const readMutation = useMutation({
+    mutationFn: () => api.post(`/entities/${id}/acquisition-read`),
+    onSuccess: () => {
+      toast.success("AI read started")
+      qc.invalidateQueries({ queryKey: ["entity-acquisition-reads", id] })
+    },
+    onError: (e: { message?: string }) => toast.error(e?.message ?? "Failed to start the AI read"),
   })
 
   const [subjectPick, setSubjectPick] = useState<string>("")
@@ -300,6 +390,15 @@ export default function EntityDetail() {
 
       {/* ── corporate family ── */}
       <Section title="Corporate family" count={edges?.length}>
+        {(isAdmin || lastRead) && (
+          <AcquisitionReadPanel
+            isAdmin={isAdmin}
+            run={lastRead}
+            hasSections={!!sections?.length}
+            busy={readActive || readMutation.isPending}
+            onStart={() => readMutation.mutate()}
+          />
+        )}
         {!edges?.length ? <Empty>No relationships recorded.</Empty> : groupedEdges.map(([group, list]) => (
           <div key={group} className="space-y-1">
             <h3 className="text-sm font-medium text-muted-foreground">{group} ({list.length})</h3>
@@ -331,6 +430,14 @@ export default function EntityDetail() {
                               <span className="text-muted-foreground">{s.status}</span>
                               <span className="text-muted-foreground">{eventDate(s)}</span>
                               <EvidenceButton id={s.evidence_id} />
+                              {s.trust === "inferred" && s.quote && (
+                                <span
+                                  className="basis-full text-muted-foreground italic"
+                                  title="Checked against the extracted Business Combinations section, not the raw filing the evidence button opens. It shows the words are there, not that the deal happened."
+                                >
+                                  “{s.quote}”
+                                </span>
+                              )}
                               {isAdmin && s.status === "proposed" && (
                                 <span className="flex gap-1">
                                   <Button
