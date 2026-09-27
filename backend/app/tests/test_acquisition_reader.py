@@ -602,3 +602,329 @@ def test_one_active_run_per_kind_and_cik(filer):
         db.rollback()
     finally:
         db.close()
+
+
+# ── planning#235: name variants, dedup keys, generic filter, dropped items ──
+
+def test_legal_name_in_the_heading_short_name_in_the_sentence(filer, scripted):
+    text = (
+        "Note 5. Business Combinations\n"
+        "Examplecorp, Inc.\n"
+        "On June 1, 2024, the Company acquired all outstanding stock of Examplecorp, a leader in widget analytics.\n"
+    )
+    quote = "On June 1, 2024, the Company acquired all outstanding stock of Examplecorp, a leader in widget analytics."
+    filer.add_section(text, filing_date=date(2024, 3, 1))
+    scripted([_answer(_item("Examplecorp, Inc.", quote, "June 1, 2024"))])
+
+    result = filer.read()
+
+    assert (result.proposed, result.names_from_variant, result.dropped_items) == (1, 1, [])
+    [(row, acquired)] = filer.acquired_rows()
+    assert acquired.legal_name == "Examplecorp"
+    assert row.grounding == "verified"
+    assert (row.event_date, row.event_date_precision) == (date(2024, 6, 1), "day")
+
+
+def test_defined_term_variant_is_stored(filer, scripted):
+    text = (
+        "Note 6. Business Combinations\n"
+        "In 2023 the Company acquired Brightpath, a provider of routing software.\n"
+    )
+    quote = "In 2023 the Company acquired Brightpath, a provider of routing software."
+    filer.add_section(text, filing_date=date(2023, 6, 1))
+    scripted([_answer(_item("Holdco Nine, Inc. (“Brightpath”)", quote))])
+
+    result = filer.read()
+
+    assert result.proposed == 1
+    [(_, acquired)] = filer.acquired_rows()
+    assert acquired.legal_name == "Brightpath"
+
+
+def test_invented_name_with_a_real_quote_is_dropped_as_name_not_in_quote(filer, scripted):
+    filer.add_section(S1, filing_date=date(2023, 2, 1))
+    scripted([_answer(_item("Invented Rival Corp", Q_WIDGETS))])
+
+    result = filer.read()
+
+    assert (result.items_returned, result.proposed) == (1, 0)
+    assert result.dropped_items == [
+        {"name": "Invented Rival Corp", "reason": "name_not_in_quote", "filing_date": "2023-02-01"}
+    ]
+
+
+def test_variant_must_be_a_whole_word_not_a_substring(filer, scripted):
+    text = "Note 7. Business Combinations\nThe Company acquired Rotary Harvest Systems in 2022.\n"
+    quote = "The Company acquired Rotary Harvest Systems in 2022."
+    filer.add_section(text, filing_date=date(2022, 4, 1))
+    scripted([_answer(_item("Rota, Inc.", quote))])
+
+    result = filer.read()
+
+    assert (result.items_returned, result.proposed) == (1, 0)
+    assert result.dropped_items == [
+        {"name": "Rota, Inc.", "reason": "name_not_in_quote", "filing_date": "2022-04-01"}
+    ]
+
+
+def test_a_stored_name_drops_its_trailing_defined_term(filer, scripted):
+    text = (
+        "Note 9. Business Combinations\n"
+        "On May 3, 2022, the Company acquired Examplar Widgets, Inc. (“Examplar”), a maker of gears.\n"
+    )
+    quote = "On May 3, 2022, the Company acquired Examplar Widgets, Inc. (“Examplar”), a maker of gears."
+    filer.add_section(text, filing_date=date(2022, 6, 1))
+    scripted([_answer(_item("Examplar Widgets, Inc. (“Examplar”)", quote))])
+
+    result = filer.read()
+
+    assert (result.proposed, result.names_from_variant) == (1, 0)
+    [(_, acquired)] = filer.acquired_rows()
+    assert acquired.legal_name == "Examplar Widgets, Inc."
+
+
+def test_variant_duplicates_across_three_10ks_collapse_to_one_row(filer, scripted):
+    text_b = "Note 2. Business Combinations\nIn 2023, the Company noted its 2022 acquisition of CloudPeak LLC.\n"
+    text_a = "Note 2. Business Combinations\nIn 2022, the Company acquired CloudPeak LLC (\"CloudPeak\"), a storage provider.\n"
+    text_c = "Note 2. Business Combinations\nIn 2024, the Company referenced its acquisition of CloudPeak.\n"
+    quote_a = "In 2022, the Company acquired CloudPeak LLC (\"CloudPeak\"), a storage provider."
+    quote_b = "In 2023, the Company noted its 2022 acquisition of CloudPeak LLC."
+    quote_c = "In 2024, the Company referenced its acquisition of CloudPeak."
+    # Added out of filing-date order on purpose; the read still visits oldest first.
+    filer.add_section(text_b, filing_date=date(2023, 2, 1))
+    section_a = filer.add_section(text_a, filing_date=date(2022, 2, 1))
+    filer.add_section(text_c, filing_date=date(2024, 2, 1))
+    scripted([
+        _answer(_item('CloudPeak LLC ("CloudPeak")', quote_a)),
+        _answer(_item("CloudPeak LLC", quote_b)),
+        _answer(_item("CloudPeak", quote_c)),
+    ])
+
+    result = filer.read()
+
+    assert (result.items_returned, result.proposed, result.items_existing) == (3, 1, 2)
+    rows = filer.acquired_rows()
+    assert len(rows) == 1
+    row, acquired = rows[0]
+    assert acquired.legal_name == "CloudPeak LLC"
+    assert row.evidence_id == section_a.evidence_id
+
+
+def test_quote_alias_matches_the_name_from_a_later_filing(filer, scripted):
+    text1 = (
+        "Note 2. Business Combinations\n"
+        "On July 21, 2021, the Company acquired all outstanding stock of Channelco Technologies, Inc. "
+        "(“Channelco”), a messaging platform.\n"
+    )
+    quote1 = (
+        "On July 21, 2021, the Company acquired all outstanding stock of Channelco Technologies, Inc. "
+        "(“Channelco”), a messaging platform."
+    )
+    text2 = (
+        "Note 3. Business Combinations\n"
+        "On July 21, 2021, the Company acquired all outstanding stock of Channelco, a messaging platform.\n"
+    )
+    quote2 = "On July 21, 2021, the Company acquired all outstanding stock of Channelco, a messaging platform."
+    filer.add_section(text1, filing_date=date(2021, 8, 15))
+    filer.add_section(text2, filing_date=date(2022, 8, 15))
+    scripted([
+        _answer(_item("Channelco Technologies, Inc.", quote1)),
+        _answer(_item("Channelco", quote2)),
+    ])
+
+    result = filer.read()
+
+    assert (result.proposed, result.items_existing) == (1, 1)
+
+
+def test_generic_defined_term_is_not_promoted_to_an_alias(filer, scripted):
+    quote1 = "The Company acquired Alpha Widgets Inc. (the “Acquiree”) in 2021."
+    quote2 = "The Company acquired Beta Gadgets Inc. (the “Acquiree”) in 2022."
+    text = f"Note 4. Business Combinations\n{quote1}\n{quote2}\n"
+    filer.add_section(text, filing_date=date(2023, 2, 1))
+    scripted([_answer(_item("Alpha Widgets Inc.", quote1), _item("Beta Gadgets Inc.", quote2))])
+
+    result = filer.read()
+
+    assert result.proposed == 2
+    assert {e.legal_name for _, e in filer.acquired_rows()} == {"Alpha Widgets Inc.", "Beta Gadgets Inc."}
+
+
+def test_status_blind_skip_matches_the_normalised_key(filer, scripted):
+    """planning#235 mutation M1: the normalised key, not byte-identity."""
+    filer.add_section(S1, filing_date=date(2023, 2, 1))
+    scripted([_answer(_item("Examplar Widgets", Q_WIDGETS))])
+    assert filer.read().proposed == 1
+    [(row, acquired)] = filer.acquired_rows()
+
+    headers, uid = _make_user(UserRole.ADMIN.value)
+    try:
+        db = SessionLocal()
+        try:
+            entity_graph.decide(db, relation_id=row.id, status="rejected", user=SimpleNamespace(id=uid))
+        finally:
+            db.close()
+
+        text2 = "Note 4. Acquisitions\nThe Company acquired Examplar Widgets, Inc. in 2024.\n"
+        quote2 = "The Company acquired Examplar Widgets, Inc. in 2024."
+        filer.add_section(text2, filing_date=date(2024, 2, 1))
+        # S1 (2023) is read again first and returns nothing new; the later
+        # section (2024) is the one carrying the re-spelled name.
+        scripted([_answer(), _answer(_item("Examplar Widgets, Inc.", quote2))])
+        again = filer.read()
+    finally:
+        db = SessionLocal()
+        try:
+            db.query(EntityRelation).filter(EntityRelation.decided_by_id == uid).update(
+                {"decided_by_id": None}, synchronize_session=False
+            )
+            db.commit()
+        finally:
+            db.close()
+        _cleanup_user(uid)
+
+    assert (again.items_returned, again.items_existing, again.proposed) == (1, 1, 0)
+    [(row_after, acquired_after)] = filer.acquired_rows()
+    assert (row_after.id, row_after.status, acquired_after.id) == (row.id, "rejected", acquired.id)
+
+
+def test_dedup_keys_never_cross_filers(filer, scripted):
+    filer2 = _Filer()
+    try:
+        text2 = "Note 2. Business Combinations\nIn 2020, the Company acquired CloudPeak, a storage company.\n"
+        quote2 = "In 2020, the Company acquired CloudPeak, a storage company."
+        filer2.add_section(text2, filing_date=date(2020, 2, 1))
+        scripted([_answer(_item("CloudPeak", quote2))])
+        result2 = filer2.read()
+        assert result2.proposed == 1
+        [(_, acquired2)] = filer2.acquired_rows()
+
+        text1 = "Note 2. Business Combinations\nIn 2021, the Company acquired CloudPeak LLC, a networking company.\n"
+        quote1 = "In 2021, the Company acquired CloudPeak LLC, a networking company."
+        filer.add_section(text1, filing_date=date(2021, 2, 1))
+        scripted([_answer(_item("CloudPeak LLC", quote1))])
+        result1 = filer.read()
+        # REACHED and not skipped: another filer's key never suppresses this one.
+        assert (result1.items_returned, result1.items_existing, result1.proposed) == (1, 0, 1)
+        [(_, acquired1)] = filer.acquired_rows()
+
+        assert acquired1.id != acquired2.id
+    finally:
+        filer2.close()
+
+
+def test_generic_names_and_the_filer_itself_are_filtered_by_dedup_key(filer, scripted):
+    q1 = "During the year, the Company acquired several companies including undisclosed local retailers."
+    q2 = "In 2019, the Company acquired 13 companies across various regions."
+    q3 = f"In 2020, the Company acquired {FILER_NAME}, Inc. assets."
+    q4 = "In 2021, the Company acquired Fictive Companies, a logistics provider."
+    text = "Note 6. Business Combinations\n" + "\n".join([q1, q2, q3, q4]) + "\n"
+    filer.add_section(text, filing_date=date(2023, 2, 1))
+    scripted([_answer(
+        _item("several companies", q1),
+        _item("13 companies", q2),
+        _item(f"{FILER_NAME}, Inc.", q3),
+        _item("Fictive Companies", q4),
+    )])
+
+    result = filer.read()
+
+    assert (result.items_filtered, result.proposed) == (3, 1)
+    assert {d["name"] for d in result.dropped_items} == {"several companies", "13 companies", f"{FILER_NAME}, Inc."}
+    assert all(d["reason"] == "filtered" for d in result.dropped_items)
+    assert [e.legal_name for _, e in filer.acquired_rows()] == ["Fictive Companies"]
+
+
+def test_a_quote_not_in_the_section_is_dropped_and_recorded(filer, scripted):
+    filer.add_section(S1, filing_date=date(2023, 2, 1))
+    fake_quote = "This sentence never appears anywhere in the filing text."
+    scripted([_answer(_item("Examplar Widgets", fake_quote))])
+
+    result = filer.read()
+
+    assert result.dropped_items == [
+        {"name": "Examplar Widgets", "reason": "quote_not_in_text", "filing_date": "2023-02-01"}
+    ]
+    assert (result.items_ungrounded, result.proposed) == (1, 0)
+
+
+def test_dropped_items_are_capped_and_long_names_truncated(filer, scripted, monkeypatch):
+    monkeypatch.setattr(ar, "DROPPED_CAP", 2)
+    filer.add_section(S1, filing_date=date(2023, 2, 1))
+    long_name = ("Nonexistent Holdings " * 8).strip()
+    assert len(long_name) > ar.DROPPED_NAME_CHARS
+    scripted([_answer(
+        _item(long_name, Q_WIDGETS),
+        _item("Nonexistent Second Corp", Q_WIDGETS),
+        _item("Nonexistent Third Corp", Q_GADGETS),
+    )])
+
+    result = filer.read()
+
+    assert result.items_ungrounded == 3
+    assert len(result.dropped_items) == 2
+    assert result.dropped_items_omitted == 1
+    assert result.dropped_items[0]["name"] == long_name[: ar.DROPPED_NAME_CHARS]
+    assert len(result.dropped_items[0]["name"]) == ar.DROPPED_NAME_CHARS
+
+
+def test_api_run_result_carries_dropped_items(filer, scripted, admin, viewer):
+    filer.add_section(S1, filing_date=date(2023, 2, 1))
+    scripted([_answer(
+        _item("Examplar Widgets", Q_WIDGETS, "March 15, 2021"),
+        _item("Ghost Rival Corp", Q_WIDGETS),
+    )])
+
+    resp = client.post(f"/api/entities/{filer.entity_id}/acquisition-read", headers=admin)
+    assert resp.status_code == 202, resp.text
+    run_id = resp.json()["id"]
+
+    runs = client.get(f"/api/entities/{filer.entity_id}/acquisition-read/runs", headers=viewer).json()
+    [run] = [r for r in runs if r["id"] == run_id]
+    assert run["result"]["dropped_items"] == [
+        {"name": "Ghost Rival Corp", "reason": "name_not_in_quote", "filing_date": "2023-02-01"}
+    ]
+
+
+@pytest.mark.parametrize("name,expected", [
+    ('X, Inc. (“X”)', ("X, Inc.", "X")),
+    ('2Alpha, Inc., (“Rypplet”)', ("2Alpha, Inc.", "Rypplet")),
+    ("Plain Name", ("Plain Name", None)),
+])
+def test_split_defined_term_table(name, expected):
+    assert ar.split_defined_term(name) == expected
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("Examplecorp, Inc.", "Examplecorp"),
+    ("Foo Pty Ltd", "Foo"),
+    ("Own Data Company Ltd.", "Own Data Company"),
+    ("Own Data Company", None),
+    ("AB Co", None),
+])
+def test_strip_legal_suffix_table(name, expected):
+    assert ar.strip_legal_suffix(name) == expected
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("several companies", True),
+    ("13 companies", True),
+    ("the Company", True),
+    ("two privately held companies", True),
+    ("certain businesses", True),
+    ("Acme Companies", False),
+    ("Business Objects Labs", False),
+    ("Target Corp", False),
+])
+def test_is_generic_table(name, expected):
+    assert ar.is_generic(name) is expected
+
+
+def test_dedup_key_ignores_defined_term_and_quote_style_and_spacing():
+    keys = {
+        ar.dedup_key('X Labs, Inc. (“X Labs”)'),
+        ar.dedup_key('X Labs, Inc. ("X Labs")'),
+        ar.dedup_key("x labs"),
+        ar.dedup_key("X  Labs Inc."),
+    }
+    assert keys == {"x labs"}
