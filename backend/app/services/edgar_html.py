@@ -186,10 +186,10 @@ def is_heading_row(cells: list[str]) -> bool:
       3. there is a second cell, and it matches a jurisdiction-column
          header vocabulary (case-insensitive)
 
-    Does NOT check "is this row the filer's own current name" — that
-    comparison needs the filer's name, which this module never has; the
-    caller (`app.services.edgar_ingest`) does that comparison itself,
-    separately, by exact string equality."""
+    Does NOT check "is this row the filer itself" — that comparison needs
+    the filer's current and former names, which this module never has; the
+    caller (`app.services.edgar_ingest`) does it separately, on
+    `entity_names.self_name_key` (planning#241)."""
     if len(cells) == 1 and cells[0].endswith(":"):
         return True
     if cells and _HEADING_FIRST_CELL_RE.match(cells[0].strip()):
