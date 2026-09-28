@@ -1992,3 +1992,160 @@ def test_posture_control_website_signal_runs_without_a_restricting_engagement(mo
         cleanup_cik(db, cik)
         cleanup_observer(db, throwaway_observer_id)
         db.close()
+
+
+# ── planning#241: SEC's ISO-datetime former-name dates, and the filer's own
+# former name inside its EX-21 ────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("2015-06-30", (date(2015, 6, 30), "day")),
+        # The shape SEC actually sends (midnight US Eastern, written in UTC).
+        ("2015-06-30T04:00:00.000Z", (date(2015, 6, 30), "day")),
+        ("2015-06-30T04:00:00Z", (date(2015, 6, 30), "day")),
+        ("2015-06-30T00:00:00-05:00", (date(2015, 6, 30), "day")),
+        ("2015-06-30T04:00", (date(2015, 6, 30), "day")),
+        (None, (None, "unknown")),
+        ("", (None, "unknown")),
+        (20150630, (None, "unknown")),
+        ("2015-02-30", (None, "unknown")),
+        ("2015-02-30T04:00:00.000Z", (None, "unknown")),
+        ("06/30/2015", (None, "unknown")),
+        ("2015-06-30 04:00:00", (None, "unknown")),
+        ("2015-06-30Tgarbage", (None, "unknown")),
+        ("2015-06-30T04:00:00.000Zjunk", (None, "unknown")),
+    ],
+)
+def test_parse_event_date_accepts_a_bare_date_or_an_iso_datetimes_date_part(raw, expected):
+    assert edgar_ingest._parse_event_date(raw) == expected
+
+
+def test_former_name_in_the_real_sec_iso_shape_stores_the_to_date_at_day_precision():
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        entry = {
+            "name": "Example Predecessor Iso Corp",
+            "from": "2010-01-04T05:00:00.000Z",
+            "to": "2015-06-30T04:00:00.000Z",
+        }
+        result, _ = _run_ingest(db, cik, _submissions(cik, former_names=[entry]))
+        assert result.former_names_asserted == 1
+
+        entity = db.execute(select(OrgEntity).where(OrgEntity.cik == cik)).scalar_one()
+        [row] = _relations_for(db, entity.id)
+        assert row.relation == "formerly_named"
+        assert row.event_date == date(2015, 6, 30)
+        assert row.event_date_precision == "day"
+        # `from` has no column of its own; it survives in the quote.
+        assert json.loads(row.quote)["from"] == "2010-01-04T05:00:00.000Z"
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+def _ex21_filing(rows: list[str]) -> tuple[dict, dict, dict]:
+    accession = _accession(241)
+    recent = _annual_report_recent([{"form": "10-K", "accession": accession, "filing_date": "2019-03-01"}])
+    idx = index_html([
+        {"Document": "form10k.htm", "Type": "10-K"},
+        {"Document": "subs.htm", "Type": "EX-21.1"},
+    ])
+    return recent, {accession: idx}, {"subs.htm": html_table(*rows), "form10k.htm": _no_bc_document()}
+
+
+def test_ex21_title_row_with_the_filers_former_name_is_skipped_and_real_rows_still_proposed():
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        recent, indexes, documents = _ex21_filing([
+            # An older 10-K's title row: the name the filer had THEN (SEC
+            # spells it upper-case, the exhibit in mixed case with a comma).
+            tr("Example Predecessor Holdings, Inc.", "List of Subsidiaries"),
+            tr("Example Sub One LLC", "Delaware"),
+            # A real subsidiary sharing the former name with a DIFFERENT
+            # legal suffix: kept (the key keeps the suffix, Jason 2026-09-28).
+            tr("Example Predecessor Holdings Corp", "Delaware"),
+        ])
+        body = _submissions(
+            cik,
+            name="Example Holdings Renamed",
+            former_names=[{
+                "name": "EXAMPLE PREDECESSOR HOLDINGS INC",
+                "from": "2005-09-27T04:00:00.000Z",
+                "to": "2020-06-05T04:00:00.000Z",
+            }],
+            recent=recent,
+        )
+        result, _ = _run_ingest2(db, cik, body, indexes=indexes, documents=documents)
+
+        # The path was reached: the EX-21 was fetched and parsed, and the
+        # former name was known to this ingest.
+        assert result.ex21_docs == 1
+        assert result.former_names_asserted == 1
+        assert result.ex21_heading_rows_skipped == 1
+        assert result.subsidiaries_proposed == 2
+
+        entity = db.execute(select(OrgEntity).where(OrgEntity.cik == cik)).scalar_one()
+        assert {r.name for r in _listings_for(db, entity.id)} == {
+            "Example Sub One LLC",
+            "Example Predecessor Holdings Corp",
+        }
+        proposed = [r for r in _relations_for_object(db, entity.id) if r.relation == "subsidiary_of"]
+        assert sorted(db.get(OrgEntity, r.subject_id).legal_name for r in proposed) == [
+            "Example Predecessor Holdings Corp",
+            "Example Sub One LLC",
+        ]
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+def test_ex21_row_matching_the_current_name_up_to_case_and_punctuation_is_skipped():
+    db = SessionLocal()
+    cik = make_cik(db)
+    try:
+        recent, indexes, documents = _ex21_filing([
+            tr("Example  Holdings, Inc.", "Delaware"),
+            tr("Example Sub One LLC", "Delaware"),
+        ])
+        body = _submissions(cik, name="EXAMPLE HOLDINGS INC", recent=recent)
+        result, _ = _run_ingest2(db, cik, body, indexes=indexes, documents=documents)
+
+        assert result.ex21_docs == 1
+        assert result.ex21_heading_rows_skipped == 1
+        assert result.subsidiaries_proposed == 1
+        entity = db.execute(select(OrgEntity).where(OrgEntity.cik == cik)).scalar_one()
+        assert [r.name for r in _listings_for(db, entity.id)] == ["Example Sub One LLC"]
+    finally:
+        cleanup_cik(db, cik)
+        db.close()
+
+
+def test_one_filers_former_name_is_never_skipped_in_another_filers_ex21():
+    """The skip is per filer (migration 0061): filer B lists a company named
+    like filer A's former name, and that is B's real subsidiary."""
+    db = SessionLocal()
+    cik_a = make_cik(db)
+    cik_b = None
+    try:
+        _run_ingest(db, cik_a, _submissions(
+            cik_a, name="Example Holdings A",
+            former_names=[{"name": "Example Shared Name Inc", "to": "2018-01-01T05:00:00.000Z"}],
+        ))
+        cik_b = make_cik(db)
+        recent, indexes, documents = _ex21_filing([
+            tr("Example Shared Name Inc", "Delaware"),
+            tr("Example Sub One LLC", "Delaware"),
+        ])
+        result, _ = _run_ingest2(
+            db, cik_b, _submissions(cik_b, name="Example Holdings B", recent=recent),
+            indexes=indexes, documents=documents,
+        )
+        assert result.ex21_heading_rows_skipped == 0
+        assert result.subsidiaries_proposed == 2
+    finally:
+        cleanup_cik(db, cik_b)
+        cleanup_cik(db, cik_a)
+        db.close()

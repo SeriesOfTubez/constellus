@@ -101,7 +101,6 @@ from __future__ import annotations
 
 import logging
 import re
-import unicodedata
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import date
@@ -118,6 +117,16 @@ from app.models.llm_call import LlmCall
 from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
 from app.services import entity_graph, llm_connector, posture
+from app.services.entity_names import (
+    _QUOTES,
+    _TERM,
+    MIN_NAME_LENGTH,
+    _fold,
+    dedup_key,
+    is_generic,
+    split_defined_term,
+    strip_legal_suffix,
+)
 from app.services.llm_grounding import Grounded, check_grounding
 
 log = logging.getLogger(__name__)
@@ -126,7 +135,6 @@ OBSERVER = "llm_acquisition_reader"
 SECTION = "business_combinations"
 # ~15k tokens. Longer sections are cut, and grounded against the cut text.
 SECTION_CHAR_CAP = 60_000
-MIN_NAME_LENGTH = 3
 TASK_PREFIX = "acquisition_read"
 # Dropped items kept on the run result (planning#235 item 4).
 DROPPED_CAP = 50
@@ -255,10 +263,6 @@ def stored_sections(db: Session, entity_id: uuid.UUID) -> list[EntityFilingSecti
     )
 
 
-def _fold(text: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
-
-
 _MONTHS = {
     **{m: i for i, m in enumerate(
         ["january", "february", "march", "april", "may", "june", "july", "august",
@@ -299,64 +303,7 @@ def _messages(filer_name: str, sent_text: str) -> list[dict]:
     ]
 
 
-# ── Names: variants, filters and the dedup key (planning#235) ───────────────
-
-# One-for-one, so an index into the translated string is an index into the
-# original: patterns match on the translation, names are sliced from the
-# original (a stored name keeps the filing's own characters).
-_QUOTES = str.maketrans({
-    "“": '"', "”": '"', "„": '"', "«": '"', "»": '"', "‘": "'", "’": "'",
-})
-# A defined term in quotes: `("Examplecorp")`, `(the "Seller")`.
-_TERM = r"""\(\s*(?:the\s+)?["']([^"'()]{1,80})["']\s*\)"""
-_TRAILING_TERM_RE = re.compile(r"\s*,?\s*" + _TERM + r"\s*$", re.IGNORECASE)
-# ONE trailing legal-form suffix. "Company" is deliberately absent: it is
-# part of real names ("Own Data Company").
-_LEGAL_SUFFIX_RE = re.compile(
-    r",?\s+(?:inc|incorporated|llc|l\.l\.c|ltd|limited|corp|corporation|co|plc|s\.a|s\.a\.s|s\.r\.l|s\.p\.a"
-    r"|gmbh|ag|n\.v|b\.v|l\.p|lp|llp|pty\.?\s+ltd|a/s|oy|ab|k\.k)\.?$",
-    re.IGNORECASE,
-)
-# Unnamed groups and generic defined terms, matched against the WHOLE folded
-# name: "several companies", "13 companies", "the Company", "the Merger".
-_GENERIC_NAME_RE = re.compile(
-    r"^(?:the\s+)?"
-    r"(?:(?:several|various|certain|other|multiple|numerous|some|additional|a\s+few|a\s+number\s+of|two|three"
-    r"|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+)?"
-    r"(?:(?:other|additional|small|smaller|private|privately[- ]held|acquired|target)\s+)*"
-    r"(?:company|companies|business|businesses|entity|entities|acquisition|acquisitions|acquiree|acquirees"
-    r"|target|targets|merger|mergers|transaction|transactions|deal|deals|seller|sellers)$"
-)
-
-
-def split_defined_term(name: str) -> tuple[str, str | None]:
-    """`X, Inc. ("X")` → (`X, Inc.`, `X`); no trailing term → (name, None).
-    A trailing comma is dropped either way."""
-    s = name.strip()
-    m = _TRAILING_TERM_RE.search(s.translate(_QUOTES))
-    if not m:
-        return s.rstrip(" ,"), None
-    return s[: m.start()].rstrip(" ,"), m.group(1).strip()
-
-
-def strip_legal_suffix(name: str) -> str | None:
-    """`X, Inc.` → `X`; None when there is no suffix or too little is left."""
-    m = _LEGAL_SUFFIX_RE.search(name)
-    if not m:
-        return None
-    stripped = name[: m.start()].rstrip(" ,")
-    return stripped if len(stripped) >= MIN_NAME_LENGTH else None
-
-
-def is_generic(name: str) -> bool:
-    return bool(_GENERIC_NAME_RE.match(_fold(name.translate(_QUOTES))))
-
-
-def dedup_key(name: str) -> str:
-    base, _ = split_defined_term(name)
-    base = strip_legal_suffix(base) or base
-    return _fold(base.translate(_QUOTES)).strip(" .,")
-
+# ── Names: variants and the skip's keys (planning#235) ─────────────────────
 
 def _alias_in_quote(name: str, quote: str) -> str | None:
     """The defined term right after `name` in `quote`: `X, Inc. ("X")`."""

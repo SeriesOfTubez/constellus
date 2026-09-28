@@ -156,6 +156,7 @@ from app.models.entity_subsidiary_listing import EntitySubsidiaryListing
 from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
 from app.services import candidate_domains, edgar_html, entity_graph, posture, sec_edgar
+from app.services.entity_names import self_name_key
 
 log = logging.getLogger(__name__)
 
@@ -318,12 +319,26 @@ def _document_filename(cell: str) -> str:
     return stripped
 
 
+# A bare date, or an ISO datetime whose date part is taken as-is. SEC's
+# `formerNames[].from/to` are the latter ("2015-06-30T04:00:00.000Z", i.e.
+# midnight US Eastern written in UTC), which the old bare-date-only parse
+# turned into `unknown` for every former name (planning#241). The date part
+# is the calendar date SEC means; no timezone conversion is applied.
+# Migration 0067 backfills with this same pattern, copied, not imported.
+_EVENT_DATE_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$"
+)
+
+
 def _parse_event_date(raw: str | None) -> tuple[date | None, str]:
-    if not raw:
+    if not isinstance(raw, str):
+        return None, "unknown"
+    m = _EVENT_DATE_RE.match(raw)
+    if not m:
         return None, "unknown"
     try:
-        return datetime.strptime(raw, "%Y-%m-%d").date(), "day"
-    except (ValueError, TypeError):
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3))), "day"
+    except ValueError:  # e.g. 2015-02-30
         return None, "unknown"
 
 
@@ -529,6 +544,7 @@ def _process_ex21_for_filing(
     observer: Observer,
     index_rows: list[dict],
     report: dict,
+    self_name_keys: frozenset[str],
     result: IngestResult,
 ) -> None:
     """Locate and process ONE 10-K's EX-21 exhibit, given its ALREADY
@@ -589,7 +605,13 @@ def _process_ex21_for_filing(
         row_index = 0
         for cells in rows:
             name = cells[0]
-            if edgar_html.is_heading_row(cells) or name == entity.legal_name:
+            # The filer itself, under its current OR any former name (an old
+            # 10-K's EX-21 title row carries the name the filer had then;
+            # planning#241). `self_name_keys` is THIS filer's names only,
+            # never a cross-entity name match. The key keeps the legal
+            # suffix: a `Foo, Inc.` row under a `Foo Corp` filer is a real
+            # subsidiary (see `entity_names`).
+            if edgar_html.is_heading_row(cells) or self_name_key(name) in self_name_keys:
                 result.ex21_heading_rows_skipped += 1
                 continue
 
@@ -959,6 +981,17 @@ def ingest_cik(db: Session, cik: str) -> IngestResult:
             )
 
     if ex21_permitted or footnote_permitted or website_permitted:
+        # Every name this filer has gone by, from the submissions JSON in
+        # hand: skipping a row is not asserting anything, so this does not
+        # depend on the former-names signal being permitted.
+        self_name_keys = frozenset(
+            self_name_key(n)
+            for n in (
+                current_name,
+                entity.legal_name,
+                *((entry.get("name") or "") for entry in (data.get("formerNames") or []) if isinstance(entry, dict)),
+            )
+        ) - {""}
         recent = data.get("filings", {}).get("recent") or {}
         annual_reports = _collect_annual_reports(recent, evidence_id=main_fetch.id)
         for page_data, page_evidence_id in pages:
@@ -1019,6 +1052,7 @@ def ingest_cik(db: Session, cik: str) -> IngestResult:
                         observer=ex21_observer,
                         index_rows=index_rows,
                         report=report,
+                        self_name_keys=self_name_keys,
                         result=result,
                     )
                 # else: no index to locate the EX-21 by Type — nothing
