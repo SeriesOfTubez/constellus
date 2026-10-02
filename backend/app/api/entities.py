@@ -37,7 +37,15 @@ from app.models.evidence import EvidenceBlob, EvidenceFetch
 from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
 from app.models.user import User, UserRole
-from app.services import acquisition_reader, audit, candidate_domains, edgar_ingest, entity_graph, llm_connector
+from app.services import (
+    acquisition_reader,
+    audit,
+    candidate_domains,
+    edgar_ingest,
+    entity_graph,
+    entity_relationship,
+    llm_connector,
+)
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +58,11 @@ class EntityResponse(BaseModel):
     cik: str | None
     lei: str | None
     created_at: str
+    # planning#240: None = unset. The ours_* fields are set iff "ours".
+    relationship: str | None = None
+    ours_authorised_by_id: uuid.UUID | None = None
+    ours_authorised_at: str | None = None
+    ours_reference: str | None = None
 
 
 class CreateEntityRequest(BaseModel):
@@ -171,7 +184,13 @@ class FilingSectionResponse(BaseModel):
 
 
 def _to_entity_response(e: OrgEntity) -> EntityResponse:
-    return EntityResponse(id=e.id, legal_name=e.legal_name, cik=e.cik, lei=e.lei, created_at=e.created_at.isoformat())
+    return EntityResponse(
+        id=e.id, legal_name=e.legal_name, cik=e.cik, lei=e.lei, created_at=e.created_at.isoformat(),
+        relationship=e.relationship,
+        ours_authorised_by_id=e.ours_authorised_by_id,
+        ours_authorised_at=e.ours_authorised_at.isoformat() if e.ours_authorised_at else None,
+        ours_reference=e.ours_reference,
+    )
 
 
 @router.get("/", response_model=list[EntityResponse])
@@ -740,6 +759,8 @@ class CandidateDomainResponse(BaseModel):
     status: str
     decided_at: str | None
     engagement_id: uuid.UUID | None
+    # planning#240: "engagement" | "estate" once accepted, else None.
+    accepted_into: str | None = None
     target_id: uuid.UUID | None
     created_at: str
 
@@ -752,7 +773,11 @@ class AddCandidateDomainRequest(BaseModel):
 
 
 class AcceptCandidateDomainRequest(BaseModel):
-    engagement_id: uuid.UUID
+    """planning#240: no picker. Omit both to accept into the one destination
+    the company inherits; name one only when `GET /{entity_id}/destination`
+    says `ambiguous`."""
+    engagement_id: uuid.UUID | None = None
+    estate: bool = False
 
 
 def _to_candidate_response(db: Session, c: CandidateDomain) -> CandidateDomainResponse:
@@ -773,6 +798,7 @@ def _to_candidate_response(db: Session, c: CandidateDomain) -> CandidateDomainRe
         status=c.status,
         decided_at=c.decided_at.isoformat() if c.decided_at else None,
         engagement_id=c.engagement_id,
+        accepted_into=c.accepted_into,
         target_id=c.target_id,
         created_at=c.created_at.isoformat(),
     )
@@ -836,14 +862,16 @@ def accept_candidate_domain(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(UserRole.ADMIN)),
 ):
-    """Creates the target already inside the engagement (so it inherits
-    the engagement's posture), then queues the same initial discovery run
+    """Creates the target already inside the destination the company
+    inherits (planning#240: an engagement, so it inherits the engagement's
+    posture, or our own estate), then queues the same initial discovery run
     `POST /targets` does. That run is gated per observer by
     `probe_authorisation.authorise_discovery`, so under a restricting
     posture only passive sources execute."""
     try:
         result = candidate_domains.accept(
-            db, candidate_id=candidate_id, engagement_id=data.engagement_id, user=current_user
+            db, candidate_id=candidate_id, engagement_id=data.engagement_id, estate=data.estate,
+            user=current_user,
         )
     except candidate_domains.CandidateError as exc:
         raise _candidate_http_error(exc)
@@ -851,7 +879,8 @@ def accept_candidate_domain(
         request,
         candidate_domain=str(result.candidate.id),
         decision={"from": "proposed", "to": "accepted"},
-        engagement=str(result.candidate.engagement_id),
+        engagement=str(result.candidate.engagement_id) if result.candidate.engagement_id else None,
+        destination="engagement" if result.candidate.engagement_id else "estate",
         target=str(result.target.id),
         target_created=result.created,
     )
@@ -877,3 +906,126 @@ def reject_candidate_domain(
         request, candidate_domain=str(candidate.id), decision={"from": "proposed", "to": "rejected"}
     )
     return _to_candidate_response(db, candidate)
+
+
+# ── relationship to us (planning#240) ────────────────────────────────────────
+
+
+class RelationshipRequest(BaseModel):
+    """`relationship`: "ours" (needs `reference`), "ma_target" (needs exactly
+    one of `engagement_id` / `new_engagement_name`), or null to unset."""
+    relationship: str | None
+    reference: str | None = None
+    engagement_id: uuid.UUID | None = None
+    new_engagement_name: str | None = None
+
+
+class DestinationEngagement(BaseModel):
+    id: uuid.UUID
+    name: str
+    posture: str
+    # The stop this engagement was reached through (its subject).
+    subject_entity_id: uuid.UUID | None
+
+
+class DestinationStop(BaseModel):
+    entity_id: uuid.UUID
+    legal_name: str
+    relationship: str
+    depth: int
+
+
+class DestinationResponse(BaseModel):
+    """Where this company's accepted domains go: `ours` / `engagement`
+    (one destination, accept needs no choice), `ambiguous` (choose one),
+    `abandoned` / `unset` (accept is blocked)."""
+    status: str
+    estate: bool
+    engagements: list[DestinationEngagement]
+    stops: list[DestinationStop]
+
+
+def _relationship_http_error(exc: entity_relationship.RelationshipError) -> HTTPException:
+    if isinstance(exc, entity_relationship.RelationshipNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, entity_relationship.RelationshipForbidden):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, entity_relationship.RelationshipConflict):
+        return HTTPException(status_code=409, detail=str(exc))
+    return HTTPException(status_code=422, detail=str(exc))
+
+
+@router.put("/{entity_id}/relationship", response_model=EntityResponse)
+def set_relationship(
+    request: Request,
+    entity_id: uuid.UUID,
+    data: RelationshipRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+):
+    """Roles (Jason, 2026-10-01): marking a company ours, or changing one
+    that is ours, is ADMIN-only; it is an authorisation (it makes domains
+    actively scannable). M&A target is ADMIN + INTEGRATION_ADMIN, the same
+    pair that may create an engagement. The "changing one that is ours"
+    half is checked by the service under the row lock."""
+    is_admin = current_user.role == UserRole.ADMIN.value
+    engagement_fields: dict = {}
+    try:
+        if data.relationship == "ours":
+            if not is_admin:
+                raise HTTPException(status_code=403, detail="only an admin can mark a company as ours")
+            entity, previous = entity_relationship.set_ours(
+                db, entity_id=entity_id, reference=data.reference or "", user=current_user
+            )
+        elif data.relationship == "ma_target":
+            entity, previous, engagement, created = entity_relationship.set_ma_target(
+                db, entity_id=entity_id, user=current_user, engagement_id=data.engagement_id,
+                new_engagement_name=data.new_engagement_name, may_clear_ours=is_admin,
+            )
+            engagement_fields = {"engagement": str(engagement.id), "engagement_created": created}
+        elif data.relationship is None:
+            entity, previous = entity_relationship.clear(db, entity_id=entity_id, may_clear_ours=is_admin)
+        else:
+            raise HTTPException(status_code=422, detail="relationship must be 'ours', 'ma_target' or null")
+    except entity_relationship.RelationshipError as exc:
+        raise _relationship_http_error(exc)
+    audit.record_detail(
+        request,
+        entity=str(entity.id),
+        relationship={"from": previous, "to": entity.relationship},
+        # NOT a key containing "auth": `audit.scrub` would redact it (see
+        # `app/api/engagements.py`'s transition handler).
+        reference=entity.ours_reference,
+        **engagement_fields,
+    )
+    return _to_entity_response(entity)
+
+
+@router.get("/{entity_id}/destination", response_model=DestinationResponse)
+def get_destination(
+    entity_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    if db.get(OrgEntity, entity_id) is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    res = entity_relationship.resolve(db, entity_id)
+    names: dict[uuid.UUID, str] = {}
+    if res.stops:
+        stop_ids = [s.entity_id for s in res.stops]
+        names = {e.id: e.legal_name for e in db.query(OrgEntity).filter(OrgEntity.id.in_(stop_ids)).all()}
+    return DestinationResponse(
+        status=res.status,
+        estate=res.estate,
+        engagements=[
+            DestinationEngagement(id=e.id, name=e.name, posture=e.posture, subject_entity_id=e.subject_entity_id)
+            for e in res.engagements
+        ],
+        stops=[
+            DestinationStop(
+                entity_id=s.entity_id, legal_name=names.get(s.entity_id, ""), relationship=s.relationship,
+                depth=s.depth,
+            )
+            for s in res.stops
+        ],
+    )

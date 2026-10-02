@@ -24,7 +24,7 @@ from app.core.database import get_db
 from app.models.engagement import Engagement, EngagementPosture
 from app.models.target import Target
 from app.models.user import User, UserRole
-from app.services import audit
+from app.services import audit, entity_relationship
 
 router = APIRouter()
 
@@ -236,13 +236,18 @@ def patch_engagement(
         raise HTTPException(status_code=404, detail="Engagement not found")
 
     if data.subject_entity_id is not None:
-        from app.models.org_entity import OrgEntity
-
-        entity = db.get(OrgEntity, data.subject_entity_id)
-        if entity is None:
+        # planning#240: a subject is an M&A target. `ours` is refused, an
+        # unset subject becomes `ma_target`, and a previous subject left
+        # with no engagement goes back to unset (the safe direction).
+        try:
+            entity = entity_relationship.check_may_become_subject(db, data.subject_entity_id)
+        except entity_relationship.RelationshipNotFound:
             raise HTTPException(status_code=422, detail="entity not found")
+        except entity_relationship.RelationshipConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         was_entity_id = engagement.subject_entity_id
         engagement.subject_entity_id = entity.id
+        entity_relationship.on_subject_changed(db, added=entity.id, removed=was_entity_id)
         db.commit()
         db.refresh(engagement)
         audit.record_detail(
@@ -340,6 +345,9 @@ def delete_engagement(
             detail=f"engagement has {member_count} member target(s) — detach them first",
         )
 
+    subject_id = engagement.subject_entity_id
     db.delete(engagement)
+    # planning#240: its subject goes back to unset if this was its last.
+    entity_relationship.on_subject_changed(db, added=None, removed=subject_id)
     db.commit()
     return {"deleted": True}

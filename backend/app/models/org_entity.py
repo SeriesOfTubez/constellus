@@ -7,6 +7,12 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
+# Mirrors migration 0068's `ck_org_entities_relationship` by hand (the
+# codebase's pattern for CHECK-backed vocabularies).
+RELATIONSHIP_OURS = "ours"
+RELATIONSHIP_MA_TARGET = "ma_target"
+RELATIONSHIPS: frozenset[str] = frozenset({RELATIONSHIP_OURS, RELATIONSHIP_MA_TARGET})
+
 
 class OrgEntity(Base):
     """A corporate entity node in the entity graph (planning#212, L3).
@@ -36,3 +42,13 @@ class OrgEntity(Base):
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # planning#240 (migration 0068): what this company is TO US. NULL = unset
+    # (browse only, accept blocked, AI reads strict). Written only through
+    # `app.services.entity_relationship`, which also keeps the cross-table
+    # invariants with `engagements.subject_entity_id`.
+    relationship: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ours_authorised_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    ours_authorised_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ours_reference: Mapped[str | None] = mapped_column(Text, nullable=True)

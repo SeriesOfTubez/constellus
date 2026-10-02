@@ -364,7 +364,7 @@ class StructuredResult(Generic[T]):
 
 # ── data policy ──────────────────────────────────────────────────────────────
 
-def effective_data_policy(engagement: Engagement | None) -> str:
+def effective_data_policy(engagement: Engagement | None, *, force_strict: bool = False) -> str:
     """`"strict"` if `settings.llm_data_policy == "strict"` OR the resolved
     engagement's posture restricts traffic to passive-only
     (`posture.posture_restricts`, `None` reads as "no engagement, nothing
@@ -372,9 +372,14 @@ def effective_data_policy(engagement: Engagement | None) -> str:
     restricted engagement (R3). Otherwise `"dev_permissive"`. `engagement`
     is whatever `_resolve_scope` resolved for this call; see the module
     docstring's "Data policy is derived from the resolved engagement"
-    section."""
+    section.
+
+    `force_strict` (planning#240 item 5) can only RAISE the policy: a caller
+    whose scope is unresolved (an entity with no relationship to us, or a
+    conflicting one) has no engagement to pass, and "no engagement" must
+    not read as the deployment default there."""
     restricts = posture.posture_restricts(engagement.posture if engagement is not None else None)
-    if settings.llm_data_policy == "strict" or restricts:
+    if force_strict or settings.llm_data_policy == "strict" or restricts:
         return "strict"
     return "dev_permissive"
 
@@ -650,7 +655,7 @@ def _resolve_scope(
 
 def _precall(
     db: Session, *, role: Role, target_id: uuid.UUID | None, engagement_id: uuid.UUID | None, task: str,
-    uses_extract: bool,
+    uses_extract: bool, force_strict: bool = False,
 ) -> tuple[str, dict[Role, RoleBinding], bool, str, uuid.UUID | None]:
     """Everything §5's "Pre-call, once per public call" section requires,
     shared by `complete()` and `structured()`. Returns
@@ -671,7 +676,7 @@ def _precall(
     engagement_row = _resolve_scope(db, target_id=target_id, engagement_id=engagement_id)
     resolved_engagement_id = engagement_row.id if engagement_row is not None else None
     passive_only = posture.posture_restricts(engagement_row.posture if engagement_row is not None else None)
-    policy = effective_data_policy(engagement_row)
+    policy = effective_data_policy(engagement_row, force_strict=force_strict)
 
     # 1b. R8, before anything else can happen: every model this call can
     # reach, fallbacks included, plus the extract primary when `structured()`
@@ -1049,7 +1054,7 @@ def complete(
 
 def structured(
     db: Session, *, role: Role, messages: list[dict], schema: type[T], target_id: uuid.UUID | None,
-    engagement_id: uuid.UUID | None, task: str, source_text: str | None,
+    engagement_id: uuid.UUID | None, task: str, source_text: str | None, force_strict: bool = False,
 ) -> StructuredResult[T]:
     """The three-tier ladder — see module docstring. `target_id`,
     `engagement_id` and `source_text` all have no default (R6): a fact
@@ -1058,6 +1063,7 @@ def structured(
     and `engagement_id` combine."""
     api_key, bindings, passive_only, policy, resolved_engagement_id = _precall(
         db, role=role, target_id=target_id, engagement_id=engagement_id, task=task, uses_extract=True,
+        force_strict=force_strict,
     )
     binding = bindings[role]
     extract_binding = bindings[Role.EXTRACT]

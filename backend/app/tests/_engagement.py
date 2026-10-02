@@ -19,6 +19,7 @@ discipline this suite already follows for `authorisation_decisions` /
 import uuid
 
 from app.models.engagement import Engagement, EngagementPosture
+from app.services import entity_relationship
 
 
 def make_engagement(db, posture: str = EngagementPosture.PRE_CLOSE.value, **overrides) -> Engagement:
@@ -35,6 +36,9 @@ def make_engagement(db, posture: str = EngagementPosture.PRE_CLOSE.value, **over
     overrides.setdefault("name", f"pa211-engagement-{uuid.uuid4().hex[:10]}")
     e = Engagement(id=uuid.uuid4(), posture=posture, **overrides)
     db.add(e)
+    # planning#240: a subject is an M&A target — the same sync the API's
+    # write paths run, so a fixture never builds a state they cannot.
+    entity_relationship.on_subject_changed(db, added=e.subject_entity_id, removed=None)
     db.commit()
     return e
 
@@ -46,5 +50,7 @@ def cleanup_engagement(db, engagement_id: uuid.UUID | None) -> None:
     see module docstring."""
     if engagement_id is None:
         return
+    subject_id = db.query(Engagement.subject_entity_id).filter(Engagement.id == engagement_id).scalar()
     db.query(Engagement).filter(Engagement.id == engagement_id).delete(synchronize_session=False)
+    entity_relationship.on_subject_changed(db, added=None, removed=subject_id)
     db.commit()

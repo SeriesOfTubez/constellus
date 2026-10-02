@@ -51,6 +51,9 @@ class CandidateDomain(Base):
     engagement_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("engagements.id", ondelete="RESTRICT"), nullable=True
     )
+    # planning#240 (migration 0068): `engagement` or `estate` iff accepted;
+    # `engagement_id` is set iff it is `engagement`. Frozen once decided.
+    accepted_into: Mapped[str | None] = mapped_column(Text, nullable=True)
     target_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("targets.id", ondelete="SET NULL"), nullable=True
     )

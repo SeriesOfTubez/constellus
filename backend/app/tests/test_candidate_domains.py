@@ -308,7 +308,38 @@ def test_accepted_without_engagement_is_refused(w):
             w.db, entity_id=e.id, domain=d, observer_id=w.website_observer().id, evidence_id=ev.id,
             quote=f"see {d}", status="accepted", decided_at=_now(),
         )
-    assert _constraint(exc.value) == "ck_candidate_domains_engagement"
+    # planning#240 (migration 0068): the destination is explicit.
+    assert _constraint(exc.value) == "ck_candidate_domains_accepted_into"
+
+
+@pytest.mark.parametrize("accepted_into, with_engagement", [
+    ("engagement", False),  # into an engagement, but which?
+    ("estate", True),       # into the estate, yet naming an engagement
+])
+def test_destination_and_engagement_must_agree(w, accepted_into, with_engagement):
+    e = w.entity()
+    ev = w.evidence_row()
+    d = _domain()
+    eng = w.engagement("pre_close", subject=e)
+    with pytest.raises(IntegrityError) as exc:
+        _raw_insert(
+            w.db, entity_id=e.id, domain=d, observer_id=w.website_observer().id, evidence_id=ev.id,
+            quote=f"see {d}", status="accepted", decided_at=_now(), accepted_into=accepted_into,
+            engagement_id=eng.id if with_engagement else None,
+        )
+    assert _constraint(exc.value) == "ck_candidate_domains_engagement_destination"
+
+
+def test_a_rejected_row_carries_no_destination(w):
+    e = w.entity()
+    ev = w.evidence_row()
+    d = _domain()
+    with pytest.raises(IntegrityError) as exc:
+        _raw_insert(
+            w.db, entity_id=e.id, domain=d, observer_id=w.website_observer().id, evidence_id=ev.id,
+            quote=f"see {d}", status="rejected", decided_at=_now(), accepted_into="estate",
+        )
+    assert _constraint(exc.value) == "ck_candidate_domains_accepted_into"
 
 
 # ── 4. the guard trigger ───────────────────────────────────────────────────
@@ -326,6 +357,23 @@ def test_decided_row_cannot_be_demoted_or_redecided(w):
             w.db.commit()
         w.db.rollback()
         assert "cannot change once decided" in str(exc.value.orig)
+
+
+def test_an_accepted_rows_destination_is_frozen(w):
+    """planning#240: where a domain was accepted into is part of the
+    decision. Moving it is a target change, never an edit of this row."""
+    e = w.entity()
+    eng = w.engagement("pre_close", subject=e)
+    other = w.engagement("pre_close", subject=e)
+    c = w.filing_candidate(e)
+    result = cd.accept(w.db, candidate_id=c.id, engagement_id=eng.id, user=w.user())
+    w.targets.append(result.target.id)
+    for values in ({"engagement_id": other.id}, {"accepted_into": "estate", "engagement_id": None}):
+        with pytest.raises(InternalError) as exc:
+            w.db.execute(CandidateDomain.__table__.update().where(CandidateDomain.id == c.id).values(**values))
+            w.db.commit()
+        w.db.rollback()
+        assert "cannot change once decided" in str(exc.value.orig), values
 
 
 def test_claimed_fields_are_immutable(w):
@@ -525,7 +573,7 @@ def test_failed_accept_leaves_no_target(w):
     assert c.status == "proposed"
 
 
-# ── 8. which engagement may receive a candidate (C3) ───────────────────────
+# ── 8. which engagement may receive a candidate (C3, planning#240) ─────────
 
 
 def test_accept_requires_a_confirmed_hop_to_the_engagement_subject(w):
@@ -535,8 +583,8 @@ def test_accept_requires_a_confirmed_hop_to_the_engagement_subject(w):
     c = w.filing_candidate(child)
     admin = w.user()
 
-    # No relation at all → refused.
-    with pytest.raises(cd.CandidateConflict, match="confirmed"):
+    # No relation at all → the child inherits nothing → refused.
+    with pytest.raises(cd.CandidateConflict, match="relationship first"):
         cd.accept(w.db, candidate_id=c.id, engagement_id=eng.id, user=admin)
 
     # A PROPOSED relation is attention, not scope → still refused.
@@ -548,7 +596,7 @@ def test_accept_requires_a_confirmed_hop_to_the_engagement_subject(w):
         evidence_id=ev.id, quote="acquired the child", event_date=None, event_date_precision="unknown",
     )
     w.relations.append(rel.id)
-    with pytest.raises(cd.CandidateConflict, match="confirmed"):
+    with pytest.raises(cd.CandidateConflict, match="relationship first"):
         cd.accept(w.db, candidate_id=c.id, engagement_id=eng.id, user=admin)
 
     # A person confirms it → accepted, and the target lands in the parent's
@@ -566,11 +614,20 @@ def test_accept_refuses_abandoned_and_subjectless_engagements(w):
     abandoned = w.engagement("abandoned", subject=subject)
     with pytest.raises(cd.CandidateConflict, match="abandoned"):
         cd.accept(w.db, candidate_id=c.id, engagement_id=abandoned.id, user=admin)
+    # Abandoned blocks even with no destination named (planning#240).
+    with pytest.raises(cd.CandidateConflict, match="abandoned"):
+        cd.accept(w.db, candidate_id=c.id, user=admin)
+    live = w.engagement("pre_close", subject=subject)
     no_subject = w.engagement("pre_close")
-    with pytest.raises(cd.CandidateConflict):
+    with pytest.raises(cd.CandidateConflict, match="not one this company's domains inherit to"):
         cd.accept(w.db, candidate_id=c.id, engagement_id=no_subject.id, user=admin)
-    with pytest.raises(cd.CandidateInvalid):
+    with pytest.raises(cd.CandidateConflict, match="not one this company's domains inherit to"):
         cd.accept(w.db, candidate_id=c.id, engagement_id=uuid.uuid4(), user=admin)
+    with pytest.raises(cd.CandidateConflict, match="not one this company's domains inherit to"):
+        cd.accept(w.db, candidate_id=c.id, engagement_id=abandoned.id, user=admin)
+    result = cd.accept(w.db, candidate_id=c.id, user=admin)
+    w.targets.append(result.target.id)
+    assert result.target.engagement_id == live.id
 
 
 # ── 9. the domain is already a target (C4) ─────────────────────────────────
@@ -585,7 +642,7 @@ def test_existing_owned_target_is_a_conflict_and_is_left_unchanged(w):
     w.db.commit()
     w.targets.append(owned.id)
 
-    with pytest.raises(cd.CandidateConflict, match="outside this engagement"):
+    with pytest.raises(cd.CandidateConflict, match="outside this destination"):
         cd.accept(w.db, candidate_id=c.id, engagement_id=eng.id, user=w.user())
     w.db.refresh(owned)
     w.db.refresh(c)

@@ -17,6 +17,7 @@ import {
   type CandidateDomain,
   type DroppedAcquisition,
   type Engagement,
+  type EntityDestination,
   type EntityEdge,
   type EntityEdgeSource,
   type EntityFilingEvent,
@@ -225,6 +226,11 @@ export default function EntityDetail() {
   const qc = useQueryClient()
   const { user } = useAuthStore()
   const isAdmin = user?.role === "admin"
+  // planning#240: marking a company ours is an authorisation (admin only);
+  // M&A target is admin + integration_admin, the same pair that may create
+  // an engagement.
+  const canMarkOurs = user?.role === "admin"
+  const canMarkTarget = user?.role === "admin" || user?.role === "integration_admin"
 
   const { data: entities, isLoading: entitiesLoading } = useQuery({
     queryKey: ["entities"],
@@ -260,6 +266,12 @@ export default function EntityDetail() {
   const { data: candidates } = useQuery({
     queryKey: ["entity-candidates", id],
     queryFn: () => api.get<CandidateDomain[]>(`/entities/${id}/candidate-domains`),
+    enabled: !!id,
+  })
+  // planning#240: where this company's accepted candidate domains go.
+  const { data: destination, isLoading: destinationLoading } = useQuery({
+    queryKey: ["entity-destination", id],
+    queryFn: () => api.get<EntityDestination>(`/entities/${id}/destination`),
     enabled: !!id,
   })
 
@@ -320,38 +332,53 @@ export default function EntityDetail() {
     onError: (e: { message?: string }) => toast.error(e?.message ?? "Failed to start the AI read"),
   })
 
-  const [subjectPick, setSubjectPick] = useState<string>("")
-  const [subjectConfirm, setSubjectConfirm] = useState<Engagement | null>(null)
-  const subjectMutation = useMutation({
-    mutationFn: (engagementId: string) => api.patch(`/engagements/${engagementId}`, { subject_entity_id: id }),
+  // planning#240 — "relationship to us" dialogs. One mutation for the PUT;
+  // which dialog is open and its own form fields are separate state so the
+  // error from a failed attempt stays scoped to the dialog that caused it.
+  const [oursOpen, setOursOpen] = useState(false)
+  const [oursReference, setOursReference] = useState("")
+  const [targetOpen, setTargetOpen] = useState(false)
+  const [targetMode, setTargetMode] = useState<"new" | "existing">("new")
+  const [targetName, setTargetName] = useState("")
+  const [targetEngagementId, setTargetEngagementId] = useState("")
+  const [clearOpen, setClearOpen] = useState(false)
+  const [relationshipError, setRelationshipError] = useState<string | null>(null)
+  const relationshipMutation = useMutation({
+    mutationFn: (body: { relationship: "ours" | "ma_target" | null; reference?: string; engagement_id?: string; new_engagement_name?: string }) =>
+      api.put<OrgEntity>(`/entities/${id}/relationship`, body),
     onSuccess: () => {
-      toast.success("Engagement subject set")
-      setSubjectPick("")
-      setSubjectConfirm(null)
+      toast.success("Relationship updated")
+      setOursOpen(false)
+      setOursReference("")
+      setTargetOpen(false)
+      setTargetMode("new")
+      setTargetName("")
+      setTargetEngagementId("")
+      setClearOpen(false)
+      qc.invalidateQueries({ queryKey: ["entities"] })
       qc.invalidateQueries({ queryKey: ["engagements"] })
+      qc.invalidateQueries({ queryKey: ["entity-destination", id] })
     },
-    onError: (e: { message?: string }) => toast.error(e?.message ?? "Failed to set subject"),
+    // Shown verbatim inside whichever dialog triggered it.
+    onError: (e: { message?: string }) => setRelationshipError(e?.message ?? "Failed to update relationship"),
   })
-  const chooseSubject = (engagementId: string) => {
-    const eng = engagements?.find(e => e.id === engagementId)
-    if (!eng) return
-    if (eng.subject_entity_id && eng.subject_entity_id !== id) setSubjectConfirm(eng)
-    else subjectMutation.mutate(eng.id)
-  }
 
   const [acceptFor, setAcceptFor] = useState<CandidateDomain | null>(null)
-  const [acceptEngagement, setAcceptEngagement] = useState("")
+  // planning#240: only meaningful when the destination is `ambiguous` —
+  // "estate" or an engagement id. Never pre-set; the user must choose.
+  const [acceptChoice, setAcceptChoice] = useState("")
   const [acceptError, setAcceptError] = useState<string | null>(null)
   const acceptMutation = useMutation({
-    mutationFn: ({ cid, engagementId }: { cid: string; engagementId: string }) =>
-      api.post(`/entities/candidate-domains/${cid}/accept`, { engagement_id: engagementId }),
+    mutationFn: ({ cid, body }: { cid: string; body: { estate?: boolean; engagement_id?: string } }) =>
+      api.post(`/entities/candidate-domains/${cid}/accept`, body),
     onSuccess: () => {
-      toast.success("Accepted — passive discovery queued")
+      toast.success("Accepted — discovery queued")
       setAcceptFor(null)
       qc.invalidateQueries({ queryKey: ["entity-candidates", id] })
+      qc.invalidateQueries({ queryKey: ["entity-destination", id] })
     },
-    // Shown verbatim in the dialog: a 409 says WHY (engagement subject is
-    // not this entity or one confirmed hop from it; target already elsewhere).
+    // Shown verbatim in the dialog: a 409 says WHY (unset/abandoned destination,
+    // target already elsewhere).
     onError: (e: { message?: string }) => setAcceptError(e?.message ?? "Failed to accept"),
   })
   const rejectMutation = useMutation({
@@ -392,6 +419,34 @@ export default function EntityDetail() {
   }
 
   const liveEngagements = (engagements ?? []).filter(e => e.posture !== "abandoned")
+  // planning#240: the "existing engagement" picker in the M&A dialog — live
+  // and not already a subject, since linking one that already has a subject
+  // is refused server-side (409).
+  const unassignedLiveEngagements = liveEngagements.filter(e => e.subject_entity_id === null)
+
+  // The stop that produced a single-destination answer, for the "Inherited
+  // from …" line. For an engagement, its own subject: another `ma_target`
+  // stop on a different path may hold only abandoned engagements.
+  const relevantStop = !destination
+    ? undefined
+    : destination.status === "ours"
+      ? destination.stops.find(s => s.relationship === "ours")
+      : destination.status === "engagement"
+        ? destination.stops.find(s => s.entity_id === destination.engagements[0]?.subject_entity_id)
+        : undefined
+
+  const acceptDisabled =
+    acceptMutation.isPending || destinationLoading || !destination ||
+    destination.status === "unset" || destination.status === "abandoned" ||
+    (destination.status === "ambiguous" && !acceptChoice)
+
+  const acceptBody = (): { estate?: boolean; engagement_id?: string } => {
+    if (destination?.status === "ambiguous") {
+      if (acceptChoice === "estate") return { estate: true }
+      if (acceptChoice) return { engagement_id: acceptChoice }
+    }
+    return {}
+  }
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-8">
@@ -405,35 +460,61 @@ export default function EntityDetail() {
           {entity.lei && <span>LEI <span className="font-mono">{entity.lei}</span></span>}
         </div>
         <div className="text-sm flex flex-wrap items-center gap-2">
-          <span className="text-muted-foreground">Subject of:</span>
-          {subjectOf.length ? subjectOf.map(e => (
-            isAdmin
-              ? <Link key={e.id} to={`/admin/engagements/${e.id}`} className="hover:text-primary"><Badge variant="outline">{e.name}</Badge></Link>
-              : <Badge key={e.id} variant="outline">{e.name}</Badge>
-          )) : <span className="text-muted-foreground">no engagement</span>}
-          {isAdmin && (
-            // Pick, then act: opening the confirm Dialog straight from
-            // onValueChange races the Select's own close, and Radix leaves
-            // `pointer-events: none` on <body> — the page freezes.
+          <span className="text-muted-foreground">Relationship to us:</span>
+          {entity.relationship === null && (
             <>
-              <Select value={subjectPick} onValueChange={setSubjectPick}>
-                <SelectTrigger className="h-8 w-64" aria-label="Use as subject of engagement">
-                  <SelectValue placeholder="Use as subject of engagement…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {liveEngagements.filter(e => e.subject_entity_id !== id).map(e => (
-                    <SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                size="sm" variant="outline" className="h-8"
-                disabled={!subjectPick || subjectMutation.isPending}
-                onClick={() => chooseSubject(subjectPick)}
-              >
-                Set subject
-              </Button>
+              <Badge variant="outline">Not set</Badge>
+              <span className="text-muted-foreground">browse only — accepting domains is blocked until this is set</span>
             </>
+          )}
+          {entity.relationship === "ours" && (
+            <>
+              <Badge>Our company</Badge>
+              <span className="text-muted-foreground">
+                authorised {entity.ours_authorised_at ? new Date(entity.ours_authorised_at).toLocaleDateString() : "—"} · ref {entity.ours_reference}
+              </span>
+            </>
+          )}
+          {entity.relationship === "ma_target" && (
+            <>
+              <Badge>M&A target</Badge>
+              <span className="text-muted-foreground">Subject of:</span>
+              {subjectOf.length ? subjectOf.map(e => (
+                isAdmin
+                  ? <Link key={e.id} to={`/admin/engagements/${e.id}`} className="hover:text-primary"><Badge variant="outline">{e.name}</Badge></Link>
+                  : <Badge key={e.id} variant="outline">{e.name}</Badge>
+              )) : <span className="text-muted-foreground">no engagement</span>}
+            </>
+          )}
+          {canMarkOurs && entity.relationship !== "ours" && subjectOf.length === 0 && (
+            <Button
+              size="sm" variant="outline" className="h-8"
+              onClick={() => { setRelationshipError(null); setOursReference(""); setOursOpen(true) }}
+            >
+              Mark as ours…
+            </Button>
+          )}
+          {canMarkTarget && (entity.relationship !== "ours" || canMarkOurs) && (
+            <Button
+              size="sm" variant="outline" className="h-8"
+              onClick={() => {
+                setRelationshipError(null)
+                setTargetMode(entity.relationship === "ma_target" ? "existing" : "new")
+                setTargetName("")
+                setTargetEngagementId("")
+                setTargetOpen(true)
+              }}
+            >
+              {entity.relationship === "ma_target" ? "Link another engagement…" : "Mark as M&A target…"}
+            </Button>
+          )}
+          {entity.relationship !== null && subjectOf.length === 0 && (entity.relationship !== "ours" || canMarkOurs) && (
+            <Button
+              size="sm" variant="outline" className="h-8"
+              onClick={() => { setRelationshipError(null); setClearOpen(true) }}
+            >
+              Clear
+            </Button>
           )}
         </div>
       </div>
@@ -566,8 +647,10 @@ export default function EntityDetail() {
                     </TableCell>
                     <TableCell className="text-xs">
                       <Badge variant={c.status === "accepted" ? "default" : "outline"}>{c.status}</Badge>
-                      {c.engagement_id && (
-                        <div className="text-muted-foreground mt-1">into {engagementName.get(c.engagement_id) ?? c.engagement_id}</div>
+                      {c.status === "accepted" && (
+                        <div className="text-muted-foreground mt-1">
+                          into {c.engagement_id ? (engagementName.get(c.engagement_id) ?? c.engagement_id) : "your estate"}
+                        </div>
                       )}
                       {c.target_id && (
                         <Link to={`/targets/${c.target_id}`} className="text-muted-foreground hover:text-primary">target</Link>
@@ -579,7 +662,7 @@ export default function EntityDetail() {
                           <div className="flex gap-1">
                             <Button
                               size="sm" variant="outline"
-                              onClick={() => { setAcceptError(null); setAcceptEngagement(subjectOf[0]?.id ?? ""); setAcceptFor(c) }}
+                              onClick={() => { setAcceptError(null); setAcceptChoice(""); setAcceptFor(c) }}
                             >
                               Accept
                             </Button>
@@ -700,57 +783,193 @@ export default function EntityDetail() {
       </Section>
 
       {/* ── dialogs ── */}
-      <Dialog open={!!subjectConfirm} onOpenChange={open => { if (!open) { setSubjectConfirm(null); setSubjectPick("") } }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Replace the engagement's subject?</DialogTitle>
-            <DialogDescription>
-              "{subjectConfirm?.name}" is currently attributed to{" "}
-              {nameById.get(subjectConfirm?.subject_entity_id ?? "") ?? "another entity"}. It will be attributed to{" "}
-              {entity.legal_name} instead.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => { setSubjectConfirm(null); setSubjectPick("") }}>Cancel</Button>
-            <Button disabled={subjectMutation.isPending} onClick={() => subjectConfirm && subjectMutation.mutate(subjectConfirm.id)}>
-              {subjectMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
-              Replace
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       <Dialog open={!!acceptFor} onOpenChange={open => { if (!open) setAcceptFor(null) }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Accept {acceptFor?.domain}</DialogTitle>
             <DialogDescription>
-              Adds the domain as a target in the chosen engagement and queues passive discovery under that engagement's posture.
-              The engagement's subject must be this entity, or one confirmed acquisition/subsidiary hop from it.
+              Adds the domain as a target in the destination below and queues discovery under its rules.
+              Domains inherit from the nearest company above this one in the confirmed family tree that has a relationship to us.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-1">
-            <Label>Engagement</Label>
-            <Select value={acceptEngagement} onValueChange={setAcceptEngagement}>
-              <SelectTrigger aria-label="Engagement"><SelectValue placeholder="Choose an engagement" /></SelectTrigger>
-              <SelectContent>
-                {liveEngagements.map(e => (
-                  <SelectItem key={e.id} value={e.id}>
-                    {e.name}{e.subject_entity_id === id ? " (subject: this entity)" : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="space-y-2 text-sm">
+            {destinationLoading ? (
+              <>
+                <Skeleton className="h-5 w-48" />
+                <p className="text-muted-foreground">Resolving destination…</p>
+              </>
+            ) : !destination || destination.status === "unset" ? (
+              <p className="text-muted-foreground">Set this company's relationship to us first (or its parent company's).</p>
+            ) : destination.status === "abandoned" ? (
+              <p className="text-muted-foreground">Its engagement was abandoned; nothing can be accepted into it.</p>
+            ) : destination.status === "ours" ? (
+              <>
+                <p>Joins your estate.</p>
+                {relevantStop && relevantStop.entity_id !== id && (
+                  <p className="text-muted-foreground">Inherited from {relevantStop.legal_name}.</p>
+                )}
+              </>
+            ) : destination.status === "engagement" ? (
+              <>
+                <p>
+                  Joins {destination.engagements[0]?.name} ({destination.engagements[0]?.posture}
+                  {destination.engagements[0]?.posture === "pre_close" ? ", passive only" : ""}).
+                </p>
+                {relevantStop && relevantStop.entity_id !== id && (
+                  <p className="text-muted-foreground">Inherited from {relevantStop.legal_name}.</p>
+                )}
+              </>
+            ) : (
+              <>
+                <p>More than one destination is reachable. Choose one:</p>
+                <div className="space-y-1">
+                  <Label htmlFor="accept-destination">Destination</Label>
+                  <Select value={acceptChoice} onValueChange={setAcceptChoice}>
+                    <SelectTrigger id="accept-destination" aria-label="Destination">
+                      <SelectValue placeholder="Choose a destination" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {destination.estate && <SelectItem value="estate">Your estate</SelectItem>}
+                      {destination.engagements.map(e => (
+                        <SelectItem key={e.id} value={e.id}>{e.name} ({e.posture})</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
+            )}
           </div>
           {acceptError && <p className="text-sm text-destructive" role="alert">{acceptError}</p>}
           <DialogFooter>
             <Button variant="outline" onClick={() => setAcceptFor(null)}>Cancel</Button>
             <Button
-              disabled={!acceptEngagement || acceptMutation.isPending}
-              onClick={() => { setAcceptError(null); acceptFor && acceptMutation.mutate({ cid: acceptFor.id, engagementId: acceptEngagement }) }}
+              disabled={acceptDisabled}
+              onClick={() => { setAcceptError(null); acceptFor && acceptMutation.mutate({ cid: acceptFor.id, body: acceptBody() }) }}
             >
               {acceptMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
               Accept
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── relationship-to-us dialogs (planning#240) ── */}
+      <Dialog open={oursOpen} onOpenChange={open => { if (!open) { setOursOpen(false); setRelationshipError(null) } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Mark {entity.legal_name} as our company?</DialogTitle>
+            <DialogDescription>
+              Marking a company as ours authorises its accepted domains, and those of its confirmed subsidiaries and
+              acquisitions, to join your own estate, where they can be actively scanned. Your name, the time and the
+              reference are recorded.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1">
+            <Label htmlFor="ours-reference">Reference (ticket, contract or note)</Label>
+            <Input id="ours-reference" value={oursReference} onChange={e => setOursReference(e.target.value)} />
+          </div>
+          {relationshipError && <p className="text-sm text-destructive" role="alert">{relationshipError}</p>}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setOursOpen(false); setRelationshipError(null) }}>Cancel</Button>
+            <Button
+              disabled={!oursReference.trim() || relationshipMutation.isPending}
+              onClick={() => { setRelationshipError(null); relationshipMutation.mutate({ relationship: "ours", reference: oursReference.trim() }) }}
+            >
+              {relationshipMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+              Mark as ours
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={targetOpen} onOpenChange={open => { if (!open) { setTargetOpen(false); setRelationshipError(null) } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Mark {entity.legal_name} as an M&A target</DialogTitle>
+            {entity.relationship === "ours" && (
+              <DialogDescription>
+                This company is currently marked ours. Making it an M&A target clears that authorisation.
+              </DialogDescription>
+            )}
+          </DialogHeader>
+          <div className="flex gap-2">
+            <Button
+              size="sm" variant={targetMode === "new" ? "default" : "outline"}
+              onClick={() => { setTargetMode("new"); setRelationshipError(null) }}
+            >
+              New engagement
+            </Button>
+            <Button
+              size="sm" variant={targetMode === "existing" ? "default" : "outline"}
+              onClick={() => { setTargetMode("existing"); setRelationshipError(null) }}
+            >
+              Existing engagement
+            </Button>
+          </div>
+          {targetMode === "new" ? (
+            <div className="space-y-1">
+              <Label htmlFor="target-name">Engagement name</Label>
+              <Input id="target-name" value={targetName} onChange={e => setTargetName(e.target.value)} />
+              <p className="text-xs text-muted-foreground">New engagements start pre-close: passive discovery only.</p>
+            </div>
+          ) : (
+            <div className="space-y-1">
+              <Label>Engagement</Label>
+              {unassignedLiveEngagements.length ? (
+                <Select value={targetEngagementId} onValueChange={setTargetEngagementId}>
+                  <SelectTrigger aria-label="Engagement"><SelectValue placeholder="Choose an engagement" /></SelectTrigger>
+                  <SelectContent>
+                    {unassignedLiveEngagements.map(e => (
+                      <SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <p className="text-sm text-muted-foreground">No unassigned live engagements</p>
+              )}
+            </div>
+          )}
+          {relationshipError && <p className="text-sm text-destructive" role="alert">{relationshipError}</p>}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setTargetOpen(false); setRelationshipError(null) }}>Cancel</Button>
+            <Button
+              disabled={
+                relationshipMutation.isPending ||
+                (targetMode === "new" ? !targetName.trim() : (!unassignedLiveEngagements.length || !targetEngagementId))
+              }
+              onClick={() => {
+                setRelationshipError(null)
+                relationshipMutation.mutate(
+                  targetMode === "new"
+                    ? { relationship: "ma_target", new_engagement_name: targetName.trim() }
+                    : { relationship: "ma_target", engagement_id: targetEngagementId }
+                )
+              }}
+            >
+              {relationshipMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+              Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={clearOpen} onOpenChange={open => { if (!open) { setClearOpen(false); setRelationshipError(null) } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Clear the relationship?</DialogTitle>
+            <DialogDescription>
+              Accepting domains will be blocked and AI reads will run under the strict data policy until it is set again.
+            </DialogDescription>
+          </DialogHeader>
+          {relationshipError && <p className="text-sm text-destructive" role="alert">{relationshipError}</p>}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setClearOpen(false); setRelationshipError(null) }}>Cancel</Button>
+            <Button
+              disabled={relationshipMutation.isPending}
+              onClick={() => { setRelationshipError(null); relationshipMutation.mutate({ relationship: null }) }}
+            >
+              {relationshipMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+              Clear
             </Button>
           </DialogFooter>
         </DialogContent>

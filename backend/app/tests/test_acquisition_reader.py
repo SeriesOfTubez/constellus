@@ -478,8 +478,11 @@ def test_newest_engagement_wins_among_equally_restrictive(filer):
         newer.created_at = older.created_at + timedelta(days=1)
         db.commit()
         filer.engagement_ids += [older.id, newer.id]
-        assert ar.pick_engagement(db, filer.entity_id).id == newer.id
-        assert ar.pick_engagement(db, uuid.uuid4()) is None
+        engagement, force_strict = ar.pick_engagement(db, filer.entity_id)
+        assert (engagement.id, force_strict) == (newer.id, False)
+        # planning#240 item 5: an entity that inherits nothing reads STRICT,
+        # not under the deployment default.
+        assert ar.pick_engagement(db, uuid.uuid4()) == (None, True)
     finally:
         db.close()
 
@@ -928,3 +931,36 @@ def test_dedup_key_ignores_defined_term_and_quote_style_and_spacing():
         ar.dedup_key("X  Labs Inc."),
     }
     assert keys == {"x labs"}
+
+
+# ── planning#240 item 5: the policy follows the relationship ───────────────
+
+@pytest.mark.parametrize("relationship, expect_zdr", [(None, True), ("ours", False)])
+def test_an_unset_company_reads_strict_and_ours_reads_the_deployment_policy(
+    filer, scripted, relationship, expect_zdr,
+):
+    """Under a PERMISSIVE deployment policy, so "strict" can only come from
+    the relationship: unset forces it, ours does not. Before #240 an unset
+    company silently read under the deployment default."""
+    from app.core.config import settings
+
+    if relationship == "ours":
+        db = SessionLocal()
+        try:
+            e = db.get(OrgEntity, filer.entity_id)
+            e.relationship, e.ours_authorised_at, e.ours_reference = "ours", datetime.now(timezone.utc), "aq240"
+            db.commit()
+        finally:
+            db.close()
+    filer.add_section(S1, filing_date=date(2023, 2, 1))
+    t = scripted([_answer(_item("Examplar Widgets", Q_WIDGETS))])
+    prior = settings.llm_data_policy
+    settings.llm_data_policy = "dev_permissive"
+    try:
+        result = filer.read()
+    finally:
+        settings.llm_data_policy = prior
+
+    assert (result.engagement_id, result.forced_strict) == (None, expect_zdr)
+    provider = json.loads(t.requests[0].content)["provider"]
+    assert provider.get("zdr") is (True if expect_zdr else None)
