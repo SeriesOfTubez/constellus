@@ -898,8 +898,8 @@ def test_split_defined_term_table(name, expected):
 @pytest.mark.parametrize("name,expected", [
     ("Examplecorp, Inc.", "Examplecorp"),
     ("Foo Pty Ltd", "Foo"),
-    ("Own Data Company Ltd.", "Own Data Company"),
-    ("Own Data Company", None),
+    ("Northwind Data Company Ltd.", "Northwind Data Company"),
+    ("Northwind Data Company", None),
     ("AB Co", None),
 ])
 def test_strip_legal_suffix_table(name, expected):

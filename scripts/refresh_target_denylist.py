@@ -16,9 +16,16 @@ its own directory, regardless of .gitignore correctness — the list itself
 is exactly as sensitive as the data it's protecting against leaking, so it
 must never be committable even by accident.
 
-Run this after adding/removing targets in the dev environment; the
-pre-commit hook (scripts/check_target_domains.py) warns if the snapshot
-looks stale.
+Since 2026-10-01 it also writes `entity-denylist.txt` beside it: every
+company name and CIK in the dev entity graph (`org_entities`). All of those
+are real (the test suite runs on constellus_test, never dev), and the same
+leak shape applies to them: a real filer's former name or subsidiary copied
+into a test table or an issue comment. scripts/denylist.py describes the
+format and how each list is matched.
+
+Run this after adding/removing targets OR mapping a company in the dev
+environment; the git hooks (scripts/check_target_domains.py) and the Claude
+Code hook (scripts/check_outbound_text.py) warn if a snapshot looks stale.
 
 Usage: backend/.venv/Scripts/python.exe scripts/refresh_target_denylist.py
 (needs SQLAlchemy — run it with the backend venv's interpreter, not system Python)
@@ -27,27 +34,23 @@ Requires DATABASE_URL (defaults to the standard local docker-compose value).
 
 import os
 import sys
-import subprocess
 from pathlib import Path
 
 os.environ.setdefault("DATABASE_URL", "postgresql://constellus:constellus@localhost:5432/constellus")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from sqlalchemy import create_engine, text  # noqa: E402
 
-def _git_common_dir() -> Path:
-    # The SHARED git dir, not `<repo>/.git`: in a `git worktree` checkout
-    # `.git` is a file, so a hard-coded `.git/` path made this hook fail
-    # closed there. Still inside git's own directory, so never tracked.
-    out = subprocess.run(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        cwd=Path(__file__).resolve().parent, capture_output=True, text=True, check=True,
-    )
-    return Path(out.stdout.strip())
+from denylist import ENTITY_PATH, TARGET_PATH  # noqa: E402
+
+OUTPUT_PATH = TARGET_PATH
 
 
-OUTPUT_PATH = _git_common_dir() / "target-denylist.txt"
+def _write(path: Path, lines: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
 def main() -> None:
@@ -57,14 +60,26 @@ def main() -> None:
             rows = conn.execute(
                 text("SELECT value FROM targets WHERE type IN ('domain', 'ip', 'cidr') ORDER BY value")
             ).scalars().all()
+            # planning#241 follow-up (2026-10-01): the entity graph is real
+            # data too — every org_entities row in dev is a real company,
+            # former name or subsidiary (tests run on constellus_test). Its
+            # names and CIKs feed check_outbound_text.py and the git hooks.
+            entities = conn.execute(
+                text("SELECT legal_name, cik FROM org_entities ORDER BY legal_name")
+            ).all()
     except Exception as exc:
         print(f"refresh_target_denylist: could not reach the dev DB ({exc}).", file=sys.stderr)
         print("Leaving any existing snapshot untouched — see README note on staleness.", file=sys.stderr)
         sys.exit(1)
 
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text("\n".join(rows) + ("\n" if rows else ""), encoding="utf-8")
-    print(f"refresh_target_denylist: wrote {len(rows)} value(s) to {OUTPUT_PATH}")
+    _write(TARGET_PATH, list(rows))
+    entity_lines = sorted(
+        {"name\t" + " ".join(name.split()) for name, _ in entities if name and name.strip()}
+        | {f"cik\t{cik}" for _, cik in entities if cik}
+    )
+    _write(ENTITY_PATH, entity_lines)
+    print(f"refresh_target_denylist: wrote {len(rows)} target value(s) to {TARGET_PATH}")
+    print(f"refresh_target_denylist: wrote {len(entity_lines)} entity value(s) to {ENTITY_PATH}")
 
 
 if __name__ == "__main__":

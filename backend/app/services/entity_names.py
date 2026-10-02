@@ -37,7 +37,7 @@ _QUOTES = str.maketrans({
 _TERM = r"""\(\s*(?:the\s+)?["']([^"'()]{1,80})["']\s*\)"""
 _TRAILING_TERM_RE = re.compile(r"\s*,?\s*" + _TERM + r"\s*$", re.IGNORECASE)
 # ONE trailing legal-form suffix. "Company" is deliberately absent: it is
-# part of real names ("Own Data Company").
+# part of real names ("Northwind Data Company").
 _LEGAL_SUFFIX_RE = re.compile(
     r",?\s+(?:inc|incorporated|llc|l\.l\.c|ltd|limited|corp|corporation|co|plc|s\.a|s\.a\.s|s\.r\.l|s\.p\.a"
     r"|gmbh|ag|n\.v|b\.v|l\.p|lp|llp|pty\.?\s+ltd|a/s|oy|ab|k\.k)\.?$",
