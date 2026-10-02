@@ -116,7 +116,7 @@ from app.models.entity_relation import EntityRelation
 from app.models.llm_call import LlmCall
 from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
-from app.services import entity_graph, llm_connector, posture
+from app.services import entity_graph, entity_relationship, llm_connector
 from app.services.entity_names import (
     _QUOTES,
     _TERM,
@@ -200,6 +200,9 @@ _FATAL = (
 @dataclass
 class ReadResult:
     engagement_id: str | None = None
+    # planning#240: True when the entity inherits no relationship (or a
+    # conflicting one), so the read ran strict with no engagement.
+    forced_strict: bool = False
     sections_total: int = 0
     sections_read: int = 0
     sections_failed: int = 0
@@ -242,16 +245,16 @@ def task_label(run_id: uuid.UUID) -> str:
     return f"{TASK_PREFIX}:{run_id}"
 
 
-def pick_engagement(db: Session, entity_id: uuid.UUID) -> Engagement | None:
-    """The engagement this read is scoped to: among the engagements whose
-    subject is this entity, a RESTRICTING posture (pre_close/abandoned)
-    first, then the newest. So a pre-close engagement is never out-ranked
-    by a closed one, and the call runs under its strict policy. None when
-    the entity is nobody's subject (the deployment policy still applies)."""
-    rows = db.query(Engagement).filter(Engagement.subject_entity_id == entity_id).all()
-    if not rows:
-        return None
-    return max(rows, key=lambda e: (posture.posture_restricts(e.posture), e.created_at))
+def pick_engagement(db: Session, entity_id: uuid.UUID) -> tuple[Engagement | None, bool]:
+    """(engagement, force_strict) for this read — planning#240 item 5, the
+    same inheritance walk accept uses (`entity_relationship.ai_scope`): an
+    engagement's posture when the entity inherits one (a RESTRICTING
+    posture first, then the newest, so a pre-close engagement is never
+    out-ranked by a closed one), the deployment policy when it inherits
+    "ours", and STRICT when it inherits nothing or a conflicting answer.
+    Before #240, an entity nobody had as subject silently ran under the
+    deployment policy."""
+    return entity_relationship.ai_scope(db, entity_id)
 
 
 def stored_sections(db: Session, entity_id: uuid.UUID) -> list[EntityFilingSection]:
@@ -394,10 +397,11 @@ def read_acquisitions(db: Session, *, entity_id: uuid.UUID, run_id: uuid.UUID) -
     if not sections:
         raise NoSectionsToRead(f"entity {entity_id} has no stored {SECTION} section")
 
-    engagement = pick_engagement(db, entity_id)
+    engagement, force_strict = pick_engagement(db, entity_id)
     task = task_label(run_id)
     result = ReadResult(
         engagement_id=str(engagement.id) if engagement else None, sections_total=len(sections),
+        forced_strict=force_strict,
     )
     filer_folded, filer_key = _fold(entity.legal_name), dedup_key(entity.legal_name)
 
@@ -419,6 +423,7 @@ def read_acquisitions(db: Session, *, entity_id: uuid.UUID, run_id: uuid.UUID) -
                     db, role=llm_connector.Role.EXTRACT, messages=_messages(entity.legal_name, sent),
                     schema=AcquisitionList, target_id=None,
                     engagement_id=engagement.id if engagement else None, task=task,
+                    force_strict=force_strict,
                     # None on purpose: grounding is per item, below (module docstring).
                     source_text=None,
                 )

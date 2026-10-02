@@ -31,15 +31,21 @@ unrestricted target by accident" the issue forbids. Here the `Target` row
 is inserted with `engagement_id`/`entity_id` already set, and the
 candidate's decision is written in the SAME commit.
 
-Which engagements may receive a candidate (Jason, 2026-09-26, C3): one
-whose `subject_entity_id` IS the candidate's entity, or is ONE CONFIRMED
-`acquired`/`subsidiary_of` hop from it (either direction), and which is not
-`abandoned`. A proposed relation is not enough: "AI raises attention,
-never scope" — only a confirmed edge (a person, or a granted SEC source)
-can carry a candidate into scope.
+Where an accepted candidate goes (planning#240, Jason 2026-10-01 —
+supersedes #216's C3 "one confirmed hop in EITHER direction"): there is no
+picker. `entity_relationship.resolve` walks the confirmed tree from the
+candidate's entity UP (parent -> child inheritance only) to the nearest
+company with a relationship: `ours` -> our own estate (a target with no
+engagement), `ma_target` -> that company's live engagement. The caller
+names a destination only when more than one is reachable; an unset tree,
+or one that stops at an abandoned engagement, blocks accept. A proposed
+relation is never walked: "AI raises attention, never scope" — only a
+confirmed edge (a person, or a granted SEC source) can carry a candidate
+into scope.
 
-An existing target with the same value (C4): same engagement → idempotent
-(sets `entity_id` if empty); anything else → `CandidateConflict`, nothing
+An existing target with the same value (C4): same destination (the same
+engagement, or both in our estate) → idempotent (sets `entity_id` if
+empty); anything else → `CandidateConflict`, nothing
 changed. Moving an owned-estate or another engagement's target is a
 `PATCH /targets/{id}` decision with its own widening rules, not a side
 effect of accepting a candidate.
@@ -58,7 +64,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -69,17 +75,11 @@ from app.models.entity_relation import EntityRelation
 from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
 from app.models.target import Target, TargetType, VerificationMethod
-from app.services import entity_graph, target_service
+from app.services import entity_graph, entity_relationship, target_service
 
 SOURCE_FILING = "edgar_10k_website"
 SOURCE_PERSON = "person"
 TARGET_SOURCE_TYPE = "candidate_domain"
-
-# Relations that carry a candidate from a related entity into an
-# engagement (C3). `dba`/`formerly_named` are the SAME entity under another
-# name — those are modelled as separate `OrgEntity` rows too, but C3 as
-# decided names only these two.
-_HOP_RELATIONS = ("acquired", "subsidiary_of")
 
 # Same shape as migration 0064's `ck_candidate_domains_domain_shape`.
 _DOMAIN_RE = re.compile(r"^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})$")
@@ -252,27 +252,6 @@ def add_manual(
     return candidate
 
 
-def engagement_may_receive(db: Session, *, entity_id: uuid.UUID, engagement: Engagement) -> bool:
-    """C3: the engagement's subject is `entity_id`, or is one CONFIRMED
-    `acquired`/`subsidiary_of` hop from it in either direction."""
-    subject = engagement.subject_entity_id
-    if subject is None:
-        return False
-    if subject == entity_id:
-        return True
-    hop = db.execute(
-        select(EntityRelation.id).where(
-            EntityRelation.status == "confirmed",
-            EntityRelation.relation.in_(_HOP_RELATIONS),
-            or_(
-                and_(EntityRelation.subject_id == subject, EntityRelation.object_id == entity_id),
-                and_(EntityRelation.subject_id == entity_id, EntityRelation.object_id == subject),
-            ),
-        ).limit(1)
-    ).scalar_one_or_none()
-    return hop is not None
-
-
 @dataclass
 class AcceptResult:
     candidate: CandidateDomain
@@ -280,7 +259,42 @@ class AcceptResult:
     created: bool
 
 
-def accept(db: Session, *, candidate_id: uuid.UUID, engagement_id: uuid.UUID, user) -> AcceptResult:
+def _choose_destination(
+    res: entity_relationship.Resolution, *, engagement_id: uuid.UUID | None, estate: bool
+) -> Engagement | None:
+    """The engagement to accept into, or None for our own estate. Raises
+    unless the requested destination is one `resolve` reached."""
+    if estate and engagement_id is not None:
+        raise CandidateInvalid("choose either our estate or an engagement, not both")
+    if res.status == "unset":
+        raise CandidateConflict(
+            "set this company's relationship first (ours or M&A target), or confirm its "
+            "parent company's relationship"
+        )
+    if res.status == "abandoned":
+        raise CandidateConflict("its engagement was abandoned; nothing can be accepted into it")
+    if estate:
+        if not res.estate:
+            raise CandidateConflict("this company does not inherit 'ours', so it cannot join our estate")
+        return None
+    if engagement_id is not None:
+        for engagement in res.engagements:
+            if engagement.id == engagement_id:
+                return engagement
+        raise CandidateConflict("that engagement is not one this company's domains inherit to")
+    if res.status == "ambiguous":
+        raise CandidateConflict("more than one destination is reachable; choose one")
+    return None if res.estate else res.engagements[0]
+
+
+def accept(
+    db: Session,
+    *,
+    candidate_id: uuid.UUID,
+    user,
+    engagement_id: uuid.UUID | None = None,
+    estate: bool = False,
+) -> AcceptResult:
     candidate = db.execute(
         select(CandidateDomain).where(CandidateDomain.id == candidate_id).with_for_update()
     ).scalar_one_or_none()
@@ -289,23 +303,35 @@ def accept(db: Session, *, candidate_id: uuid.UUID, engagement_id: uuid.UUID, us
     if candidate.status != "proposed":
         raise CandidateConflict(f"candidate is already {candidate.status}")
 
-    engagement = db.get(Engagement, engagement_id)
-    if engagement is None:
-        raise CandidateInvalid("engagement not found")
-    if engagement.posture == EngagementPosture.ABANDONED.value:
-        raise CandidateConflict("cannot accept into an abandoned engagement — it is terminal")
-    if not engagement_may_receive(db, entity_id=candidate.entity_id, engagement=engagement):
-        raise CandidateConflict(
-            "that engagement's subject is neither this entity nor one confirmed "
-            "acquired/subsidiary_of relation away from it"
-        )
+    # Serialise against a concurrent relationship change on any company
+    # this answer rests on (`entity_relationship`'s writers lock the same
+    # rows): lock every entity a first walk read, reloading them past the
+    # session's identity map, then walk again under the lock. A different
+    # walk means the tree changed underneath; refuse rather than guess.
+    first = entity_relationship.resolve(db, candidate.entity_id)
+    db.execute(
+        select(OrgEntity).where(OrgEntity.id.in_(first.visited)).order_by(OrgEntity.id)
+        .with_for_update().execution_options(populate_existing=True)
+    ).all()
+    res = entity_relationship.resolve(db, candidate.entity_id)
+    if res.visited != first.visited or [(s.entity_id, s.relationship) for s in res.stops] != [
+        (s.entity_id, s.relationship) for s in first.stops
+    ]:
+        raise CandidateConflict("this company's relationship changed while accepting; try again")
+    engagement = _choose_destination(res, engagement_id=engagement_id, estate=estate)
+    if engagement is not None:
+        db.execute(select(Engagement.id).where(Engagement.id == engagement.id).with_for_update())
+        db.refresh(engagement)
+        if engagement.posture == EngagementPosture.ABANDONED.value:
+            raise CandidateConflict("cannot accept into an abandoned engagement — it is terminal")
+    destination_id = engagement.id if engagement is not None else None
 
     now = datetime.now(timezone.utc)
     existing = db.execute(select(Target).where(Target.value == candidate.domain)).scalar_one_or_none()
     if existing is not None:
-        if existing.engagement_id != engagement.id:
+        if existing.engagement_id != destination_id:
             raise CandidateConflict(
-                "that domain is already a target outside this engagement; change it on the target itself"
+                "that domain is already a target outside this destination; change it on the target itself"
             )
         if existing.entity_id is not None and existing.entity_id != candidate.entity_id:
             raise CandidateConflict("that target is already attributed to a different entity")
@@ -321,7 +347,7 @@ def accept(db: Session, *, candidate_id: uuid.UUID, engagement_id: uuid.UUID, us
             verified_by_id=user.id,
             verified_at=now,
             source_type=TARGET_SOURCE_TYPE,
-            engagement_id=engagement.id,
+            engagement_id=destination_id,
             entity_id=candidate.entity_id,
         )
         db.add(target)
@@ -336,7 +362,8 @@ def accept(db: Session, *, candidate_id: uuid.UUID, engagement_id: uuid.UUID, us
         candidate.status = "accepted"
         candidate.decided_at = now
         candidate.decided_by_id = user.id
-        candidate.engagement_id = engagement.id
+        candidate.engagement_id = destination_id
+        candidate.accepted_into = "engagement" if destination_id is not None else "estate"
         candidate.target_id = target.id
         db.commit()
     except IntegrityError as exc:

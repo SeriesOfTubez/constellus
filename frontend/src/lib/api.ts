@@ -298,6 +298,25 @@ export type OrgEntity = {
   cik: string | null
   lei: string | null
   created_at: string
+  // planning#240: this company's relationship to us. `null` = unset — browse
+  // only, accepting candidate domains is blocked. The ours_* fields are set
+  // iff relationship === "ours".
+  relationship: "ours" | "ma_target" | null
+  ours_authorised_by_id: string | null
+  ours_authorised_at: string | null
+  ours_reference: string | null
+}
+
+// planning#240 — `GET /entities/{id}/destination`: where this company's
+// accepted candidate domains go, inherited from the nearest company up the
+// confirmed family tree that has a relationship to us. `engagements` are
+// LIVE ones only (posture !== "abandoned"); `stops` are the companies walked
+// to reach this answer.
+export type EntityDestination = {
+  status: "ours" | "engagement" | "ambiguous" | "abandoned" | "unset"
+  estate: boolean
+  engagements: { id: string; name: string; posture: string; subject_entity_id: string | null }[]
+  stops: { entity_id: string; legal_name: string; relationship: string; depth: number }[]
 }
 
 export type EntityRelationStatus = "proposed" | "confirmed" | "rejected"
