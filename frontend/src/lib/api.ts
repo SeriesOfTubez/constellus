@@ -29,7 +29,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new ApiError(res.status, body.detail ?? "Request failed")
+    // A structured `detail` (e.g. planning#236's "CIK already on <entity>")
+    // keeps its fields on `ApiError.detail`; the message is its `message`.
+    const detail = body.detail
+    const message = typeof detail === "string"
+      ? detail
+      : detail && typeof detail === "object" && typeof detail.message === "string" ? detail.message : "Request failed"
+    throw new ApiError(res.status, message, detail)
   }
 
   if (res.status === 204) return undefined as T
@@ -54,7 +60,7 @@ async function tryRefresh(refreshToken: string): Promise<string | null> {
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public detail?: unknown) {
     super(message)
   }
 }
@@ -305,6 +311,54 @@ export type OrgEntity = {
   ours_authorised_by_id: string | null
   ours_authorised_at: string | null
   ours_reference: string | null
+  // planning#236: set iff the CIK came from a person-confirmed registrant
+  // link (so it can be unlinked).
+  registrant_linked_at: string | null
+  registrant_linked_by_id: string | null
+}
+
+// planning#236 S1 — linking a CIK-less acquired company to its SEC registrant.
+export type RegistrantDeal = {
+  acquirer_id: string
+  acquirer_name: string
+  event_date: string | null
+  precision: "day" | "month" | "year" | "unknown"
+}
+
+export type RegistrantLinkContext = {
+  eligible: boolean
+  reason: string | null
+  linked: boolean
+  suggested_query: string
+  deals: RegistrantDeal[]
+}
+
+export type RegistrantCandidate = {
+  cik: string
+  name: string
+  state_of_incorporation: string | null
+  sic: string | null
+  sic_description: string | null
+  former_names: { name: string; from: string | null; to: string | null }[]
+  first_filing: string | null
+  last_filing: string | null
+  annual_reports: number
+  first_annual_report: string | null
+  last_annual_report: string | null
+  // Older filings live in paged files the summary did not read.
+  annual_reports_partial: boolean
+  taken_by_id: string | null
+  taken_by_name: string | null
+}
+
+export type RegistrantUnlinkResult = {
+  entity: OrgEntity
+  cik: string
+  relations_rejected: number
+  candidates_rejected: number
+  filing_events: number
+  filing_sections: number
+  subsidiary_listings: number
 }
 
 // planning#240 — `GET /entities/{id}/destination`: where this company's

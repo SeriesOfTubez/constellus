@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
+import { RegistrantLinkPanel } from "@/components/RegistrantLinkPanel"
 import {
   api,
   type CandidateDomain,
@@ -517,6 +518,7 @@ export default function EntityDetail() {
             </Button>
           )}
         </div>
+        <RegistrantLinkPanel entity={entity} isAdmin={isAdmin} />
       </div>
 
       {/* ── corporate family ── */}

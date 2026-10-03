@@ -45,6 +45,8 @@ from app.services import (
     entity_graph,
     entity_relationship,
     llm_connector,
+    registrant_link,
+    sec_edgar,
 )
 
 log = logging.getLogger(__name__)
@@ -63,6 +65,10 @@ class EntityResponse(BaseModel):
     ours_authorised_by_id: uuid.UUID | None = None
     ours_authorised_at: str | None = None
     ours_reference: str | None = None
+    # planning#236 S1: set iff the CIK came from a person-confirmed
+    # registrant link (and so can be unlinked).
+    registrant_linked_at: str | None = None
+    registrant_linked_by_id: uuid.UUID | None = None
 
 
 class CreateEntityRequest(BaseModel):
@@ -190,6 +196,8 @@ def _to_entity_response(e: OrgEntity) -> EntityResponse:
         ours_authorised_by_id=e.ours_authorised_by_id,
         ours_authorised_at=e.ours_authorised_at.isoformat() if e.ours_authorised_at else None,
         ours_reference=e.ours_reference,
+        registrant_linked_at=e.registrant_linked_at.isoformat() if e.registrant_linked_at else None,
+        registrant_linked_by_id=e.registrant_linked_by_id,
     )
 
 
@@ -475,19 +483,22 @@ def _to_run_response(run: EntityIngestRun, entity: OrgEntity | None) -> IngestRu
 @router.get("/edgar-ingest/runs", response_model=list[IngestRunResponse])
 def list_ingest_runs(
     limit: int = 20,
+    cik: str | None = None,
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
-    """Newest first. Open to any authenticated user, like every read here."""
+    """Newest first. Open to any authenticated user, like every read here.
+    `cik` narrows to one filer (planning#236: a linked registrant's page
+    shows its own ingest)."""
     limit = max(1, min(limit, 100))
     # EDGAR ingests only: an AI read has its own list under the entity.
-    runs = (
-        db.query(EntityIngestRun)
-        .filter(EntityIngestRun.kind == "edgar_ingest")
-        .order_by(EntityIngestRun.created_at.desc())
-        .limit(limit)
-        .all()
-    )
+    query = db.query(EntityIngestRun).filter(EntityIngestRun.kind == "edgar_ingest")
+    if cik is not None:
+        try:
+            query = query.filter(EntityIngestRun.cik == edgar_ingest.normalise_cik(cik))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="cik must be 1 to 10 digits")
+    runs = query.order_by(EntityIngestRun.created_at.desc()).limit(limit).all()
     ciks = {r.cik for r in runs}
     entities = {e.cik: e for e in db.query(OrgEntity).filter(OrgEntity.cik.in_(ciks)).all()} if ciks else {}
     return [_to_run_response(r, entities.get(r.cik)) for r in runs]
@@ -1029,3 +1040,210 @@ def get_destination(
             for s in res.stops
         ],
     )
+
+
+# ── link to an SEC registrant (planning#236 S1) ──────────────────────────────
+
+
+class DealResponse(BaseModel):
+    acquirer_id: uuid.UUID
+    acquirer_name: str
+    event_date: str | None
+    precision: str
+
+
+class RegistrantLinkContextResponse(BaseModel):
+    """`eligible`: the link action may be offered (no CIK yet, and a
+    confirmed `acquired` edge reaches this company). `reason` says why not.
+    `deals` are those confirmed edges: their dates are the reviewer's hint
+    against each candidate's filing span."""
+    eligible: bool
+    reason: str | None
+    linked: bool
+    suggested_query: str
+    deals: list[DealResponse]
+
+
+class RegistrantCandidate(BaseModel):
+    cik: str
+    name: str
+    state_of_incorporation: str | None
+    sic: str | None
+    sic_description: str | None
+    former_names: list[dict]
+    first_filing: str | None
+    last_filing: str | None
+    annual_reports: int
+    first_annual_report: str | None
+    last_annual_report: str | None
+    annual_reports_partial: bool
+    # Already on another mapped company: linking it is refused.
+    taken_by_id: uuid.UUID | None
+    taken_by_name: str | None
+
+
+class RegistrantLinkRequest(BaseModel):
+    cik: str
+
+
+class RegistrantLinkAccepted(BaseModel):
+    entity: EntityResponse
+    run: IngestRunResponse
+
+
+class RegistrantUnlinkResponse(BaseModel):
+    entity: EntityResponse
+    cik: str
+    relations_rejected: int
+    candidates_rejected: int
+    filing_events: int
+    filing_sections: int
+    subsidiary_listings: int
+
+
+def _link_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, registrant_link.CikTaken):
+        return HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "entity_id": str(exc.entity_id), "legal_name": exc.legal_name},
+        )
+    if isinstance(exc, registrant_link.LinkNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, registrant_link.LinkConflict):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, registrant_link.LinkInvalid):
+        return HTTPException(status_code=422, detail=str(exc))
+    if isinstance(exc, edgar_ingest.EdgarNotConfigured):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, sec_edgar.SecForbidden):
+        return HTTPException(status_code=502, detail="SEC refused the request; check SEC_USER_AGENT")
+    if isinstance(exc, sec_edgar.SecSearchUnparsed):
+        return HTTPException(status_code=502, detail=str(exc))
+    # Any other SEC failure: the class name only, never the message (it
+    # carries the URL, and with it the typed query).
+    return HTTPException(status_code=502, detail=f"SEC EDGAR could not be reached ({type(exc).__name__}); try again")
+
+
+_LINK_ERRORS = (
+    registrant_link.LinkError, edgar_ingest.EdgarNotConfigured, sec_edgar.SecFetchError, sec_edgar.SecNotFound,
+)
+
+
+def _to_candidate(f: registrant_link.RegistrantFacts) -> RegistrantCandidate:
+    return RegistrantCandidate(**{k: getattr(f, k) for k in RegistrantCandidate.model_fields})
+
+
+@router.get("/{entity_id}/registrant-link", response_model=RegistrantLinkContextResponse)
+def get_registrant_link(
+    entity_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    try:
+        ctx = registrant_link.context(db, entity_id)
+    except registrant_link.LinkError as exc:
+        raise _link_http_error(exc)
+    return RegistrantLinkContextResponse(
+        eligible=ctx.eligible, reason=ctx.reason, linked=ctx.linked, suggested_query=ctx.suggested_query,
+        deals=[DealResponse(**dataclasses.asdict(d)) for d in ctx.deals],
+    )
+
+
+@router.get("/{entity_id}/registrant-candidates", response_model=list[RegistrantCandidate])
+def registrant_candidates(
+    entity_id: uuid.UUID,
+    q: str | None = None,
+    cik: str | None = None,
+    contains: bool = False,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(UserRole.ADMIN)),
+):
+    """ADMIN, like the link itself: every call sends requests to SEC (one
+    search plus one submissions fetch per candidate). Exactly one of `q`
+    (a name search) or `cik` (one registrant's preview). Nothing here
+    links anything."""
+    if (q is None) == (cik is None):
+        raise HTTPException(status_code=422, detail="give exactly one of q or cik")
+    try:
+        if q is not None:
+            facts = registrant_link.search(db, entity_id=entity_id, query=q, contains=contains)
+        else:
+            facts = [registrant_link.preview(db, entity_id=entity_id, cik=cik)]
+    except _LINK_ERRORS as exc:
+        raise _link_http_error(exc)
+    return [_to_candidate(f) for f in facts]
+
+
+def _run_registrant_link(run_id: uuid.UUID, entity_id: uuid.UUID, cik: str, user_id: uuid.UUID | None) -> None:
+    """The ingest, then (if it succeeded) the AI acquisition read, as one
+    background task: Jason, 2026-10-02 — after a confirmed link everything
+    runs automatically. Why a read did not run is recorded on the INGEST
+    run's result (`acquisition_read`), never silently dropped."""
+    _run_edgar_ingest(run_id, cik)
+    db = SessionLocal()
+    read_run = None
+    result: dict = {}
+    try:
+        run = db.get(EntityIngestRun, run_id)
+        result = dict((run.result if run else None) or {})
+        if run is None or run.status != "succeeded":
+            followup = {"status": "skipped", "reason": "the ingest did not succeed"}
+        else:
+            read_run, reason = registrant_link.followup_read(db, entity_id=entity_id, cik10=cik, user_id=user_id)
+            followup = (
+                {"status": "queued", "run_id": str(read_run.id)} if read_run else {"status": "skipped", "reason": reason}
+            )
+    except Exception as exc:
+        db.rollback()
+        log.exception("registrant link follow-up failed for entity_id=%s", entity_id)
+        followup = {"status": "skipped", "reason": type(exc).__name__}
+    finally:
+        db.close()
+    _mark_run(run_id, result={**result, "acquisition_read": followup})
+    if read_run is not None:
+        _run_acquisition_read(read_run.id, entity_id)
+
+
+@router.post("/{entity_id}/registrant-link", response_model=RegistrantLinkAccepted, status_code=202)
+def link_registrant(
+    entity_id: uuid.UUID,
+    data: RegistrantLinkRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """A person confirms that this acquired company IS the registrant with
+    `cik`. Never automatic. Queues the ingest and, after it, the AI read."""
+    try:
+        entity, run, facts = registrant_link.link(db, entity_id=entity_id, cik=data.cik, user=current_user)
+    except _LINK_ERRORS as exc:
+        raise _link_http_error(exc)
+    audit.record_detail(
+        request,
+        entity=str(entity.id),
+        registrant_link={"from": None, "to": entity.cik},
+        # What SEC said at confirm time: the facts the person decided on.
+        registrant=facts.as_dict(),
+        run_id=str(run.id),
+    )
+    background_tasks.add_task(_run_registrant_link, run.id, entity.id, entity.cik, current_user.id)
+    return RegistrantLinkAccepted(entity=_to_entity_response(entity), run=_to_run_response(run, entity))
+
+
+@router.delete("/{entity_id}/registrant-link", response_model=RegistrantUnlinkResponse)
+def unlink_registrant(
+    entity_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    try:
+        entity, summary = registrant_link.unlink(db, entity_id=entity_id, user=current_user)
+    except registrant_link.LinkError as exc:
+        raise _link_http_error(exc)
+    audit.record_detail(
+        request, entity=str(entity.id), registrant_link={"from": summary["cik"], "to": None},
+        **{k: v for k, v in summary.items() if k != "cik"},
+    )
+    return RegistrantUnlinkResponse(entity=_to_entity_response(entity), **summary)

@@ -49,7 +49,12 @@ before any I/O: `https` scheme and host in `{data.sec.gov, www.sec.gov}`,
 and, for `www.sec.gov` specifically, a path that starts with
 `/Archives/edgar/data/` (the only tree this module ever needs there —
 `www.sec.gov` also serves full-text search, EDGAR's own UI, and other
-surfaces this slice has no business fetching). So a future caller that
+surfaces this slice has no business fetching). One exception since
+planning#236 S1: the company search, `/cgi-bin/browse-edgar` with
+`action=getcompany` and only the parameters `company_search_url` builds
+(`_is_company_search`). Its `company` value is a person-typed name, so it
+is length- and control-character-checked and always `urlencode`d, never
+spliced into the URL. So a future caller that
 forgets the upstream validation still cannot be redirected anywhere else,
 or to another part of `www.sec.gov`, by a crafted or corrupted value.
 
@@ -102,7 +107,7 @@ import time
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from typing import Callable
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
 
@@ -117,6 +122,20 @@ _ALLOWED_PREFIX = f"https://{_DATA_HOST}/"
 # The only tree this module ever fetches on www.sec.gov — see module
 # docstring's "Host allowlist" section.
 _WWW_REQUIRED_PATH_PREFIX = "/Archives/edgar/data/"
+# planning#236 S1: EDGAR's company search, the one exception to the prefix
+# above (see `_is_company_search`). It lists historic filers too, which an
+# acquired target that stopped filing years ago needs (`company_tickers.
+# json` lists current filers only).
+_SEARCH_PATH = "/cgi-bin/browse-edgar"
+_SEARCH_PARAMS = frozenset({"action", "company", "match", "owner", "count"})
+_SEARCH_QUERY_MAX_LEN = 100
+_SEARCH_QUERY_RE = re.compile(r"^[^\x00-\x1f\x7f]+$")
+# The three shapes a real search page takes: a results table, a single
+# company's page (EDGAR jumps straight to it on one match), or "none".
+_SEARCH_RESULTS_MARKER = 'class="tableFile2"'
+_SEARCH_COMPANY_MARKER = 'class="companyName"'
+_SEARCH_NONE_MARKER = "No matching companies"
+_SEARCH_CIK_TEXT_RE = re.compile(r"^\s*([0-9]{10})(?:\s|$)")
 
 _CIK_RE = re.compile(r"^[0-9]{10}$")
 _PAGE_NAME_RE = re.compile(r"^CIK[0-9]{10}-submissions-[0-9]{3}\.json$")
@@ -214,11 +233,29 @@ def _check_allowlisted(url: str) -> None:
             f"URL not allowlisted (only https://{{{','.join(sorted(_ALLOWED_HOSTS))}}}/ "
             f"may be fetched by this module): {url!r}"
         )
-    if parts.netloc == _WWW_HOST and not parts.path.startswith(_WWW_REQUIRED_PATH_PREFIX):
+    if parts.netloc == _WWW_HOST and not (
+        parts.path.startswith(_WWW_REQUIRED_PATH_PREFIX) or _is_company_search(parts)
+    ):
         raise ValueError(
             f"URL not allowlisted (www.sec.gov paths must start with "
-            f"{_WWW_REQUIRED_PATH_PREFIX!r}): {url!r}"
+            f"{_WWW_REQUIRED_PATH_PREFIX!r}, or be the company search): {url!r}"
         )
+
+
+def _is_company_search(parts) -> bool:
+    """The one other www.sec.gov surface (planning#236 S1): exactly the
+    company search path, `action=getcompany` given once, and no parameter
+    outside the set `company_search_url` builds. EDGAR's same CGI also
+    serves filing browses and other actions; none of them is reachable."""
+    if parts.path != _SEARCH_PATH or parts.fragment:
+        return False
+    try:
+        params = parse_qs(parts.query, keep_blank_values=True, strict_parsing=True)
+    except ValueError:
+        return False
+    if params.get("action") != ["getcompany"] or len(params.get("company", [])) != 1:
+        return False
+    return set(params) <= _SEARCH_PARAMS and all(len(v) == 1 for v in params.values())
 
 
 def _headers() -> dict[str, str]:
@@ -523,3 +560,86 @@ def fetch_filing_document(cik10: str, accession: str, filename: str) -> tuple[by
     url`'s docstring."""
     url = filing_document_url(cik10, accession, filename)
     return _fetch(url, validate=_validate_filing_document)
+
+
+# ── www.sec.gov — the company search (planning#236 S1) ─────────────────────
+
+
+class SecSearchUnparsed(SecFetchError):
+    """A company-search page that looks like a real result (its table or
+    company header is there) but yields no CIK. That is EDGAR's layout
+    changing under this parser, and it must fail loudly: an empty list
+    would read as "no registrant by that name", which is a claim."""
+
+
+def company_search_url(query: str, *, contains: bool = False) -> str:
+    """Builds the EDGAR company search URL from a validated name query:
+    1 to 100 characters after trimming, no control characters, encoded by
+    `urlencode` (so `&`, `#` or `/` in a name stay inside the `company`
+    value). EDGAR matches the name by PREFIX unless `contains`."""
+    if not isinstance(query, str):
+        raise ValueError("company_search_url requires a string query")
+    q = query.strip()
+    if not q or len(q) > _SEARCH_QUERY_MAX_LEN or not _SEARCH_QUERY_RE.match(q):
+        raise ValueError(f"a company search needs 1 to {_SEARCH_QUERY_MAX_LEN} printable characters")
+    params = [("action", "getcompany"), ("company", q), ("owner", "include"), ("count", "40")]
+    if contains:
+        params.append(("match", "contains"))
+    return f"https://{_WWW_HOST}{_SEARCH_PATH}?{urlencode(params)}"
+
+
+def _validate_company_search_html(body: bytes) -> bool:
+    text = body.decode("utf-8", errors="replace")
+    return any(m in text for m in (_SEARCH_RESULTS_MARKER, _SEARCH_COMPANY_MARKER, _SEARCH_NONE_MARKER))
+
+
+class _SearchCikParser(HTMLParser):
+    """Collects CIKs in page order from links whose text starts with the
+    10-digit CIK and whose href names the same CIK: the first cell of each
+    results row, and the CIK link in a single company's header. Nothing
+    taken from an href is ever fetched (see the module docstring); the
+    CIK only feeds `fetch_submissions`, which validates it again."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.ciks: list[str] = []
+        self._href: str | None = None
+        self._text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag == "a":
+            self._href = dict(attrs).get("href") or ""
+            self._text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._href is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag != "a" or self._href is None:
+            return
+        m = _SEARCH_CIK_TEXT_RE.match("".join(self._text))
+        if m and f"CIK={m.group(1)}" in self._href and m.group(1) not in self.ciks:
+            self.ciks.append(m.group(1))
+        self._href = None
+
+
+def parse_company_search(body: bytes) -> list[str]:
+    """CIKs on a company-search page, in EDGAR's order. `[]` only for the
+    explicit "No matching companies" page; a results page with no
+    parseable CIK raises `SecSearchUnparsed`."""
+    text = body.decode("utf-8", errors="replace")
+    parser = _SearchCikParser()
+    parser.feed(text)
+    if parser.ciks:
+        return parser.ciks
+    if _SEARCH_NONE_MARKER in text and _SEARCH_RESULTS_MARKER not in text and _SEARCH_COMPANY_MARKER not in text:
+        return []
+    raise SecSearchUnparsed("the EDGAR company search page had results this parser could not read")
+
+
+def search_companies(query: str, *, contains: bool = False) -> list[str]:
+    """Fetch and parse one EDGAR company search. Same retries, rate limit
+    and User-Agent as every other fetch here."""
+    content, _ct, _at, _url = _fetch(company_search_url(query, contains=contains), validate=_validate_company_search_html)
+    return parse_company_search(content)
