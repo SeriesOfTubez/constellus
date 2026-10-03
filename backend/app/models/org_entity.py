@@ -52,3 +52,10 @@ class OrgEntity(Base):
     )
     ours_authorised_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ours_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # planning#236 S1 (migration 0069): set iff `cik` came from a
+    # person-confirmed registrant link (`app.services.registrant_link`),
+    # which is what makes it undoable. A filer mapped directly never has it.
+    registrant_linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    registrant_linked_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
