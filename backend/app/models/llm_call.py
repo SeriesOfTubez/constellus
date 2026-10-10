@@ -54,13 +54,15 @@ ROLES: tuple[str, ...] = ("research", "extract", "classify", "judge", "narrate")
 # Mirrors the CHECK constraint text in 0058_llm_call_ledger.py.
 DATA_POLICIES: tuple[str, ...] = ("strict", "dev_permissive")
 
-# Mirrors the CHECK constraint text in 0058_llm_call_ledger.py. `ok` is a
-# genuine end-to-end success; `invalid_output`/`ungrounded` are structured-
-# output failures on an otherwise-successful HTTP response (R2: the
-# structurer is a transformer, never a source — an ungrounded result is a
-# failed attempt, never partially accepted); the rest are HTTP/transport
-# outcomes, including the two refusals that never sent a request at all
-# (`budget_refused`, `not_configured`).
+# Mirrors the CHECK constraint text in 0058_llm_call_ledger.py, extended by
+# 0070_llm_call_guardrail_blocked_status.py. `ok` is a genuine end-to-end
+# success; `invalid_output`/`ungrounded` are structured-output failures on
+# an otherwise-successful HTTP response (R2: the structurer is a transformer,
+# never a source — an ungrounded result is a failed attempt, never partially
+# accepted); the rest are HTTP/transport outcomes, including the refusals
+# that never sent a request at all (`budget_refused`, `not_configured`, and
+# `guardrail_blocked` — a model skipped because it is not on the OpenRouter
+# key's guardrail allow-list, planning#224 item 4).
 STATUSES: tuple[str, ...] = (
     "ok",
     "invalid_output",
@@ -71,6 +73,7 @@ STATUSES: tuple[str, ...] = (
     "upstream_error",
     "transport_error",
     "not_configured",
+    "guardrail_blocked",
 )
 
 

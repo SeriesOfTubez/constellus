@@ -17,6 +17,7 @@ from app.api import edges
 from app.api import engagements
 from app.api import entities
 from app.api import hygiene
+from app.api import llm
 from app.api import monitoring
 from app.api import notifications
 from app.api import scan_templates
@@ -127,6 +128,7 @@ app.include_router(hygiene.router, prefix="/api/hygiene", tags=["hygiene"])
 app.include_router(audit.router, prefix="/api/audit", tags=["audit"])
 app.include_router(engagements.router, prefix="/api/engagements", tags=["engagements"])
 app.include_router(entities.router, prefix="/api/entities", tags=["entities"])
+app.include_router(llm.router, prefix="/api/llm", tags=["llm"])
 
 
 @app.get("/api/health")
