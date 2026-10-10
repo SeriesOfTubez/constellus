@@ -150,6 +150,12 @@ jobs:
         working-directory: frontend
         run: npm run typecheck
 
+      # Unit tests (vitest), incl. the chat renderer's link/HTML guard (planning#228).
+      # In this job so they ride its required status check.
+      - name: Unit tests (vitest)
+        working-directory: frontend
+        run: npm test
+
   backend-tests:
     name: Backend Tests
     runs-on: ubuntu-latest
