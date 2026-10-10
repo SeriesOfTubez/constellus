@@ -424,6 +424,7 @@ def ask(user: User, question: str, conversation_id: uuid.UUID | None = None) -> 
         raise InvalidQuestion(f"The question is longer than {MAX_QUESTION_CHARS} characters.")
 
     history: list[dict[str, Any]] = []
+    prior_cites: set[str] = set()
     spent = Decimal(0)
     db = SessionLocal()
     try:
@@ -440,6 +441,9 @@ def ask(user: User, question: str, conversation_id: uuid.UUID | None = None) -> 
             # their tool results are not replayed (cost, and less hostile
             # text carried forward).
             history = [{"role": m.role, "content": m.content} for m in prior if m.content]
+            # Records a tool returned earlier in THIS conversation stay
+            # citable: a follow-up ("which of those...") links back to them.
+            prior_cites = {c for m in prior if m.role == "assistant" for c in (m.meta or {}).get("cite_ids", [])}
         registry = json.dumps(_registry(), separators=(",", ":"))
     finally:
         db.close()
@@ -453,7 +457,7 @@ def ask(user: User, question: str, conversation_id: uuid.UUID | None = None) -> 
     trace: list[dict[str, Any]] = []
     queries: list[dict[str, Any]] = []
     payloads: list[dict[str, Any]] = []
-    cite_ids: set[str] = set()
+    cite_ids: set[str] = set(prior_cites)
     ledger_ids: list[int] = []
     tokens = 0
     cost = Decimal(0)
@@ -520,6 +524,7 @@ def ask(user: User, question: str, conversation_id: uuid.UUID | None = None) -> 
         "tokens": tokens,
         "cost_usd": str(cost),
         "ledger_ids": ledger_ids,
+        "cite_ids": sorted(cite_ids - prior_cites),  # this question's; the union is rebuilt on load
         **({"error": error} if error else {}),
     }
     return _store(user, conv_id, conversation_id is None, question, final, meta)
