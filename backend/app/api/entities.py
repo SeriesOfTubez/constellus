@@ -556,7 +556,7 @@ def acquisition_read_requested(
     """Queue an AI read of this filer's stored Business Combinations
     sections. Every refusal happens HERE, before a run row exists or any
     request is sent: unknown entity (404), no CIK or no stored section, the
-    LLM connector unconfigured, or a read of this filer already active (409)."""
+    LLM connector or its AI models unconfigured, or a read of this filer already active (409)."""
     entity = db.get(OrgEntity, entity_id)
     if entity is None:
         raise HTTPException(status_code=404, detail="Entity not found")
@@ -568,6 +568,8 @@ def acquisition_read_requested(
         )
     if not llm_connector.is_configured(db):
         raise HTTPException(status_code=409, detail="the OpenRouter connector is not configured or not enabled")
+    if not llm_connector.models_configured(db):
+        raise HTTPException(status_code=409, detail="AI models not configured (Admin -> AI models)")
 
     run = EntityIngestRun(cik=entity.cik, kind="acquisition_read", status="queued", requested_by_id=current_user.id)
     db.add(run)

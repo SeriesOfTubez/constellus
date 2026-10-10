@@ -354,6 +354,8 @@ def followup_read(db: Session, *, entity_id: uuid.UUID, cik10: str, user_id: uui
         reason = "the registrant's filings have no Business Combinations section to read"
     elif not llm_connector.is_configured(db):
         reason = "the OpenRouter connector is not configured or not enabled"
+    elif not llm_connector.models_configured(db):
+        reason = "AI models not configured"
     if reason is not None:
         db.rollback()
         return None, reason

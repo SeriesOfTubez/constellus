@@ -29,6 +29,7 @@ from app.models.app_settings import AppSetting
 from app.models.llm_call import LlmCall
 from app.services import app_settings, connector_config as connector_config_svc
 from app.services import llm_connector as llmc
+from app.tests.llm_fixtures import TEST_ROLE_BINDINGS
 
 _TEST_API_KEY = "sk-or-test-224"
 _NO_ROW = object()
@@ -72,6 +73,36 @@ def _models_user_response(ids, *, status=200) -> httpx.Response:
          "pricing": {"prompt": "0", "completion": "0"}}
         for i in ids
     ]})
+
+
+def _zdr_row(model_id, *, provider="FixtureCloud", params=("max_tokens", "temperature")):
+    # The real `/api/v1/endpoints/zdr` row shape (recorded 2026-10-09),
+    # trimmed to the fields that vary; one row per provider endpoint.
+    return {
+        "name": f"{provider} | {model_id}", "model_id": model_id, "model_name": model_id,
+        "context_length": 128000,
+        "pricing": {"prompt": "0.00000003", "completion": "0.00000015", "discount": 0},
+        "provider_name": provider, "tag": provider.lower(), "quantization": "fp8",
+        "max_completion_tokens": 32768, "max_prompt_tokens": None,
+        "supported_parameters": list(params), "status": 0, "uptime_last_1d": 100,
+    }
+
+
+def _zdr_response(rows, *, status=200) -> httpx.Response:
+    if status != 200:
+        return httpx.Response(status, json={"error": {"message": "nope"}})
+    return httpx.Response(200, json={"data": rows})
+
+
+def _key_response(*, status=200, data=None) -> httpx.Response:
+    if status != 200:
+        return httpx.Response(status, json={"error": {"message": "nope"}})
+    # The real `/api/v1/key` shape: `data` with label/limit/limit_remaining/
+    # usage/is_free_tier (label is a masked key fragment we never pass on).
+    return httpx.Response(200, json={"data": data if data is not None else {
+        "label": "sk-or-v1-abc...xyz", "limit": 2, "limit_remaining": 1.25, "usage": 0.75,
+        "is_free_tier": False, "limit_reset": "weekly",
+    }})
 
 
 def _configure_openrouter(db, *, api_key=_TEST_API_KEY, enabled=True):
@@ -124,7 +155,7 @@ def _set_cache(db, ids, *, fetched_at=None):
 
 
 def _set_classify_binding(db, models):
-    custom = copy.deepcopy(app_settings._LLM_ROLE_BINDINGS_DEFAULT)
+    custom = copy.deepcopy(TEST_ROLE_BINDINGS)
     custom["classify"] = {"models": models, "max_tokens": 512, "temperature": 0}
     app_settings.set_value(db, "llm.role_bindings", json.dumps(custom))
 
@@ -145,15 +176,26 @@ def test_refresh_fetches_models_user_and_caches_with_timestamp():
     snap_or = _configure_openrouter(db)
     snap_cache = _snapshot_setting(db, _CACHE_KEY)
     try:
-        scripted = _ScriptedTransport([_models_user_response(["vendor/a", "vendor/b"])])
+        scripted = _ScriptedTransport([
+            _models_user_response(["vendor/a", "vendor/b"]),
+            _zdr_response([
+                _zdr_row("vendor/a", provider="P1", params=("max_tokens", "response_format")),
+                _zdr_row("vendor/a", provider="P2"),
+                _zdr_row("vendor/not-allowed", provider="P1", params=("response_format",)),
+            ]),
+        ])
         llmc._transport = scripted.transport
         try:
             result = llmc.refresh_allowed_models(db)
         finally:
             llmc._transport = None
 
-        # fetched /models/user with the key, as a GET
-        assert len(scripted.requests) == 1
+        # fetched /models/user with the key, as a GET, then the public ZDR
+        # catalogue WITHOUT the key
+        assert len(scripted.requests) == 2
+        zdr_req = scripted.requests[1]
+        assert str(zdr_req.url) == llmc._ZDR_ENDPOINTS_URL
+        assert "Authorization" not in zdr_req.headers
         req = scripted.requests[0]
         assert req.method == "GET"
         assert str(req.url) == llmc._MODELS_USER_URL
@@ -167,6 +209,11 @@ def test_refresh_fetches_models_user_and_caches_with_timestamp():
         assert llmc.allowed_model_ids(db) == {"vendor/a", "vendor/b"}
         # faithful wire fields kept for the UI slice
         assert reread.entries[0]["supported_parameters"] == ["response_format"]
+        # ZDR endpoint counts per allowed model: (total, accepting response_format);
+        # an allowed model with no ZDR endpoint reads 0, not unknown
+        by_id = {e["id"]: e for e in reread.entries}
+        assert (by_id["vendor/a"]["zdr_endpoints"], by_id["vendor/a"]["zdr_structured_endpoints"]) == (2, 1)
+        assert (by_id["vendor/b"]["zdr_endpoints"], by_id["vendor/b"]["zdr_structured_endpoints"]) == (0, 0)
     finally:
         _restore_setting(db, _CACHE_KEY, snap_cache)
         _restore_openrouter(snap_or)
@@ -257,7 +304,7 @@ def test_refresh_rejects_shape_drift_but_caches_a_real_empty_list():
             assert len(scripted.requests) == 1  # the fetch was reached
             assert llmc.allowed_model_ids(db) == {"vendor/keep"}
 
-        scripted = _ScriptedTransport([_models_user_response([])])
+        scripted = _ScriptedTransport([_models_user_response([]), _zdr_response([])])
         llmc._transport = scripted.transport
         try:
             llmc.refresh_allowed_models(db)
@@ -266,6 +313,118 @@ def test_refresh_rejects_shape_drift_but_caches_a_real_empty_list():
         assert llmc.allowed_model_ids(db) == set()
     finally:
         _restore_setting(db, _CACHE_KEY, snap_cache)
+        _restore_openrouter(snap_or)
+        db.close()
+
+
+def test_zdr_catalogue_failure_still_caches_the_allow_list_with_unknown_counts():
+    """The ZDR counts are display-only: a failed catalogue read must not
+    fail the refresh (the call path needs the allow-list), and reads as
+    unknown (None), never as 0 ZDR endpoints."""
+    db = SessionLocal()
+    snap_or = _configure_openrouter(db)
+    snap_cache = _snapshot_setting(db, _CACHE_KEY)
+    try:
+        for zdr in (_zdr_response([], status=503), httpx.Response(200, json={"rows": []})):
+            scripted = _ScriptedTransport([_models_user_response(["vendor/a"]), zdr])
+            llmc._transport = scripted.transport
+            try:
+                llmc.refresh_allowed_models(db)
+            finally:
+                llmc._transport = None
+            assert len(scripted.requests) == 2  # the catalogue fetch was reached
+            entry = llmc.load_allowed_models(db).entries[0]
+            assert entry["id"] == "vendor/a"
+            assert entry["zdr_endpoints"] is None and entry["zdr_structured_endpoints"] is None
+    finally:
+        _restore_setting(db, _CACHE_KEY, snap_cache)
+        _restore_openrouter(snap_or)
+        db.close()
+
+
+def test_rejected_allow_list_does_not_fetch_the_zdr_catalogue():
+    db = SessionLocal()
+    snap_or = _configure_openrouter(db)
+    snap_cache = _snapshot_setting(db, _CACHE_KEY)
+    try:
+        scripted = _ScriptedTransport([httpx.Response(200, json={"models": []})])
+        llmc._transport = scripted.transport
+        try:
+            with pytest.raises(llmc.LLMUpstreamError):
+                llmc.refresh_allowed_models(db)
+        finally:
+            llmc._transport = None
+        assert [str(r.url) for r in scripted.requests] == [llmc._MODELS_USER_URL]
+    finally:
+        _restore_setting(db, _CACHE_KEY, snap_cache)
+        _restore_openrouter(snap_or)
+        db.close()
+
+
+# ── item 7: key status ───────────────────────────────────────────────────
+
+def test_key_status_reads_numbers_and_drops_the_label():
+    db = SessionLocal()
+    snap_or = _configure_openrouter(db)
+    try:
+        scripted = _ScriptedTransport([_key_response()])
+        llmc._transport = scripted.transport
+        try:
+            status = llmc.key_status(db)
+        finally:
+            llmc._transport = None
+        assert len(scripted.requests) == 1
+        assert str(scripted.requests[0].url) == llmc._KEY_URL
+        assert scripted.requests[0].headers["Authorization"] == f"Bearer {_TEST_API_KEY}"
+        assert status == {"limit": 2.0, "limit_remaining": 1.25, "usage": 0.75, "is_free_tier": False}
+
+        # no limit on the key = null limit / remaining, not 0
+        scripted = _ScriptedTransport([_key_response(data={"limit": None, "limit_remaining": None, "usage": 3})])
+        llmc._transport = scripted.transport
+        try:
+            status = llmc.key_status(db)
+        finally:
+            llmc._transport = None
+        assert (status["limit"], status["limit_remaining"], status["usage"]) == (None, None, 3.0)
+    finally:
+        _restore_openrouter(snap_or)
+        db.close()
+
+
+def test_key_status_errors_are_typed():
+    db = SessionLocal()
+    snap_or = _configure_openrouter(db)
+    try:
+        for resp, exc_type in (
+            (_key_response(status=401), llmc.LLMNotConfigured),
+            (_key_response(status=500), llmc.LLMUpstreamError),
+            (httpx.Response(200, json={"limit": 2}), llmc.LLMUpstreamError),
+            (httpx.Response(200, json=[1, 2]), llmc.LLMUpstreamError),
+        ):
+            scripted = _ScriptedTransport([resp])
+            llmc._transport = scripted.transport
+            try:
+                with pytest.raises(exc_type):
+                    llmc.key_status(db)
+            finally:
+                llmc._transport = None
+            assert len(scripted.requests) == 1
+    finally:
+        _restore_openrouter(snap_or)
+        db.close()
+
+    db = SessionLocal()
+    snap_or = _configure_openrouter(db, enabled=False)
+    try:
+        scripted = _ScriptedTransport([])
+        llmc._transport = scripted.transport
+        try:
+            with pytest.raises(llmc.LLMNotConfigured):
+                llmc.key_status(db)
+        finally:
+            llmc._transport = None
+        assert scripted.requests == []
+    finally:
         _restore_openrouter(snap_or)
         db.close()
 

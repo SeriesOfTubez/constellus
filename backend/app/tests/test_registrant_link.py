@@ -517,6 +517,17 @@ def test_followup_skips_when_the_llm_is_not_configured(w, sec, monkeypatch):
     assert run is None and "OpenRouter" in reason
 
 
+def test_followup_skips_when_ai_models_are_not_configured(w, sec, monkeypatch):
+    """planning#224 item 5: connector configured, section stored, no role
+    bindings saved -> the read is skipped with a reason, not queued to fail."""
+    monkeypatch.setattr(llm_connector, "is_configured", lambda db: True)
+    monkeypatch.setattr(llm_connector, "models_configured", lambda db: False)
+    _a, e = _linked(w, sec)
+    w.section(e)
+    run, reason = rl.followup_read(w.db, entity_id=e.id, cik10=e.cik, user_id=None)
+    assert run is None and reason == "AI models not configured"
+
+
 def test_followup_queues_the_read_on_the_linked_entity(w, sec, monkeypatch):
     monkeypatch.setattr(llm_connector, "is_configured", lambda db: True)
     _a, e = _linked(w, sec)

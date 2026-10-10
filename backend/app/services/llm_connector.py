@@ -178,6 +178,17 @@ _CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 # through the same injectable `_transport` seam the chat path uses.
 _MODELS_USER_URL = "https://openrouter.ai/api/v1/models/user"
 _ALLOWED_MODELS_CACHE_KEY = "llm.allowed_models_cache"
+# planning#224 item 2 — the PUBLIC ZDR endpoint catalogue (no key, one row
+# per provider endpoint: `model_id`, `supported_parameters`, ...). Fetched
+# alongside `/models/user` on refresh purely to annotate each allowed model
+# with how many ZDR endpoints serve it (and how many of those accept
+# `response_format`, which strict structured calls need) for the admin
+# page. DISPLAY ONLY: the call path never reads these counts — the ZDR
+# `provider` block on every request is the enforcement. Sent WITHOUT the
+# API key (it is public), through the same `_transport` seam.
+_ZDR_ENDPOINTS_URL = "https://openrouter.ai/api/v1/endpoints/zdr"
+# planning#224 item 7 — the key's own limit / remaining / usage.
+_KEY_URL = "https://openrouter.ai/api/v1/key"
 
 # OpenRouter passes provider rates through without markup but charges 5.5%
 # on card credit purchases ($0.80 minimum per purchase — the per-purchase
@@ -235,21 +246,27 @@ class RoleBinding(BaseModel):
 
 def load_bindings(db: Session) -> dict[Role, RoleBinding]:
     """Parse `app_settings['llm.role_bindings']` into one `RoleBinding` per
-    `Role`. Raises `LLMConfigError` naming the key and the role on a
-    value that fails to parse, or a stored value missing a role — this
-    NEVER silently falls back to `app_settings.DEFAULTS`'s value once a
-    value has been stored: a typo in a saved binding must not quietly
-    route a role to a different model set. If the key has never been set
-    at all, `app_settings.get` already returns the default itself."""
+    `Role`. Raises `ModelsNotConfigured` when no bindings have ever been
+    saved (planning#224 item 5: there is no code default — model choice is
+    config), and `LLMConfigError` naming the key and the role on a stored
+    value that fails to parse or is missing a role: a typo in a saved
+    binding must not quietly route a role to a different model set."""
     raw = app_settings.get(db, "llm.role_bindings")
+    if raw is None:
+        raise ModelsNotConfigured(
+            "AI models not configured: no role bindings have been saved "
+            "(Admin -> AI models)"
+        )
     try:
-        parsed = json.loads(raw) if raw is not None else {}
+        parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise LLMConfigError(
             f"app_settings['llm.role_bindings'] is not valid JSON: {exc}"
         ) from exc
 
     bindings: dict[Role, RoleBinding] = {}
+    if not isinstance(parsed, dict):
+        raise LLMConfigError("app_settings['llm.role_bindings'] is not a JSON object")
     for role in Role:
         entry = parsed.get(role.value)
         if entry is None:
@@ -280,6 +297,15 @@ class LLMNotConfigured(LLMError):
 class LLMConfigError(LLMError):
     """A stored configuration value (role bindings, or a `target_id` that
     does not resolve to a real `targets` row) is unusable."""
+
+
+class ModelsNotConfigured(LLMConfigError):
+    """No role bindings have been saved (planning#224 item 5). Fresh
+    installs start here: there is deliberately no code default, so an AI
+    feature reports "AI models not configured" rather than calling a model
+    nobody chose. A subclass of `LLMConfigError`, so every existing
+    handler of that still catches it; raised before any request or ledger
+    row, like the rest of `load_bindings`' errors."""
 
 
 class StrictPolicyRefused(LLMConfigError):
@@ -472,36 +498,121 @@ def refresh_allowed_models(db: Session) -> AllowedModels:
         raise LLMNotConfigured("OpenRouter connector is not configured, disabled, or has no stored API key")
 
     try:
-        with httpx.Client(
-            transport=_transport,
-            timeout=httpx.Timeout(connect=_CONNECT_TIMEOUT_S, read=_READ_TIMEOUT_S, write=_READ_TIMEOUT_S, pool=_READ_TIMEOUT_S),
-        ) as client:
+        with _metadata_client() as client:
             resp = client.get(_MODELS_USER_URL, headers=_headers(api_key))
+            if resp.status_code in (401, 403):
+                raise LLMNotConfigured(f"OpenRouter rejected the API key (HTTP {resp.status_code})")
+            if resp.status_code != 200:
+                raise LLMUpstreamError(
+                    f"OpenRouter /models/user returned HTTP {resp.status_code}: {_error_message(resp)}"
+                )
+            payload = _safe_json(resp)
+            if payload is None:
+                raise LLMUpstreamError("OpenRouter /models/user returned a non-JSON body")
+            # A body without a `data` LIST is shape drift, not "the guardrail
+            # allows nothing": caching it as an empty allow-list would block
+            # every AI call until the next refresh. Refuse it and keep the
+            # last good cache. A present-but-empty `data: []` is a real
+            # answer and IS cached.
+            if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+                raise LLMUpstreamError("OpenRouter /models/user returned an unexpected shape (no `data` list)")
+            entries = _parse_models_user(payload)
+            # Only once the allow-list itself is good: annotate it from the
+            # public ZDR catalogue (display only; never fails the refresh).
+            zdr_counts = _fetch_zdr_counts(client)
     except httpx.TransportError as exc:
         raise LLMUpstreamError(f"Could not reach OpenRouter /models/user: {exc}") from exc
 
-    if resp.status_code in (401, 403):
-        raise LLMNotConfigured(f"OpenRouter rejected the API key (HTTP {resp.status_code})")
-    if resp.status_code != 200:
-        raise LLMUpstreamError(f"OpenRouter /models/user returned HTTP {resp.status_code}: {_error_message(resp)}")
-
-    payload = _safe_json(resp)
-    if payload is None:
-        raise LLMUpstreamError("OpenRouter /models/user returned a non-JSON body")
-    # A body without a `data` LIST is shape drift, not "the guardrail allows
-    # nothing": caching it as an empty allow-list would block every AI call
-    # until the next refresh. Refuse it and keep the last good cache. A
-    # present-but-empty `data: []` is a real answer and IS cached.
-    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-        raise LLMUpstreamError("OpenRouter /models/user returned an unexpected shape (no `data` list)")
-
-    entries = _parse_models_user(payload)
+    for entry in entries:
+        # `None` = the ZDR catalogue could not be read this refresh (unknown),
+        # distinct from 0 = read, and no ZDR endpoint serves this model.
+        counts = None if zdr_counts is None else zdr_counts.get(entry["id"], (0, 0))
+        entry["zdr_endpoints"] = None if counts is None else counts[0]
+        entry["zdr_structured_endpoints"] = None if counts is None else counts[1]
     fetched_at = _now()
     app_settings.set_value(
         db, _ALLOWED_MODELS_CACHE_KEY,
         json.dumps({"fetched_at": fetched_at.isoformat(), "models": entries}),
     )
     return AllowedModels(fetched_at=fetched_at, entries=entries)
+
+
+def _metadata_client() -> httpx.Client:
+    return httpx.Client(
+        transport=_transport,
+        timeout=httpx.Timeout(connect=_CONNECT_TIMEOUT_S, read=_READ_TIMEOUT_S, write=_READ_TIMEOUT_S, pool=_READ_TIMEOUT_S),
+    )
+
+
+def _fetch_zdr_counts(client: httpx.Client) -> dict[str, tuple[int, int]] | None:
+    """`model_id` -> (ZDR endpoints, of which accept `response_format`)
+    from the public ZDR catalogue, or `None` when it cannot be read. A
+    failure here never fails the refresh: the allow-list (which the call
+    path uses) is still cached, and the page shows the counts as unknown."""
+    try:
+        resp = client.get(_ZDR_ENDPOINTS_URL)
+    except httpx.TransportError as exc:
+        log.warning("llm_connector: could not reach the OpenRouter ZDR catalogue: %s", exc)
+        return None
+    payload = _safe_json(resp) if resp.status_code == 200 else None
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        log.warning("llm_connector: OpenRouter ZDR catalogue unreadable (HTTP %s)", resp.status_code)
+        return None
+    counts: dict[str, tuple[int, int]] = {}
+    for row in payload["data"]:
+        if not isinstance(row, dict) or not isinstance(row.get("model_id"), str):
+            continue
+        params = row.get("supported_parameters")
+        structured = isinstance(params, list) and "response_format" in params
+        total, with_structured = counts.get(row["model_id"], (0, 0))
+        counts[row["model_id"]] = (total + 1, with_structured + int(structured))
+    return counts
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def key_status(db: Session) -> dict[str, Any]:
+    """The OpenRouter key's own credit picture from `/api/v1/key`
+    (planning#224 item 7): `limit` (None = no limit), `limit_remaining`,
+    `usage`, `is_free_tier`. Numbers only — the key's `label` is not passed
+    on. Raises `LLMNotConfigured` (no key / key rejected) or
+    `LLMUpstreamError`; sends nothing to the ledger (no inference)."""
+    api_key = _get_api_key(db)
+    if api_key is None:
+        raise LLMNotConfigured("OpenRouter connector is not configured, disabled, or has no stored API key")
+    try:
+        with _metadata_client() as client:
+            resp = client.get(_KEY_URL, headers=_headers(api_key))
+    except httpx.TransportError as exc:
+        raise LLMUpstreamError(f"Could not reach OpenRouter /key: {exc}") from exc
+    if resp.status_code in (401, 403):
+        raise LLMNotConfigured(f"OpenRouter rejected the API key (HTTP {resp.status_code})")
+    if resp.status_code != 200:
+        raise LLMUpstreamError(f"OpenRouter /key returned HTTP {resp.status_code}: {_error_message(resp)}")
+    payload = _safe_json(resp)
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise LLMUpstreamError("OpenRouter /key returned an unexpected shape (no `data` object)")
+    return {
+        "limit": _number(data.get("limit")),
+        "limit_remaining": _number(data.get("limit_remaining")),
+        "usage": _number(data.get("usage")),
+        "is_free_tier": data.get("is_free_tier") if isinstance(data.get("is_free_tier"), bool) else None,
+    }
+
+
+def budget_status(db: Session) -> dict[str, Decimal]:
+    """The app's own daily budget against today's grossed-up spend — the
+    same two numbers `_precall` compares (planning#224 Notes: the page
+    shows this next to the key's credit limit, which can bite first)."""
+    return {
+        "daily_budget_usd": _daily_budget(db),
+        "spent_today_usd": _grossed_up_spend_today(db),
+    }
 
 
 def load_allowed_models(db: Session) -> AllowedModels | None:
@@ -759,6 +870,10 @@ def spend_summary(db: Session, *, since: datetime, until: datetime) -> dict[str,
     }
 
 
+def _daily_budget(db: Session) -> Decimal:
+    return Decimal(app_settings.get(db, "llm.daily_budget_usd") or "5")
+
+
 def _grossed_up_spend_today(db: Session) -> Decimal:
     from sqlalchemy import func
 
@@ -894,7 +1009,7 @@ def _precall(
     # 3. Budget — checked ONCE before the call starts, not between attempts;
     # a call already in progress may finish even if it pushes spend over
     # the line mid-flight.
-    budget = Decimal(app_settings.get(db, "llm.daily_budget_usd") or "5")
+    budget = _daily_budget(db)
     gross = _grossed_up_spend_today(db)
     if gross >= budget:
         _write_ledger(
@@ -951,7 +1066,7 @@ def _safe_json(resp: httpx.Response) -> dict | None:
 
 def _error_message(resp: httpx.Response) -> str:
     data = _safe_json(resp)
-    if data is not None:
+    if isinstance(data, dict):
         error = data.get("error")
         if isinstance(error, dict) and error.get("message"):
             return str(error["message"])
@@ -1200,6 +1315,15 @@ def is_configured(db: Session) -> bool:
     before queueing work (planning#218's run button): it sends nothing and
     writes no ledger row. `_precall` still re-checks on every call."""
     return _get_api_key(db) is not None
+
+
+def models_configured(db: Session) -> bool:
+    """True iff role bindings have been saved (planning#224 item 5) — the
+    pre-queue counterpart of `ModelsNotConfigured`, for a caller that
+    refuses before queueing work. A stored-but-corrupt value still counts
+    as configured: the call then fails with the `LLMConfigError` that names
+    what is wrong, rather than being reported as never configured."""
+    return app_settings.get(db, "llm.role_bindings") is not None
 
 
 def complete(

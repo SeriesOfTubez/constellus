@@ -50,6 +50,7 @@ from app.services import connector_config as connector_config_svc
 from app.services import llm_connector as llmc
 from app.services.llm_grounding import Grounded
 from app.tests._engagement import cleanup_engagement, make_engagement
+from app.tests.llm_fixtures import TEST_ROLE_BINDINGS
 
 _TEST_API_KEY = "sk-or-v1-test-key-not-real"
 
@@ -499,7 +500,7 @@ def test_tier2_ungrounded_fails_and_positive_twin_passes():
     snapshot = _configure_openrouter(db)
     bindings_snapshot = _snapshot_app_setting(db, "llm.role_bindings")
     try:
-        custom = copy.deepcopy(app_settings._LLM_ROLE_BINDINGS_DEFAULT)
+        custom = copy.deepcopy(TEST_ROLE_BINDINGS)
         custom["classify"] = {"models": ["fixture/model-a", "fixture/model-b"], "max_tokens": 512, "temperature": 0}
         app_settings.set_value(db, "llm.role_bindings", json.dumps(custom))
 
@@ -1617,7 +1618,7 @@ def test_spend_summary_by_engagement_buckets_correctly():
 # instead of passing vacuously.
 
 def _bind(db, role: str, models: list[str]) -> None:
-    custom = copy.deepcopy(app_settings._LLM_ROLE_BINDINGS_DEFAULT)
+    custom = copy.deepcopy(TEST_ROLE_BINDINGS)
     custom[role] = {"models": models, "max_tokens": 64, "temperature": 0}
     app_settings.set_value(db, "llm.role_bindings", json.dumps(custom))
 

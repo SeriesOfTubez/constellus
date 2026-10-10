@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Plug, FlaskConical, Save, Loader2, Search, Globe, RefreshCw, Zap } from "lucide-react"
+import { Plug, FlaskConical, Save, Loader2, Search, Globe, RefreshCw, Zap, Bot } from "lucide-react"
+import { Link } from "react-router-dom"
 import { AdminBreadcrumb } from "@/components/AdminBreadcrumb"
 import { ConnectorConfigFields, fillConfigValues } from "@/components/ConnectorConfigFields"
 import { Badge } from "@/components/ui/badge"
@@ -111,6 +112,11 @@ function ConnectorCard({ connector, onConfigure }: { connector: ConnectorSummary
                 disabled={syncMutation.isPending}>
                 {syncMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
                 Sync
+              </Button>
+            )}
+            {connector.id === "openrouter" && (
+              <Button variant="outline" size="sm" asChild>
+                <Link to="/admin/ai-models"><Bot className="h-3 w-3" />AI models</Link>
               </Button>
             )}
             <Button variant="outline" size="sm" onClick={() => onConfigure(connector)}>

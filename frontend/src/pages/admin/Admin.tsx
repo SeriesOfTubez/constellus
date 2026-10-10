@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import {
-  Activity, Bell, Briefcase, Building2, ChevronRight, ClipboardList, GitBranch,
+  Activity, Bell, Bot, Briefcase, Building2, ChevronRight, ClipboardList, GitBranch,
   Globe, KeyRound, Network, Plug, Server, Settings2,
   ShieldCheck, Smartphone, Tags, Target as TargetIcon, Users,
 } from "lucide-react"
@@ -49,6 +49,7 @@ const CATEGORIES: AdminCategory[] = [
       { label: "Engagements",  description: "M&A posture, authorisation, member targets", to: "/admin/engagements", icon: Briefcase,  statsKey: "engagements" },
       { label: "Entity Review", description: "Proposed corporate-entity relationships awaiting a decision", to: "/admin/entities", icon: Network, statsKey: "entities" },
       { label: "Connectors",   description: "Third-party integrations",                 to: "/admin/connectors",   icon: Plug,       statsKey: "connectors" },
+      { label: "AI models",    description: "Which model does which AI job",           to: "/admin/ai-models",    icon: Bot },
     ],
   },
   {
