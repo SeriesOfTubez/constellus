@@ -1,6 +1,6 @@
-"""Admin API for LLM model configuration (planning#224 items 1, 3).
+"""Admin API for LLM model configuration (planning#224 items 1, 3, 5, 7).
 
-Two concerns, both ADMIN-only:
+Three concerns, all ADMIN-only:
 
 - **Role bindings** (item 3) — `GET/PUT /api/llm/role-bindings` read and
   write `app_settings['llm.role_bindings']`, the role → model-ladder map
@@ -13,13 +13,17 @@ Two concerns, both ADMIN-only:
 - **Guardrail allow-list** (item 1) — `GET /api/llm/models` returns the
   cached `/models/user` result (what this key's OpenRouter guardrail
   permits), and `POST /api/llm/models/refresh` re-fetches and re-caches it.
-  The admin page (item 2, a later slice) reads these; exposing them now
-  keeps the UI PR pure-frontend.
+  Each entry also carries its ZDR endpoint counts (display only).
 
-Deferred to the UI PR (item 5): removing the model ids from
-`app_settings.DEFAULTS` and the "configure AI models" empty state. Until
-then a fresh install still has a working default binding, and this PUT only
-ever overwrites it.
+- **Status** (item 7) — `GET /api/llm/status`: the OpenRouter key's credit
+  limit / remaining / usage next to the app's own daily budget and today's
+  spend. Either the key or the budget can bite first, so the page shows
+  both; a key-status failure is reported in `key_error`, never a 5xx that
+  would also hide the budget.
+
+There is no code default for the bindings (item 5): until the first PUT,
+`GET /role-bindings` answers `configured: false` and AI features report
+"AI models not configured".
 """
 
 import json
@@ -51,7 +55,29 @@ class RoleBindingsUpdate(BaseModel):
 
 
 class RoleBindingsResponse(BaseModel):
-    bindings: dict[str, dict]
+    # `configured: false` + `bindings: null` on a fresh install (item 5).
+    configured: bool
+    bindings: dict[str, dict] | None
+
+
+class KeyStatus(BaseModel):
+    limit: float | None
+    limit_remaining: float | None
+    usage: float | None
+    is_free_tier: bool | None
+
+
+class BudgetStatus(BaseModel):
+    daily_budget_usd: float
+    spent_today_usd: float
+
+
+class LlmStatusResponse(BaseModel):
+    connector_configured: bool
+    models_configured: bool
+    key: KeyStatus | None
+    key_error: str | None
+    budget: BudgetStatus
 
 
 class AllowedModelsResponse(BaseModel):
@@ -59,14 +85,18 @@ class AllowedModelsResponse(BaseModel):
     models: list[dict]
 
 
-def _load_bindings_or_409(db: Session) -> dict[str, dict]:
+def _bindings_response(db: Session) -> RoleBindingsResponse:
     try:
         bindings = llm_connector.load_bindings(db)
+    except llm_connector.ModelsNotConfigured:
+        return RoleBindingsResponse(configured=False, bindings=None)
     except llm_connector.LLMConfigError as exc:
         # The stored value is corrupt/incomplete — surface it so the admin
         # can fix it, rather than 500ing.
         raise HTTPException(status_code=409, detail=str(exc))
-    return {role.value: binding.model_dump() for role, binding in bindings.items()}
+    return RoleBindingsResponse(
+        configured=True, bindings={role.value: binding.model_dump() for role, binding in bindings.items()},
+    )
 
 
 @router.get("/role-bindings", response_model=RoleBindingsResponse)
@@ -75,7 +105,7 @@ def get_role_bindings(
     db: Session = Depends(get_db),
     _=Depends(require_role(UserRole.ADMIN)),
 ):
-    return RoleBindingsResponse(bindings=_load_bindings_or_409(db))
+    return _bindings_response(db)
 
 
 @router.put("/role-bindings", response_model=RoleBindingsResponse)
@@ -106,8 +136,8 @@ def put_role_bindings(
         validated[role_name] = binding.model_dump()
 
     # Capture the old ladders for the audit trail BEFORE overwriting. Read
-    # the stored/default value raw so a currently-corrupt binding is still
-    # recorded as what it was, not an exception.
+    # the stored value raw so a currently-corrupt binding is still recorded
+    # as what it was, not an exception (None = never configured).
     old_raw = app_settings.get(db, "llm.role_bindings")
     try:
         old_parsed = json.loads(old_raw) if old_raw else None
@@ -117,7 +147,7 @@ def put_role_bindings(
     app_settings.set_value(db, "llm.role_bindings", json.dumps(validated))
 
     audit.record_detail(request, role_bindings={"from": old_parsed, "to": validated})
-    return RoleBindingsResponse(bindings=_load_bindings_or_409(db))
+    return _bindings_response(db)
 
 
 @router.get("/models", response_model=AllowedModelsResponse)
@@ -153,3 +183,31 @@ def refresh_allowed_models(
         allowed_models_refreshed={"count": len(allowed.entries), "fetched_at": allowed.fetched_at.isoformat()},
     )
     return AllowedModelsResponse(fetched_at=allowed.fetched_at.isoformat(), models=allowed.entries)
+
+
+@router.get("/status", response_model=LlmStatusResponse)
+def get_status(
+    request: Request,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(UserRole.ADMIN)),
+):
+    """Key credit (live `/api/v1/key`, item 7) + app budget + whether the
+    connector and the role bindings are configured. Sends no inference
+    request and writes no ledger row."""
+    connector_configured = llm_connector.is_configured(db)
+    key, key_error = None, None
+    if connector_configured:
+        try:
+            key = KeyStatus(**llm_connector.key_status(db))
+        except (llm_connector.LLMNotConfigured, llm_connector.LLMUpstreamError) as exc:
+            key_error = str(exc)
+    budget = llm_connector.budget_status(db)
+    return LlmStatusResponse(
+        connector_configured=connector_configured,
+        models_configured=llm_connector.models_configured(db),
+        key=key,
+        key_error=key_error,
+        budget=BudgetStatus(
+            daily_budget_usd=float(budget["daily_budget_usd"]), spent_today_usd=float(budget["spent_today_usd"]),
+        ),
+    )

@@ -574,6 +574,30 @@ def test_api_refuses_before_any_request_or_run_row(filer, scripted, admin):
         db.close()
 
 
+def test_api_refuses_when_ai_models_are_not_configured(filer, openrouter, scripted, admin):
+    """planning#224 item 5: connector configured and a section stored, but
+    no role bindings saved -> 409 naming the models, before any request or
+    run row. The positive twin is test_api_run_succeeds_... (bindings seeded)."""
+    from app.models.app_settings import AppSetting
+
+    t = scripted([])
+    filer.add_section(S1, filing_date=date(2023, 2, 1))
+    db = SessionLocal()
+    row = db.get(AppSetting, "llm.role_bindings")
+    saved = row.value
+    db.delete(row)
+    db.commit()
+    try:
+        resp = client.post(f"/api/entities/{filer.entity_id}/acquisition-read", headers=admin)
+        assert resp.status_code == 409 and "AI models not configured" in resp.json()["detail"]
+        assert t.requests == []
+        assert db.query(EntityIngestRun).filter(EntityIngestRun.cik == filer.cik).count() == 0
+    finally:
+        db.add(AppSetting(key="llm.role_bindings", value=saved))
+        db.commit()
+        db.close()
+
+
 def test_api_an_active_read_blocks_a_second_one(filer, openrouter, admin):
     filer.add_section(S1, filing_date=date(2023, 2, 1))
     db = SessionLocal()

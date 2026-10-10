@@ -30,6 +30,7 @@ import Sso from "@/pages/admin/Sso"
 import Users from "@/pages/admin/Users"
 import Settings from "@/pages/admin/Settings"
 import TagRules from "@/pages/admin/TagRules"
+import AiModels from "@/pages/admin/AiModels"
 
 function SetupGuard({ children }: { children: React.ReactNode }) {
   const { data, isLoading, isError, refetch } = useQuery({
@@ -112,6 +113,7 @@ export default function App() {
 
               <Route element={<ProtectedRoute roles={["admin"]} />}>
                 <Route path="/admin/users" element={<Users />} />
+                <Route path="/admin/ai-models" element={<AiModels />} />
               </Route>
             </Route>
           </Route>

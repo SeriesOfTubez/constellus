@@ -120,6 +120,7 @@ def test_get_role_bindings_admin_ok_viewer_403():
     try:
         r = client.get("/api/llm/role-bindings", headers=admin_h)
         assert r.status_code == 200
+        assert r.json()["configured"] is True
         assert set(r.json()["bindings"]) == {"classify", "extract", "research", "judge", "narrate"}
 
         assert client.get("/api/llm/role-bindings", headers=viewer_h).status_code == 403
@@ -253,3 +254,120 @@ def test_refresh_models_not_configured_is_409():
         _restore_openrouter(snap_or)
         db.close()
         _cleanup_user(admin_id)
+
+
+# ── item 5: fresh install (no saved bindings) ───────────────────────────
+
+def test_unconfigured_bindings_read_as_configured_false_until_the_first_put():
+    admin_h, admin_id = _make_user("admin")
+    db = SessionLocal()
+    snap_bind = _snapshot_setting(db, _BIND_KEY)
+    assert snap_bind is not _NO_ROW  # precondition: the session fixture seeded bindings
+    try:
+        db.delete(db.get(AppSetting, _BIND_KEY))
+        db.commit()
+        r = client.get("/api/llm/role-bindings", headers=admin_h)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"configured": False, "bindings": None}
+
+        r = client.put("/api/llm/role-bindings", headers=admin_h, json={"bindings": _valid_bindings()})
+        assert r.status_code == 200, r.text
+        assert r.json()["configured"] is True
+        assert client.get("/api/llm/role-bindings", headers=admin_h).json()["configured"] is True
+
+        # the first save is audited from "never configured" (null)
+        row = (
+            db.query(AuditLog)
+            .filter(AuditLog.user_id == admin_id)
+            .order_by(AuditLog.occurred_at.desc())
+            .first()
+        )
+        changes = (row.detail or {}).get("changes", {})
+        assert "role_bindings" in changes
+        assert changes["role_bindings"]["from"] is None
+    finally:
+        _restore_setting(db, _BIND_KEY, snap_bind)
+        db.close()
+        _cleanup_user(admin_id)
+
+
+# ── item 7: status (key credit + app budget) ─────────────────────────────
+
+def _key_handler(status=200, data=None):
+    def _handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == llmc._KEY_URL
+        if status != 200:
+            return httpx.Response(status, json={"error": {"message": "nope"}})
+        return httpx.Response(200, json={"data": data or {
+            "label": "sk-or-v1-abc...xyz", "limit": 2, "limit_remaining": 1.5, "usage": 0.5, "is_free_tier": False,
+        }})
+    return _handler
+
+
+def test_status_reports_key_credit_and_budget():
+    admin_h, admin_id = _make_user("admin")
+    db = SessionLocal()
+    snap_or = _configure_openrouter(db)
+    try:
+        llmc._transport = httpx.MockTransport(_key_handler())
+        try:
+            r = client.get("/api/llm/status", headers=admin_h)
+        finally:
+            llmc._transport = None
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["connector_configured"] is True and body["models_configured"] is True
+        assert body["key"] == {"limit": 2.0, "limit_remaining": 1.5, "usage": 0.5, "is_free_tier": False}
+        assert body["key_error"] is None
+        assert "label" not in json.dumps(body)
+        assert body["budget"]["daily_budget_usd"] == float(app_settings.get(db, "llm.daily_budget_usd"))
+        assert body["budget"]["spent_today_usd"] >= 0
+    finally:
+        _restore_openrouter(snap_or)
+        db.close()
+        _cleanup_user(admin_id)
+
+
+def test_status_key_failure_is_reported_not_raised():
+    """An upstream /key failure must not 5xx the page and hide the budget."""
+    admin_h, admin_id = _make_user("admin")
+    db = SessionLocal()
+    snap_or = _configure_openrouter(db)
+    try:
+        llmc._transport = httpx.MockTransport(_key_handler(status=503))
+        try:
+            r = client.get("/api/llm/status", headers=admin_h)
+        finally:
+            llmc._transport = None
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["key"] is None and "503" in body["key_error"]
+        assert body["budget"]["daily_budget_usd"] > 0
+    finally:
+        _restore_openrouter(snap_or)
+        db.close()
+        _cleanup_user(admin_id)
+
+
+def test_status_without_a_connector_sends_nothing_and_viewer_is_403():
+    admin_h, admin_id = _make_user("admin")
+    viewer_h, viewer_id = _make_user("viewer")
+    db = SessionLocal()
+    snap_or = _configure_openrouter(db, enabled=False)
+    sent: list[httpx.Request] = []
+    try:
+        llmc._transport = httpx.MockTransport(lambda req: sent.append(req) or httpx.Response(500))
+        try:
+            r = client.get("/api/llm/status", headers=admin_h)
+            assert client.get("/api/llm/status", headers=viewer_h).status_code == 403
+        finally:
+            llmc._transport = None
+        assert r.status_code == 200, r.text
+        assert r.json()["connector_configured"] is False
+        assert r.json()["key"] is None and r.json()["key_error"] is None
+        assert sent == []
+    finally:
+        _restore_openrouter(snap_or)
+        db.close()
+        _cleanup_user(admin_id)
+        _cleanup_user(viewer_id)

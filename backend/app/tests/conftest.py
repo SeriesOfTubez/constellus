@@ -69,3 +69,36 @@ def _restore_monkeypatched_modules():
         for name, original_value in snapshot.items():
             if vars(mod).get(name) is not original_value:
                 setattr(mod, name, original_value)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _seed_llm_role_bindings():
+    """planning#224 item 5: there is no code default for
+    `llm.role_bindings`, so store the test bindings for the session (an
+    install whose admin has configured AI models) and remove them after,
+    keeping the run's zero-residue guarantee. See `llm_fixtures.py`."""
+    import json
+
+    from app.core.database import SessionLocal
+    from app.models.app_settings import AppSetting
+    from app.services import app_settings
+    from app.tests.llm_fixtures import TEST_ROLE_BINDINGS
+
+    key = "llm.role_bindings"
+    db = SessionLocal()
+    try:
+        created = db.get(AppSetting, key) is None
+        if created:
+            app_settings.set_value(db, key, json.dumps(TEST_ROLE_BINDINGS))
+    finally:
+        db.close()
+    yield
+    if created:
+        db = SessionLocal()
+        try:
+            row = db.get(AppSetting, key)
+            if row is not None:
+                db.delete(row)
+                db.commit()
+        finally:
+            db.close()
