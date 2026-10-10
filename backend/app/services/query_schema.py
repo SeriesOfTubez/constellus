@@ -1,6 +1,6 @@
 """The attack-surface query language: published schema + validator (planning#227).
 
-One JSON query object is shared by Explore's builder (#53), Perseus (#228,
+One JSON query object is shared by Explore's builder (#53), the chat assistant (#228,
 which emits it through `llm_connector.structured()`) and the backend, which
 validates it here and compiles it in `query_compiler`. **Nothing in the object
 is ever interpolated into SQL**: field and relation names are looked up in the

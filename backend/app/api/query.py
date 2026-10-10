@@ -1,8 +1,8 @@
 """Attack-surface query API (planning#227).
 
 `GET /api/query/schema` publishes the field registry and the JSON Schema of
-the query object: the one description Explore's builder (#53) and Perseus
-(#228) both read. `POST /api/query` validates a query object (422 with a
+the query object: the one description Explore's builder (#53) and the chat
+assistant (#228) both read. `POST /api/query` validates a query object (422 with a
 path per error, before any SQL is built) and returns table rows;
 `POST /api/query?mode=count` returns the exact match count instead, capped
 at `limits.count_cap` (planning#228). The query object is the same in both

@@ -63,7 +63,7 @@ nothing, so a fresh deploy behaves exactly as before the first refresh.
 ## Tool calling (planning#228)
 
 `chat_round()` is one round of a tool-calling conversation for the `chat`
-role (Perseus). It accepts function tools only (`_function_tools_only`),
+role (the chat assistant). It accepts function tools only (`_function_tools_only`),
 always runs strict, and returns the model's tool calls to the caller, which
 executes them; this module never runs a tool. `_attempt_model` treats a
 tool-call-only reply (`content: null`) as success for that path alone.
@@ -242,7 +242,7 @@ class Role(str, Enum):
     CLASSIFY = "classify"
     JUDGE = "judge"
     NARRATE = "narrate"
-    CHAT = "chat"  # Perseus (planning#228): tool-calling, always strict
+    CHAT = "chat"  # the chat assistant (planning#228): tool-calling, always strict
 
 
 class RoleBinding(BaseModel):
@@ -1438,7 +1438,7 @@ def complete(
 
 
 def _function_tools_only(tools: list[dict]) -> None:
-    """Perseus's tools are our own functions, executed here as the asking
+    """The chat assistant's tools are our own functions, executed here as the asking
     user. Any other tool type (OpenRouter server tools such as web search,
     or anything a future provider adds) would run somewhere we do not
     control, so it is refused outright, under every data policy. R8's
@@ -1466,7 +1466,7 @@ def _parse_tool_calls(message: dict) -> list[ToolCall]:
 
 def chat_round(db: Session, *, messages: list[dict], tools: list[dict], task: str) -> ChatTurn:
     """One round of a tool-calling conversation for the `chat` role
-    (Perseus, planning#228): send the conversation so far plus the tool
+    (the chat assistant, planning#228): send the conversation so far plus the tool
     definitions, return the model's reply (text and/or tool calls). The
     CALLER runs the tools and calls again; there is no loop in here.
 

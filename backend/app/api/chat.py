@@ -1,15 +1,15 @@
-"""Perseus chat API (planning#228, slice 1).
+"""Chat assistant API (planning#228, slice 1).
 
-Any authenticated user may use Perseus: its tools read exactly what that
-user's own API calls would (see `services/perseus.py`). A user sees, asks
+Any authenticated user may use the chat assistant: its tools read exactly what that
+user's own API calls would (see `services/chat.py`). A user sees, asks
 into and deletes only their own conversations; anyone else's answers 404,
 the same as a missing one.
 
-- `POST /api/perseus/conversations` `{question}` starts a conversation.
-- `POST /api/perseus/conversations/{id}/messages` `{question}` continues one.
-- `GET  /api/perseus/conversations` lists the caller's conversations.
-- `GET  /api/perseus/conversations/{id}` returns one with its messages.
-- `DELETE /api/perseus/conversations/{id}` deletes it.
+- `POST /api/chat/conversations` `{question}` starts a conversation.
+- `POST /api/chat/conversations/{id}/messages` `{question}` continues one.
+- `GET  /api/chat/conversations` lists the caller's conversations.
+- `GET  /api/chat/conversations/{id}` returns one with its messages.
+- `DELETE /api/chat/conversations/{id}` deletes it.
 
 Asking is synchronous: the response arrives when the answer is stored.
 The audit middleware records these requests without their bodies, so no
@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.models.user import User
-from app.services import llm_connector, perseus
+from app.services import chat, llm_connector
 
 router = APIRouter()
 
@@ -37,12 +37,12 @@ class QuestionIn(BaseModel):
 
 def _ask(user: User, question: str, conversation_id: uuid.UUID | None) -> dict[str, Any]:
     try:
-        return perseus.ask(user, question, conversation_id)
-    except perseus.ConversationNotFound:
+        return chat.ask(user, question, conversation_id)
+    except chat.ConversationNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    except perseus.ConversationLimit as exc:
+    except chat.ConversationLimit as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    except perseus.InvalidQuestion as exc:
+    except chat.InvalidQuestion as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except (llm_connector.LLMNotConfigured, llm_connector.LLMConfigError) as exc:
         # LLMConfigError covers ModelsNotConfigured and StrictPolicyRefused.
@@ -69,7 +69,7 @@ def continue_conversation(
 def list_conversations(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    return perseus.list_conversations(db, current_user)
+    return chat.list_conversations(db, current_user)
 
 
 @router.get("/conversations/{conversation_id}")
@@ -77,8 +77,8 @@ def get_conversation(
     conversation_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     try:
-        return perseus.get_conversation(db, current_user, conversation_id)
-    except perseus.ConversationNotFound:
+        return chat.get_conversation(db, current_user, conversation_id)
+    except chat.ConversationNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
 
@@ -87,8 +87,8 @@ def delete_conversation(
     conversation_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
 ) -> Response:
     try:
-        perseus.delete_conversation(db, current_user, conversation_id)
-    except perseus.ConversationNotFound:
+        chat.delete_conversation(db, current_user, conversation_id)
+    except chat.ConversationNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
     db.commit()
     return Response(status_code=204)

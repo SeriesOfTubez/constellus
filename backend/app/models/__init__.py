@@ -46,7 +46,7 @@ from app.models.entity_subsidiary_listing import EntitySubsidiaryListing
 from app.models.entity_filing_section import EntityFilingSection, SECTION_VALUES
 from app.models.candidate_domain import CandidateDomain, CANDIDATE_SOURCES, CANDIDATE_STATUSES
 from app.models.entity_ingest_run import EntityIngestRun, INGEST_RUN_STATUSES
-from app.models.perseus import PerseusConversation, PerseusMessage
+from app.models.chat import ChatConversation, ChatMessage
 
 __all__ = [
     "User", "UserRole",
@@ -116,6 +116,6 @@ __all__ = [
     "CANDIDATE_STATUSES",
     "EntityIngestRun",
     "INGEST_RUN_STATUSES",
-    "PerseusConversation",
-    "PerseusMessage",
+    "ChatConversation",
+    "ChatMessage",
 ]

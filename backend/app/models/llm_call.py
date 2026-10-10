@@ -49,7 +49,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 
 # Mirrors the CHECK constraint text in 0058_llm_call_ledger.py, extended by
-# 0072_perseus_transcripts.py (`chat`, planning#228).
+# 0072_chat_transcripts.py (`chat`, planning#228).
 ROLES: tuple[str, ...] = ("research", "extract", "classify", "judge", "narrate", "chat")
 
 # Mirrors the CHECK constraint text in 0058_llm_call_ledger.py.

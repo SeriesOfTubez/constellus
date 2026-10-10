@@ -1261,7 +1261,7 @@ def get_entity(
     _=Depends(get_current_user),
 ):
     """One org entity, same fields and access as `list_entities` (planning#228:
-    Perseus's `get_entity` tool calls this function as the asking user)."""
+    the chat assistant's `get_entity` tool calls this function as the asking user)."""
     e = db.get(OrgEntity, entity_id)
     if e is None:
         raise HTTPException(status_code=404, detail="Entity not found")

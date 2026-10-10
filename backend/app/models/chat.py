@@ -12,12 +12,12 @@ from app.core.database import Base
 MESSAGE_ROLES: frozenset[str] = frozenset({"user", "assistant"})
 
 
-class PerseusConversation(Base):
-    """One Perseus conversation, owned by one user (planning#228). Migration
+class ChatConversation(Base):
+    """One chat assistant conversation, owned by one user (planning#228). Migration
     0072's docstring carries the invariants: per-user, retention by
     `updated_at`, never copied into the ledger."""
 
-    __tablename__ = "perseus_conversations"
+    __tablename__ = "chat_conversations"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("uuidv7()"))
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -28,12 +28,12 @@ class PerseusConversation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
-class PerseusMessage(Base):
-    __tablename__ = "perseus_messages"
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("uuidv7()"))
     conversation_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("perseus_conversations.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True), ForeignKey("chat_conversations.id", ondelete="CASCADE"), nullable=False
     )
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=False)

@@ -1,5 +1,5 @@
 {
- "_about": "Recorded live 2026-10-10 (planning#228, Jason-approved): branch code against constellus_test with synthetic rows only, strict policy, OpenRouter, chat ladder primary deepseek/deepseek-v4.1-flash. Responses are verbatim; requests are not stored. q1 and q2 are one conversation; q3 is the TXT prompt-injection question. test_perseus.py rebuilds the world with these ids and replays them.",
+ "_about": "Recorded live 2026-10-10 (planning#228, Jason-approved): branch code against constellus_test with synthetic rows only, strict policy, OpenRouter, chat ladder primary deepseek/deepseek-v4.1-flash. Responses are verbatim; requests are not stored. q1 and q2 are one conversation; q3 is the TXT prompt-injection question. test_chat.py rebuilds the world with these ids and replays them.",
  "suffix": "e2e-f36f1519",
  "ids": {
   "web1": "37f8ecea-dd93-4c4e-ae3b-a06ab97e5cf3",

@@ -72,7 +72,7 @@ def start() -> None:
     _register_run_reaper()
     _register_llm_ledger_pruner()
     _register_llm_models_refresher()
-    _register_perseus_transcript_purger()
+    _register_chat_transcript_purger()
 
 
 def _seed_default_connectors() -> None:
@@ -492,36 +492,36 @@ def _run_llm_ledger_prune() -> None:
         db.close()
 
 
-def _register_perseus_transcript_purger() -> None:
-    """Delete Perseus conversations idle longer than
-    `perseus.transcript_retention_days` (planning#228), daily. First run
+def _register_chat_transcript_purger() -> None:
+    """Delete chat assistant conversations idle longer than
+    `chat.transcript_retention_days` (planning#228), daily. First run
     ~150s after startup, staggered past the other daily jobs."""
     if _scheduler is None:
         return
     _scheduler.add_job(
-        _run_perseus_transcript_purge,
+        _run_chat_transcript_purge,
         trigger=IntervalTrigger(hours=24),
-        id="perseus_transcript_purger",
-        name="Perseus transcript daily retention",
+        id="chat_transcript_purger",
+        name="Chat transcript daily retention",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
         next_run_time=datetime.now(timezone.utc) + timedelta(seconds=150),
     )
-    log.info("Scheduled perseus_transcript_purger (every 24h; first run ~150s after start)")
+    log.info("Scheduled chat_transcript_purger (every 24h; first run ~150s after start)")
 
 
-def _run_perseus_transcript_purge() -> None:
-    from app.services import perseus
+def _run_chat_transcript_purge() -> None:
+    from app.services import chat
 
     db = SessionLocal()
     try:
-        deleted = perseus.purge_transcripts(db)
+        deleted = chat.purge_transcripts(db)
         db.commit()
-        log.info("Perseus transcript retention complete — %d conversation(s) deleted", deleted)
+        log.info("Chat transcript retention complete — %d conversation(s) deleted", deleted)
     except Exception:
         db.rollback()
-        log.error("Perseus transcript retention failed", exc_info=True)
+        log.error("Chat transcript retention failed", exc_info=True)
     finally:
         db.close()
 

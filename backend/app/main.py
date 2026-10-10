@@ -20,7 +20,7 @@ from app.api import hygiene
 from app.api import llm
 from app.api import monitoring
 from app.api import notifications
-from app.api import perseus
+from app.api import chat
 from app.api import query
 from app.api import scan_templates
 from app.api import settings as settings_api
@@ -132,7 +132,7 @@ app.include_router(engagements.router, prefix="/api/engagements", tags=["engagem
 app.include_router(entities.router, prefix="/api/entities", tags=["entities"])
 app.include_router(llm.router, prefix="/api/llm", tags=["llm"])
 app.include_router(query.router, prefix="/api/query", tags=["query"])
-app.include_router(perseus.router, prefix="/api/perseus", tags=["perseus"])
+app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 
 
 @app.get("/api/health")

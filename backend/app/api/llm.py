@@ -24,7 +24,7 @@ Three concerns, all ADMIN-only:
 
 - **Settings** — `PUT /api/llm/settings` sets
   `ai.finding_writeups.auto_daily_cap` (0 = off), audited old → new.
-  `PUT /api/llm/perseus-settings` sets `perseus.transcript_retention_days`
+  `PUT /api/llm/chat-settings` sets `chat.transcript_retention_days`
   (planning#228), audited the same way; `GET /status` reports it.
 
 There is no code default for the bindings (item 5): until the first PUT,
@@ -42,7 +42,7 @@ from app.api.deps import require_role
 from app.core.database import get_db
 from app.models.user import UserRole
 from app.services import app_settings, audit, finding_writeup, llm_connector
-from app.services import perseus
+from app.services import chat
 from app.services.llm_connector import Role, RoleBinding
 
 router = APIRouter()
@@ -91,7 +91,7 @@ class LlmStatusResponse(BaseModel):
     key_error: str | None
     budget: BudgetStatus
     auto_writeups: AutoWriteupStatus
-    perseus_transcript_retention_days: int
+    chat_transcript_retention_days: int
 
 
 class LlmSettingsUpdate(BaseModel):
@@ -233,7 +233,7 @@ def get_status(
         auto_writeups=AutoWriteupStatus(
             daily_cap=finding_writeup.auto_daily_cap(db), today=finding_writeup.auto_count_today(db),
         ),
-        perseus_transcript_retention_days=perseus.retention_days(db),
+        chat_transcript_retention_days=chat.retention_days(db),
     )
 
 
@@ -250,22 +250,22 @@ def put_settings(
     return AutoWriteupStatus(daily_cap=finding_writeup.auto_daily_cap(db), today=finding_writeup.auto_count_today(db))
 
 
-class PerseusSettingsUpdate(BaseModel):
-    transcript_retention_days: int = Field(ge=1, le=perseus.MAX_RETENTION_DAYS)
+class ChatSettingsUpdate(BaseModel):
+    transcript_retention_days: int = Field(ge=1, le=chat.MAX_RETENTION_DAYS)
 
 
-class PerseusSettings(BaseModel):
+class ChatSettings(BaseModel):
     transcript_retention_days: int
 
 
-@router.put("/perseus-settings", response_model=PerseusSettings)
-def put_perseus_settings(
-    data: PerseusSettingsUpdate,
+@router.put("/chat-settings", response_model=ChatSettings)
+def put_chat_settings(
+    data: ChatSettingsUpdate,
     request: Request,
     db: Session = Depends(get_db),
     _=Depends(require_role(UserRole.ADMIN)),
 ):
-    old = perseus.retention_days(db)
-    app_settings.set_value(db, perseus.RETENTION_KEY, str(data.transcript_retention_days))
-    audit.record_detail(request, perseus_transcript_retention_days={"from": old, "to": data.transcript_retention_days})
-    return PerseusSettings(transcript_retention_days=perseus.retention_days(db))
+    old = chat.retention_days(db)
+    app_settings.set_value(db, chat.RETENTION_KEY, str(data.transcript_retention_days))
+    audit.record_detail(request, chat_transcript_retention_days={"from": old, "to": data.transcript_retention_days})
+    return ChatSettings(transcript_retention_days=chat.retention_days(db))
