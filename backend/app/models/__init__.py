@@ -30,6 +30,7 @@ from app.models.hygiene_history import HygieneHistory
 from app.models.cloud_range import CloudRange, CloudRangeMeta
 from app.models.llm_call import LlmCall, ROLES as LLM_CALL_ROLES, DATA_POLICIES as LLM_CALL_DATA_POLICIES, STATUSES as LLM_CALL_STATUSES
 from app.models.engagement import Engagement, EngagementPosture
+from app.models.finding_ai_writeup import FindingAiWriteup
 from app.models.org_entity import OrgEntity
 from app.models.evidence import EvidenceBlob, EvidenceFetch
 from app.models.entity_relation import (
@@ -93,6 +94,7 @@ __all__ = [
     "LLM_CALL_ROLES",
     "LLM_CALL_DATA_POLICIES",
     "LLM_CALL_STATUSES",
+    "FindingAiWriteup",
     "Engagement",
     "EngagementPosture",
     "OrgEntity",

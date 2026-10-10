@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -13,8 +13,8 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.finding import FindingState
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
-from app.models.user import UserRole
-from app.services import bod_sla, projector, scan_executor
+from app.models.user import User, UserRole
+from app.services import audit, bod_sla, finding_writeup, projector, scan_executor
 from app.services.asset_chain import chain_target_ids
 from app.services.finding_confidence import confidence_for, strongest
 
@@ -353,6 +353,88 @@ def get_finding(
         raise HTTPException(status_code=404, detail="Finding not found")
     asset = db.get(AssetCanonical, finding.asset_canonical_id)
     return _serialize_finding(finding, asset, _finding_asset_state(db, finding))
+
+
+# ── AI write-up (planning#226) ───────────────────────────────────────────────
+
+def _writeup_out(db: Session, row) -> dict:
+    payload = row.payload or {}
+    return {
+        "id": str(row.id),
+        "created_at": row.created_at,
+        "finished_at": row.finished_at,
+        "model": row.model,
+        "summary": payload.get("summary"),
+        "context": payload.get("context", []),
+        "fix_steps": payload.get("fix_steps", []),
+        "priority_note": payload.get("priority_note"),
+        "statements_returned": row.statements_returned,
+        "statements_dropped": row.statements_dropped,
+        "priority_note_dropped": row.priority_note_dropped,
+        "forced_strict": row.forced_strict,
+        "cost_usd": finding_writeup.cost_usd(db, row.ledger_ids or []),
+    }
+
+
+def _writeup_state(db: Session, finding: FindingCanonical) -> dict:
+    eligible = finding.severity in finding_writeup.WRITEUP_SEVERITIES
+    done = finding_writeup.latest_succeeded(db, finding.id)
+    newest = finding_writeup.latest_any(db, finding.id)
+    pending = newest if newest is not None and newest.status in ("queued", "running") else None
+    failure = newest if newest is not None and newest.status == "failed" else None
+    inputs_changed = None
+    if done is not None and eligible:
+        inputs_changed = done.input_hash != finding_writeup.current_hash(db, finding)
+    return {
+        "eligible": eligible,
+        "writeup": _writeup_out(db, done) if done is not None else None,
+        "inputs_changed": inputs_changed,
+        "pending": {"id": str(pending.id), "status": pending.status, "created_at": pending.created_at} if pending else None,
+        "last_failure": {"error": failure.error, "finished_at": failure.finished_at} if failure else None,
+    }
+
+
+@router.get("/{finding_id}/ai-writeup")
+def get_ai_writeup(
+    finding_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """The newest succeeded write-up, any queued/running one, the newest
+    failure if it is the latest attempt, and whether the inputs changed
+    since the write-up was made. Never generates anything."""
+    finding = db.get(FindingCanonical, finding_id)
+    if not finding:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    return _writeup_state(db, finding)
+
+
+@router.post("/{finding_id}/ai-writeup")
+def request_ai_writeup(
+    finding_id: uuid.UUID,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    force: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Generate a write-up, or return the cached one when the inputs are
+    unchanged (no call is made). `force` (Regenerate) skips the cache.
+    Every refusal happens here, before a row exists or any request is sent:
+    unknown finding (404), not Critical/High, connector or AI models not
+    configured, or a write-up already queued/running (409)."""
+    finding = db.get(FindingCanonical, finding_id)
+    if not finding:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    try:
+        row, cached = finding_writeup.request_writeup(db, finding=finding, user_id=current_user.id, force=force)
+    except (finding_writeup.NotEligible, finding_writeup.NotConfigured, finding_writeup.AlreadyRunning) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if not cached:
+        audit.record_detail(request, finding_id=str(finding_id), writeup_id=str(row.id), force=force)
+        # planning#134: another on-demand background task the job queue retires.
+        background_tasks.add_task(finding_writeup.run_in_background, row.id)
+    return {"cached": cached, **_writeup_state(db, finding)}
 
 
 @router.get("/{finding_id}/epss-history")
