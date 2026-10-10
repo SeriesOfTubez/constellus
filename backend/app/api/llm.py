@@ -24,6 +24,8 @@ Three concerns, all ADMIN-only:
 
 - **Settings** — `PUT /api/llm/settings` sets
   `ai.finding_writeups.auto_daily_cap` (0 = off), audited old → new.
+  `PUT /api/llm/chat-settings` sets `chat.transcript_retention_days`
+  (planning#228), audited the same way; `GET /status` reports it.
 
 There is no code default for the bindings (item 5): until the first PUT,
 `GET /role-bindings` answers `configured: false` and AI features report
@@ -40,6 +42,7 @@ from app.api.deps import require_role
 from app.core.database import get_db
 from app.models.user import UserRole
 from app.services import app_settings, audit, finding_writeup, llm_connector
+from app.services import chat
 from app.services.llm_connector import Role, RoleBinding
 
 router = APIRouter()
@@ -88,6 +91,7 @@ class LlmStatusResponse(BaseModel):
     key_error: str | None
     budget: BudgetStatus
     auto_writeups: AutoWriteupStatus
+    chat_transcript_retention_days: int
 
 
 class LlmSettingsUpdate(BaseModel):
@@ -229,6 +233,7 @@ def get_status(
         auto_writeups=AutoWriteupStatus(
             daily_cap=finding_writeup.auto_daily_cap(db), today=finding_writeup.auto_count_today(db),
         ),
+        chat_transcript_retention_days=chat.retention_days(db),
     )
 
 
@@ -243,3 +248,24 @@ def put_settings(
     app_settings.set_value(db, finding_writeup.AUTO_CAP_KEY, str(data.auto_writeups_daily_cap))
     audit.record_detail(request, auto_writeups_daily_cap={"from": old, "to": data.auto_writeups_daily_cap})
     return AutoWriteupStatus(daily_cap=finding_writeup.auto_daily_cap(db), today=finding_writeup.auto_count_today(db))
+
+
+class ChatSettingsUpdate(BaseModel):
+    transcript_retention_days: int = Field(ge=1, le=chat.MAX_RETENTION_DAYS)
+
+
+class ChatSettings(BaseModel):
+    transcript_retention_days: int
+
+
+@router.put("/chat-settings", response_model=ChatSettings)
+def put_chat_settings(
+    data: ChatSettingsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(UserRole.ADMIN)),
+):
+    old = chat.retention_days(db)
+    app_settings.set_value(db, chat.RETENTION_KEY, str(data.transcript_retention_days))
+    audit.record_detail(request, chat_transcript_retention_days={"from": old, "to": data.transcript_retention_days})
+    return ChatSettings(transcript_retention_days=chat.retention_days(db))

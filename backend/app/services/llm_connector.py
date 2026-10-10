@@ -14,7 +14,7 @@ implement inference itself.
 
 ## What this slice deliberately does NOT build
 
-No agentic research loop, no tool calling, no web-search/plugins, no job
+No agentic research loop, no web-search/plugins, no job
 queue (planning#134 — `LLMRateLimited` is written the way it is, raising
 rather than escalating, specifically so a future queue can reschedule the
 call instead of burning another model's budget), and no per-engagement
@@ -59,6 +59,14 @@ bound model for a role is blocked, `_precall` raises `GuardrailBlocked`
 (distinct from `NoCompliantEndpoint`'s data-policy 404) with zero requests.
 This is FAIL-OPEN: a cold/unreadable cache reads as `None` and skips
 nothing, so a fresh deploy behaves exactly as before the first refresh.
+
+## Tool calling (planning#228)
+
+`chat_round()` is one round of a tool-calling conversation for the `chat`
+role (the chat assistant). It accepts function tools only (`_function_tools_only`),
+always runs strict, and returns the model's tool calls to the caller, which
+executes them; this module never runs a tool. `_attempt_model` treats a
+tool-call-only reply (`content: null`) as success for that path alone.
 
 ## R8 — strict never reaches web search (planning#215 rule 4)
 
@@ -234,6 +242,7 @@ class Role(str, Enum):
     CLASSIFY = "classify"
     JUDGE = "judge"
     NARRATE = "narrate"
+    CHAT = "chat"  # the chat assistant (planning#228): tool-calling, always strict
 
 
 class RoleBinding(BaseModel):
@@ -409,6 +418,34 @@ class Completion:
     generation_id: str | None
     tier: int
     ledger_ids: list[int]
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    """One function call the model asked for. `arguments` is the raw JSON
+    string as sent: the caller parses and validates it (model output is
+    never trusted to be well-formed)."""
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class ChatTurn:
+    """One `chat_round()` reply: final text, tool calls, or both.
+    `assistant_message` is the message to append to the conversation before
+    the tool results (OpenAI shape, as OpenRouter returned it)."""
+    content: str | None
+    tool_calls: list[ToolCall]
+    assistant_message: dict[str, Any]
+    model: str
+    provider: str | None
+    generation_id: str | None
+    tier: int
+    ledger_ids: list[int]
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: Decimal
 
 
 @dataclass(frozen=True)
@@ -1112,6 +1149,7 @@ def _attempt_model(
     tier: int,
     ledger_ids: list[int],
     attempt_counter: list[int],
+    accept_tool_calls: bool = False,
 ) -> dict[str, Any]:
     """Send `body` to `model`, retrying inline per the response/error
     handling rules (§5.1). Writes a ledger row for every HTTP attempt
@@ -1169,6 +1207,10 @@ def _attempt_model(
             choices = data.get("choices") or []
             first = choices[0] if choices and isinstance(choices[0], dict) else {}
             content = (first.get("message") or {}).get("content")
+            # `chat_round()` only: a reply that is ONLY tool calls
+            # (`content: null`) is that call's normal success shape.
+            tool_calls = (first.get("message") or {}).get("tool_calls")
+            has_tool_calls = accept_tool_calls and isinstance(tool_calls, list) and bool(tool_calls)
             # A 200 with no string content (no choices; `content: null` on a
             # refusal or a tool-call-only reply) is NOT a success: `complete()`
             # would index into nothing AFTER the spend happened, and
@@ -1176,7 +1218,7 @@ def _attempt_model(
             is_error = (
                 bool(data.get("error"))
                 or first.get("finish_reason") == "error"
-                or not isinstance(content, str)
+                or (not isinstance(content, str) and not has_tool_calls)
             )
             if is_error:
                 attempt_in_model += 1
@@ -1385,6 +1427,119 @@ def complete(
             generation_id=resp_json.get("id"),
             tier=tier,
             ledger_ids=ledger_ids,
+        )
+
+    if attempts and all(status == "no_eligible_endpoint" for _, status in attempts):
+        raise NoCompliantEndpoint(role.value, policy, [m for m, _ in attempts])
+    raise LLMUpstreamError(
+        f"All bound models exhausted for role={role.value!r}: "
+        + "; ".join(f"{m}:{s}" for m, s in attempts)
+    )
+
+
+def _function_tools_only(tools: list[dict]) -> None:
+    """The chat assistant's tools are our own functions, executed here as the asking
+    user. Any other tool type (OpenRouter server tools such as web search,
+    or anything a future provider adds) would run somewhere we do not
+    control, so it is refused outright, under every data policy. R8's
+    web-search check still runs on the body as well."""
+    for t in tools:
+        fn = t.get("function") if isinstance(t, dict) else None
+        if not (isinstance(t, dict) and t.get("type") == "function" and isinstance(fn, dict)
+                and isinstance(fn.get("name"), str) and set(t) == {"type", "function"}):
+            raise LLMConfigError(f"chat_round accepts function tools only; refused: {str(t)[:200]}")
+
+
+def _parse_tool_calls(message: dict) -> list[ToolCall]:
+    out: list[ToolCall] = []
+    for raw in message.get("tool_calls") or []:
+        raw = raw if isinstance(raw, dict) else {}
+        fn = raw.get("function") if isinstance(raw.get("function"), dict) else {}
+        name, args = fn.get("name"), fn.get("arguments")
+        out.append(ToolCall(
+            id=str(raw.get("id") or ""),
+            name=name if isinstance(name, str) else "",
+            arguments=args if isinstance(args, str) else json.dumps(args) if args is not None else "",
+        ))
+    return out
+
+
+def chat_round(db: Session, *, messages: list[dict], tools: list[dict], task: str) -> ChatTurn:
+    """One round of a tool-calling conversation for the `chat` role
+    (the chat assistant, planning#228): send the conversation so far plus the tool
+    definitions, return the model's reply (text and/or tool calls). The
+    CALLER runs the tools and calls again; there is no loop in here.
+
+    Always strict: `force_strict=True`, no parameter to turn it off. A
+    question can touch any engagement's assets, pre-close included, and
+    the call is unscoped (`target_id`/`engagement_id` None), so nothing
+    else would make it strict. `require_parameters` routes only to
+    endpoints that support `tools`. Every round goes through `_precall`
+    (budget, guardrail, R8) and the ledger like `complete()`."""
+    _function_tools_only(tools)
+    role = Role.CHAT
+    api_key, bindings, passive_only, policy, resolved_engagement_id, allowed_ids = _precall(
+        db, role=role, target_id=None, engagement_id=None, task=task, uses_extract=False, force_strict=True,
+    )
+    binding = bindings[role]
+    ledger_ids: list[int] = []
+    attempt_counter = [0]
+    attempts: list[tuple[str, str]] = []
+    reachable = _reachable_ladder(
+        db, models=binding.models, allowed_ids=allowed_ids, role=role, task=task,
+        target_id=None, engagement_id=resolved_engagement_id, passive_only=passive_only,
+        policy=policy, ledger_ids=ledger_ids, attempt_counter=attempt_counter,
+    )
+    for model_index, model in enumerate(reachable):
+        tier = 1 if model_index == 0 else 3
+        body = {
+            "model": model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "max_tokens": binding.max_tokens,
+            "temperature": binding.temperature,
+            "usage": {"include": True},
+            "provider": _provider_block(policy, require_parameters=True),
+        }
+        outcome = _attempt_model(
+            db, api_key=api_key, body=body, model=model, role=role, task=task,
+            target_id=None, engagement_id=resolved_engagement_id, passive_only=passive_only,
+            policy=policy, tier=tier, ledger_ids=ledger_ids, attempt_counter=attempt_counter,
+            accept_tool_calls=True,
+        )
+        if outcome["status"] != "ok":
+            attempts.append((model, outcome["status"]))
+            continue
+
+        resp_json = outcome["response_json"]
+        usage = _usage_fields(resp_json)
+        attempt_counter[0] += 1
+        ledger_ids.append(_write_ledger(
+            role=role.value, task=task, target_id=None, engagement_id=resolved_engagement_id,
+            passive_only=passive_only, data_policy=policy, requested_model=model, tier=tier,
+            attempt=attempt_counter[0], status="ok", served_model=resp_json.get("model"),
+            provider=resp_json.get("provider"), generation_id=resp_json.get("id"),
+            latency_ms=outcome.get("latency_ms"), **usage,
+        ))
+        message = resp_json["choices"][0].get("message") or {}
+        content = message.get("content")
+        return ChatTurn(
+            content=content if isinstance(content, str) else None,
+            tool_calls=_parse_tool_calls(message),
+            assistant_message={
+                "role": "assistant",
+                "content": content if isinstance(content, str) else None,
+                **({"tool_calls": message["tool_calls"]} if message.get("tool_calls") else {}),
+            },
+            model=resp_json.get("model", model),
+            provider=resp_json.get("provider"),
+            generation_id=resp_json.get("id"),
+            tier=tier,
+            ledger_ids=ledger_ids,
+            prompt_tokens=usage["prompt_tokens"] or 0,
+            completion_tokens=usage["completion_tokens"] or 0,
+            cost_usd=usage["cost_usd"] or Decimal(0),
         )
 
     if attempts and all(status == "no_eligible_endpoint" for _, status in attempts):

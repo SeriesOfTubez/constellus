@@ -72,6 +72,7 @@ def start() -> None:
     _register_run_reaper()
     _register_llm_ledger_pruner()
     _register_llm_models_refresher()
+    _register_chat_transcript_purger()
 
 
 def _seed_default_connectors() -> None:
@@ -487,6 +488,40 @@ def _run_llm_ledger_prune() -> None:
         log.info("LLM call ledger retention complete — %d row(s) deleted", deleted)
     except Exception:
         log.error("LLM call ledger retention failed", exc_info=True)
+    finally:
+        db.close()
+
+
+def _register_chat_transcript_purger() -> None:
+    """Delete chat assistant conversations idle longer than
+    `chat.transcript_retention_days` (planning#228), daily. First run
+    ~150s after startup, staggered past the other daily jobs."""
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        _run_chat_transcript_purge,
+        trigger=IntervalTrigger(hours=24),
+        id="chat_transcript_purger",
+        name="Chat transcript daily retention",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=150),
+    )
+    log.info("Scheduled chat_transcript_purger (every 24h; first run ~150s after start)")
+
+
+def _run_chat_transcript_purge() -> None:
+    from app.services import chat
+
+    db = SessionLocal()
+    try:
+        deleted = chat.purge_transcripts(db)
+        db.commit()
+        log.info("Chat transcript retention complete — %d conversation(s) deleted", deleted)
+    except Exception:
+        db.rollback()
+        log.error("Chat transcript retention failed", exc_info=True)
     finally:
         db.close()
 
