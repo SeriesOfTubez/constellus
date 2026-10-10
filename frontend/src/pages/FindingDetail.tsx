@@ -6,6 +6,7 @@ import {
   ChevronLeft, ShieldCheck, ShieldOff, RefreshCw, ChevronDown, Loader2, SquareArrowOutUpRight,
 } from "lucide-react"
 
+import { AiWriteupPanel } from "@/components/AiWriteupPanel"
 import { ConnectedEntities } from "@/components/ConnectedEntities"
 import { VulnNarrative, VulnIntel, hasVulnIntel } from "@/components/VulnNarrative"
 import { CvssBreakdown } from "@/components/CvssBreakdown"
@@ -94,6 +95,8 @@ export default function FindingDetail() {
     </div>
   )
 
+  // planning#226: same rule as the backend's WRITEUP_SEVERITIES.
+  const isWriteupEligible = finding.severity === "critical" || finding.severity === "high"
   const detail = finding.detail ?? {}
   const extracted: string[] = (detail.extracted_results as string[]) ?? []
   const matchedAt = detail.matched_at as string | undefined
@@ -187,6 +190,7 @@ export default function FindingDetail() {
           <TabsList className="h-auto w-full justify-start gap-0 bg-transparent rounded-none p-0">
             <TabsTrigger value="overview"      className={TAB}>Overview</TabsTrigger>
             {hasVulnIntel(finding) && <TabsTrigger value="intel" className={TAB}>Intel</TabsTrigger>}
+            {isWriteupEligible && <TabsTrigger value="remediation-ai" className={TAB}>Remediation (AI)</TabsTrigger>}
             <TabsTrigger value="asset"         className={TAB}>Asset</TabsTrigger>
             <TabsTrigger value="relationships" className={TAB}>Relationships</TabsTrigger>
             <TabsTrigger value="timeline"      className={TAB}>Timeline</TabsTrigger>
@@ -318,6 +322,13 @@ export default function FindingDetail() {
         <TabsContent value="intel" className="pt-5">
           <VulnIntel finding={finding} />
         </TabsContent>
+
+        {/* ── Remediation (AI) — planning#226 ── */}
+        {isWriteupEligible && (
+          <TabsContent value="remediation-ai" className="pt-5">
+            <AiWriteupPanel findingId={finding.id} />
+          </TabsContent>
+        )}
 
         {/* ── Asset ── */}
         <TabsContent value="asset" className="pt-5">
