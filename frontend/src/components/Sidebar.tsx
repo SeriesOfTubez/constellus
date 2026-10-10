@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   ChevronRight,
   LogOut,
+  Sparkles,
 } from "lucide-react"
 import { Logo } from "@/components/Logo"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -24,6 +25,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useAuthStore } from "@/lib/auth"
+import { ASSISTANT_NAME } from "@/lib/chat"
+import { useChatPanel } from "@/lib/chatPanel"
 import { canMutate } from "@/lib/roles"
 import { cn } from "@/lib/utils"
 
@@ -106,6 +109,7 @@ function RailButton({
 export function Sidebar() {
   const { user, clearAuth } = useAuthStore()
   const isAdmin = canMutate(user?.role)
+  const toggleChat = useChatPanel(s => s.toggle)
 
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("sidebar-collapsed") === "true"
@@ -165,6 +169,12 @@ export function Sidebar() {
 
         {/* Bottom utility rail */}
         <div className={cn("border-t py-3", sectionClass)}>
+          <RailButton
+            icon={Sparkles}
+            label={`Ask ${ASSISTANT_NAME} (Ctrl+/)`}
+            collapsed={collapsed}
+            onClick={toggleChat}
+          />
           <RailButton
             icon={HelpCircle}
             label="Help"
