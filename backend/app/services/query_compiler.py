@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Callable
 
-from sqlalchemy import Float, and_, case, cast, false, func, literal, not_, or_, select, true
+from sqlalchemy import Float, and_, case, cast, exists, false, func, literal, not_, or_, select, true
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql import column
@@ -34,6 +34,8 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.models.asset_canonical import AssetCanonical
 from app.models.asset_state import AssetState
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
+from app.models.target import Target
+from app.models.target_asset_link import TargetAssetLink
 from app.models.user import User
 from app.services import read_scope
 from app.services.claims_query import SURFACE_UNKNOWN, asset_ids_with_surface
@@ -146,7 +148,29 @@ def _value(spec_type: str, v: Any) -> Any:
     return v
 
 
+# Fields that are not a scalar column: no `_FIELD_SQL` entry, so they can be
+# neither sorted nor output. Compiled by `_predicate` before that lookup.
+_MEMBERSHIP_FIELDS = frozenset({"asset.engagement_id"})
+
+
+def _engagement_member(p: Predicate, ctx: _Ctx) -> ColumnElement[bool]:
+    """An asset is IN engagement E iff a `target_asset_links` row links it to a
+    target whose `engagement_id` is E (Jason, planning#230). `validate()` allows
+    `eq` and `in` only."""
+    if p.op == "in":
+        member = Target.engagement_id.in_([uuid.UUID(v) for v in p.value])
+    else:
+        member = Target.engagement_id == uuid.UUID(p.value)
+    return exists(
+        select(1).select_from(TargetAssetLink)
+        .join(Target, Target.id == TargetAssetLink.target_id)
+        .where(TargetAssetLink.asset_canonical_id == ctx.asset.id, member)
+    )
+
+
 def _predicate(p: Predicate, ctx: _Ctx) -> ColumnElement[bool]:
+    if p.field in _MEMBERSHIP_FIELDS:
+        return _engagement_member(p, ctx)
     spec = FIELDS_BY_NAME[p.field]
     col = _FIELD_SQL[p.field](ctx)
     op = p.op

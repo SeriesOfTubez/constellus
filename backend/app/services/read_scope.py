@@ -31,3 +31,11 @@ def finding_clause(user: User, finding: Any, asset: Any) -> ColumnElement[bool]:
     """WHERE clause limiting `finding` (a FindingCanonical entity or alias), whose asset is
     `asset`, to what `user` may read."""
     return true()
+
+
+def engagement_visible(user: User, engagement_id: Any) -> bool:
+    """May `user` see `engagement_id`, and so its reports? The hook planning#261
+    fills; report list, view and download all call it, and answer 404 (not 403)
+    when it is False so an engagement a user may not see is not confirmed to
+    exist. **Today this grants everything**, as the two clauses above do."""
+    return True

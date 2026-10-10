@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Globe,
   Network,
+  FileText,
   Building2,
   HelpCircle,
   Settings,
@@ -35,6 +36,7 @@ const NAV = [
   { to: "/findings",  label: "Findings",  icon: AlertTriangle },
   { to: "/assets",    label: "Assets",    icon: Globe },
   { to: "/explore",   label: "Explore",   icon: Network },
+  { to: "/reports",   label: "Reports",   icon: FileText },
   { to: "/entities",  label: "Entities",  icon: Building2 },
 ]
 

@@ -47,6 +47,7 @@ from app.models.entity_filing_section import EntityFilingSection, SECTION_VALUES
 from app.models.candidate_domain import CandidateDomain, CANDIDATE_SOURCES, CANDIDATE_STATUSES
 from app.models.entity_ingest_run import EntityIngestRun, INGEST_RUN_STATUSES
 from app.models.chat import ChatConversation, ChatMessage
+from app.models.report import Report
 
 __all__ = [
     "User", "UserRole",
@@ -118,4 +119,5 @@ __all__ = [
     "INGEST_RUN_STATUSES",
     "ChatConversation",
     "ChatMessage",
+    "Report",
 ]
