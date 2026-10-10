@@ -107,6 +107,18 @@ OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
     "string_list": ("has", "is_empty"),
 }
 
+# Fields whose operators are narrower than their type's. `asset.engagement_id`
+# is a many-valued membership (an asset can be linked to targets of several
+# engagements), so `ne` would be ambiguous: "any other engagement" or "not this one".
+FIELD_OPERATORS_OVERRIDE: dict[str, tuple[str, ...]] = {
+    "asset.engagement_id": ("eq", "in"),
+}
+
+
+def operators_for(spec: "FieldSpec") -> tuple[str, ...]:
+    return FIELD_OPERATORS_OVERRIDE.get(spec.name, OPERATORS_BY_TYPE[spec.type])
+
+
 OPERATORS: dict[str, str] = {
     "eq": "equals the value",
     "ne": "does not equal the value (rows where the field is empty are not matched)",
@@ -128,6 +140,9 @@ _VERIFICATIONS = ("unverified", "confirmed_ours", "rejected_shared_infra", "owne
 FIELDS: tuple[FieldSpec, ...] = (
     # asset — assets_canonical, plus asset_state for surface/hosting
     FieldSpec("asset.id", "uuid", "Asset id.", sortable=False),
+    FieldSpec("asset.engagement_id", "uuid",
+              "Engagement the asset belongs to: it is linked to a target of that engagement. "
+              "An asset can belong to several.", sortable=False),
     FieldSpec("asset.type", "enum", "Asset type.", tuple(t.value for t in AssetType)),
     FieldSpec("asset.value", "string", "Hostname, IP address or other identity value."),
     FieldSpec("asset.parent_value", "string", "Parent value (e.g. the apex a hostname belongs to)."),
@@ -395,7 +410,7 @@ def _check_predicate(p: Predicate, path: str, readable: tuple[str, ...], hint: s
         errors.append({"path": f"{path}.field",
                        "message": f"{p.field!r} cannot be used here; {hint}"})
         return
-    allowed = OPERATORS_BY_TYPE[spec.type]
+    allowed = operators_for(spec)
     if p.op not in allowed:
         errors.append({"path": f"{path}.op",
                        "message": f"operator {p.op!r} is not allowed for {spec.type} field "
@@ -525,7 +540,7 @@ def published_schema() -> dict[str, Any]:
         },
         "fields": [
             {"name": f.name, "type": f.type, "description": f.description,
-             "operators": list(OPERATORS_BY_TYPE[f.type]), "sortable": f.sortable,
+             "operators": list(operators_for(f)), "sortable": f.sortable,
              **({"enum": list(f.enum)} if f.enum else {})}
             for f in FIELDS
         ],

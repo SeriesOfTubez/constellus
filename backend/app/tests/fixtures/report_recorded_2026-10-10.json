@@ -1,0 +1,693 @@
+{
+  "_note": "planning#230: one live narrate answer over a real engagement's facts, recorded 2026-10-10. The engagement id is replaced by a synthetic one; the facts hold counts and queries only.",
+  "answer": {
+    "statements": [
+      {
+        "section": "posture",
+        "sources": [
+          {
+            "path": "engagement.posture",
+            "value": "pre_close"
+          }
+        ],
+        "text": "The engagement is in pre-close status."
+      },
+      {
+        "section": "exposure",
+        "sources": [
+          {
+            "path": "metrics.assets_total.count",
+            "value": "258"
+          }
+        ],
+        "text": "There are 258 assets identified on the external attack surface."
+      },
+      {
+        "section": "exposure",
+        "sources": [
+          {
+            "path": "metrics.assets_unknown.count",
+            "value": "258"
+          }
+        ],
+        "text": "All 258 assets are of unknown ownership and have not been verified as belonging to the organization."
+      },
+      {
+        "section": "exposure",
+        "sources": [
+          {
+            "path": "metrics.assets_new_30d.count",
+            "value": "258"
+          }
+        ],
+        "text": "258 assets were first seen in the last 30 days."
+      },
+      {
+        "section": "exposure",
+        "sources": [
+          {
+            "path": "metrics.assets_not_ours.count",
+            "value": "86"
+          }
+        ],
+        "text": "86 assets are identified as third-party and not owned by the organization."
+      },
+      {
+        "section": "exposure",
+        "sources": [
+          {
+            "path": "metrics.findings_open.count",
+            "value": "0"
+          }
+        ],
+        "text": "No open findings are recorded on the external attack surface."
+      },
+      {
+        "section": "exposure",
+        "sources": [
+          {
+            "path": "metrics.findings_open_critical.count",
+            "value": "0"
+          }
+        ],
+        "text": "No open critical findings are recorded."
+      },
+      {
+        "section": "exposure",
+        "sources": [
+          {
+            "path": "metrics.findings_open_high.count",
+            "value": "0"
+          }
+        ],
+        "text": "No open high-severity findings are recorded."
+      },
+      {
+        "section": "exposure",
+        "sources": [
+          {
+            "path": "metrics.findings_open_exploit.count",
+            "value": "0"
+          }
+        ],
+        "text": "No open findings with known public exploits are recorded."
+      },
+      {
+        "section": "exposure",
+        "sources": [
+          {
+            "path": "metrics.findings_open_kev.count",
+            "value": "0"
+          }
+        ],
+        "text": "No open findings on the CISA KEV list are recorded."
+      },
+      {
+        "section": "gaps",
+        "sources": [
+          {
+            "path": "metrics.assets_claimed_ours.count",
+            "value": "0"
+          },
+          {
+            "path": "metrics.assets_proven_ours.count",
+            "value": "0"
+          }
+        ],
+        "text": "No assets have been claimed or proven to belong to the organization."
+      },
+      {
+        "section": "gaps",
+        "sources": [
+          {
+            "path": "metrics.findings_new_30d.count",
+            "value": "0"
+          }
+        ],
+        "text": "No findings were first seen in the last 30 days."
+      },
+      {
+        "section": "gaps",
+        "sources": [
+          {
+            "path": "metrics.findings_resolved_30d.count",
+            "value": "0"
+          }
+        ],
+        "text": "No findings were resolved in the last 30 days."
+      }
+    ]
+  },
+  "completion_tokens": 657,
+  "cost_usd": "0.006614",
+  "expected": {
+    "dropped": 0,
+    "kept": 13,
+    "reasons": {},
+    "returned": 13
+  },
+  "facts": {
+    "as_of": "2026-10-10T21:40:53.902664+00:00",
+    "engagement": {
+      "id": "00000000-0000-4000-8000-000000000230",
+      "posture": "pre_close"
+    },
+    "metrics": {
+      "assets_claimed_ours": {
+        "capped": false,
+        "count": 0,
+        "label": "Assets claimed ours",
+        "query": {
+          "entity": "asset",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              },
+              {
+                "field": "asset.surface",
+                "op": "eq",
+                "value": "claimed_ours"
+              }
+            ]
+          }
+        }
+      },
+      "assets_new_30d": {
+        "capped": false,
+        "count": 258,
+        "label": "Assets first seen in the last 30 days",
+        "query": {
+          "entity": "asset",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              },
+              {
+                "field": "asset.first_seen_at",
+                "op": "gte",
+                "value": "2026-09-10T21:40:53.902664+00:00"
+              }
+            ]
+          }
+        },
+        "window_days": 30
+      },
+      "assets_not_ours": {
+        "capped": false,
+        "count": 86,
+        "label": "Assets not ours (third party)",
+        "query": {
+          "entity": "asset",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": true
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              },
+              {
+                "field": "asset.surface",
+                "op": "eq",
+                "value": "not_ours"
+              }
+            ]
+          }
+        }
+      },
+      "assets_proven_ours": {
+        "capped": false,
+        "count": 0,
+        "label": "Assets proven ours",
+        "query": {
+          "entity": "asset",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              },
+              {
+                "field": "asset.surface",
+                "op": "eq",
+                "value": "proven_ours"
+              }
+            ]
+          }
+        }
+      },
+      "assets_total": {
+        "capped": false,
+        "count": 258,
+        "label": "Assets (excluding third-party context)",
+        "query": {
+          "entity": "asset",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              }
+            ]
+          }
+        }
+      },
+      "assets_unknown": {
+        "capped": false,
+        "count": 258,
+        "label": "Assets of unknown ownership",
+        "query": {
+          "entity": "asset",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              },
+              {
+                "field": "asset.surface",
+                "op": "eq",
+                "value": "unknown"
+              }
+            ]
+          }
+        }
+      },
+      "findings_new_30d": {
+        "capped": false,
+        "count": 0,
+        "label": "Findings first seen in the last 30 days",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              },
+              {
+                "field": "finding.first_seen_at",
+                "op": "gte",
+                "value": "2026-09-10T21:40:53.902664+00:00"
+              }
+            ]
+          }
+        },
+        "window_days": 30
+      },
+      "findings_open": {
+        "capped": false,
+        "count": 0,
+        "label": "Open findings",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              },
+              {
+                "field": "finding.state",
+                "op": "in",
+                "value": [
+                  "open",
+                  "acknowledged"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "findings_open_critical": {
+        "capped": false,
+        "count": 0,
+        "label": "Open critical findings",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              },
+              {
+                "field": "finding.state",
+                "op": "in",
+                "value": [
+                  "open",
+                  "acknowledged"
+                ]
+              },
+              {
+                "field": "finding.severity",
+                "op": "eq",
+                "value": "critical"
+              }
+            ]
+          }
+        }
+      },
+      "findings_open_exploit": {
+        "capped": false,
+        "count": 0,
+        "label": "Open findings with a known public exploit",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              },
+              {
+                "field": "finding.state",
+                "op": "in",
+                "value": [
+                  "open",
+                  "acknowledged"
+                ]
+              },
+              {
+                "field": "finding.has_exploit",
+                "op": "eq",
+                "value": true
+              }
+            ]
+          }
+        }
+      },
+      "findings_open_high": {
+        "capped": false,
+        "count": 0,
+        "label": "Open high findings",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              },
+              {
+                "field": "finding.state",
+                "op": "in",
+                "value": [
+                  "open",
+                  "acknowledged"
+                ]
+              },
+              {
+                "field": "finding.severity",
+                "op": "eq",
+                "value": "high"
+              }
+            ]
+          }
+        }
+      },
+      "findings_open_kev": {
+        "capped": false,
+        "count": 0,
+        "label": "Open findings on the CISA KEV list",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              },
+              {
+                "field": "finding.state",
+                "op": "in",
+                "value": [
+                  "open",
+                  "acknowledged"
+                ]
+              },
+              {
+                "field": "finding.kev",
+                "op": "eq",
+                "value": true
+              }
+            ]
+          }
+        }
+      },
+      "findings_open_low": {
+        "capped": false,
+        "count": 0,
+        "label": "Open low findings",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              },
+              {
+                "field": "finding.state",
+                "op": "in",
+                "value": [
+                  "open",
+                  "acknowledged"
+                ]
+              },
+              {
+                "field": "finding.severity",
+                "op": "eq",
+                "value": "low"
+              }
+            ]
+          }
+        }
+      },
+      "findings_open_medium": {
+        "capped": false,
+        "count": 0,
+        "label": "Open medium findings",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              },
+              {
+                "field": "finding.state",
+                "op": "in",
+                "value": [
+                  "open",
+                  "acknowledged"
+                ]
+              },
+              {
+                "field": "finding.severity",
+                "op": "eq",
+                "value": "medium"
+              }
+            ]
+          }
+        }
+      },
+      "findings_resolved_30d": {
+        "capped": false,
+        "count": 0,
+        "label": "Findings resolved in the last 30 days",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000230"
+              },
+              {
+                "field": "finding.resolved_at",
+                "op": "gte",
+                "value": "2026-09-10T21:40:53.902664+00:00"
+              }
+            ]
+          }
+        },
+        "window_days": 30
+      }
+    },
+    "top_findings": [],
+    "top_findings_query": {
+      "entity": "finding",
+      "include": {
+        "excluded_verifications": false,
+        "suppressed": false,
+        "third_party": false
+      },
+      "limit": 10,
+      "sort": [
+        {
+          "dir": "desc",
+          "field": "finding.risk_score"
+        }
+      ],
+      "version": 1,
+      "where": {
+        "all": [
+          {
+            "field": "asset.engagement_id",
+            "op": "eq",
+            "value": "00000000-0000-4000-8000-000000000230"
+          },
+          {
+            "field": "finding.state",
+            "op": "in",
+            "value": [
+              "open",
+              "acknowledged"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "model": "anthropic/claude-haiku-4.5",
+  "prompt_tokens": 3329
+}

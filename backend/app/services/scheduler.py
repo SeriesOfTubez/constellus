@@ -73,6 +73,7 @@ def start() -> None:
     _register_llm_ledger_pruner()
     _register_llm_models_refresher()
     _register_chat_transcript_purger()
+    _register_report_purger()
 
 
 def _seed_default_connectors() -> None:
@@ -522,6 +523,38 @@ def _run_chat_transcript_purge() -> None:
     except Exception:
         db.rollback()
         log.error("Chat transcript retention failed", exc_info=True)
+    finally:
+        db.close()
+
+
+def _register_report_purger() -> None:
+    """Delete reports older than `reports.RETENTION_DAYS` (planning#230),
+    daily. First run ~180s after startup, staggered past the other daily jobs."""
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        _run_report_purge,
+        trigger=IntervalTrigger(hours=24),
+        id="report_purger",
+        name="Report daily retention",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=180),
+    )
+    log.info("Scheduled report_purger (every 24h; first run ~180s after start)")
+
+
+def _run_report_purge() -> None:
+    from app.services import reports
+
+    db = SessionLocal()
+    try:
+        deleted = reports.purge_reports(db)
+        log.info("Report retention complete - %d report(s) deleted", deleted)
+    except Exception:
+        db.rollback()
+        log.error("Report retention failed", exc_info=True)
     finally:
         db.close()
 

@@ -135,7 +135,8 @@ def _keys(ids: dict, *keys: str) -> set[str]:
 # ── registry ↔ compiler ─────────────────────────────────────────────────────
 
 def test_every_published_field_compiles_and_nothing_else_does():
-    assert set(query_schema.FIELDS_BY_NAME) == set(query_compiler._FIELD_SQL)
+    # Membership fields compile in `_predicate`, not as a scalar column.
+    assert set(query_schema.FIELDS_BY_NAME) - query_compiler._MEMBERSHIP_FIELDS == set(query_compiler._FIELD_SQL)
     for e in query_schema.ENTITIES.values():
         assert set(e["output"]) <= set(query_schema.FIELDS_BY_NAME)
 
@@ -148,7 +149,7 @@ def test_every_field_and_operator_compiles_against_the_database(surface):
                "datetime": "2026-01-01T00:00:00+00:00", "uuid": str(uuid.uuid4()),
                "string_list": "x"}
     for f in query_schema.FIELDS:
-        for op in query_schema.OPERATORS_BY_TYPE[f.type]:
+        for op in query_schema.operators_for(f):
             v = f.enum[0] if f.type == "enum" else samples[f.type]
             if op in ("is_null", "is_empty"):
                 v = True

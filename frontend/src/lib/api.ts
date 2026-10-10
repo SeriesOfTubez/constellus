@@ -2,7 +2,7 @@ import { useAuthStore } from "@/lib/auth"
 
 const BASE = "/api"
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function send(path: string, init: RequestInit = {}): Promise<Response> {
   const { tokens, clearAuth } = useAuthStore.getState()
 
   const headers: Record<string, string> = {
@@ -38,6 +38,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError(res.status, message, detail)
   }
 
+  return res
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const res = await send(path, init)
   if (res.status === 204) return undefined as T
   return res.json()
 }
@@ -66,6 +71,8 @@ export class ApiError extends Error {
 }
 
 export const api = {
+  /** An authenticated GET whose body is a file, not JSON (e.g. a markdown export). */
+  getBlob: async (path: string): Promise<Blob> => (await send(path, { method: "GET" })).blob(),
   get: <T>(path: string) => request<T>(path, { method: "GET" }),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "POST", body: JSON.stringify(body) }),

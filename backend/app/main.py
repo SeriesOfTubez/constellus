@@ -22,6 +22,7 @@ from app.api import monitoring
 from app.api import notifications
 from app.api import chat
 from app.api import query
+from app.api import reports
 from app.api import scan_templates
 from app.api import settings as settings_api
 from app.api import system
@@ -133,6 +134,7 @@ app.include_router(entities.router, prefix="/api/entities", tags=["entities"])
 app.include_router(llm.router, prefix="/api/llm", tags=["llm"])
 app.include_router(query.router, prefix="/api/query", tags=["query"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
+app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
 
 
 @app.get("/api/health")

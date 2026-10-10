@@ -17,6 +17,7 @@ import Assets from "@/pages/Assets"
 import AssetDetail from "@/pages/AssetDetail"
 import TargetDetail from "@/pages/TargetDetail"
 import Explore from "@/pages/Explore"
+import Reports from "@/pages/Reports"
 import Admin from "@/pages/admin/Admin"
 import Connectors from "@/pages/admin/Connectors"
 import Targets from "@/pages/admin/Targets"
@@ -93,6 +94,7 @@ export default function App() {
               <Route path="/assets/:id" element={<AssetDetail />} />
               <Route path="/targets/:id" element={<TargetDetail />} />
               <Route path="/explore" element={<Explore />} />
+              <Route path="/reports" element={<Reports />} />
               <Route path="/entities" element={<Entities />} />
               <Route path="/entities/:id" element={<EntityDetail />} />
               <Route path="/scans" element={<Navigate to="/admin/activity" replace />} />
