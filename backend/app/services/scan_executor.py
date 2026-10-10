@@ -523,6 +523,18 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
             db.rollback()
             log.exception("notification_dispatcher.dispatch_promotions failed for run %s", scan_run_id)
 
+    # planning#226 slice 2 — AI write-ups for this run's Critical/High
+    # findings, behind ai.finding_writeups.auto_daily_cap (default 0, off).
+    # After COMPLETED and on its own thread + session: the write-up can
+    # neither delay nor fail the run, and it reads the scored rows. It never
+    # writes back to anything a score reads (see that module's docstring).
+    if touched_finding_ids:
+        try:
+            from app.services import finding_writeup
+            finding_writeup.start_auto(touched_finding_ids)
+        except Exception:
+            log.exception("finding write-up auto-generation failed to start for run %s", scan_run_id)
+
 
 def _stamp_scope_target_engagements(db: Session, run: ScanRun, scope: dict) -> None:
     """Stamp `scan_runs.scope_target_engagements` (migration 0059,
