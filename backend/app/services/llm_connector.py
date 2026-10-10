@@ -47,6 +47,19 @@ endpoint satisfies zdr/data_collection/require_parameters") or
 `LLMUpstreamError`/`StructuredOutputFailed` (some other failure occurred) —
 it never quietly serves the request from a laxer policy.
 
+## Guardrail allow-list — skip-before-send (planning#224 item 4)
+
+The OpenRouter key carries a guardrail: a request to a model outside it
+404s "Model blocked by guardrail". `/models/user` reports exactly the
+allowed set; `refresh_allowed_models` caches it (`app_settings`, with a
+timestamp) and `allowed_model_ids` reads it back. `_precall` and the two
+ladders consult that cache and SKIP a bound model that is not on it — no
+wasted request, one `guardrail_blocked` ledger row per skip. When every
+bound model for a role is blocked, `_precall` raises `GuardrailBlocked`
+(distinct from `NoCompliantEndpoint`'s data-policy 404) with zero requests.
+This is FAIL-OPEN: a cold/unreadable cache reads as `None` and skips
+nothing, so a fresh deploy behaves exactly as before the first refresh.
+
 ## R8 — strict never reaches web search (planning#215 rule 4)
 
 ZDR covers inference routing only. OpenRouter runs a web search when a
@@ -155,6 +168,16 @@ T = TypeVar("T", bound=BaseModel)
 
 _CONNECTOR_ID = "openrouter"
 _CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
+# planning#224 item 1 — the guardrail-allowed model list for this key.
+# `/models/user` (with the key, free) returns exactly the models the
+# OpenRouter guardrail permits, each with `supported_parameters`,
+# `context_length` and `pricing`. We cache the response (id + those three
+# fields) in `app_settings` under the key below, with a fetch timestamp,
+# and read it at call time to skip a bound model the guardrail would 404
+# anyway (item 4). A constant URL, not user input — no SSRF surface — sent
+# through the same injectable `_transport` seam the chat path uses.
+_MODELS_USER_URL = "https://openrouter.ai/api/v1/models/user"
+_ALLOWED_MODELS_CACHE_KEY = "llm.allowed_models_cache"
 
 # OpenRouter passes provider rates through without markup but charges 5.5%
 # on card credit purchases ($0.80 minimum per purchase — the per-purchase
@@ -309,6 +332,29 @@ class NoCompliantEndpoint(LLMError):
         self.attempted_models = attempted_models
 
 
+class GuardrailBlocked(LLMError):
+    """Every model bound to this role is blocked by the OpenRouter key's
+    guardrail — none appears in the cached `/models/user` allow-list, so a
+    request would deterministically 404 ("Model blocked by guardrail").
+    Distinct from `NoCompliantEndpoint` (item 4): that is a DATA-POLICY 404
+    ("No endpoints found matching your data policy") raised only after
+    requests were actually sent; this is the guardrail blocking the model
+    itself, decided locally from the cache with ZERO requests. The two map
+    to the two different OpenRouter 404 messages the issue body names, and
+    the operator fix differs — rebind the role vs. relax the key's
+    guardrail. Only raised when the allow-list cache is PRESENT; a cold
+    cache (never refreshed) skips nothing and behaves as before."""
+
+    def __init__(self, role: str, blocked_models: list[str]) -> None:
+        super().__init__(
+            f"Every model bound to role={role!r} is blocked by the OpenRouter "
+            f"guardrail (not in the key's allowed-models list): {blocked_models}. "
+            f"Re-bind the role to an allowed model, or widen the key's guardrail."
+        )
+        self.role = role
+        self.blocked_models = blocked_models
+
+
 class StructuredOutputFailed(LLMError):
     """Every bound model failed to produce a valid, grounded structured
     result (tier 1 and, where reached, tier 2)."""
@@ -360,6 +406,132 @@ class StructuredResult(Generic[T]):
     generation_id: str | None
     tier: int
     ledger_ids: list[int]
+
+
+# ── connector key + guardrail-allowed models (planning#224) ──────────────────
+
+def _get_api_key(db: Session) -> str | None:
+    """The one R5-compliant key lookup: the decrypted `api_key` from the
+    `openrouter` connector row IFF that row exists and is enabled, else
+    `None`. Never reads `.env`/`os.environ`/`get_secret` (R5). Shared by
+    `is_configured`, `_precall` and `refresh_allowed_models` so all three
+    agree on what "configured" means."""
+    row = connector_config.get_one(db, _CONNECTOR_ID)
+    if row is None or not row.enabled:
+        return None
+    return connector_config.get_decrypted_config(db, _CONNECTOR_ID).get("api_key") or None
+
+
+@dataclass(frozen=True)
+class AllowedModels:
+    """The guardrail-allowed model list cached from `/models/user`.
+    `entries` holds the faithful per-model wire fields the admin UI will
+    need later (id, `supported_parameters`, `context_length`, `pricing`);
+    the call path only consumes `ids`."""
+
+    fetched_at: datetime
+    entries: list[dict[str, Any]]
+
+    @property
+    def ids(self) -> set[str]:
+        return {e["id"] for e in self.entries if isinstance(e.get("id"), str)}
+
+
+def _parse_models_user(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Reduce a `/models/user` response to the fields we store. OpenRouter
+    returns `{"data": [{"id", "context_length", "supported_parameters",
+    "pricing", ...}, ...]}`; we keep exactly those four, dropping an entry
+    with no string `id`."""
+    out: list[dict[str, Any]] = []
+    for entry in payload["data"]:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("id")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        out.append({
+            "id": model_id,
+            "context_length": entry.get("context_length"),
+            "supported_parameters": entry.get("supported_parameters"),
+            "pricing": entry.get("pricing"),
+        })
+    return out
+
+
+def refresh_allowed_models(db: Session) -> AllowedModels:
+    """Fetch `/models/user`, store it (entries + fetch timestamp) in
+    `app_settings[_ALLOWED_MODELS_CACHE_KEY]`, and return it. Raises
+    `LLMNotConfigured` when the connector has no usable key (same test as
+    `is_configured`) or OpenRouter rejects the key (401/403), and
+    `LLMUpstreamError` on any other non-200 or an unreadable body — the
+    caller (admin "Refresh" button, daily job) decides how to surface it,
+    and a failure NEVER clobbers the last good cache. Sends the request
+    through the module `_transport` seam so tests never hit the network."""
+    api_key = _get_api_key(db)
+    if api_key is None:
+        raise LLMNotConfigured("OpenRouter connector is not configured, disabled, or has no stored API key")
+
+    try:
+        with httpx.Client(
+            transport=_transport,
+            timeout=httpx.Timeout(connect=_CONNECT_TIMEOUT_S, read=_READ_TIMEOUT_S, write=_READ_TIMEOUT_S, pool=_READ_TIMEOUT_S),
+        ) as client:
+            resp = client.get(_MODELS_USER_URL, headers=_headers(api_key))
+    except httpx.TransportError as exc:
+        raise LLMUpstreamError(f"Could not reach OpenRouter /models/user: {exc}") from exc
+
+    if resp.status_code in (401, 403):
+        raise LLMNotConfigured(f"OpenRouter rejected the API key (HTTP {resp.status_code})")
+    if resp.status_code != 200:
+        raise LLMUpstreamError(f"OpenRouter /models/user returned HTTP {resp.status_code}: {_error_message(resp)}")
+
+    payload = _safe_json(resp)
+    if payload is None:
+        raise LLMUpstreamError("OpenRouter /models/user returned a non-JSON body")
+    # A body without a `data` LIST is shape drift, not "the guardrail allows
+    # nothing": caching it as an empty allow-list would block every AI call
+    # until the next refresh. Refuse it and keep the last good cache. A
+    # present-but-empty `data: []` is a real answer and IS cached.
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise LLMUpstreamError("OpenRouter /models/user returned an unexpected shape (no `data` list)")
+
+    entries = _parse_models_user(payload)
+    fetched_at = _now()
+    app_settings.set_value(
+        db, _ALLOWED_MODELS_CACHE_KEY,
+        json.dumps({"fetched_at": fetched_at.isoformat(), "models": entries}),
+    )
+    return AllowedModels(fetched_at=fetched_at, entries=entries)
+
+
+def load_allowed_models(db: Session) -> AllowedModels | None:
+    """Read the cached allow-list, or `None` when it has never been
+    fetched or the stored value is unreadable. A corrupt/absent cache
+    reads as `None` (never an empty allow-list) so the call path treats it
+    as "unknown, skip nothing" rather than "everything is blocked"."""
+    raw = app_settings.get(db, _ALLOWED_MODELS_CACHE_KEY)
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        fetched_at = datetime.fromisoformat(parsed["fetched_at"])
+        entries = parsed["models"]
+        if not isinstance(entries, list):
+            return None
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        log.warning("llm_connector: allowed-models cache is unreadable; treating as absent")
+        return None
+    return AllowedModels(fetched_at=fetched_at, entries=entries)
+
+
+def allowed_model_ids(db: Session) -> set[str] | None:
+    """The set of guardrail-allowed model ids, or `None` when the cache is
+    cold/unreadable. `None` is the signal the call path uses to skip NO
+    model (fail-open: a fresh deploy that has not refreshed yet behaves
+    exactly as before item 4, paying the 404 tax until the first refresh —
+    never bricking every AI call on an empty set)."""
+    allowed = load_allowed_models(db)
+    return allowed.ids if allowed is not None else None
 
 
 # ── data policy ──────────────────────────────────────────────────────────────
@@ -656,10 +828,13 @@ def _resolve_scope(
 def _precall(
     db: Session, *, role: Role, target_id: uuid.UUID | None, engagement_id: uuid.UUID | None, task: str,
     uses_extract: bool, force_strict: bool = False,
-) -> tuple[str, dict[Role, RoleBinding], bool, str, uuid.UUID | None]:
+) -> tuple[str, dict[Role, RoleBinding], bool, str, uuid.UUID | None, set[str] | None]:
     """Everything §5's "Pre-call, once per public call" section requires,
     shared by `complete()` and `structured()`. Returns
-    (api_key, bindings, passive_only, effective_policy, resolved_engagement_id)."""
+    (api_key, bindings, passive_only, effective_policy, resolved_engagement_id,
+    allowed_model_ids). `allowed_model_ids` is the guardrail allow-list
+    (`None` = cache cold → skip no model); the caller filters its ladder by
+    it (planning#224 item 4)."""
     bindings = load_bindings(db)  # LLMConfigError propagates untouched — zero requests, no ledger row.
     primary_model = bindings[role].models[0]
 
@@ -687,10 +862,7 @@ def _precall(
     _refuse_web_search(policy, role, models=reachable)
 
     # 2. Connector row + key (R5) — missing/disabled/empty key -> not_configured.
-    row = connector_config.get_one(db, _CONNECTOR_ID)
-    api_key = None
-    if row is not None and row.enabled:
-        api_key = connector_config.get_decrypted_config(db, _CONNECTOR_ID).get("api_key")
+    api_key = _get_api_key(db)
     if not api_key:
         _write_ledger(
             role=role.value, task=task, target_id=target_id, engagement_id=resolved_engagement_id,
@@ -701,6 +873,23 @@ def _precall(
             f"OpenRouter connector is not configured, disabled, or has no stored API "
             f"key (role={role.value!r})"
         )
+
+    # 2b. Guardrail allow-list (planning#224 item 4). When the cache is
+    # PRESENT and not one of the role's bound models is in it, every send
+    # would 404 "Model blocked by guardrail" — fail fast with that distinct
+    # error and ZERO requests. A cold cache (`None`) skips this entirely
+    # (fail-open). The extract primary (tier 2) being blocked while the
+    # role still has an allowed model is NOT fatal here — `structured()`
+    # just skips tier 2; this fast-fail is only for "no usable model at all".
+    allowed_ids = allowed_model_ids(db)
+    if allowed_ids is not None and not any(m in allowed_ids for m in bindings[role].models):
+        _write_ledger(
+            role=role.value, task=task, target_id=target_id, engagement_id=resolved_engagement_id,
+            passive_only=passive_only, data_policy=policy, requested_model=primary_model,
+            tier=1, attempt=1, status="guardrail_blocked",
+            error_detail="all bound models blocked by the OpenRouter key guardrail (not in /models/user)",
+        )
+        raise GuardrailBlocked(role.value, list(bindings[role].models))
 
     # 3. Budget — checked ONCE before the call starts, not between attempts;
     # a call already in progress may finish even if it pushes spend over
@@ -718,7 +907,7 @@ def _precall(
             f"{gross} >= budget {budget}"
         )
 
-    return api_key, bindings, passive_only, policy, resolved_engagement_id
+    return api_key, bindings, passive_only, policy, resolved_engagement_id, allowed_ids
 
 
 # ── HTTP attempt (one model, with its own inline retries) ──────────────────
@@ -977,15 +1166,40 @@ def _validate_and_ground(
 
 # ── public API ───────────────────────────────────────────────────────────────
 
+def _reachable_ladder(
+    db: Session, *, models: list[str], allowed_ids: set[str] | None, role: Role, task: str,
+    target_id: uuid.UUID | None, engagement_id: uuid.UUID | None, passive_only: bool, policy: str,
+    ledger_ids: list[int], attempt_counter: list[int],
+) -> list[str]:
+    """Filter a role's bound ladder to the guardrail-allowed models
+    (planning#224 item 4), writing one `guardrail_blocked` ledger row for
+    each model skipped so the skip is visible, not silent. With `allowed_ids
+    is None` (cold cache) nothing is filtered. `_precall` has already
+    guaranteed at least one of the role's own models survives, so the
+    returned list for the role is non-empty."""
+    if allowed_ids is None:
+        return list(models)
+    reachable: list[str] = []
+    for model in models:
+        if model in allowed_ids:
+            reachable.append(model)
+            continue
+        attempt_counter[0] += 1
+        ledger_ids.append(_write_ledger(
+            role=role.value, task=task, target_id=target_id, engagement_id=engagement_id,
+            passive_only=passive_only, data_policy=policy, requested_model=model, tier=1,
+            attempt=attempt_counter[0], status="guardrail_blocked",
+            error_detail="model not in the OpenRouter key's guardrail-allowed list (/models/user)",
+        ))
+    return reachable
+
+
 def is_configured(db: Session) -> bool:
     """True iff the OpenRouter connector row is enabled and holds an API key,
     the same test `_precall` applies (R5). For a caller that wants to refuse
     before queueing work (planning#218's run button): it sends nothing and
     writes no ledger row. `_precall` still re-checks on every call."""
-    row = connector_config.get_one(db, _CONNECTOR_ID)
-    if row is None or not row.enabled:
-        return False
-    return bool(connector_config.get_decrypted_config(db, _CONNECTOR_ID).get("api_key"))
+    return _get_api_key(db) is not None
 
 
 def complete(
@@ -997,7 +1211,7 @@ def complete(
     `engagement_id` both have no default (R6): omitting either is a
     `TypeError`, not a silent unscoped call. See `_resolve_scope` for how
     the two combine."""
-    api_key, bindings, passive_only, policy, resolved_engagement_id = _precall(
+    api_key, bindings, passive_only, policy, resolved_engagement_id, allowed_ids = _precall(
         db, role=role, target_id=target_id, engagement_id=engagement_id, task=task, uses_extract=False,
     )
     binding = bindings[role]
@@ -1006,7 +1220,12 @@ def complete(
     attempt_counter = [0]
     attempts: list[tuple[str, str]] = []
 
-    for model_index, model in enumerate(binding.models):
+    reachable = _reachable_ladder(
+        db, models=binding.models, allowed_ids=allowed_ids, role=role, task=task,
+        target_id=target_id, engagement_id=resolved_engagement_id, passive_only=passive_only,
+        policy=policy, ledger_ids=ledger_ids, attempt_counter=attempt_counter,
+    )
+    for model_index, model in enumerate(reachable):
         tier = 1 if model_index == 0 else 3
         body = {
             "model": model,
@@ -1061,7 +1280,7 @@ def structured(
     extraction that forgets its scope or its span must not silently become
     unscoped/"not_applicable". See `_resolve_scope` for how `target_id`
     and `engagement_id` combine."""
-    api_key, bindings, passive_only, policy, resolved_engagement_id = _precall(
+    api_key, bindings, passive_only, policy, resolved_engagement_id, allowed_ids = _precall(
         db, role=role, target_id=target_id, engagement_id=engagement_id, task=task, uses_extract=True,
         force_strict=force_strict,
     )
@@ -1074,7 +1293,18 @@ def structured(
     attempts: list[str] = []
     saw_non_404 = False
 
-    for model_index, model in enumerate(binding.models):
+    reachable = _reachable_ladder(
+        db, models=binding.models, allowed_ids=allowed_ids, role=role, task=task,
+        target_id=target_id, engagement_id=resolved_engagement_id, passive_only=passive_only,
+        policy=policy, ledger_ids=ledger_ids, attempt_counter=attempt_counter,
+    )
+    # Tier 2 reuses the extract binding's primary. When the guardrail blocks
+    # it (allow-list present and it is not on it), tier 2 cannot run — the
+    # outer ladder still proceeds, falling through to tier 3 on the next
+    # reachable model.
+    extract_primary_allowed = allowed_ids is None or extract_primary in allowed_ids
+
+    for model_index, model in enumerate(reachable):
         tier1 = 1 if model_index == 0 else 3
         tier2 = 2 if model_index == 0 else 3
 
@@ -1120,6 +1350,19 @@ def structured(
                 ledger_ids=ledger_ids,
             )
         attempts.append(f"{model} tier{tier1}: {status1}")
+
+        # Tier 2 is impossible when the guardrail blocks the extract primary.
+        # Record the skip (visible, not silent) and move to the next model.
+        if not extract_primary_allowed:
+            attempt_counter[0] += 1
+            ledger_ids.append(_write_ledger(
+                role=role.value, task=task, target_id=target_id, engagement_id=resolved_engagement_id,
+                passive_only=passive_only, data_policy=policy, requested_model=extract_primary, tier=tier2,
+                attempt=attempt_counter[0], status="guardrail_blocked",
+                error_detail="extract-primary model (tier 2) blocked by the OpenRouter key guardrail",
+            ))
+            attempts.append(f"{extract_primary} tier{tier2}: guardrail_blocked")
+            continue
 
         # Tier 2 — split structuring, always against the extract binding's
         # PRIMARY model (never escalated across models; tier 3 is model
@@ -1188,5 +1431,5 @@ def structured(
             )
 
     if not saw_non_404:
-        raise NoCompliantEndpoint(role.value, policy, list(binding.models))
+        raise NoCompliantEndpoint(role.value, policy, reachable)
     raise StructuredOutputFailed(role.value, attempts)

@@ -71,6 +71,7 @@ def start() -> None:
     _register_nightly_rescore()
     _register_run_reaper()
     _register_llm_ledger_pruner()
+    _register_llm_models_refresher()
 
 
 def _seed_default_connectors() -> None:
@@ -486,6 +487,45 @@ def _run_llm_ledger_prune() -> None:
         log.info("LLM call ledger retention complete — %d row(s) deleted", deleted)
     except Exception:
         log.error("LLM call ledger retention failed", exc_info=True)
+    finally:
+        db.close()
+
+
+def _register_llm_models_refresher() -> None:
+    """Refresh the OpenRouter guardrail allow-list (`/models/user`) daily
+    (planning#224 item 1), so skip-before-send (item 4) acts on a current
+    list and the admin page shows a fresh one. First run fires ~120s after
+    startup — staggered past the other daily jobs. A run with no configured
+    key is a no-op (logged, not an error); a fetch failure leaves the last
+    good cache intact.
+    """
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        _run_llm_models_refresh,
+        trigger=IntervalTrigger(hours=24),
+        id="llm_models_refresher",
+        name="OpenRouter allowed-models daily refresh",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=120),
+    )
+    log.info("Scheduled llm_models_refresher (every 24h; first run ~120s after start)")
+
+
+def _run_llm_models_refresh() -> None:
+    from app.services import llm_connector
+
+    db = SessionLocal()
+    try:
+        if not llm_connector.is_configured(db):
+            log.info("OpenRouter allowed-models refresh skipped — connector not configured")
+            return
+        allowed = llm_connector.refresh_allowed_models(db)
+        log.info("OpenRouter allowed-models refresh complete — %d model(s)", len(allowed.entries))
+    except Exception:
+        log.error("OpenRouter allowed-models refresh failed", exc_info=True)
     finally:
         db.close()
 
