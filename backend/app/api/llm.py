@@ -19,7 +19,11 @@ Three concerns, all ADMIN-only:
   limit / remaining / usage next to the app's own daily budget and today's
   spend. Either the key or the budget can bite first, so the page shows
   both; a key-status failure is reported in `key_error`, never a 5xx that
-  would also hide the budget.
+  would also hide the budget. It also carries the automatic write-up cap
+  and today's auto count (planning#226 slice 2).
+
+- **Settings** — `PUT /api/llm/settings` sets
+  `ai.finding_writeups.auto_daily_cap` (0 = off), audited old → new.
 
 There is no code default for the bindings (item 5): until the first PUT,
 `GET /role-bindings` answers `configured: false` and AI features report
@@ -29,13 +33,13 @@ There is no code default for the bindings (item 5): until the first PUT,
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_role
 from app.core.database import get_db
 from app.models.user import UserRole
-from app.services import app_settings, audit, llm_connector
+from app.services import app_settings, audit, finding_writeup, llm_connector
 from app.services.llm_connector import Role, RoleBinding
 
 router = APIRouter()
@@ -72,12 +76,24 @@ class BudgetStatus(BaseModel):
     spent_today_usd: float
 
 
+class AutoWriteupStatus(BaseModel):
+    daily_cap: int
+    today: int
+
+
 class LlmStatusResponse(BaseModel):
     connector_configured: bool
     models_configured: bool
     key: KeyStatus | None
     key_error: str | None
     budget: BudgetStatus
+    auto_writeups: AutoWriteupStatus
+
+
+class LlmSettingsUpdate(BaseModel):
+    # An upper bound so a typo cannot authorise thousands of calls; the
+    # global daily budget still bites first in practice.
+    auto_writeups_daily_cap: int = Field(ge=0, le=1000)
 
 
 class AllowedModelsResponse(BaseModel):
@@ -210,4 +226,20 @@ def get_status(
         budget=BudgetStatus(
             daily_budget_usd=float(budget["daily_budget_usd"]), spent_today_usd=float(budget["spent_today_usd"]),
         ),
+        auto_writeups=AutoWriteupStatus(
+            daily_cap=finding_writeup.auto_daily_cap(db), today=finding_writeup.auto_count_today(db),
+        ),
     )
+
+
+@router.put("/settings", response_model=AutoWriteupStatus)
+def put_settings(
+    data: LlmSettingsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(UserRole.ADMIN)),
+):
+    old = finding_writeup.auto_daily_cap(db)
+    app_settings.set_value(db, finding_writeup.AUTO_CAP_KEY, str(data.auto_writeups_daily_cap))
+    audit.record_detail(request, auto_writeups_daily_cap={"from": old, "to": data.auto_writeups_daily_cap})
+    return AutoWriteupStatus(daily_cap=finding_writeup.auto_daily_cap(db), today=finding_writeup.auto_count_today(db))

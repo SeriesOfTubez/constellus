@@ -1,4 +1,4 @@
-"""Coverage for planning#226 slice 1: AI write-ups for Critical/High findings
+"""Coverage for planning#226 slices 1 and 2: AI write-ups for Critical/High findings
 (`app.services.finding_writeup`, the path grounder in `llm_grounding`, the
 `/findings/{id}/ai-writeup` endpoints, migration 0071).
 
@@ -33,6 +33,7 @@ from app.models.llm_call import LlmCall
 from app.models.target import Target
 from app.models.target_asset_link import TargetAssetLink
 from app.models.user import UserRole
+from app.services import app_settings
 from app.services import finding_writeup as fw
 from app.services import llm_connector as llmc
 from app.services.llm_grounding import check_path_grounding
@@ -659,15 +660,369 @@ def test_dns_record_carries_its_terminal_ip_ports(world):
 
 def test_no_scoring_module_reads_writeups():
     """Structural half of "a write-up never changes a score": only this
-    feature's own service and route may import it."""
+    feature's own service and routes may import it. Two callers are allowed
+    a NARROW use (slice 2): the scan executor may only start auto-generation
+    (after scoring, on its own thread), and the LLM admin API may only read
+    and set the auto cap. Anything else they reference is an offender."""
     root = pathlib.Path(__file__).resolve().parents[1]
     allowed = {root / "services" / "finding_writeup.py", root / "api" / "findings.py",
                root / "models" / "finding_ai_writeup.py", root / "models" / "__init__.py"}
+    cap_key = r"ai\.finding_writeups\.auto_daily_cap"  # the setting's name, in comments/docs
+    # file -> (the uses it may make, the one use it must still make)
+    narrow = {
+        root / "services" / "scan_executor.py": (
+            re.compile(rf"from app\.services import finding_writeup\n|finding_writeup\.start_auto\(|{cap_key}"),
+            "finding_writeup.start_auto(touched_finding_ids)",
+        ),
+        root / "api" / "llm.py": (
+            re.compile(r"(?<=audit, )finding_writeup(?=, llm_connector\n)|"
+                       rf"finding_writeup\.(auto_daily_cap|auto_count_today|AUTO_CAP_KEY)\b|{cap_key}"),
+            "finding_writeup.auto_count_today(db)",
+        ),
+        root / "services" / "app_settings.py": (re.compile(cap_key), '"ai.finding_writeups.auto_daily_cap": "0"'),
+    }
     pattern = re.compile(r"finding_writeup|FindingAiWriteup|finding_ai_writeups")
-    offenders = [
-        str(p.relative_to(root)) for p in root.rglob("*.py")
-        if "tests" not in p.parts and p not in allowed and pattern.search(p.read_text(encoding="utf-8"))
-    ]
+    offenders = []
+    for p in root.rglob("*.py"):
+        if "tests" in p.parts or p in allowed:
+            continue
+        text = p.read_text(encoding="utf-8")
+        if p in narrow:
+            uses, required = narrow[p]
+            assert required in text, f"{p.name}: the allowed use is gone; tighten this test"
+            text = uses.sub("", text)
+        if pattern.search(text):
+            offenders.append(str(p.relative_to(root)))
     assert offenders == []
     # And the check is live: it does see the allowed reader.
     assert pattern.search((root / "api" / "findings.py").read_text(encoding="utf-8"))
+
+
+# ── slice 2: automatic write-ups after a scan, behind a daily cap ───────────
+
+@pytest.fixture
+def auto_cap():
+    """Set `ai.finding_writeups.auto_daily_cap` (and optionally the daily
+    budget) for one test, restoring both rows afterwards."""
+    from app.tests.test_llm_connector import _restore_app_setting, _snapshot_app_setting
+    keys = (fw.AUTO_CAP_KEY, "llm.daily_budget_usd")
+    db = SessionLocal()
+    try:
+        snaps = {k: _snapshot_app_setting(db, k) for k in keys}
+    finally:
+        db.close()
+
+    def set_(cap: int, budget: str | None = None):
+        db = SessionLocal()
+        try:
+            app_settings.set_value(db, fw.AUTO_CAP_KEY, str(cap))
+            if budget is not None:
+                app_settings.set_value(db, "llm.daily_budget_usd", budget)
+        finally:
+            db.close()
+
+    yield set_
+    db = SessionLocal()
+    try:
+        for k, v in snaps.items():
+            _restore_app_setting(db, k, v)
+    finally:
+        db.close()
+
+
+def _set(finding_id, **cols):
+    db = SessionLocal()
+    try:
+        f = db.get(FindingCanonical, finding_id)
+        for k, v in cols.items():
+            setattr(f, k, v)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _prompted_cves(t: _Transport) -> list[str]:
+    """Which finding each call was about, read from what the transport got
+    (the subject finding's CVE is the first one after its "finding" key)."""
+    out = []
+    for body in t.bodies():
+        after = body["messages"][-1]["content"].split('"finding"', 1)[1]
+        out.append(re.search(r"CVE-2099-\d{4}", after).group(0))
+    return out
+
+
+def test_auto_cap_defaults_to_zero_and_makes_no_call(world, llm):
+    a = world.asset(ports=PORTS)
+    f = world.finding(a)
+    t = llm(_always(_answer))
+    db = SessionLocal()
+    try:
+        assert fw.auto_daily_cap(db) == 0
+        # Precondition reached: the finding IS a candidate; only the cap stops it.
+        assert fw.auto_candidates(db, [f]) == [f]
+    finally:
+        db.close()
+    assert fw.auto_generate([f]) == 0
+    assert t.requests == [] and _rows(f) == []
+
+
+def test_auto_cap_n_plus_one_eligible_gives_n_calls_in_priority_order(world, llm, auto_cap):
+    a = world.asset(ports=PORTS)
+    high = world.finding(a, severity="high", cve="CVE-2099-0003")
+    crit_low = world.finding(a, cve="CVE-2099-0002")
+    crit_top = world.finding(a, cve="CVE-2099-0001")
+    _set(crit_low, risk_score=40)
+    _set(crit_top, risk_score=95)
+    _set(high, risk_score=99)  # severity outranks score
+    t = llm(_always(_answer))
+    auto_cap(2)
+
+    assert fw.auto_generate([high, crit_low, crit_top]) == 2
+    assert len(t.requests) == 2
+    assert _prompted_cves(t) == ["CVE-2099-0001", "CVE-2099-0002"]
+    for f in (crit_top, crit_low):
+        rows = _rows(f)
+        assert [r.status for r in rows] == ["succeeded"] and rows[0].requested_by_id is None
+    assert _rows(high) == []
+
+    # Cap reached: a second pass over the same run makes no call...
+    assert fw.auto_generate([high, crit_low, crit_top]) == 0
+    assert len(t.requests) == 2
+    # ...and raising it lets the overflow catch up, without redoing the others.
+    auto_cap(3)
+    assert fw.auto_generate([high, crit_low, crit_top]) == 1
+    assert _prompted_cves(t)[2:] == ["CVE-2099-0003"]
+
+
+def test_on_demand_rows_do_not_count_against_the_cap(world, llm, admin, auto_cap):
+    a = world.asset(ports=PORTS)
+    manual = world.finding(a, cve="CVE-2099-0001")
+    auto = world.finding(a, cve="CVE-2099-0002")
+    t = llm(_always(_answer))
+    assert client.post(f"/api/findings/{manual}/ai-writeup", headers=admin).status_code == 200
+    auto_cap(1)
+    assert fw.auto_generate([manual, auto]) == 1
+    assert _prompted_cves(t) == ["CVE-2099-0001", "CVE-2099-0002"]
+    db = SessionLocal()
+    try:
+        assert fw.auto_count_today(db) == 1
+    finally:
+        db.close()
+
+
+def test_auto_skips_excluded_closed_ineligible_and_already_written(world, llm, admin, auto_cap):
+    a = world.asset(ports=PORTS)
+    keep_null = world.finding(a, cve="CVE-2099-0001")
+    keep_ours = world.finding(a, cve="CVE-2099-0002")
+    _set(keep_ours, verification="confirmed_ours")
+    rejected = world.finding(a, cve="CVE-2099-0003")
+    _set(rejected, verification="rejected_shared_infra")
+    unverifiable = world.finding(a, cve="CVE-2099-0004")
+    _set(unverifiable, verification="ownership_unverifiable")
+    resolved = world.finding(a, cve="CVE-2099-0005", state="resolved")
+    medium = world.finding(a, cve="CVE-2099-0006", severity="medium")
+    written = world.finding(a, cve="CVE-2099-0007")
+    t = llm(_always(_answer))
+    client.post(f"/api/findings/{written}/ai-writeup", headers=admin)
+    assert len(t.requests) == 1
+
+    every = [keep_null, keep_ours, rejected, unverifiable, resolved, medium, written]
+    db = SessionLocal()
+    try:
+        assert set(fw.auto_candidates(db, every)) == {keep_null, keep_ours}
+    finally:
+        db.close()
+    auto_cap(50)
+    assert fw.auto_generate(every) == 2
+    assert sorted(_prompted_cves(t)[1:]) == ["CVE-2099-0001", "CVE-2099-0002"]
+    assert len(_rows(written)) == 1
+    for f in (rejected, unverifiable, resolved, medium):
+        assert _rows(f) == []
+
+
+def test_auto_writeup_never_touches_scores(world, llm, auto_cap):
+    a = world.asset(ports=PORTS)
+    f = world.finding(a)
+    before = _snapshot(f)
+    t = llm(_always(_answer))
+    auto_cap(1)
+    assert fw.auto_generate([f]) == 1 and len(t.requests) == 1
+    assert _rows(f)[0].status == "succeeded"
+    assert _snapshot(f) == before
+
+
+def test_auto_stops_when_not_configured_without_a_row(world, auto_cap):
+    a = world.asset(ports=PORTS)
+    f = world.finding(a)
+    db = SessionLocal()
+    try:
+        snapshot = _configure_openrouter(db, enabled=False)
+    finally:
+        db.close()
+    seen: list[httpx.Request] = []
+    llmc._transport = httpx.MockTransport(lambda r: seen.append(r) or _answer())
+    try:
+        auto_cap(5)
+        db = SessionLocal()
+        try:
+            assert fw.auto_candidates(db, [f]) == [f]  # reached: it was a candidate
+        finally:
+            db.close()
+        assert fw.auto_generate([f]) == 0
+    finally:
+        llmc._transport = None
+        _restore_openrouter(snapshot)
+    assert seen == [] and _rows(f) == []
+
+
+def test_auto_stops_when_the_daily_budget_is_spent(world, llm, auto_cap):
+    a = world.asset(ports=PORTS)
+    f = world.finding(a)
+    t = llm(_always(_answer))
+    auto_cap(5, budget="0")
+    assert fw.auto_generate([f]) == 0
+    assert t.requests == [] and _rows(f) == []
+    auto_cap(5, budget="5")  # the same finding goes through once the budget allows
+    assert fw.auto_generate([f]) == 1 and len(t.requests) == 1
+
+
+def test_concurrent_auto_runs_cannot_both_take_the_last_slot(world, llm, auto_cap, monkeypatch):
+    """Two scans finishing together, cap 1. The count is slowed down so,
+    without the advisory lock, both threads would count 0 before either
+    inserts and both would call."""
+    import threading
+    import time as _time
+    a = world.asset(ports=PORTS)
+    f1 = world.finding(a, cve="CVE-2099-0001")
+    f2 = world.finding(a, cve="CVE-2099-0002")
+    t = llm(_always(_answer))
+    auto_cap(1)
+    real_count = fw.auto_count_today
+
+    def slow_count(db):
+        n = real_count(db)
+        _time.sleep(0.5)
+        return n
+
+    monkeypatch.setattr(fw, "auto_count_today", slow_count)
+    threads = [threading.Thread(target=fw.auto_generate, args=([f],)) for f in (f1, f2)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(timeout=30)
+    assert len(t.requests) == 1
+    assert len(_rows(f1)) + len(_rows(f2)) == 1
+
+
+def test_start_auto_runs_off_the_calling_thread(world, llm, auto_cap):
+    import threading
+    a = world.asset(ports=PORTS)
+    f = world.finding(a)
+    call_threads: list[str] = []
+    t = llm(lambda request: call_threads.append(threading.current_thread().name) or _answer())
+    auto_cap(1)
+    th = fw.start_auto([f])
+    assert th.daemon
+    th.join(timeout=30)
+    assert len(t.requests) == 1
+    # The call happened on the write-up thread, not the scan's.
+    assert call_threads == ["finding-writeup-auto"] != [threading.current_thread().name]
+
+
+# ── the scan_executor hook ──────────────────────────────────────────────────
+
+def _run_scan_touching(finding_id, monkeypatch, start_auto, run_id):
+    """Drive the real `scan_executor._run` with `_run_pipeline` replaced by
+    one that reports `finding_id` as touched, so the whole post-scan chain
+    runs against it."""
+    from app.models.scan import ScanRun, ScanStatus
+    from app.services import scan_executor
+
+    def fake_pipeline(db, scan_run_id, chunk_scope, *args, touched_finding_ids=None, **kwargs):
+        touched_finding_ids.add(finding_id)
+
+    monkeypatch.setattr(scan_executor, "_run_pipeline", fake_pipeline)
+    monkeypatch.setattr(fw, "start_auto", start_auto)
+    db = SessionLocal()
+    run = ScanRun(id=run_id, status=ScanStatus.PENDING,
+                  scope={"domains": [f"wu226-{uuid.uuid4().hex[:8]}.example.com"], "ip_ranges": []},
+                  options={"aggressiveness": "polite"})
+    db.add(run)
+    db.commit()
+    try:
+        scan_executor._run(db, run.id, run.scope, {})
+        db.refresh(run)
+        return run.status, list(run.partial_failures or [])
+    finally:
+        db.rollback()
+        db.query(ScanRun).filter(ScanRun.id == run.id).delete()
+        db.commit()
+        db.close()
+
+
+def test_scan_hands_touched_findings_to_auto_after_completed(world, monkeypatch):
+    from app.models.scan import ScanRun, ScanStatus
+    a = world.asset(ports=PORTS)
+    f = world.finding(a, cve=None)
+    run_id = uuid.uuid4()
+    calls = []
+
+    def capture(ids):
+        db = SessionLocal()
+        try:  # the run already reads as COMPLETED, from another session
+            status = db.get(ScanRun, run_id).status
+        finally:
+            db.close()
+        calls.append((set(ids), status))
+
+    status, _ = _run_scan_touching(f, monkeypatch, capture, run_id)
+    assert status == ScanStatus.COMPLETED
+    assert calls == [({f}, ScanStatus.COMPLETED)]
+
+
+def test_auto_failing_to_start_does_not_fail_the_scan(world, monkeypatch):
+    from app.models.scan import ScanStatus
+    a = world.asset(ports=PORTS)
+    f = world.finding(a, cve=None)
+    reached = []
+
+    def boom(ids):
+        reached.append(set(ids))
+        raise RuntimeError("thread start failed")
+
+    status, failures = _run_scan_touching(f, monkeypatch, boom, uuid.uuid4())
+    assert reached == [{f}]
+    assert status == ScanStatus.COMPLETED
+    assert not any("write-up" in m for m in failures)
+
+
+# ── the cap's admin API ─────────────────────────────────────────────────────
+
+def test_admin_sets_the_cap_and_status_reports_it(admin, auto_cap):
+    r = client.put("/api/llm/settings", headers=admin, json={"auto_writeups_daily_cap": 7})
+    assert r.status_code == 200, r.text
+    assert r.json()["daily_cap"] == 7
+    s = client.get("/api/llm/status", headers=admin).json()
+    assert s["auto_writeups"]["daily_cap"] == 7 and s["auto_writeups"]["today"] >= 0
+    for bad in (-1, 1001, "lots"):
+        assert client.put("/api/llm/settings", headers=admin,
+                          json={"auto_writeups_daily_cap": bad}).status_code == 422
+    db = SessionLocal()
+    try:
+        assert fw.auto_daily_cap(db) == 7
+    finally:
+        db.close()
+
+
+def test_non_admin_cannot_set_the_cap(auto_cap):
+    headers, uid = _make_user(UserRole.INTEGRATION_ADMIN.value)
+    try:
+        r = client.put("/api/llm/settings", headers=headers, json={"auto_writeups_daily_cap": 5})
+        assert r.status_code == 403
+    finally:
+        _cleanup_user(uid)
+    db = SessionLocal()
+    try:
+        assert fw.auto_daily_cap(db) == 0
+    finally:
+        db.close()

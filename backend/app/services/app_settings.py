@@ -41,6 +41,10 @@ DEFAULTS = {
     # what the credits actually cost); at or above it, llm_connector
     # refuses every new call outright.
     "llm.daily_budget_usd": "5",
+    # planning#226 slice 2 — automatic finding write-ups per UTC day, after
+    # a scan (the write-up service's auto_generate). 0 is off: Jason
+    # turns it on from Admin -> AI models once he has seen the cost.
+    "ai.finding_writeups.auto_daily_cap": "0",
     # Retention for the llm_calls ledger (app.services.llm_connector.
     # prune_ledger) — high-volume telemetry, long retention, never the
     # prompt/response content itself (R4).

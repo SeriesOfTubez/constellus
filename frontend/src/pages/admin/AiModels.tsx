@@ -59,6 +59,12 @@ interface LlmStatus {
   key: { limit: number | null; limit_remaining: number | null; usage: number | null; is_free_tier: boolean | null } | null
   key_error: string | null
   budget: { daily_budget_usd: number; spent_today_usd: number }
+  auto_writeups: AutoWriteups
+}
+
+interface AutoWriteups {
+  daily_cap: number
+  today: number
 }
 
 const ROLES: { name: RoleName; label: string; description: string; structured: boolean; defaults: Omit<RoleBinding, "models"> }[] = [
@@ -92,6 +98,58 @@ function emptyDraft(): Record<RoleName, RoleBinding> {
   const draft = {} as Record<RoleName, RoleBinding>
   for (const r of ROLES) draft[r.name] = { models: [], ...r.defaults }
   return draft
+}
+
+// ── automatic finding write-ups (planning#226 slice 2) ──────────────────
+
+const AUTO_CAP_MAX = 1000
+
+function AutoWriteupsCard({ auto }: { auto: AutoWriteups | undefined }) {
+  const qc = useQueryClient()
+  const [draft, setDraft] = useState<string>("")
+  useEffect(() => {
+    if (auto) setDraft(String(auto.daily_cap))
+  }, [auto?.daily_cap])
+  const parsed = Number(draft)
+  const valid = draft.trim() !== "" && Number.isInteger(parsed) && parsed >= 0 && parsed <= AUTO_CAP_MAX
+  const dirty = auto !== undefined && valid && parsed !== auto.daily_cap
+  const save = useMutation({
+    mutationFn: (cap: number) => api.put<AutoWriteups>("/llm/settings", { auto_writeups_daily_cap: cap }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["llm-status"] })
+      toast.success(r.daily_cap === 0 ? "Automatic write-ups turned off" : `Automatic write-ups: up to ${r.daily_cap} a day`)
+    },
+    onError: (e: Error) => toast.error(`Save failed: ${e.message}`),
+  })
+  if (!auto) return <Skeleton className="h-28" />
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">Automatic finding write-ups</CardTitle>
+        <CardDescription className="text-xs">
+          After each scan, Critical and High findings that have no write-up yet get one, up to this many a day (UTC).
+          0 turns it off. The daily budget above still applies.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-end gap-6 text-sm">
+          <div className="space-y-1">
+            <Label htmlFor="auto-writeups-cap" className="text-xs text-muted-foreground">Per day</Label>
+            <div className="flex gap-2">
+              <Input id="auto-writeups-cap" type="number" min={0} max={AUTO_CAP_MAX} step={1} className="h-8 w-24 text-xs"
+                value={draft} onChange={(e) => setDraft(e.target.value)} aria-invalid={!valid} />
+              <Button size="sm" className="h-8" aria-label="Save automatic write-up cap" disabled={!dirty || save.isPending} onClick={() => save.mutate(parsed)}>Save</Button>
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Today</div>
+            <div className="tabular-nums">{auto.daily_cap === 0 ? `${auto.today} (off)` : `${auto.today} of ${auto.daily_cap}`}</div>
+          </div>
+        </div>
+        {!valid && <p className="mt-2 text-xs text-destructive">A whole number from 0 to {AUTO_CAP_MAX}.</p>}
+      </CardContent>
+    </Card>
+  )
 }
 
 // ── status cards ────────────────────────────────────────────────────────
@@ -331,6 +389,7 @@ export default function AiModels() {
       </div>
 
       <StatusCards status={status} />
+      <AutoWriteupsCard auto={status?.auto_writeups} />
 
       {saved && !saved.configured && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm flex items-start gap-2">

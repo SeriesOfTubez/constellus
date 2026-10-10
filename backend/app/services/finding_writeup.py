@@ -1,5 +1,5 @@
 """app.services.finding_writeup — AI write-ups for Critical/High findings
-(planning#226 slice 1).
+(planning#226: slice 1 on demand, slice 2 automatic after a scan).
 
 A write-up is a `narrate` call through `llm_connector.structured()` over a
 BOUNDED JSON description of one finding: the finding itself, its asset
@@ -63,6 +63,17 @@ posture. Targets that span engagements → `force_strict`. No target at all
 Timestamps (`last_seen_at`, scan times) are excluded and EPSS is rounded to
 two places, so a rescan that finds nothing new does not change the hash.
 An unchanged hash means no call; `force` (Regenerate) bypasses it.
+
+## Automatic write-ups after a scan (slice 2, Jason, 2026-10-10)
+
+`scan_executor` calls `start_auto` with the run's touched findings once the
+run is COMPLETED. It runs on its own thread with its own session, so it can
+neither delay nor fail the scan. `auto_candidates` picks Critical/High, open,
+not-excluded findings with no write-up row yet. `app_settings`
+`ai.finding_writeups.auto_daily_cap` (default 0, off) bounds the auto rows
+(`requested_by_id IS NULL`) per UTC day, counted under an advisory lock.
+The global daily LLM budget applies on top. An auto write-up is the same
+row and the same `generate` as an on-demand one; only the requester differs.
 """
 
 from __future__ import annotations
@@ -72,13 +83,15 @@ import ipaddress
 import json
 import logging
 import re
+import threading
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -86,11 +99,11 @@ from app.core.database import SessionLocal
 from app.models.asset_canonical import AssetCanonical
 from app.models.engagement import Engagement
 from app.models.finding_ai_writeup import WRITEUP_ACTIVE, FindingAiWriteup
-from app.models.finding_canonical import FindingCanonical
+from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
 from app.models.llm_call import LlmCall
 from app.models.target import Target, TargetType
 from app.models.target_asset_link import TargetAssetLink
-from app.services import llm_connector, projector
+from app.services import app_settings, llm_connector, projector
 from app.services.llm_grounding import check_path_grounding
 
 log = logging.getLogger(__name__)
@@ -587,3 +600,129 @@ def run_in_background(writeup_id: uuid.UUID) -> None:
             _finish(db, row, status="failed", error=f"internal error ({type(exc).__name__})")
     finally:
         db.close()
+
+
+# ── auto-generation after a scan (planning#226 slice 2) ──────────────────────
+
+AUTO_CAP_KEY = "ai.finding_writeups.auto_daily_cap"
+# Serialises "count today's auto rows, then queue one" across concurrent
+# scans, so two runs finishing together cannot both take the last slot.
+_AUTO_LOCK_KEY = 2260002
+
+
+def auto_daily_cap(db: Session) -> int:
+    """Auto write-ups allowed per UTC day. 0 (the default) is off."""
+    return max(app_settings.get_int(db, AUTO_CAP_KEY) or 0, 0)
+
+
+def auto_count_today(db: Session) -> int:
+    """Today's auto rows (no requester), whatever their status: a failed
+    attempt may still have spent money, and counting it stops a retry loop."""
+    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    return db.execute(
+        select(func.count()).select_from(FindingAiWriteup).where(
+            FindingAiWriteup.requested_by_id.is_(None), FindingAiWriteup.created_at >= start,
+        )
+    ).scalar_one()
+
+
+def _no_writeup_yet():
+    return ~select(FindingAiWriteup.id).where(FindingAiWriteup.finding_id == FindingCanonical.id).exists()
+
+
+def auto_candidates(db: Session, finding_ids: Iterable[uuid.UUID]) -> list[uuid.UUID]:
+    """Of `finding_ids`, those that get an auto write-up, in cap order.
+
+    Critical/High, open, not shared-infra rejected or unverifiable (the set
+    notifications skip; a NULL verification is not excluded), and no
+    write-up row at all. "No row" rather than "new this run" because a
+    severity change is not observable after the upsert (Jason, 2026-10-10):
+    it covers new, escalated and reopened findings, and a finding that
+    overflowed yesterday's cap is picked up on its next scan. An on-demand
+    Regenerate is the way to refresh one that already has a write-up."""
+    ids = list(set(finding_ids))
+    if not ids:
+        return []
+    return list(db.execute(
+        select(FindingCanonical.id).where(
+            FindingCanonical.id.in_(ids),
+            FindingCanonical.severity.in_(WRITEUP_SEVERITIES),
+            FindingCanonical.state == "open",
+            or_(FindingCanonical.verification.is_(None),
+                FindingCanonical.verification.notin_(EXCLUDED_VERIFICATIONS)),
+            _no_writeup_yet(),
+        ).order_by(
+            case((FindingCanonical.severity == "critical", 0), else_=1),
+            FindingCanonical.risk_score.desc().nulls_last(),
+            FindingCanonical.id,
+        )
+    ).scalars())
+
+
+def _queue_auto(db: Session, finding_id: uuid.UUID) -> tuple[str, uuid.UUID | None]:
+    """Under the lock: re-check the cap and the candidate, then queue one
+    auto row. ("cap", None) | ("taken", None) | ("queued", writeup_id);
+    the request refusals propagate."""
+    db.execute(select(func.pg_advisory_xact_lock(_AUTO_LOCK_KEY)))
+    if auto_count_today(db) >= auto_daily_cap(db):
+        db.rollback()
+        return "cap", None
+    finding = db.execute(
+        select(FindingCanonical).where(FindingCanonical.id == finding_id, _no_writeup_yet())
+    ).scalar_one_or_none()
+    if finding is None:  # another scan (or a person) got there first
+        db.rollback()
+        return "taken", None
+    # Commits the row, which also releases the lock.
+    row, _cached = request_writeup(db, finding=finding, user_id=None, force=False)
+    return "queued", row.id
+
+
+def auto_generate(finding_ids: Iterable[uuid.UUID]) -> int:
+    """Post-scan hook: write up the eligible findings among `finding_ids`,
+    up to today's remaining cap. Owns its own session, runs each write-up to
+    completion before queuing the next (so a dying process orphans at most
+    one row), and never raises. Returns the number of write-ups queued."""
+    queued = 0
+    db = SessionLocal()
+    try:
+        if auto_daily_cap(db) <= 0:
+            return 0
+        for finding_id in auto_candidates(db, finding_ids):
+            db.rollback()  # end the read transaction before taking the lock
+            budget = llm_connector.budget_status(db)
+            if budget["spent_today_usd"] >= budget["daily_budget_usd"]:
+                log.info("auto write-ups stopped: the daily AI budget is used up")
+                break
+            try:
+                outcome, writeup_id = _queue_auto(db, finding_id)
+            except NotConfigured as exc:
+                db.rollback()
+                log.info("auto write-ups stopped: %s", exc)
+                break
+            except (AlreadyRunning, NotEligible):  # changed under us since the candidate query
+                db.rollback()
+                continue
+            if outcome == "cap":
+                log.info("auto write-ups stopped: today's cap is reached")
+                break
+            if outcome == "taken":
+                continue
+            queued += 1
+            run_in_background(writeup_id)
+    except Exception:
+        db.rollback()
+        log.exception("auto write-ups failed")
+    finally:
+        db.close()
+    return queued
+
+
+def start_auto(finding_ids: Iterable[uuid.UUID]) -> threading.Thread:
+    """Run `auto_generate` off the scan's thread. A scheduled scan runs
+    inside its APScheduler job; write-ups at several seconds each must not
+    hold that job open."""
+    t = threading.Thread(target=auto_generate, args=(list(finding_ids),), name="finding-writeup-auto",
+                         daemon=True)
+    t.start()
+    return t
