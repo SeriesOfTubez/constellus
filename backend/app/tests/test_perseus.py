@@ -793,3 +793,25 @@ def test_oversized_tool_result_sheds_rows_then_truncates():
 def test_query_tool_requires_where():
     params = next(t for t in perseus.tool_definitions() if t["function"]["name"] == "run_query")["function"]["parameters"]
     assert "where" in params["required"] and "entity" in params["required"]
+
+
+@pytest.mark.parametrize("hostile", [
+    ",000" * 15_000 + "x",          # the CodeQL case: ~9s on the pre-fix pattern, ~3ms after
+    " 1" + ",000" * 15_000 + ".0",
+    "0" * 60_000 + "x",
+    "![" * 30_000,
+    "[a](" * 15_000,
+    '[a](b "' * 10_000,
+    "<a" * 30_000,
+    "<http:" * 10_000,
+    "[" * 60_000 + "\n" + "[x]: " * 10_000,
+], ids=["thousands-x", "thousands-dot", "zeros", "images", "links", "link-titles", "tags", "autolinks",
+        "ref-defs"])  # short ids: pytest puts the id in an env var (32k limit on Windows)
+def test_sanitiser_and_number_check_are_linear_on_hostile_text(hostile):
+    """Tool payloads and model output are attacker-influenced; every regex
+    over them must stay linear (CodeQL py/polynomial-redos on #60)."""
+    import time
+    start = time.perf_counter()
+    perseus.sanitise(hostile, set())
+    perseus.unverified_numbers(hostile, [{"v": hostile}])
+    assert time.perf_counter() - start < 2.0

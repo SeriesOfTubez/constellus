@@ -271,12 +271,15 @@ def tool_message(call_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 # ── answer post-processing ────────────────────────────────────────────────────
 
-_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
-_LINK = re.compile(r"\[([^\]]*)\]\(\s*([^)\s]*)(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)")
-_AUTOLINK = re.compile(r"<((?:https?|ftp|mailto|data|javascript):[^>\s]*)>", re.IGNORECASE)
-_REF_DEF = re.compile(r"^[ \t]*\[[^\]]+\]:[ \t]*\S+.*$", re.MULTILINE)
+# Linear-time by construction (planning#228; CodeQL py/polynomial-redos): every
+# scan stops at the next opening delimiter, so a run of unclosed "![", "[",
+# "<" or "<http:" cannot make each start re-scan to the end of the text.
+_IMAGE = re.compile(r"!\[[^\[\]]*\]\([^()]*\)")
+_LINK = re.compile(r"\[([^\[\]]*)\]\(\s*+([^()\s]*+)(?:\s++(?:\"[^\"()]*\"|'[^'()]*'))?\s*\)")
+_AUTOLINK = re.compile(r"<((?:https?|ftp|mailto|data|javascript):[^<>\s]*)>", re.IGNORECASE)
+_REF_DEF = re.compile(r"^[ \t]*\[[^\[\]\n]+\]:[ \t]*\S+.*$", re.MULTILINE)
 # An HTML tag: "<" then a letter or "/". "ports < 1024" and "<5" are not tags.
-_HTML_TAG = re.compile(r"</?[A-Za-z][^>]*>")
+_HTML_TAG = re.compile(r"</?[A-Za-z][^<>]*>")
 _INTERNAL = re.compile(r"^/(assets|findings|entities)/([0-9a-fA-F-]{36})$")
 
 
@@ -318,7 +321,9 @@ def sanitise(text: str, cite_ids: set[str]) -> tuple[str, dict[str, int]]:
 
 # A trailing "." or "," ends a sentence or a list item; followed by a digit it
 # is part of a version, IP or thousands group, which are not counts.
-_NUMBER = re.compile(r"(?<![\w.:/#-])\d{1,3}(?:,\d{3})+(?![\w:/-]|[.,]\d)|(?<![\w.:/#,-])\d+(?![\w:/-]|[.,]\d)")
+# Possessive runs and a "," in both lookbehinds keep this linear on hostile
+# input such as "000,000,000,...x" (tool payloads are attacker-controlled).
+_NUMBER = re.compile(r"(?<![\w.:/#,-])\d{1,3}(?:,\d{3})++(?![\w:/-]|[.,]\d)|(?<![\w.:/#,-])\d++(?![\w:/-]|[.,]\d)")
 
 
 def unverified_numbers(text: str, tool_payloads: list[Any]) -> list[int]:
