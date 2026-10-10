@@ -49,6 +49,10 @@ DEFAULTS = {
     # prune_ledger) — high-volume telemetry, long retention, never the
     # prompt/response content itself (R4).
     "llm_ledger_retention_days": "400",
+    # planning#228 — Perseus transcripts (questions + answers: content, unlike
+    # the ledger) are deleted this many days after a conversation's last
+    # activity (app.services.perseus.purge_transcripts, daily).
+    "perseus.transcript_retention_days": "30",
 }
 
 

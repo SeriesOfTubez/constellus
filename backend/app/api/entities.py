@@ -1249,3 +1249,20 @@ def unlink_registrant(
         **{k: v for k, v in summary.items() if k != "cik"},
     )
     return RegistrantUnlinkResponse(entity=_to_entity_response(entity), **summary)
+
+
+# Registered LAST so it cannot shadow a static single-segment route
+# (`/relations`): FastAPI matches in registration order, and a UUID path
+# parameter would answer "/relations" with a 422 instead of falling through.
+@router.get("/{entity_id}", response_model=EntityResponse)
+def get_entity(
+    entity_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """One org entity, same fields and access as `list_entities` (planning#228:
+    Perseus's `get_entity` tool calls this function as the asking user)."""
+    e = db.get(OrgEntity, entity_id)
+    if e is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    return _to_entity_response(e)

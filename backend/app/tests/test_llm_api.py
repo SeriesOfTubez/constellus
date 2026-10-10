@@ -109,6 +109,7 @@ def _valid_bindings():
         "research": {"models": ["vendor/c"], "max_tokens": 8192, "temperature": 0.2},
         "judge":    {"models": ["vendor/a"], "max_tokens": 4096, "temperature": 0},
         "narrate":  {"models": ["vendor/b"], "max_tokens": 2048, "temperature": 0.4},
+        "chat":     {"models": ["vendor/a"], "max_tokens": 2048, "temperature": 0},
     }
 
 
@@ -121,7 +122,7 @@ def test_get_role_bindings_admin_ok_viewer_403():
         r = client.get("/api/llm/role-bindings", headers=admin_h)
         assert r.status_code == 200
         assert r.json()["configured"] is True
-        assert set(r.json()["bindings"]) == {"classify", "extract", "research", "judge", "narrate"}
+        assert set(r.json()["bindings"]) == {"classify", "extract", "research", "judge", "narrate", "chat"}
 
         assert client.get("/api/llm/role-bindings", headers=viewer_h).status_code == 403
     finally:

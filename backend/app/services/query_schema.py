@@ -78,6 +78,7 @@ MAX_LIST_ITEMS = 100     # values in an `in` / `not_in` list; children of all/an
 MAX_STRING = 256         # any string value
 MAX_SORT = 3
 STATEMENT_TIMEOUT_MS = 10_000  # per query, transaction-local
+COUNT_CAP = 10_000       # count mode: an exact count up to here, then "10,000+" (planning#228)
 
 
 # ── field registry ──────────────────────────────────────────────────────────
@@ -534,7 +535,7 @@ def published_schema() -> dict[str, Any]:
             "default_limit": DEFAULT_LIMIT, "max_limit": MAX_LIMIT, "max_depth": MAX_DEPTH,
             "max_conditions": MAX_PREDICATES, "max_list_items": MAX_LIST_ITEMS,
             "max_string_length": MAX_STRING, "max_sort_keys": MAX_SORT,
-            "statement_timeout_ms": STATEMENT_TIMEOUT_MS,
+            "statement_timeout_ms": STATEMENT_TIMEOUT_MS, "count_cap": COUNT_CAP,
         },
         "query_json_schema": Query.model_json_schema(by_alias=True),
     }

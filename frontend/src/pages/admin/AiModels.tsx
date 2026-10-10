@@ -24,7 +24,7 @@ import { relativeTime } from "@/lib/time"
 // decides which model does which job (role bindings). No model id lives in
 // application code: a fresh install starts unconfigured.
 
-type RoleName = "research" | "extract" | "classify" | "judge" | "narrate"
+type RoleName = "research" | "extract" | "classify" | "judge" | "narrate" | "chat"
 
 interface AllowedModel {
   id: string
@@ -73,6 +73,7 @@ const ROLES: { name: RoleName; label: string; description: string; structured: b
   { name: "classify", label: "Classify", description: "Short labelling decisions", structured: true, defaults: { max_tokens: 1024, temperature: 0 } },
   { name: "judge",    label: "Judge",    description: "Second-opinion checks on another model's output", structured: false, defaults: { max_tokens: 4096, temperature: 0 } },
   { name: "narrate",  label: "Narrate",  description: "Human-readable write-ups", structured: false, defaults: { max_tokens: 2048, temperature: 0.4 } },
+  { name: "chat",     label: "Chat",     description: "Perseus: answers questions by running read-only queries (tool calling, always strict)", structured: false, defaults: { max_tokens: 2048, temperature: 0 } },
 ]
 
 // `~vendor/...-latest` slugs float: OpenRouter can change the model behind

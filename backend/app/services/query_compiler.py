@@ -45,6 +45,7 @@ from app.services.query_schema import (
     ExistsNode,
     NotNode,
     Predicate,
+    COUNT_CAP,
     STATEMENT_TIMEOUT_MS,
     Query,
 )
@@ -225,9 +226,10 @@ def _node(node: Any, ctx: _Ctx, q: Query, user: User) -> ColumnElement[bool]:
     return _predicate(node, ctx)
 
 
-def compile_query(db: Session, q: Query, user: User):
-    """Build the SELECT for a validated query. Fetches `limit + 1` rows so the
-    caller can tell whether the result was truncated."""
+def _base(db: Session, q: Query, user: User):
+    """The FROM and WHERE every use of a query shares (rows and count), so
+    the two can never disagree about which rows match. Returns
+    (select-with-from, conditions, field context, root id column)."""
     state = aliased(AssetState)
     if q.entity == "asset":
         asset = AssetCanonical
@@ -251,7 +253,13 @@ def compile_query(db: Session, q: Query, user: User):
                  _finding_visible(finding, q.include.excluded_verifications)]
     if q.where is not None:
         conds.append(_node(q.where, ctx, q, user))
+    return from_, conds, ctx, root_id
 
+
+def compile_query(db: Session, q: Query, user: User):
+    """Build the SELECT for a validated query. Fetches `limit + 1` rows so the
+    caller can tell whether the result was truncated."""
+    from_, conds, ctx, root_id = _base(db, q, user)
     cols = [_FIELD_SQL[name](ctx).label(name) for name in ENTITIES[q.entity]["output"]]
     order = []
     for s in q.sort:
@@ -284,3 +292,16 @@ def run_query(db: Session, q: Query, user: User) -> dict[str, Any]:
         "row_count": len(rows),
         "truncated": truncated,
     }
+
+
+def count_query(db: Session, q: Query, user: User) -> dict[str, Any]:
+    """Exact number of rows the query matches, ignoring `limit` and `sort`,
+    capped at COUNT_CAP: the inner SELECT stops at COUNT_CAP + 1 ids, so a
+    huge match costs no more than the cap. `capped` means "more than
+    `count`" (planning#228: an answer's "N instances" is a real number, or
+    says N+)."""
+    db.execute(select(func.set_config("statement_timeout", str(STATEMENT_TIMEOUT_MS), True)))
+    from_, conds, _, root_id = _base(db, q, user)
+    inner = from_.add_columns(root_id).where(*conds).limit(COUNT_CAP + 1).subquery()
+    n = db.execute(select(func.count()).select_from(inner)).scalar_one()
+    return {"entity": q.entity, "count": min(n, COUNT_CAP), "capped": n > COUNT_CAP}

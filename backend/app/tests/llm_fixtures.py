@@ -18,4 +18,5 @@ TEST_ROLE_BINDINGS = {
     "research": {"models": ["z-ai/glm-5.3", "moonshotai/kimi-k2.6", "deepseek/deepseek-v4-pro"], "max_tokens": 8192, "temperature": 0.2},
     "judge":    {"models": ["deepseek/deepseek-v4-pro", "anthropic/claude-sonnet-5", "google/gemini-3.1-pro-preview"], "max_tokens": 4096, "temperature": 0},
     "narrate":  {"models": ["google/gemini-3.8-flash", "moonshotai/kimi-k2.6", "z-ai/glm-5.3"], "max_tokens": 2048, "temperature": 0.4},
+    "chat":     {"models": ["deepseek/deepseek-v4.1-flash", "anthropic/claude-haiku-4.5", "z-ai/glm-5.3"], "max_tokens": 2048, "temperature": 0},
 }
