@@ -670,6 +670,65 @@ def test_429_long_retry_after_raises_without_second_request():
         db.close()
 
 
+# ── 10b. 401 / 403 handling ──────────────────────────────────────────────────
+
+def test_403_input_filter_raises_input_blocked_one_request_no_fallback():
+    suffix = uuid.uuid4().hex[:10]
+    task = f"llm140-t10c-{suffix}"
+    db = SessionLocal()
+    snapshot = _configure_openrouter(db)
+    try:
+        # A second scripted response that must NOT be consumed: no next model.
+        scripted = _ScriptedTransport([
+            httpx.Response(403, json={"error": {"code": 403, "message": "Request blocked: prompt injection patterns detected"}}),
+            _ok_response(),
+        ])
+        llmc._transport = scripted.transport
+        try:
+            with pytest.raises(llmc.InputBlocked) as excinfo:
+                llmc.complete(
+                    db, role=llmc.Role.CLASSIFY, messages=[{"role": "user", "content": "hi"}],
+                    target_id=None, engagement_id=None, task=task,
+                )
+        finally:
+            llmc._transport = None
+        assert not isinstance(excinfo.value, llmc.LLMNotConfigured)
+        assert "prompt injection" in str(excinfo.value)
+        assert len(scripted.requests) == 1
+        rows = db.query(LlmCall.status).filter(LlmCall.task == task).all()
+        assert [r[0] for r in rows] == ["upstream_error"]
+    finally:
+        _cleanup(task)
+        _restore_openrouter(snapshot)
+        db.close()
+
+
+@pytest.mark.parametrize("status,message", [(403, "Key is disabled"), (401, "No auth credentials found")])
+def test_key_rejections_raise_not_configured(status, message):
+    suffix = uuid.uuid4().hex[:10]
+    task = f"llm140-t10d-{status}-{suffix}"
+    db = SessionLocal()
+    snapshot = _configure_openrouter(db)
+    try:
+        scripted = _ScriptedTransport([_error_response(status, message=message), _ok_response()])
+        llmc._transport = scripted.transport
+        try:
+            with pytest.raises(llmc.LLMNotConfigured):
+                llmc.complete(
+                    db, role=llmc.Role.CLASSIFY, messages=[{"role": "user", "content": "hi"}],
+                    target_id=None, engagement_id=None, task=task,
+                )
+        finally:
+            llmc._transport = None
+        assert len(scripted.requests) == 1
+        rows = db.query(LlmCall.status).filter(LlmCall.task == task).all()
+        assert [r[0] for r in rows] == ["upstream_error"]
+    finally:
+        _cleanup(task)
+        _restore_openrouter(snapshot)
+        db.close()
+
+
 # ── 11. 402 handling ─────────────────────────────────────────────────────────
 
 def test_402_in_flight_budget_behaves_as_429_other_402_raises_budget_exhausted():

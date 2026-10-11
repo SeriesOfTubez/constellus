@@ -535,6 +535,17 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
         except Exception:
             log.exception("finding write-up auto-generation failed to start for run %s", scan_run_id)
 
+    # planning#231 - AI web-app classification of the web endpoints on this
+    # run's assets, behind ai.web_classifications.auto_daily_cap (default 0,
+    # off). Same shape as the write-up above: after COMPLETED, own thread and
+    # session, and a PROPOSAL only (a person promotes it; it writes no score).
+    if touched_asset_ids:
+        try:
+            from app.services import web_classifier
+            web_classifier.start_auto(touched_asset_ids)
+        except Exception:
+            log.exception("web classification auto-generation failed to start for run %s", scan_run_id)
+
 
 def _stamp_scope_target_engagements(db: Session, run: ScanRun, scope: dict) -> None:
     """Stamp `scan_runs.scope_target_engagements` (migration 0059,
@@ -950,6 +961,12 @@ def _run_pipeline(
                 if result.assets:
                     connectors_used.append(cid)
             except Exception:
+                # A failed flush/commit leaves the session in a failed-transaction
+                # state; without a rollback here one connector's failure (e.g. a
+                # DB error from hostile banner bytes) fails every later phase of
+                # the run. Each writer commits its own work, so this discards
+                # only the failing connector's uncommitted state.
+                db.rollback()
                 log.exception("Discovery connector %s failed on domain %s", cid, domain)
 
         # Index-based passive discovery — enrichment connectors that expose an
@@ -1120,6 +1137,7 @@ def _run_pipeline(
                     if touched_finding_ids is not None:
                         touched_finding_ids.update(finding_ids)
             except Exception:
+                db.rollback()
                 log.exception("Port-scan connector %s failed", cid)
 
     # ── Phase 2: Enrichment ───────────────────────────────────────────────────
@@ -1142,6 +1160,7 @@ def _run_pipeline(
                 if result.assets or result.findings:
                     connectors_used.append(cid)
             except Exception:
+                db.rollback()
                 log.exception("Enrichment connector %s failed", cid)
 
     # ── Phase 3: Scanning ─────────────────────────────────────────────────────
@@ -1213,6 +1232,7 @@ def _run_pipeline(
                         touched_finding_ids.update(finding_ids)
                     connectors_used.append(cid)
             except Exception:
+                db.rollback()
                 log.exception("Scanning connector %s failed", cid)
 
 

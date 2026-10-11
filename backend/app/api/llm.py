@@ -26,6 +26,8 @@ Three concerns, all ADMIN-only:
   `ai.finding_writeups.auto_daily_cap` (0 = off), audited old → new.
   `PUT /api/llm/chat-settings` sets `chat.transcript_retention_days`
   (planning#228), audited the same way; `GET /status` reports it.
+  `PUT /api/llm/web-classification-settings` sets
+  `ai.web_classifications.auto_daily_cap` (planning#231), likewise.
 
 There is no code default for the bindings (item 5): until the first PUT,
 `GET /role-bindings` answers `configured: false` and AI features report
@@ -42,7 +44,7 @@ from app.api.deps import require_role
 from app.core.database import get_db
 from app.models.user import UserRole
 from app.services import app_settings, audit, finding_writeup, llm_connector
-from app.services import chat
+from app.services import chat, web_classifier
 from app.services.llm_connector import Role, RoleBinding
 
 router = APIRouter()
@@ -91,6 +93,7 @@ class LlmStatusResponse(BaseModel):
     key_error: str | None
     budget: BudgetStatus
     auto_writeups: AutoWriteupStatus
+    auto_web_classifications: AutoWriteupStatus
     chat_transcript_retention_days: int
 
 
@@ -233,6 +236,9 @@ def get_status(
         auto_writeups=AutoWriteupStatus(
             daily_cap=finding_writeup.auto_daily_cap(db), today=finding_writeup.auto_count_today(db),
         ),
+        auto_web_classifications=AutoWriteupStatus(
+            daily_cap=web_classifier.auto_daily_cap(db), today=web_classifier.auto_count_today(db),
+        ),
         chat_transcript_retention_days=chat.retention_days(db),
     )
 
@@ -248,6 +254,28 @@ def put_settings(
     app_settings.set_value(db, finding_writeup.AUTO_CAP_KEY, str(data.auto_writeups_daily_cap))
     audit.record_detail(request, auto_writeups_daily_cap={"from": old, "to": data.auto_writeups_daily_cap})
     return AutoWriteupStatus(daily_cap=finding_writeup.auto_daily_cap(db), today=finding_writeup.auto_count_today(db))
+
+
+class WebClassificationSettingsUpdate(BaseModel):
+    # An upper bound so a typo cannot authorise thousands of calls; the
+    # global daily budget still bites first in practice.
+    daily_cap: int = Field(ge=0, le=10000)
+
+
+@router.put("/web-classification-settings", response_model=AutoWriteupStatus)
+def put_web_classification_settings(
+    data: WebClassificationSettingsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(UserRole.ADMIN)),
+):
+    """Set `ai.web_classifications.auto_daily_cap` (0 = off), audited old -> new."""
+    old = web_classifier.auto_daily_cap(db)
+    app_settings.set_value(db, web_classifier.AUTO_CAP_KEY, str(data.daily_cap))
+    audit.record_detail(request, auto_web_classifications_daily_cap={"from": old, "to": data.daily_cap})
+    return AutoWriteupStatus(
+        daily_cap=web_classifier.auto_daily_cap(db), today=web_classifier.auto_count_today(db),
+    )
 
 
 class ChatSettingsUpdate(BaseModel):

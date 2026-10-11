@@ -186,8 +186,9 @@ class AcquisitionReadStopped(Exception):
 
 
 # These stop the whole run: each would fail every remaining section the same
-# way. `StructuredOutputFailed` (bad output, or every model 5xx'd) is
-# per-section and is counted instead.
+# way. `StructuredOutputFailed` (bad output, or every model 5xx'd) and
+# `InputBlocked` (the provider's filter refused this section's filing text) are
+# per-section and are counted instead.
 _FATAL = (
     llm_connector.LLMBudgetExhausted,
     llm_connector.LLMRateLimited,
@@ -427,7 +428,7 @@ def read_acquisitions(db: Session, *, entity_id: uuid.UUID, run_id: uuid.UUID) -
                     # None on purpose: grounding is per item, below (module docstring).
                     source_text=None,
                 )
-            except llm_connector.StructuredOutputFailed:
+            except (llm_connector.StructuredOutputFailed, llm_connector.InputBlocked):
                 result.sections_failed += 1
                 continue
             result.sections_read += 1

@@ -45,6 +45,10 @@ DEFAULTS = {
     # a scan (the write-up service's auto_generate). 0 is off: Jason
     # turns it on from Admin -> AI models once he has seen the cost.
     "ai.finding_writeups.auto_daily_cap": "0",
+    # planning#231 - automatic web-app classifications per UTC day, after a
+    # scan (web_classifier.auto_generate). 0 is off. Counts classification
+    # rows (one per web endpoint), not assets.
+    "ai.web_classifications.auto_daily_cap": "0",
     # Retention for the llm_calls ledger (app.services.llm_connector.
     # prune_ledger) — high-volume telemetry, long retention, never the
     # prompt/response content itself (R4).
