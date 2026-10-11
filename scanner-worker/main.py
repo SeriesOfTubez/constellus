@@ -1455,6 +1455,11 @@ def httpx_probe(req: HttpxProbeRequest, _: None = Depends(_require_token)) -> di
             "-l", targets_path,
             "-json", "-silent",
             "-td", "-title", "-favicon", "-jarm", "-server",
+            # planning#231: response headers + the Location header are
+            # classifier inputs. Redirects are deliberately NOT followed
+            # (no -fr / -follow-redirects / -follow-host-redirects): a
+            # followed redirect would fetch a host outside authorised scope.
+            "-irh", "-location",
             "-timeout", timeout_arg,
             "-threads", threads_arg,
             "-disable-update-check",
@@ -1510,6 +1515,10 @@ def httpx_probe(req: HttpxProbeRequest, _: None = Depends(_require_token)) -> di
                         "tech": row.get("tech", []),
                         "favicon": row.get("favicon"),
                         "jarm": row.get("jarm_hash"),
+                        # httpx -irh -> `header` (map, lowercased keys with
+                        # '-' replaced by '_'); -location -> `location`.
+                        "header": row.get("header"),
+                        "location": row.get("location"),
                     })
         except FileNotFoundError:
             pass

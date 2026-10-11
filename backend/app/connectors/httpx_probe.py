@@ -23,6 +23,7 @@ What it adds per port:
 import ipaddress
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
@@ -38,6 +39,85 @@ from app.core.netaddr import is_public_ip as _is_public_ip
 from app.models.asset import AssetType
 
 log = logging.getLogger(__name__)
+
+# planning#231 classifier inputs from the response headers. Allowlist only,
+# strictly capped: header values are attacker-controlled and cookie VALUES
+# (session tokens) must never be stored.
+_CONTENT_TYPE_CAP = 100
+_AUTH_SCHEME_CAP = 32
+_POWERED_BY_CAP = 100
+_COOKIE_NAMES_CAP = 10
+_COOKIE_NAME_CAP = 64
+_LOCATION_CAP = 300
+_COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+
+def _clean_text(value: Any, cap: int) -> str | None:
+    """A kept string: control characters (incl. NUL) removed, trimmed, capped."""
+    if not isinstance(value, str):
+        return None
+    cleaned = "".join(ch for ch in value if ch.isprintable()).strip()
+    return cleaned[:cap] or None
+
+
+def _header_values(headers: dict, name: str) -> list[str]:
+    """Every string value of header `name`, tolerant of httpx's key spelling
+    (lowercase, '-' replaced by '_') and of str / list-of-str values."""
+    out: list[str] = []
+    for key in (name.replace("-", "_"), name):
+        raw = headers.get(key)
+        if isinstance(raw, str):
+            out.append(raw)
+        elif isinstance(raw, list):
+            out.extend(v for v in raw if isinstance(v, str))
+    return out
+
+
+def _cookie_names(values: list[str]) -> list[str]:
+    """Cookie NAMES from Set-Cookie values. httpx may join several headers
+    with ','; segments without a `name=` before the first ';' (such as the
+    tail of an Expires date) are skipped. Values are never kept."""
+    names: list[str] = []
+    for value in values:
+        for segment in value.split(","):
+            pair = segment.split(";", 1)[0]
+            name, eq, _ = pair.partition("=")
+            name = "".join(ch for ch in name if ch.isprintable()).strip()
+            if not eq or not name or len(name) > _COOKIE_NAME_CAP or not _COOKIE_NAME_RE.match(name):
+                continue
+            if name not in names:
+                names.append(name)
+            if len(names) >= _COOKIE_NAMES_CAP:
+                return names
+    return names
+
+
+def _allowlisted_headers(headers: Any) -> dict[str, Any]:
+    if not isinstance(headers, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for v in _header_values(headers, "content-type"):
+        text = _clean_text(v, _CONTENT_TYPE_CAP)
+        if text:
+            out["content_type"] = text
+            break
+    for v in _header_values(headers, "www-authenticate"):
+        # Only the auth-scheme token of the first challenge, never the
+        # realm or any parameter.
+        cleaned = _clean_text(v, 200)
+        scheme = cleaned.split(None, 1)[0][:_AUTH_SCHEME_CAP] if cleaned else None
+        if scheme:
+            out["www_authenticate"] = scheme
+            break
+    for v in _header_values(headers, "x-powered-by"):
+        text = _clean_text(v, _POWERED_BY_CAP)
+        if text:
+            out["x_powered_by"] = text
+            break
+    cookies = _cookie_names(_header_values(headers, "set-cookie"))
+    if cookies:
+        out["set_cookie_names"] = cookies
+    return out
 
 _SCANNER_URL = os.environ.get("SCANNER_URL", "http://scanner-worker:8001")
 _SCANNER_TOKEN = os.environ.get("SCANNER_INTERNAL_TOKEN", "")
@@ -259,6 +339,13 @@ class HttpxConnector(ScanningConnector):
             jarm = row.get("jarm")
             if isinstance(jarm, str) and jarm:
                 entry["jarm"] = jarm
+
+            http_headers = _allowlisted_headers(row.get("header"))
+            if http_headers:
+                entry["http_headers"] = http_headers
+            location = _clean_text(row.get("location"), _LOCATION_CAP)
+            if location:
+                entry["http_location"] = location
 
             # httpx only emits a row for an endpoint that returned an HTTP
             # response, so a scheme means a live HTTP service — positive
