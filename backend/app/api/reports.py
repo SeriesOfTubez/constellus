@@ -23,7 +23,7 @@ _WRITERS = (UserRole.ADMIN, UserRole.REPORT_ADMIN)
 
 class ReportRequest(BaseModel):
     engagement_id: uuid.UUID
-    kind: Literal["exec_summary"] = "exec_summary"
+    kind: Literal["exec_summary", "ma_brief"] = "exec_summary"
 
 
 def _email(db: Session, user_id: uuid.UUID | None) -> str | None:
@@ -101,7 +101,8 @@ def create_report(
 ):
     """Queue a report. Every refusal happens before a row exists or a request
     is sent: unknown engagement (404), AI not configured (503), one already
-    queued or running (409), today's cap reached (429)."""
+    queued or running (409), today's cap reached (429), an M&A brief for an
+    engagement with no subject entity (422)."""
     engagement = _visible_engagement(db, current_user, body.engagement_id)
     if not llm_connector.is_configured(db):
         raise HTTPException(status_code=503, detail="the OpenRouter connector is not configured or not enabled")
@@ -113,6 +114,8 @@ def create_report(
         raise HTTPException(status_code=409, detail=str(exc))
     except reports.DailyCapReached as exc:
         raise HTTPException(status_code=429, detail=str(exc))
+    except reports.NoSubjectEntity as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     audit.record_detail(request, report_id=str(row.id), engagement_id=str(engagement.id), kind=body.kind)
     background_tasks.add_task(reports.run_in_background, row.id, current_user.id)
     return _summary(db, row)

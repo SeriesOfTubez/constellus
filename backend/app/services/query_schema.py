@@ -11,7 +11,7 @@ Shape (version 1)::
 
     {
       "version": 1,
-      "entity": "asset" | "finding",
+      "entity": "asset" | "finding" | "entity" | "relation" | "domain",
       "where": <node>,                      # optional
       "sort": [{"field": "...", "dir": "asc" | "desc"}],
       "limit": 100,
@@ -63,7 +63,10 @@ from pydantic import (
 )
 
 from app.models.asset import AssetType
+from app.models.candidate_domain import CANDIDATE_STATUSES
+from app.models.entity_relation import EVENT_DATE_PRECISIONS, RELATION_STATUSES, RELATION_TYPES
 from app.models.finding import FindingState, Severity
+from app.models.org_entity import RELATIONSHIPS
 from app.services.claims_query import SURFACE_VALUES
 from app.services.risk_scorer import BANDS
 
@@ -110,8 +113,15 @@ OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
 # Fields whose operators are narrower than their type's. `asset.engagement_id`
 # is a many-valued membership (an asset can be linked to targets of several
 # engagements), so `ne` would be ambiguous: "any other engagement" or "not this one".
+# The three `*.family_of` fields are the same kind of membership (planning#230
+# slice 2): the corporate family of an engagement's subject entity. `parent_relation`
+# is a membership-style special case (a confirmed parent edge points into the entity).
 FIELD_OPERATORS_OVERRIDE: dict[str, tuple[str, ...]] = {
     "asset.engagement_id": ("eq", "in"),
+    "entity.family_of": ("eq", "in"),
+    "entity.parent_relation": ("eq", "in"),
+    "relation.family_of": ("eq", "in"),
+    "domain.family_of": ("eq", "in"),
 }
 
 
@@ -197,6 +207,48 @@ FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("port.cert_issuer_cn", "string", "TLS certificate issuer CN.", sortable=False),
     FieldSpec("port.cert_issuer_org", "string", "TLS certificate issuer organisation.", sortable=False),
     FieldSpec("port.cert_sans", "string_list", "TLS certificate subject alternative names.", sortable=False),
+    # entity — org_entities (planning#230 slice 2)
+    FieldSpec("entity.id", "uuid", "Entity id.", sortable=False),
+    FieldSpec("entity.name", "string", "Legal name of the company."),
+    FieldSpec("entity.relationship", "enum",
+              "What the company is to us: ours or ma_target. Empty when unset.", tuple(sorted(RELATIONSHIPS))),
+    FieldSpec("entity.has_cik", "boolean", "The company has an SEC CIK recorded."),
+    FieldSpec("entity.created_at", "datetime", "When the entity was created."),
+    FieldSpec("entity.family_of", "uuid",
+              "Engagement id. The company is in the corporate family of that engagement's subject "
+              "(the subject included): reachable down CONFIRMED subsidiary_of / acquired edges only.",
+              sortable=False),
+    FieldSpec("entity.parent_relation", "enum",
+              "A CONFIRMED parent edge of this type points into the company as the child: "
+              "subsidiary_of (it is a subsidiary of another company) or acquired (another company acquired it).",
+              ("subsidiary_of", "acquired"), sortable=False),
+    # relation — entity_relations; one row per source assertion
+    FieldSpec("relation.id", "uuid", "Relation record id.", sortable=False),
+    FieldSpec("relation.type", "enum", "Relation type.", tuple(sorted(RELATION_TYPES))),
+    FieldSpec("relation.status", "enum", "Review status.", tuple(sorted(RELATION_STATUSES))),
+    FieldSpec("relation.event_date", "datetime",
+              "When the event happened (acquisition date, name change), as UTC midnight of the recorded "
+              "date. Read it together with relation.event_date_precision: a year-precision date is "
+              "stored as January 1st and means only the year."),
+    FieldSpec("relation.event_date_precision", "enum", "How precise event_date is.",
+              tuple(sorted(EVENT_DATE_PRECISIONS))),
+    FieldSpec("relation.subject_id", "uuid", "Subject entity id.", sortable=False),
+    FieldSpec("relation.object_id", "uuid", "Object entity id.", sortable=False),
+    FieldSpec("relation.subject_name", "string", "Legal name of the subject entity."),
+    FieldSpec("relation.object_name", "string", "Legal name of the object entity."),
+    FieldSpec("relation.family_of", "uuid",
+              "Engagement id. The subject OR the object is in the corporate family of that "
+              "engagement's subject.", sortable=False),
+    # domain — candidate_domains
+    FieldSpec("domain.id", "uuid", "Candidate domain id.", sortable=False),
+    FieldSpec("domain.name", "string", "The domain name."),
+    FieldSpec("domain.status", "enum", "Review status.", tuple(sorted(CANDIDATE_STATUSES))),
+    FieldSpec("domain.source", "string", "How the candidate was found (edgar_10k_website, person)."),
+    FieldSpec("domain.entity_id", "uuid", "Entity the domain is attributed to.", sortable=False),
+    FieldSpec("domain.entity_name", "string", "Legal name of that entity."),
+    FieldSpec("domain.family_of", "uuid",
+              "Engagement id. The domain's entity is in the corporate family of that engagement's subject.",
+              sortable=False),
 )
 
 FIELDS_BY_NAME: dict[str, FieldSpec] = {f.name: f for f in FIELDS}
@@ -224,6 +276,32 @@ ENTITIES: dict[str, dict[str, Any]] = {
                    "finding.epss_score", "finding.kev", "finding.risk_score", "finding.risk_band",
                    "finding.verification", "finding.first_seen_at", "finding.last_seen_at",
                    "asset.id", "asset.type", "asset.value"),
+    },
+    "entity": {
+        "description": "One row per company (org entity) in the entity graph.",
+        "namespaces": ("entity",),
+        "relations": (),
+        "include": (),
+        "output": ("entity.id", "entity.name", "entity.relationship", "entity.has_cik"),
+    },
+    "relation": {
+        "description": "One row per SOURCE ASSERTION about a relationship between two companies "
+                       "(two sources reporting the same acquisition are two rows), with both names.",
+        "namespaces": ("relation",),
+        "relations": (),
+        "include": (),
+        "output": ("relation.id", "relation.type", "relation.status", "relation.event_date",
+                   "relation.event_date_precision",
+                   "relation.subject_id", "relation.subject_name", "relation.object_id",
+                   "relation.object_name"),
+    },
+    "domain": {
+        "description": "One row per candidate domain (a domain evidence says may belong to a company).",
+        "namespaces": ("domain",),
+        "relations": (),
+        "include": (),
+        "output": ("domain.id", "domain.name", "domain.status", "domain.source",
+                   "domain.entity_id", "domain.entity_name"),
     },
 }
 
@@ -494,9 +572,10 @@ def validate(raw: Any) -> Query:
 
     if q.where is not None:
         other = [r for r in entity["relations"]]
-        walk(q.where, "where", 1, root_ns,
-             f"a {q.entity} query reads {', '.join(n + '.*' for n in root_ns)} directly; "
-             f"use an exists block for {', '.join(r + '.*' for r in other)}", False)
+        hint = f"a {q.entity} query reads {', '.join(n + '.*' for n in root_ns)} directly"
+        if other:
+            hint += f"; use an exists block for {', '.join(r + '.*' for r in other)}"
+        walk(q.where, "where", 1, root_ns, hint, False)
     if count > MAX_PREDICATES:
         errors.append({"path": "where", "message": f"more than {MAX_PREDICATES} conditions"})
 

@@ -7,8 +7,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
-# Mirror the CHECK-backed vocabularies in migration 0073 by hand.
-REPORT_KINDS: tuple[str, ...] = ("exec_summary",)
+# Mirror the CHECK-backed vocabularies in migrations 0073 and 0074 by hand.
+REPORT_KINDS: tuple[str, ...] = ("exec_summary", "ma_brief")
 REPORT_STATUSES: frozenset[str] = frozenset({"queued", "running", "done", "failed"})
 REPORT_ACTIVE: tuple[str, ...] = ("queued", "running")
 

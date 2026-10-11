@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { canGenerateReports, citationHref, formatCount, SECTION_LABELS, type Citation } from "@/lib/reports"
+import { canGenerateReports, citationHref, formatCount, listRowText, SECTION_LABELS, type Citation } from "@/lib/reports"
 
 const ID = "3f2b8c1e-4d5a-4b6c-8d7e-9f0a1b2c3d4e"
 const query = { version: 1, entity: "finding", where: { field: "severity", op: "eq", value: "critical" } }
@@ -53,5 +53,29 @@ describe("formatCount", () => {
 describe("SECTION_LABELS", () => {
   it("names the gaps section plainly", () => {
     expect(SECTION_LABELS.gaps).toBe("What we don't know")
+  })
+})
+
+describe("citationHref entity", () => {
+  it("links a uuid entity ref and refuses a non-uuid", () => {
+    expect(citationHref(cite("entity", ID), report)).toBe(`/entities/${ID}`)
+    expect(citationHref(cite("entity", "x/../y"), report)).toBeNull()
+    expect(citationHref(cite("entity", null), report)).toBeNull()
+  })
+})
+
+describe("listRowText", () => {
+  it("formats each list key", () => {
+    expect(listRowText("family", { name: "Example Holdings B", relationship: "subsidiary" })).toBe("Example Holdings B (subsidiary)")
+    expect(listRowText("family", { name: "Example Holdings B", relationship: null })).toBe("Example Holdings B")
+    // the stored enum is not a label
+    expect(listRowText("family", { name: "Example Holdings B", relationship: "ma_target" })).toBe("Example Holdings B (M&A target)")
+    expect(listRowText("acquisitions", { acquirer: "A", acquired: "B", event_date: "2020-01-01" })).toBe("A acquired B (2020-01-01)")
+    expect(listRowText("acquisitions", { acquirer: "A", acquired: "B", event_date: null })).toBe("A acquired B")
+    expect(listRowText("former_names", { name: "Old Name" })).toBe("Old Name")
+    expect(listRowText("domains", { domain: "fabrikam.com", entity_name: "Example Holdings B" })).toBe("fabrikam.com (Example Holdings B)")
+  })
+  it("falls back to the row values for an unknown key", () => {
+    expect(listRowText("other", { a: "x", b: null, c: "y" })).toBe("x · y")
   })
 })

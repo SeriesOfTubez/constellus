@@ -1,0 +1,1317 @@
+{
+  "_note": "planning#230 slice 2: one live ma_brief narrate answer over a real engagement, recorded 2026-10-11. Every entity name, domain and id is replaced by a synthetic one; the replacement keeps grounding.",
+  "answer": {
+    "statements": [
+      {
+        "section": "family",
+        "sources": [
+          {
+            "path": "metrics.family_entities.count",
+            "value": "6"
+          }
+        ],
+        "text": "The confirmed corporate family of Example Company D comprises 6 companies excluding the subject."
+      },
+      {
+        "section": "family",
+        "sources": [
+          {
+            "path": "metrics.family_subsidiaries.count",
+            "value": "6"
+          }
+        ],
+        "text": "All 6 family companies are confirmed subsidiaries."
+      },
+      {
+        "section": "family",
+        "sources": [
+          {
+            "path": "lists.family.rows[0].name",
+            "value": "Example Company F"
+          },
+          {
+            "path": "lists.family.rows[1].name",
+            "value": "Example Company A"
+          },
+          {
+            "path": "lists.family.rows[2].name",
+            "value": "Example Company B"
+          },
+          {
+            "path": "lists.family.rows[3].name",
+            "value": "Example Company G"
+          },
+          {
+            "path": "lists.family.rows[4].name",
+            "value": "Example Company C"
+          },
+          {
+            "path": "lists.family.rows[5].name",
+            "value": "Example Company H"
+          }
+        ],
+        "text": "The family companies are Example Company F, Example Company A, Example Company B, Example Company G, Example Company C, and Example Company H."
+      },
+      {
+        "section": "family",
+        "sources": [
+          {
+            "path": "metrics.family_own_relationship.count",
+            "value": "0"
+          }
+        ],
+        "text": "No family companies are themselves marked ours or are the subject of another engagement."
+      },
+      {
+        "section": "family",
+        "sources": [
+          {
+            "path": "metrics.former_names.count",
+            "value": "1"
+          },
+          {
+            "path": "lists.former_names.rows[0].name",
+            "value": "Example Company E"
+          }
+        ],
+        "text": "Example Company D has 1 confirmed former name or trading name: Example Company E."
+      },
+      {
+        "section": "acquisitions",
+        "sources": [
+          {
+            "path": "metrics.family_acquired.count",
+            "value": "0"
+          }
+        ],
+        "text": "No confirmed acquisitions are recorded for Example Company D"
+      },
+      {
+        "section": "acquisitions",
+        "sources": [
+          {
+            "path": "metrics.relations_proposed.count",
+            "value": "119"
+          }
+        ],
+        "text": "119 proposed relationship records are awaiting review."
+      },
+      {
+        "section": "domains",
+        "sources": [
+          {
+            "path": "metrics.domains_accepted.count",
+            "value": "1"
+          },
+          {
+            "path": "lists.domains.rows[0].domain",
+            "value": "example-a.test"
+          }
+        ],
+        "text": "1 accepted candidate domain is recorded: example-a.test."
+      },
+      {
+        "section": "domains",
+        "sources": [
+          {
+            "path": "metrics.domains_proposed.count",
+            "value": "0"
+          }
+        ],
+        "text": "No candidate domains are awaiting review."
+      },
+      {
+        "section": "exposure",
+        "sources": [
+          {
+            "path": "metrics.assets_total.count",
+            "value": "258"
+          },
+          {
+            "path": "metrics.assets_unknown.count",
+            "value": "258"
+          }
+        ],
+        "text": "258 assets are recorded, all of unknown ownership."
+      },
+      {
+        "section": "exposure",
+        "sources": [
+          {
+            "path": "metrics.assets_proven_ours.count",
+            "value": "0"
+          },
+          {
+            "path": "metrics.assets_claimed_ours.count",
+            "value": "0"
+          }
+        ],
+        "text": "No assets are proven ours and no assets are claimed ours."
+      },
+      {
+        "section": "exposure",
+        "sources": [
+          {
+            "path": "metrics.assets_not_ours.count",
+            "value": "86"
+          }
+        ],
+        "text": "86 assets are identified as third-party context."
+      },
+      {
+        "section": "exposure",
+        "sources": [
+          {
+            "path": "metrics.assets_new_30d.count",
+            "value": "258"
+          }
+        ],
+        "text": "258 assets were first seen in the last 30 days."
+      },
+      {
+        "section": "priorities",
+        "sources": [
+          {
+            "path": "metrics.findings_open_critical.count",
+            "value": "0"
+          },
+          {
+            "path": "metrics.findings_open_high.count",
+            "value": "0"
+          },
+          {
+            "path": "metrics.findings_open_medium.count",
+            "value": "0"
+          },
+          {
+            "path": "metrics.findings_open_low.count",
+            "value": "0"
+          }
+        ],
+        "text": "No open critical, high, medium or low findings are recorded."
+      },
+      {
+        "section": "priorities",
+        "sources": [
+          {
+            "path": "metrics.findings_open_exploit.count",
+            "value": "0"
+          }
+        ],
+        "text": "No open findings with a known public exploit are recorded."
+      },
+      {
+        "section": "priorities",
+        "sources": [
+          {
+            "path": "metrics.findings_open_kev.count",
+            "value": "0"
+          }
+        ],
+        "text": "No open findings on the CISA KEV list are recorded."
+      },
+      {
+        "section": "gaps",
+        "sources": [
+          {
+            "path": "metrics.findings_new_30d.count",
+            "value": "0"
+          }
+        ],
+        "text": "No findings are recorded as new in the last 30 days."
+      },
+      {
+        "section": "gaps",
+        "sources": [
+          {
+            "path": "metrics.findings_resolved_30d.count",
+            "value": "0"
+          }
+        ],
+        "text": "No findings are recorded as resolved in the last 30 days."
+      },
+      {
+        "section": "gaps",
+        "sources": [
+          {
+            "path": "metrics.assets_total.count",
+            "value": "258"
+          },
+          {
+            "path": "metrics.assets_proven_ours.count",
+            "value": "0"
+          },
+          {
+            "path": "metrics.assets_claimed_ours.count",
+            "value": "0"
+          }
+        ],
+        "text": "Asset ownership classification is incomplete: all 258 assets remain unclassified as proven ours or claimed ours."
+      },
+      {
+        "section": "gaps",
+        "sources": [
+          {
+            "path": "metrics.relations_proposed.count",
+            "value": "119"
+          }
+        ],
+        "text": "119 proposed relationship records require review to determine whether additional acquisitions or family entities should be confirmed."
+      }
+    ]
+  },
+  "completion_tokens": 1376,
+  "cost_usd": "0.012841",
+  "expected": {
+    "dropped": 1,
+    "kept": 19,
+    "reasons": {
+      "sources_count": 1
+    },
+    "returned": 20
+  },
+  "facts": {
+    "as_of": "2026-10-10T23:40:31.561003+00:00",
+    "engagement": {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "posture": "pre_close"
+    },
+    "list_order": [
+      "family",
+      "acquisitions",
+      "former_names",
+      "domains"
+    ],
+    "lists": {
+      "acquisitions": {
+        "label": "Confirmed acquisitions",
+        "query": {
+          "entity": "relation",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 25,
+          "sort": [
+            {
+              "dir": "desc",
+              "field": "relation.event_date"
+            }
+          ],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "relation.family_of",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "relation.type",
+                "op": "eq",
+                "value": "acquired"
+              },
+              {
+                "field": "relation.status",
+                "op": "eq",
+                "value": "confirmed"
+              }
+            ]
+          }
+        },
+        "rows": [],
+        "truncated": false
+      },
+      "domains": {
+        "label": "Accepted candidate domains",
+        "query": {
+          "entity": "domain",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 25,
+          "sort": [
+            {
+              "dir": "asc",
+              "field": "domain.name"
+            }
+          ],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "domain.family_of",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "domain.status",
+                "op": "eq",
+                "value": "accepted"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "domain": "example-a.test",
+            "entity_id": "00000000-0000-4000-8000-000000000002",
+            "entity_name": "Example Company D"
+          }
+        ],
+        "truncated": false
+      },
+      "family": {
+        "label": "Confirmed corporate family",
+        "query": {
+          "entity": "entity",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 25,
+          "sort": [
+            {
+              "dir": "asc",
+              "field": "entity.name"
+            }
+          ],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "entity.family_of",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "not": {
+                  "field": "entity.id",
+                  "op": "eq",
+                  "value": "00000000-0000-4000-8000-000000000002"
+                }
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "entity_id": "00000000-0000-4000-8000-000000000003",
+            "name": "Example Company F",
+            "relationship": null
+          },
+          {
+            "entity_id": "00000000-0000-4000-8000-000000000004",
+            "name": "Example Company A",
+            "relationship": null
+          },
+          {
+            "entity_id": "00000000-0000-4000-8000-000000000005",
+            "name": "Example Company B",
+            "relationship": null
+          },
+          {
+            "entity_id": "00000000-0000-4000-8000-000000000006",
+            "name": "Example Company G",
+            "relationship": null
+          },
+          {
+            "entity_id": "00000000-0000-4000-8000-000000000007",
+            "name": "Example Company C",
+            "relationship": null
+          },
+          {
+            "entity_id": "00000000-0000-4000-8000-000000000008",
+            "name": "Example Company H",
+            "relationship": null
+          }
+        ],
+        "truncated": false
+      },
+      "former_names": {
+        "label": "Confirmed former names",
+        "query": {
+          "entity": "relation",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 25,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "relation.subject_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000002"
+              },
+              {
+                "field": "relation.type",
+                "op": "in",
+                "value": [
+                  "formerly_named",
+                  "dba"
+                ]
+              },
+              {
+                "field": "relation.status",
+                "op": "eq",
+                "value": "confirmed"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "entity_id": "00000000-0000-4000-8000-000000000009",
+            "name": "Example Company E"
+          }
+        ],
+        "truncated": false
+      }
+    },
+    "metric_order": [
+      "assets_total",
+      "assets_proven_ours",
+      "assets_claimed_ours",
+      "assets_not_ours",
+      "assets_unknown",
+      "assets_new_30d",
+      "findings_open",
+      "findings_open_critical",
+      "findings_open_high",
+      "findings_open_medium",
+      "findings_open_low",
+      "findings_open_kev",
+      "findings_open_exploit",
+      "findings_new_30d",
+      "findings_resolved_30d",
+      "family_entities",
+      "family_subsidiaries",
+      "family_acquired",
+      "family_own_relationship",
+      "former_names",
+      "relations_proposed",
+      "domains_accepted",
+      "domains_proposed"
+    ],
+    "metrics": {
+      "assets_claimed_ours": {
+        "capped": false,
+        "count": 0,
+        "label": "Assets claimed ours",
+        "query": {
+          "entity": "asset",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "asset.surface",
+                "op": "eq",
+                "value": "claimed_ours"
+              }
+            ]
+          }
+        }
+      },
+      "assets_new_30d": {
+        "capped": false,
+        "count": 258,
+        "label": "Assets first seen in the last 30 days",
+        "query": {
+          "entity": "asset",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "asset.first_seen_at",
+                "op": "gte",
+                "value": "2026-09-10T23:40:31.561003+00:00"
+              }
+            ]
+          }
+        },
+        "window_days": 30
+      },
+      "assets_not_ours": {
+        "capped": false,
+        "count": 86,
+        "label": "Assets not ours (third party)",
+        "query": {
+          "entity": "asset",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": true
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "asset.surface",
+                "op": "eq",
+                "value": "not_ours"
+              }
+            ]
+          }
+        }
+      },
+      "assets_proven_ours": {
+        "capped": false,
+        "count": 0,
+        "label": "Assets proven ours",
+        "query": {
+          "entity": "asset",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "asset.surface",
+                "op": "eq",
+                "value": "proven_ours"
+              }
+            ]
+          }
+        }
+      },
+      "assets_total": {
+        "capped": false,
+        "count": 258,
+        "label": "Assets (excluding third-party context)",
+        "query": {
+          "entity": "asset",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              }
+            ]
+          }
+        }
+      },
+      "assets_unknown": {
+        "capped": false,
+        "count": 258,
+        "label": "Assets of unknown ownership",
+        "query": {
+          "entity": "asset",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "asset.surface",
+                "op": "eq",
+                "value": "unknown"
+              }
+            ]
+          }
+        }
+      },
+      "domains_accepted": {
+        "capped": false,
+        "count": 1,
+        "label": "Accepted candidate domains of family companies",
+        "query": {
+          "entity": "domain",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "domain.family_of",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "domain.status",
+                "op": "eq",
+                "value": "accepted"
+              }
+            ]
+          }
+        }
+      },
+      "domains_proposed": {
+        "capped": false,
+        "count": 0,
+        "label": "Candidate domains awaiting review",
+        "query": {
+          "entity": "domain",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "domain.family_of",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "domain.status",
+                "op": "eq",
+                "value": "proposed"
+              }
+            ]
+          }
+        }
+      },
+      "family_acquired": {
+        "capped": false,
+        "count": 0,
+        "label": "Family companies confirmed as acquired",
+        "query": {
+          "entity": "entity",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "entity.family_of",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "not": {
+                  "field": "entity.id",
+                  "op": "eq",
+                  "value": "00000000-0000-4000-8000-000000000002"
+                }
+              },
+              {
+                "field": "entity.parent_relation",
+                "op": "eq",
+                "value": "acquired"
+              }
+            ]
+          }
+        }
+      },
+      "family_entities": {
+        "capped": false,
+        "count": 6,
+        "label": "Companies in the confirmed corporate family (excluding the subject)",
+        "query": {
+          "entity": "entity",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "entity.family_of",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "not": {
+                  "field": "entity.id",
+                  "op": "eq",
+                  "value": "00000000-0000-4000-8000-000000000002"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "family_own_relationship": {
+        "capped": false,
+        "count": 0,
+        "label": "Family companies that are themselves marked ours or are the subject of another engagement",
+        "query": {
+          "entity": "entity",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "entity.family_of",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "not": {
+                  "field": "entity.id",
+                  "op": "eq",
+                  "value": "00000000-0000-4000-8000-000000000002"
+                }
+              },
+              {
+                "field": "entity.relationship",
+                "op": "is_null",
+                "value": false
+              }
+            ]
+          }
+        }
+      },
+      "family_subsidiaries": {
+        "capped": false,
+        "count": 6,
+        "label": "Family companies confirmed as subsidiaries",
+        "query": {
+          "entity": "entity",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "entity.family_of",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "not": {
+                  "field": "entity.id",
+                  "op": "eq",
+                  "value": "00000000-0000-4000-8000-000000000002"
+                }
+              },
+              {
+                "field": "entity.parent_relation",
+                "op": "eq",
+                "value": "subsidiary_of"
+              }
+            ]
+          }
+        }
+      },
+      "findings_new_30d": {
+        "capped": false,
+        "count": 0,
+        "label": "Findings first seen in the last 30 days",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "finding.first_seen_at",
+                "op": "gte",
+                "value": "2026-09-10T23:40:31.561003+00:00"
+              }
+            ]
+          }
+        },
+        "window_days": 30
+      },
+      "findings_open": {
+        "capped": false,
+        "count": 0,
+        "label": "Open findings",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "finding.state",
+                "op": "in",
+                "value": [
+                  "open",
+                  "acknowledged"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "findings_open_critical": {
+        "capped": false,
+        "count": 0,
+        "label": "Open critical findings",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "finding.state",
+                "op": "in",
+                "value": [
+                  "open",
+                  "acknowledged"
+                ]
+              },
+              {
+                "field": "finding.severity",
+                "op": "eq",
+                "value": "critical"
+              }
+            ]
+          }
+        }
+      },
+      "findings_open_exploit": {
+        "capped": false,
+        "count": 0,
+        "label": "Open findings with a known public exploit",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "finding.state",
+                "op": "in",
+                "value": [
+                  "open",
+                  "acknowledged"
+                ]
+              },
+              {
+                "field": "finding.has_exploit",
+                "op": "eq",
+                "value": true
+              }
+            ]
+          }
+        }
+      },
+      "findings_open_high": {
+        "capped": false,
+        "count": 0,
+        "label": "Open high findings",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "finding.state",
+                "op": "in",
+                "value": [
+                  "open",
+                  "acknowledged"
+                ]
+              },
+              {
+                "field": "finding.severity",
+                "op": "eq",
+                "value": "high"
+              }
+            ]
+          }
+        }
+      },
+      "findings_open_kev": {
+        "capped": false,
+        "count": 0,
+        "label": "Open findings on the CISA KEV list",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "finding.state",
+                "op": "in",
+                "value": [
+                  "open",
+                  "acknowledged"
+                ]
+              },
+              {
+                "field": "finding.kev",
+                "op": "eq",
+                "value": true
+              }
+            ]
+          }
+        }
+      },
+      "findings_open_low": {
+        "capped": false,
+        "count": 0,
+        "label": "Open low findings",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "finding.state",
+                "op": "in",
+                "value": [
+                  "open",
+                  "acknowledged"
+                ]
+              },
+              {
+                "field": "finding.severity",
+                "op": "eq",
+                "value": "low"
+              }
+            ]
+          }
+        }
+      },
+      "findings_open_medium": {
+        "capped": false,
+        "count": 0,
+        "label": "Open medium findings",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "finding.state",
+                "op": "in",
+                "value": [
+                  "open",
+                  "acknowledged"
+                ]
+              },
+              {
+                "field": "finding.severity",
+                "op": "eq",
+                "value": "medium"
+              }
+            ]
+          }
+        }
+      },
+      "findings_resolved_30d": {
+        "capped": false,
+        "count": 0,
+        "label": "Findings resolved in the last 30 days",
+        "query": {
+          "entity": "finding",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "asset.engagement_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "finding.resolved_at",
+                "op": "gte",
+                "value": "2026-09-10T23:40:31.561003+00:00"
+              }
+            ]
+          }
+        },
+        "window_days": 30
+      },
+      "former_names": {
+        "capped": false,
+        "count": 1,
+        "label": "Confirmed former-name or trading-name records of the subject",
+        "query": {
+          "entity": "relation",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "relation.type",
+                "op": "in",
+                "value": [
+                  "formerly_named",
+                  "dba"
+                ]
+              },
+              {
+                "field": "relation.status",
+                "op": "eq",
+                "value": "confirmed"
+              },
+              {
+                "field": "relation.subject_id",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000002"
+              }
+            ]
+          }
+        }
+      },
+      "relations_proposed": {
+        "capped": false,
+        "count": 119,
+        "label": "Proposed relationship records awaiting review",
+        "query": {
+          "entity": "relation",
+          "include": {
+            "excluded_verifications": false,
+            "suppressed": false,
+            "third_party": false
+          },
+          "limit": 100,
+          "sort": [],
+          "version": 1,
+          "where": {
+            "all": [
+              {
+                "field": "relation.family_of",
+                "op": "eq",
+                "value": "00000000-0000-4000-8000-000000000001"
+              },
+              {
+                "field": "relation.status",
+                "op": "eq",
+                "value": "proposed"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "subject": {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "name": "Example Company D"
+    },
+    "top_findings": [],
+    "top_findings_query": {
+      "entity": "finding",
+      "include": {
+        "excluded_verifications": false,
+        "suppressed": false,
+        "third_party": false
+      },
+      "limit": 10,
+      "sort": [
+        {
+          "dir": "desc",
+          "field": "finding.risk_score"
+        }
+      ],
+      "version": 1,
+      "where": {
+        "all": [
+          {
+            "field": "asset.engagement_id",
+            "op": "eq",
+            "value": "00000000-0000-4000-8000-000000000001"
+          },
+          {
+            "field": "finding.state",
+            "op": "in",
+            "value": [
+              "open",
+              "acknowledged"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "model": "anthropic/claude-haiku-4.5",
+  "prompt_tokens": 5961
+}

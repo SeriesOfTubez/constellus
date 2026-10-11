@@ -20,12 +20,13 @@ Every row source passes through `read_scope` (no-op today, planning#261).
 
 from __future__ import annotations
 
+import itertools
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Callable
 
-from sqlalchemy import Float, and_, case, cast, exists, false, func, literal, not_, or_, select, true
+from sqlalchemy import DateTime, Float, Integer, and_, case, cast, exists, false, func, literal, not_, or_, select, true
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql import column
@@ -33,11 +34,15 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.asset_canonical import AssetCanonical
 from app.models.asset_state import AssetState
+from app.models.candidate_domain import CandidateDomain
+from app.models.engagement import Engagement
+from app.models.entity_relation import EntityRelation
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
+from app.models.org_entity import OrgEntity
 from app.models.target import Target
 from app.models.target_asset_link import TargetAssetLink
 from app.models.user import User
-from app.services import read_scope
+from app.services import entity_relationship, read_scope
 from app.services.claims_query import SURFACE_UNKNOWN, asset_ids_with_surface
 from app.services.query_schema import (
     ENTITIES,
@@ -60,6 +65,12 @@ class _Ctx:
     state: Any = None
     finding: Any = None
     port: Any = None   # the JSONB value column of one open_ports element
+    entity: Any = None        # entity root: OrgEntity
+    relation: Any = None      # relation root: EntityRelation
+    rel_subject: Any = None   # relation root: OrgEntity alias on subject_id
+    rel_object: Any = None    # relation root: OrgEntity alias on object_id
+    domain: Any = None        # domain root: CandidateDomain
+    dom_entity: Any = None    # domain root: OrgEntity alias on entity_id
 
 
 def _port_key(*keys: str) -> Callable[[_Ctx], Any]:
@@ -122,6 +133,28 @@ _FIELD_SQL: dict[str, Callable[[_Ctx], Any]] = {
     "finding.last_seen_at": lambda c: c.finding.last_seen_at,
     "finding.resolved_at": lambda c: c.finding.resolved_at,
     "finding.tags": lambda c: c.finding.tags,
+    "entity.id": lambda c: c.entity.id,
+    "entity.name": lambda c: c.entity.legal_name,
+    "entity.relationship": lambda c: c.entity.relationship,
+    "entity.has_cik": lambda c: c.entity.cik.isnot(None),
+    "entity.created_at": lambda c: c.entity.created_at,
+    "relation.id": lambda c: c.relation.id,
+    "relation.type": lambda c: c.relation.relation,
+    "relation.status": lambda c: c.relation.status,
+    # A DATE read as UTC midnight, so comparing it with an ISO datetime does
+    # not depend on the session time zone.
+    "relation.event_date": lambda c: func.timezone("UTC", cast(c.relation.event_date, DateTime)),
+    "relation.event_date_precision": lambda c: c.relation.event_date_precision,
+    "relation.subject_id": lambda c: c.relation.subject_id,
+    "relation.object_id": lambda c: c.relation.object_id,
+    "relation.subject_name": lambda c: c.rel_subject.legal_name,
+    "relation.object_name": lambda c: c.rel_object.legal_name,
+    "domain.id": lambda c: c.domain.id,
+    "domain.name": lambda c: c.domain.domain,
+    "domain.status": lambda c: c.domain.status,
+    "domain.source": lambda c: c.domain.source,
+    "domain.entity_id": lambda c: c.domain.entity_id,
+    "domain.entity_name": lambda c: c.dom_entity.legal_name,
     "port.number": _port_key("port"),
     "port.protocol": _text(_port_key("protocol")),
     "port.service": _text(_port_key("service")),
@@ -148,11 +181,6 @@ def _value(spec_type: str, v: Any) -> Any:
     return v
 
 
-# Fields that are not a scalar column: no `_FIELD_SQL` entry, so they can be
-# neither sorted nor output. Compiled by `_predicate` before that lookup.
-_MEMBERSHIP_FIELDS = frozenset({"asset.engagement_id"})
-
-
 def _engagement_member(p: Predicate, ctx: _Ctx) -> ColumnElement[bool]:
     """An asset is IN engagement E iff a `target_asset_links` row links it to a
     target whose `engagement_id` is E (Jason, planning#230). `validate()` allows
@@ -168,9 +196,87 @@ def _engagement_member(p: Predicate, ctx: _Ctx) -> ColumnElement[bool]:
     )
 
 
+_cte_seq = itertools.count()
+
+
+def family_ids_cte(engagement_ids: list[uuid.UUID]):
+    """The corporate family of each engagement, as a recursive CTE over
+    (engagement_id, entity_id, depth) (planning#230 slice 2).
+
+    Seed: the engagement's subject entity (a NULL subject has no family), depth 0.
+    Step: DOWN the CONFIRMED parent edges only, from parent to child: a
+    `subsidiary_of` row whose OBJECT is the parent gives its SUBJECT as child; an
+    `acquired` row whose SUBJECT is the parent gives its OBJECT as child. Never
+    up, never proposed or rejected, and `formerly_named` / `dba` are not family
+    edges. The walk does not stop at an entity that has its own `relationship`
+    (this is corporate structure, not domain inheritance) and is cut at
+    `entity_relationship.MAX_DEPTH`. `UNION` (not `UNION ALL`) dedupes rows, so
+    a cycle ends; the depth bound is the backstop."""
+    name = f"family_{next(_cte_seq)}"
+    seed = select(
+        Engagement.id.label("engagement_id"),
+        Engagement.subject_entity_id.label("entity_id"),
+        literal(0, Integer).label("depth"),
+    ).where(Engagement.id.in_(engagement_ids), Engagement.subject_entity_id.isnot(None))
+    fam = seed.cte(name, recursive=True)
+    edge = EntityRelation
+    step = (
+        select(fam.c.engagement_id,
+               case((edge.relation == "subsidiary_of", edge.subject_id), else_=edge.object_id),
+               fam.c.depth + 1)
+        .select_from(fam.join(edge, or_(
+            and_(edge.relation == "subsidiary_of", edge.object_id == fam.c.entity_id),
+            and_(edge.relation == "acquired", edge.subject_id == fam.c.entity_id))))
+        .where(edge.status == "confirmed", fam.c.depth + 1 <= entity_relationship.MAX_DEPTH)
+    )
+    return fam.union(step)
+
+
+def _uuids(p: Predicate) -> list[uuid.UUID]:
+    return [uuid.UUID(v) for v in p.value] if p.op == "in" else [uuid.UUID(p.value)]
+
+
+def _family_member(*cols: Callable[[_Ctx], Any]) -> Callable[[Predicate, _Ctx], ColumnElement[bool]]:
+    """`<col> is in the family of engagement E` for `eq`, or of any listed
+    engagement for `in`. With several columns, any one of them may be the member."""
+    def member(p: Predicate, ctx: _Ctx) -> ColumnElement[bool]:
+        ids = _uuids(p)
+        fam = family_ids_cte(ids)
+        engagement = fam.c.engagement_id == ids[0] if p.op == "eq" else fam.c.engagement_id.in_(ids)
+        which = or_(*(fam.c.entity_id == col(ctx) for col in cols))
+        return exists(select(1).select_from(fam).where(which, engagement))
+    return member
+
+
+def _parent_relation_member(p: Predicate, ctx: _Ctx) -> ColumnElement[bool]:
+    """A CONFIRMED parent edge of the given type(s) points INTO this entity as
+    the child: `subsidiary_of` with subject = the entity, `acquired` with
+    object = the entity."""
+    types = [p.value] if p.op == "eq" else list(p.value)
+    edge = EntityRelation
+    parts = []
+    if "subsidiary_of" in types:
+        parts.append(and_(edge.relation == "subsidiary_of", edge.subject_id == ctx.entity.id))
+    if "acquired" in types:
+        parts.append(and_(edge.relation == "acquired", edge.object_id == ctx.entity.id))
+    return exists(select(1).select_from(edge).where(edge.status == "confirmed", or_(*parts)))
+
+
+# Fields that are not a scalar column: no `_FIELD_SQL` entry, so they can be
+# neither sorted nor output. Compiled by `_predicate` before that lookup.
+_MEMBERSHIP_COMPILERS: dict[str, Callable[[Predicate, _Ctx], ColumnElement[bool]]] = {
+    "asset.engagement_id": _engagement_member,
+    "entity.family_of": _family_member(lambda c: c.entity.id),
+    "entity.parent_relation": _parent_relation_member,
+    "relation.family_of": _family_member(lambda c: c.relation.subject_id, lambda c: c.relation.object_id),
+    "domain.family_of": _family_member(lambda c: c.domain.entity_id),
+}
+_MEMBERSHIP_FIELDS = frozenset(_MEMBERSHIP_COMPILERS)
+
+
 def _predicate(p: Predicate, ctx: _Ctx) -> ColumnElement[bool]:
     if p.field in _MEMBERSHIP_FIELDS:
-        return _engagement_member(p, ctx)
+        return _MEMBERSHIP_COMPILERS[p.field](p, ctx)
     spec = FIELDS_BY_NAME[p.field]
     col = _FIELD_SQL[p.field](ctx)
     op = p.op
@@ -265,6 +371,27 @@ def _base(db: Session, q: Query, user: User):
             conds.append(~asset.suppressed)
         if not q.include.third_party:
             conds.append(asset.id.not_in(asset_ids_with_surface(db, "not_ours")))
+    elif q.entity == "entity":
+        ent = OrgEntity
+        ctx = _Ctx(entity=ent)
+        root_id = ent.id
+        from_ = select().select_from(ent)
+        conds = [read_scope.entity_clause(user, ent)]
+    elif q.entity == "relation":
+        rel, subj, obj = EntityRelation, aliased(OrgEntity), aliased(OrgEntity)
+        ctx = _Ctx(relation=rel, rel_subject=subj, rel_object=obj)
+        root_id = rel.id
+        from_ = (select().select_from(rel)
+                 .join(subj, subj.id == rel.subject_id)
+                 .join(obj, obj.id == rel.object_id))
+        conds = [read_scope.relation_clause(user, rel),
+                 read_scope.entity_clause(user, subj), read_scope.entity_clause(user, obj)]
+    elif q.entity == "domain":
+        dom, ent = CandidateDomain, aliased(OrgEntity)
+        ctx = _Ctx(domain=dom, dom_entity=ent)
+        root_id = dom.id
+        from_ = select().select_from(dom).join(ent, ent.id == dom.entity_id)
+        conds = [read_scope.domain_clause(user, dom), read_scope.entity_clause(user, ent)]
     else:
         finding, asset = FindingCanonical, AssetCanonical
         ctx = _Ctx(asset=asset, state=state, finding=finding)

@@ -7,11 +7,13 @@
 import { api } from "@/lib/api"
 import { exploreHref, isInternalHref, type QueryObject } from "@/lib/chat"
 
+export type ReportKind = "exec_summary" | "ma_brief"
+
 export type ReportStatus = "queued" | "running" | "done" | "failed"
 
 export interface ReportListItem {
   id: string
-  kind: "exec_summary"
+  kind: ReportKind
   status: ReportStatus
   as_of: string
   created_at: string
@@ -43,11 +45,22 @@ export interface TopFinding {
 export interface Citation {
   path: string
   value: string
-  kind: "metric" | "finding" | "fact"
+  kind: "metric" | "finding" | "fact" | "entity"
   ref: string | null
 }
 
-export type Section = "posture" | "exposure" | "priorities" | "gaps"
+export type Section =
+  | "posture" | "exposure" | "priorities" | "gaps"
+  | "family" | "acquisitions" | "domains"
+
+export type ListRow = Record<string, string | null>
+
+export interface FactList {
+  label: string
+  query: Record<string, unknown>
+  rows: ListRow[]
+  truncated: boolean
+}
 
 export interface Statement {
   section: Section
@@ -69,25 +82,48 @@ export interface Report extends ReportListItem {
     top_findings_query: Record<string, unknown>
     /** Display order of `metrics` (JSONB does not keep key order). */
     metric_order?: string[]
+    /** ma_brief only. */
+    subject?: { id: string; name: string }
+    lists?: Record<string, FactList>
+    list_order?: string[]
   } | null
   payload: { statements: Statement[] } | null
 }
 
-export const SECTION_ORDER: Section[] = ["posture", "exposure", "priorities", "gaps"]
+type ExecSection = "posture" | "exposure" | "priorities" | "gaps"
 
-export const SECTION_LABELS: Record<Section, string> = {
+export const SECTION_ORDER: ExecSection[] = ["posture", "exposure", "priorities", "gaps"]
+
+export const SECTION_LABELS: Record<ExecSection, string> = {
   posture: "Posture",
   exposure: "Exposure",
   priorities: "Priorities",
   gaps: "What we don't know",
 }
 
+export const KIND_LABELS: Record<ReportKind, string> = {
+  exec_summary: "Executive summary",
+  ma_brief: "M&A due-diligence brief",
+}
+
+export const SECTIONS_BY_KIND: Record<ReportKind, { key: Section; label: string }[]> = {
+  exec_summary: SECTION_ORDER.map(key => ({ key, label: SECTION_LABELS[key] })),
+  ma_brief: [
+    { key: "family", label: "Corporate family" },
+    { key: "acquisitions", label: "Acquisitions" },
+    { key: "domains", label: "Domains" },
+    { key: "exposure", label: "Exposure" },
+    { key: "priorities", label: "Priorities" },
+    { key: "gaps", label: "What we still don't know" },
+  ],
+}
+
 export const reportsApi = {
   list: (engagementId: string) =>
     api.get<ReportListItem[]>(`/reports?engagement_id=${encodeURIComponent(engagementId)}`),
   get: (id: string) => api.get<Report>(`/reports/${encodeURIComponent(id)}`),
-  create: (engagementId: string) =>
-    api.post<ReportListItem>("/reports", { engagement_id: engagementId, kind: "exec_summary" }),
+  create: (engagementId: string, kind: ReportKind = "exec_summary") =>
+    api.post<ReportListItem>("/reports", { engagement_id: engagementId, kind }),
   remove: (id: string) => api.delete<void>(`/reports/${encodeURIComponent(id)}`),
 }
 
@@ -128,7 +164,27 @@ export function citationHref(
     const href = `/findings/${c.ref}`
     return isInternalHref(href) ? href : null
   }
+  if (c.kind === "entity" && c.ref) {
+    const href = `/entities/${c.ref}`
+    return isInternalHref(href) ? href : null
+  }
   return null
+}
+
+/** `org_entities.relationship` in words (the stored enum is not a label). */
+export const RELATIONSHIP_LABELS: Record<string, string> = { ours: "ours", ma_target: "M&A target" }
+
+/** Display text of one fact-list row (plain text; the view never renders it as markup). */
+export function listRowText(key: string, row: ListRow): string {
+  const paren = (v: string | null | undefined) => (v ? ` (${v})` : "")
+  switch (key) {
+    case "family": return `${row.name ?? ""}${paren(row.relationship ? RELATIONSHIP_LABELS[row.relationship] ?? row.relationship : null)}`
+    case "acquisitions": return `${row.acquirer ?? ""} acquired ${row.acquired ?? ""}${paren(row.event_date)}`
+    case "former_names": return row.name ?? ""
+    case "domains": return `${row.domain ?? ""} (${row.entity_name ?? ""})`
+    default:
+      return Object.values(row).filter((v): v is string => v != null && v !== "").join(" · ")
+  }
 }
 
 export function formatCount(m: Pick<Metric, "count" | "capped">): string {

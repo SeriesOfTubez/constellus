@@ -816,3 +816,482 @@ def test_recorded_answer_drops_a_statement_whose_source_changed(metric, count):
     after, _, _, reasons = reports.shape(reports.ReportOut.model_validate(rec["answer"]), rec["facts"])
     assert len(after) == len(before) - len(cites)
     assert reasons == {"value_not_at_path": len(cites)}
+
+
+# ═══ planning#230 slice 2: the M&A due-diligence brief ═══════════════════════
+#
+# Family fixture: `_ma_world.py` (documented there). Migration 0074 widens
+# `reports.kind`; the suite migrates UP only, so the down path (delete the
+# ma_brief rows, narrow the CHECK) is concluded from the code, not run.
+
+import app.tests._ma_world as _ma_world_mod  # noqa: E402
+from sqlalchemy import text  # noqa: E402
+from sqlalchemy.exc import IntegrityError  # noqa: E402
+from app.tests.test_query_entities import _oracle_family  # noqa: E402
+
+
+class _MaR(_ma_world_mod.MaWorld):
+    """`MaWorld` plus report/ledger cleanup (ledger rows pin engagements)."""
+
+    def close(self):
+        db = SessionLocal()
+        try:
+            if self.engagements:
+                db.query(LlmCall).filter(LlmCall.engagement_id.in_(self.engagements)).delete(
+                    synchronize_session=False)
+                db.query(Report).filter(Report.engagement_id.in_(self.engagements)).delete(
+                    synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
+        super().close()
+
+
+@pytest.fixture
+def ma():
+    w = _MaR().build_family()
+    yield w
+    w.close()
+
+
+def _ma_facts(w, as_of=None) -> dict:
+    db = SessionLocal()
+    try:
+        return report_facts.build_ma_facts(db, db.get(Engagement, w.E.id), _viewer(),
+                                           as_of or datetime.now(timezone.utc))
+    finally:
+        db.close()
+
+
+def _exec_metric_keys() -> list[str]:
+    return [k for k, *_ in report_facts._metrics("2026-01-01T00:00:00+00:00", "e")]
+
+
+def test_ma_metrics_equal_independent_sql_and_exclude_unreviewed_entities(ma):
+    facts = _ma_facts(ma)
+    db = SessionLocal()
+    try:
+        fam = _oracle_family(db, ma.S.id)
+        others = [str(i) for i in fam - {ma.S.id}]
+        all_fam = [str(i) for i in fam]
+        sql = lambda q, **p: db.execute(text(q), p).scalar_one()  # noqa: E731
+        expected = {
+            "family_entities": len(others),
+            "family_subsidiaries": sql(
+                "select count(distinct subject_id) from entity_relations where status = 'confirmed' and "
+                "relation = 'subsidiary_of' and subject_id = any(cast(:ids as uuid[]))", ids=others),
+            "family_acquired": sql(
+                "select count(distinct object_id) from entity_relations where status = 'confirmed' and "
+                "relation = 'acquired' and object_id = any(cast(:ids as uuid[]))", ids=others),
+            "family_own_relationship": sql(
+                "select count(*) from org_entities where relationship is not null and "
+                "id = any(cast(:ids as uuid[]))", ids=others),
+            "former_names": sql(
+                "select count(*) from entity_relations where status = 'confirmed' and subject_id = :s "
+                "and relation in ('formerly_named', 'dba')", s=str(ma.S.id)),
+            "relations_proposed": sql(
+                "select count(*) from entity_relations where status = 'proposed' and "
+                "(subject_id = any(cast(:ids as uuid[])) or object_id = any(cast(:ids as uuid[])))", ids=all_fam),
+            "domains_accepted": sql(
+                "select count(*) from candidate_domains where status = 'accepted' and "
+                "entity_id = any(cast(:ids as uuid[]))", ids=all_fam),
+            "domains_proposed": sql(
+                "select count(*) from candidate_domains where status = 'proposed' and "
+                "entity_id = any(cast(:ids as uuid[]))", ids=all_fam),
+        }
+    finally:
+        db.close()
+    got = {k: facts["metrics"][k]["count"] for k in expected}
+    assert got == expected
+    # Hand-checked against the fixture, so the oracle is not the only witness: the family is
+    # A, B and the three chain companies. P (proposed), Q (proposed), R (rejected), U (S's
+    # parent), F (formerly_named) and D2 (dba) are not in it.
+    assert expected == {
+        "family_entities": 5, "family_subsidiaries": 1, "family_acquired": 5, "family_own_relationship": 1,
+        "former_names": 2, "relations_proposed": 3, "domains_accepted": 2, "domains_proposed": 2,
+    }
+    assert all(m["capped"] is False and m["label"] and m["query"] for m in facts["metrics"].values())
+
+
+def test_ma_metric_order_and_list_order_are_complete(ma):
+    facts = _ma_facts(ma)
+    exec_keys = _exec_metric_keys()
+    ma_keys = ["family_entities", "family_subsidiaries", "family_acquired", "family_own_relationship",
+               "former_names", "relations_proposed", "domains_accepted", "domains_proposed"]
+    assert len(exec_keys) == 15
+    assert facts["metric_order"] == exec_keys + ma_keys
+    assert set(facts["metrics"]) == set(facts["metric_order"])
+    assert facts["list_order"] == ["family", "acquisitions", "former_names", "domains"]
+    assert set(facts["lists"]) == set(facts["list_order"])
+    assert facts["subject"] == {"id": str(ma.S.id), "name": "Example Holdings S"}
+    assert facts["engagement"] == {"id": str(ma.E.id), "posture": "pre_close"}
+    assert facts["top_findings"] == [] and facts["top_findings_query"]["entity"] == "finding"
+
+
+def test_ma_lists_hold_confirmed_and_accepted_records_only(ma):
+    facts = _ma_facts(ma)
+    lists = facts["lists"]
+    assert [r["name"] for r in lists["family"]["rows"]] == [
+        "Chain Alpha", "Chain Beta", "Chain Gamma", "Fabrikam A Ltd", "Fabrikam B Ltd"]
+    assert {r["relationship"] for r in lists["family"]["rows"]} == {None, "ma_target"}
+    acq = lists["acquisitions"]["rows"]
+    assert len(acq) == 5
+    assert acq[0]["entity_id"] == str(ma.B.id) and (acq[0]["acquirer"], acq[0]["acquired"]) == (
+        "Fabrikam A Ltd", "Fabrikam B Ltd")
+    assert acq[0]["event_date"] == "2020-03-01" and acq[1]["event_date"] is None  # dated first
+    assert {r["name"] for r in lists["former_names"]["rows"]} == {"Former Name F", "Trading Name D2"}
+    assert [r["domain"] for r in lists["domains"]["rows"]] == sorted([ma.dom_s.domain, ma.dom_a.domain])
+    assert {r["entity_name"] for r in lists["domains"]["rows"]} == {"Example Holdings S", "Fabrikam A Ltd"}
+    assert all(lst["truncated"] is False and lst["label"] and lst["query"]["limit"] == report_facts.LIST_ROWS
+               for lst in lists.values())
+    # Nothing unreviewed in any list. The proposed and rejected records exist (their counts in the
+    # metrics test prove it) and not one of them is named anywhere in `lists`.
+    blob = json.dumps(lists)
+    for unreviewed in ("Proposed P", "Proposed Q Ltd", "Proposed Z Trading", "Rejected R", "Parent U",
+                       ma.dom_a2.domain, ma.dom_b.domain, ma.dom_u.domain, ma.dom_r.domain):
+        assert unreviewed not in blob, unreviewed
+    # Each stored query reproduces its list.
+    db = SessionLocal()
+    try:
+        for key, lst in lists.items():
+            res = query_compiler.run_query(db, validate(lst["query"]), _viewer())
+            assert res["row_count"] == len(lst["rows"]), key
+    finally:
+        db.close()
+
+
+def test_ma_lists_report_truncation(ma, monkeypatch):
+    monkeypatch.setattr(report_facts, "LIST_ROWS", 2)
+    lists = _ma_facts(ma)["lists"]
+    assert [len(lst["rows"]) for lst in lists.values()] == [2, 2, 2, 2]
+    # family has 5 and acquisitions 5: more exist. former names and domains hold exactly 2: they do not.
+    assert {k: lst["truncated"] for k, lst in lists.items()} == {
+        "family": True, "acquisitions": True, "former_names": False, "domains": False}
+    assert lists["family"]["query"]["limit"] == 2
+
+
+def test_build_ma_facts_refuses_an_engagement_with_no_subject(ma):
+    db = SessionLocal()
+    try:
+        with pytest.raises(ValueError):
+            report_facts.build_ma_facts(db, db.get(Engagement, ma.N.id), _viewer(), datetime.now(timezone.utc))
+    finally:
+        db.close()
+
+
+# ── shape with list citations ───────────────────────────────────────────────
+
+def _ma_shape(facts, *statements):
+    return reports.shape(reports.MaReportOut(statements=list(statements)), facts)
+
+
+def _ma_st(text, *sources, section="family"):
+    return reports.MaStatement(section=section, text=text,
+                               sources=[reports.Source(path=p, value=v) for p, v in sources])
+
+
+def test_a_list_row_citation_grounds_and_points_at_the_entity(ma):
+    facts = json.loads(json.dumps(_ma_facts(ma)))
+    row = facts["lists"]["family"]["rows"][0]
+    kept, returned, dropped, reasons = _ma_shape(
+        facts, _ma_st("The first family company is named as shown.", ("lists.family.rows[0].name", row["name"])))
+    assert (returned, dropped, reasons) == (1, 0, {})
+    assert kept[0]["citations"] == [{"path": "lists.family.rows[0].name", "value": row["name"],
+                                     "kind": "entity", "ref": row["entity_id"]}]
+    # a domain row's entity_id is the company that owns the domain:
+    d = facts["lists"]["domains"]["rows"][0]
+    kept, *_ = _ma_shape(facts, _ma_st("A domain is listed.", ("lists.domains.rows[0].domain", d["domain"]),
+                                       section="domains"))
+    assert (kept[0]["citations"][0]["kind"], kept[0]["citations"][0]["ref"]) == ("entity", d["entity_id"])
+    # metrics keep their meaning, and a stale value still drops:
+    kept, *_ = _ma_shape(facts, _ma_st(
+        "There are 5 companies in the family.", ("metrics.family_entities.count", "5")))
+    assert (kept[0]["citations"][0]["kind"], kept[0]["citations"][0]["ref"]) == ("metric", "family_entities")
+    _, _, dropped, reasons = _ma_shape(facts, _ma_st("Wrong.", ("lists.family.rows[0].name", "Someone Else")))
+    assert (dropped, reasons) == (1, {"value_not_at_path": 1})
+
+
+def test_a_list_row_without_an_entity_id_is_a_plain_fact():
+    facts = {"metrics": {}, "top_findings": [], "lists": {"misc": {"rows": [{"label": "alpha"}], "truncated": False}}}
+    kept, *_ = _ma_shape(facts, _ma_st("A row is listed.", ("lists.misc.rows[0].label", "alpha")))
+    assert kept[0]["citations"] == [{"path": "lists.misc.rows[0].label", "value": "alpha",
+                                     "kind": "fact", "ref": None}]
+    # a path into a list that is not a row (the truncated flag) is a fact too
+    kept, *_ = _ma_shape(facts, _ma_st("Nothing is cut off.", ("lists.misc.truncated", "false")))
+    assert len(kept) == 1 and kept[0]["citations"][0]["kind"] == "fact"
+
+
+def test_the_ma_schema_restricts_sections_to_its_own():
+    reports.MaReportOut.model_validate({"statements": [{"section": "family", "text": "x", "sources": []}]})
+    for section in ("posture", "nonsense"):
+        with pytest.raises(Exception) as exc:
+            reports.MaReportOut.model_validate({"statements": [{"section": section, "text": "x", "sources": []}]})
+        assert "section" in str(exc.value)
+    reports.ReportOut.model_validate({"statements": [{"section": "posture", "text": "x", "sources": []}]})
+    with pytest.raises(Exception):
+        reports.ReportOut.model_validate({"statements": [{"section": "family", "text": "x", "sources": []}]})
+    assert reports.KIND_CONFIGS["exec_summary"].prompt_version == reports.PROMPT_VERSION
+    assert reports.KIND_CONFIGS["ma_brief"].prompt_version == reports.MA_PROMPT_VERSION
+    assert reports.KIND_CONFIGS["ma_brief"].sections == ("family", "acquisitions", "domains", "exposure",
+                                                          "priorities", "gaps")
+    assert reports.KIND_CONFIGS["exec_summary"].sections == reports.SECTIONS
+
+
+# ── generate end to end ─────────────────────────────────────────────────────
+
+def _ma_statements(facts):
+    row = facts["lists"]["family"]["rows"][0]
+    return [
+        {"section": "family", "text": f"{row['name']} is in the confirmed family.",
+         "sources": [{"path": "lists.family.rows[0].name", "value": row["name"]}]},
+        {"section": "family",
+         "text": f"The family has {facts['metrics']['family_entities']['count']} other companies.",
+         "sources": [{"path": "metrics.family_entities.count",
+                      "value": str(facts["metrics"]["family_entities"]["count"])}]},
+        {"section": "gaps",
+         "text": f"{facts['metrics']['relations_proposed']['count']} relationship records await review.",
+         "sources": [{"path": "metrics.relations_proposed.count",
+                      "value": str(facts["metrics"]["relations_proposed"]["count"])}]},
+        {"section": "domains", "text": "A domain of 77 hosts.",   # 77 is cited nowhere
+         "sources": [{"path": "lists.domains.rows[0].domain",
+                      "value": facts["lists"]["domains"]["rows"][0]["domain"]}]},
+    ]
+
+
+def _post_ma(headers, engagement_id):
+    return client.post("/api/reports", json={"engagement_id": str(engagement_id), "kind": "ma_brief"},
+                       headers=headers)
+
+
+def test_generate_ma_brief_end_to_end_with_the_transport_spied(ma, llm, writer, permissive):
+    headers, _ = writer
+    t = llm(_scripted(_ma_statements))
+    r = _post_ma(headers, ma.E.id)
+    assert r.status_code == 202, r.text
+    assert r.json()["kind"] == "ma_brief"
+    row = _row(r.json()["id"])
+
+    assert len(t.requests) == 1
+    body = t.bodies()[0]
+    user_msg = body["messages"][-1]["content"]
+    assert "<data>" in user_msg and '"lists"' in user_msg and "Example Holdings S" in user_msg
+    system = body["messages"][0]["content"]
+    assert "M&A due-diligence" in system and "CONFIRMED" in system and "awaiting review" in system
+    data = _data_of(t.requests[0])
+    assert data["subject"]["name"] == "Example Holdings S" and set(data["lists"]) == set(data["list_order"])
+
+    assert row.status == "done" and row.kind == "ma_brief" and row.prompt_version == reports.MA_PROMPT_VERSION
+    assert (row.statements_returned, row.statements_dropped) == (4, 1)
+    assert row.drop_reasons == {"number_not_in_sources": 1}
+    assert [s["section"] for s in row.payload["statements"]] == ["family", "family", "gaps"]
+    assert row.payload["statements"][0]["citations"][0]["kind"] == "entity"
+    assert row.ledger_ids
+    db = SessionLocal()
+    try:
+        calls = db.query(LlmCall).filter(LlmCall.task == f"report:{row.id}").all()
+        assert [c.id for c in calls] == row.ledger_ids and {c.engagement_id for c in calls} == {ma.E.id}
+    finally:
+        db.close()
+
+    md = client.get(f"/api/reports/{row.id}/markdown", headers=headers)
+    assert md.status_code == 200 and md.text.startswith("# M&A due-diligence brief — ")
+    assert "## Confirmed corporate family" in md.text and "### Family" in md.text and "### Gaps" in md.text
+
+
+def test_an_ma_answer_with_an_exec_section_fails_the_row_and_keeps_the_facts(ma, llm, writer, permissive):
+    headers, _ = writer
+    # a fixed answer: the retry ladder's later requests carry no <data> block for `_scripted` to read
+    t = llm(lambda request: _ok_response(model=NARRATE_PRIMARY, content=json.dumps({"statements": [
+        {"section": "posture", "text": "Fine.",
+         "sources": [{"path": "metrics.findings_open.count", "value": "0"}]}]})))
+    row = _row(_post_ma(headers, ma.E.id).json()["id"])
+    assert t.requests                                       # the model really was asked
+    assert row.status == "failed" and row.error == "no model returned a usable report"
+    assert row.payload is None and row.facts["lists"]["family"]["rows"]   # the numbers and lists stand
+
+
+# ── API ─────────────────────────────────────────────────────────────────────
+
+def test_ma_brief_without_a_subject_is_422_and_makes_no_call(ma, llm, writer, permissive):
+    headers, _ = writer
+    t = llm(_scripted(_ma_statements))
+    r = _post_ma(headers, ma.N.id)
+    assert r.status_code == 422
+    assert r.json()["detail"] == "this engagement has no subject entity, so there is no corporate family to brief on"
+    assert t.requests == []
+    db = SessionLocal()
+    try:
+        assert db.query(Report).filter(Report.engagement_id == ma.N.id).count() == 0   # no row either
+    finally:
+        db.close()
+    # the same request for an engagement WITH a subject gets past the guard and reaches the model
+    assert _post_ma(headers, ma.E.id).status_code == 202 and len(t.requests) == 1
+
+
+def test_exec_summary_is_unchanged_for_an_engagement_with_a_subject(ma, llm, writer, permissive):
+    headers, _ = writer
+    t = llm(_scripted(lambda facts: [{"section": "posture", "text": "No findings are recorded.",
+                                      "sources": [{"path": "metrics.findings_open.count", "value": "0"}]}]))
+    r = _post(headers, ma.E.id)                              # no kind: the default
+    assert r.status_code == 202 and r.json()["kind"] == "exec_summary"
+    row = _row(r.json()["id"])
+    assert row.status == "done" and row.statements_dropped == 0
+    assert row.prompt_version == reports.PROMPT_VERSION
+    assert "lists" not in _data_of(t.requests[0]) and "subject" not in _data_of(t.requests[0])
+    assert "executive summary" in t.bodies()[0]["messages"][0]["content"]
+    bad = client.post("/api/reports", json={"engagement_id": str(ma.E.id), "kind": "other"}, headers=headers)
+    assert bad.status_code == 422
+
+
+# ── markdown ────────────────────────────────────────────────────────────────
+
+EVIL = "Evil [x](http://e.example) Ltd"
+EVIL_ESCAPED = "Evil \\[x\\]\\(http://e.example\\) Ltd"
+
+
+def _ma_report(truncated=False, n_rows=1) -> Report:
+    row = {"entity_id": "11111111-1111-1111-1111-111111111111"}
+    facts = {
+        "as_of": "2026-10-10T00:00:00+00:00", "engagement": {"id": "e", "posture": "pre_close"},
+        "subject": {"id": "s", "name": EVIL},
+        "metrics": {"family_entities": {"label": "Family", "count": 3, "capped": False}},
+        "metric_order": ["family_entities"],
+        "lists": {
+            "family": {"label": "Confirmed corporate family", "truncated": truncated,
+                       "rows": [{**row, "name": EVIL, "relationship": "ma_target"}] * n_rows},
+            "acquisitions": {"label": "Confirmed acquisitions", "truncated": False, "rows": [
+                {**row, "acquirer": EVIL, "acquired": "![i](x)", "event_date": "2020-03-01T00:00:00"}]},
+            "former_names": {"label": "Confirmed former names", "truncated": False,
+                             "rows": [{**row, "name": EVIL}]},
+            "domains": {"label": "Accepted candidate domains", "truncated": False,
+                        "rows": [{**row, "domain": "a.example.com", "entity_name": EVIL}]},
+        },
+        "list_order": ["family", "acquisitions", "former_names", "domains"],
+        "top_findings": [],
+    }
+    payload = {"statements": [{
+        "section": "family", "text": EVIL,
+        "citations": [{"path": "lists.family.rows[0].name", "value": EVIL, "kind": "entity",
+                       "ref": row["entity_id"]}],
+    }]}
+    return Report(id=uuid.uuid4(), engagement_id=uuid.uuid4(), kind="ma_brief", status="done",
+                  as_of=datetime(2026, 10, 10, tzinfo=timezone.utc), facts=facts, payload=payload,
+                  statements_returned=1, statements_dropped=0)
+
+
+def test_render_markdown_for_ma_brief_escapes_hostile_names_in_title_and_rows():
+    md = reports.render_markdown(_ma_report(), EVIL)
+    assert md.startswith(f"# M&A due-diligence brief — {EVIL_ESCAPED}")
+    assert "](" not in md and "![" not in md
+    assert f"- {EVIL_ESCAPED} \\(M&A target\\)" in md                        # family row
+    assert f"- {EVIL_ESCAPED} acquired \\!\\[i\\]\\(x\\) \\(2020-03-01T00:00:00\\)" in md   # acquisitions row
+    assert f"- {EVIL_ESCAPED}\n" in md                                         # former-name row
+    assert f"- a.example.com \\({EVIL_ESCAPED}\\)" in md                       # domain row
+    assert f"- {EVIL_ESCAPED} \\[1\\]" in md                                   # the statement
+    assert "entity: lists.family.rows\\[0\\].name" in md
+    assert "(/entities/11111111-1111-1111-1111-111111111111)" in md
+    for heading in ("## Confirmed corporate family", "## Confirmed acquisitions", "## Confirmed former names",
+                    "## Accepted candidate domains", "### Family"):
+        assert heading in md
+    assert "Showing the first" not in md                                      # nothing truncated
+
+
+def test_render_markdown_for_ma_brief_says_when_a_list_is_truncated():
+    md = reports.render_markdown(_ma_report(truncated=True, n_rows=25), "Eng")
+    assert md.count("Showing the first 25; more exist.") == 1
+    assert md.index("## Confirmed corporate family") < md.index("Showing the first 25") < md.index(
+        "## Confirmed acquisitions")
+
+
+def test_render_markdown_for_exec_summary_has_no_list_blocks():
+    md = _render_fixture()
+    assert "## Confirmed" not in md and md.startswith("# Executive summary")
+
+
+# ── migration 0074 ──────────────────────────────────────────────────────────
+
+def test_migration_0074_admits_ma_brief_and_still_refuses_unknown_kinds(ma):
+    db = SessionLocal()
+    try:
+        definition = db.execute(text(
+            "select pg_get_constraintdef(oid) from pg_constraint where conname = 'ck_reports_kind'")).scalar_one()
+        assert "ma_brief" in definition and "exec_summary" in definition
+        db.add(Report(engagement_id=ma.E.id, kind="ma_brief", status="done", as_of=datetime.now(timezone.utc)))
+        db.commit()                                             # admitted
+        db.add(Report(engagement_id=ma.E.id, kind="bogus", status="done", as_of=datetime.now(timezone.utc)))
+        with pytest.raises(IntegrityError):
+            db.commit()                                         # and nothing else is
+        db.rollback()
+        assert db.execute(text("select version_num from alembic_version")).scalar_one() >= "0074"
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("iso,precision,expected", [
+    ("2021-01-01T00:00:00+00:00", "year", "2021"),
+    ("2021-03-01T00:00:00+00:00", "month", "2021-03"),
+    ("2021-03-14T00:00:00+00:00", "day", "2021-03-14"),
+    ("2021-03-14T00:00:00+00:00", "unknown", None),
+    (None, "day", None),
+])
+def test_event_date_text_claims_only_the_recorded_precision(iso, precision, expected):
+    # a year-precision date is stored as January 1st; it must not read as a day
+    assert report_facts.event_date_text(iso, precision) == expected
+
+
+@pytest.mark.parametrize("kind,cap", [("exec_summary", 20), ("ma_brief", 30)])
+def test_each_kind_tells_the_model_its_own_statement_cap(kind, cap):
+    system = reports.messages_for({"metrics": {}}, kind)[0]["content"]
+    assert f"Write at most {cap} statements" in system
+    assert "{max_statements}" not in system
+    assert reports.KIND_CONFIGS[kind].max_statements == cap
+
+
+def test_shape_cuts_at_the_cap_it_is_given():
+    good = _st("There are 12 open findings.", OPEN_SRC)
+    answer = reports.ReportOut(statements=[good] * 25)
+    assert len(reports.shape(answer, SHAPE_FACTS)[0]) == 20                  # default = exec cap
+    kept, returned, dropped, reasons = reports.shape(answer, SHAPE_FACTS, 24)
+    assert (len(kept), returned, dropped, reasons) == (24, 25, 1, {"over_cap": 1})
+
+
+# ── recorded live ma_brief answer ───────────────────────────────────────────
+
+_MA_RECORDED = Path(__file__).parent / "fixtures" / "report_ma_recorded_2026-10-11.json"
+
+
+def _ma_recorded() -> dict:
+    return json.loads(_MA_RECORDED.read_text(encoding="utf-8"))
+
+
+def _ma_replay(rec: dict):
+    cfg = reports.KIND_CONFIGS["ma_brief"]
+    return reports.shape(cfg.out_model.model_validate(rec["answer"]), rec["facts"], cfg.max_statements)
+
+
+def test_recorded_ma_answer_shapes_as_it_did_live():
+    rec = _ma_recorded()
+    kept, returned, dropped, reasons = _ma_replay(rec)
+    assert {"returned": returned, "kept": len(kept), "dropped": dropped, "reasons": reasons} == rec["expected"]
+    assert len(kept) > 0
+    # an entity citation reached _citation and resolved to the list row's entity
+    entity_cites = [c for s in kept for c in s["citations"] if c["kind"] == "entity"]
+    assert entity_cites and all(c["ref"] for c in entity_cites)
+
+
+@pytest.mark.parametrize("metric", ["family_entities", "relations_proposed"])
+def test_recorded_ma_answer_drops_a_statement_whose_source_changed(metric):
+    rec = _ma_recorded()
+    before, *_ = _ma_replay(rec)
+    cites = [s for s in before if any(c["path"] == f"metrics.{metric}.count" for c in s["citations"])]
+    assert cites
+    rec["facts"]["metrics"][metric]["count"] += 1
+    after, _, _, reasons = _ma_replay(rec)
+    assert len(after) == len(before) - len(cites)
+    assert reasons.get("value_not_at_path") == len(cites)
+
+
+def test_markdown_family_row_shows_the_relationship_in_words():
+    assert reports._row_line("family", {"name": "Example Holdings B", "relationship": "ma_target"}) == \
+        "Example Holdings B \(M&A target\)"
+    assert reports._row_line("family", {"name": "Example Holdings B", "relationship": None}) == "Example Holdings B"
