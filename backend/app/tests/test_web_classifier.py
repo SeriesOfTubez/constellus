@@ -1385,7 +1385,7 @@ def _delete(asset_id, headers, port=443):
 def _override_audits(uid) -> list[dict]:
     db = SessionLocal()
     try:
-        changes = [r.detail.get("changes", {}) for r in db.query(AuditLog).filter(AuditLog.user_id == uid).all()]
+        changes = [r.detail.get("changes", {}) for r in db.query(AuditLog).filter(AuditLog.user_id == uid).order_by(AuditLog.occurred_at).all()]
     finally:
         db.close()
     return [c for c in changes if "web_classification_override" in c]
