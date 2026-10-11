@@ -47,6 +47,8 @@ def _ask(user: User, question: str, conversation_id: uuid.UUID | None) -> dict[s
     except (llm_connector.LLMNotConfigured, llm_connector.LLMConfigError) as exc:
         # LLMConfigError covers ModelsNotConfigured and StrictPolicyRefused.
         raise HTTPException(status_code=503, detail=f"AI is not available: {exc}")
+    except llm_connector.InputBlocked:
+        raise HTTPException(status_code=422, detail="the AI provider blocked this message as a likely prompt injection")
     except (llm_connector.LLMBudgetExhausted, llm_connector.LLMRateLimited) as exc:
         raise HTTPException(status_code=429, detail=str(exc))
     except llm_connector.LLMError as exc:

@@ -525,6 +525,20 @@ def test_unusable_output_fails_the_row_with_a_plain_message(world, llm, admin):
     assert g["writeup"] is None and g["last_failure"]["error"] == row.error
 
 
+def test_a_provider_403_input_block_fails_the_row_with_its_own_message(world, llm, admin):
+    a = world.asset()
+    f = world.finding(a)
+    t = llm(lambda request: httpx.Response(403, json={"error": {
+        "code": 403, "message": "Request blocked: prompt injection patterns detected"}}))
+    assert client.post(f"/api/findings/{f}/ai-writeup", headers=admin).status_code == 200
+    assert len(t.requests) == 1  # reached, and no fallback to another model
+    row = _rows(f)[0]
+    assert row.status == "failed"
+    assert row.error == ("the AI provider blocked this input as a likely prompt injection "
+                         "(the asset's own text, e.g. a banner or title)")
+    assert row.payload is None and row.ledger_ids
+
+
 # ── scope: the strictest of the asset's targets ─────────────────────────────
 
 def _provider(t: _Transport) -> dict:
@@ -680,6 +694,11 @@ def test_no_scoring_module_reads_writeups():
             "finding_writeup.auto_count_today(db)",
         ),
         root / "services" / "app_settings.py": (re.compile(cap_key), '"ai.finding_writeups.auto_daily_cap": "0"'),
+        # planning#231: the web classifier reuses the scope resolver and nothing else.
+        root / "services" / "web_classifier.py": (
+            re.compile(r"from app\.services\.finding_writeup import resolve_scope\n"),
+            "from app.services.finding_writeup import resolve_scope\n",
+        ),
     }
     pattern = re.compile(r"finding_writeup|FindingAiWriteup|finding_ai_writeups")
     offenders = []

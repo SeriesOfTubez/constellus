@@ -1,9 +1,30 @@
+import json
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.core.config import settings
 
-engine = create_engine(settings.database_url)
+
+def _strip_nul(value):
+    """Recursively remove U+0000 from every str (dict keys and values, list/tuple items)."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {_strip_nul(k): _strip_nul(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_strip_nul(v) for v in value]
+    return value
+
+
+def _json_serializer(obj):
+    # Postgres JSONB cannot store U+0000, and scanned data (banners, titles,
+    # certs) is attacker-controlled. This serializer is the one choke point
+    # for every JSONB write, so a NUL can never reach the database through it.
+    return json.dumps(_strip_nul(obj))
+
+
+engine = create_engine(settings.database_url, json_serializer=_json_serializer)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

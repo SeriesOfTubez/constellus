@@ -267,6 +267,28 @@ def _parse_host_ports(host: dict) -> list[dict]:
         if module is not None:
             entry["shodan_module"] = module
 
+        # Web fields from Shodan's `http` block (planning#231). Never stored:
+        # `html`, `favicon.data`, `location`, `redirects` (bulk or attacker text
+        # the classifier does not need). Absent values set no key.
+        http = svc.get("http")
+        if isinstance(http, dict):
+            title = http.get("title")
+            if isinstance(title, str) and title.strip():
+                entry["http_title"] = title.strip()[:512]
+            status = http.get("status")
+            if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+                entry["http_status"] = status
+            components = http.get("components")
+            if isinstance(components, dict):
+                names = sorted(k for k in components if isinstance(k, str) and k)[:50]
+                if names:
+                    entry["tech_stack"] = names
+            favicon = http.get("favicon")
+            if isinstance(favicon, dict):
+                fav_hash = favicon.get("hash")
+                if isinstance(fav_hash, int) and not isinstance(fav_hash, bool):
+                    entry["favicon_hash"] = str(fav_hash)
+
         # Per-port TLS: fold Shodan's `ssl` block into the same cert_summary
         # shape tlsx writes, so the unified TLS panel reads both sources (#56).
         cert_summary = _parse_ssl_cert(svc.get("ssl"))

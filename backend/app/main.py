@@ -26,6 +26,7 @@ from app.api import reports
 from app.api import scan_templates
 from app.api import settings as settings_api
 from app.api import system
+from app.api import web_classifications
 from app.core.config import require_configured_secret_key, settings
 from app.core.database import get_db
 from app.services.audit import AuditMiddleware
@@ -132,6 +133,7 @@ app.include_router(audit.router, prefix="/api/audit", tags=["audit"])
 app.include_router(engagements.router, prefix="/api/engagements", tags=["engagements"])
 app.include_router(entities.router, prefix="/api/entities", tags=["entities"])
 app.include_router(llm.router, prefix="/api/llm", tags=["llm"])
+app.include_router(web_classifications.router, prefix="/api", tags=["web-classifications"])
 app.include_router(query.router, prefix="/api/query", tags=["query"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(reports.router, prefix="/api/reports", tags=["reports"])

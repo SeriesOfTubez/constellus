@@ -72,6 +72,10 @@ def create_scan(
         created_by_id=current_user.id,
     )
     db.add(tmpl)
+    # Flush first: there is no relationship() between the two models, so the
+    # unit of work may emit the run's INSERT before the template's and fail
+    # fk_scan_runs_template_id.
+    db.flush()
 
     run = ScanRun(
         id=uuid.uuid4(),

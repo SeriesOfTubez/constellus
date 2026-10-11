@@ -395,6 +395,7 @@ def request_report(db: Session, engagement: Engagement, kind: str, user: User) -
 # never a response body or a traceback.
 _FAILURES: tuple[tuple[type[Exception], str], ...] = (
     (llm_connector.ModelsNotConfigured, "AI models not configured (Admin -> AI models)"),
+    (llm_connector.InputBlocked, "the AI provider blocked this input as a likely prompt injection"),
     (llm_connector.LLMNotConfigured, "the OpenRouter connector is not configured or not enabled"),
     (llm_connector.LLMBudgetExhausted, "the daily AI budget is used up"),
     (llm_connector.LLMRateLimited, "the AI provider is rate-limiting; try again later"),

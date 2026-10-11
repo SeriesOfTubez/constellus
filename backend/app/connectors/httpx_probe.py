@@ -249,7 +249,10 @@ class HttpxConnector(ScanningConnector):
                 entry["tech_stack"] = tech
             title = row.get("title")
             if isinstance(title, str) and title:
-                entry["http_title"] = title
+                entry["http_title"] = title[:512]
+            status_code = row.get("status_code")
+            if isinstance(status_code, int) and not isinstance(status_code, bool) and 100 <= status_code <= 599:
+                entry["http_status"] = status_code
             favicon = row.get("favicon")
             if isinstance(favicon, str) and favicon:
                 entry["favicon_hash"] = favicon

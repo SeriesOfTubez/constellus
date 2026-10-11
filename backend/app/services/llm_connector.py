@@ -300,7 +300,16 @@ class LLMError(Exception):
 class LLMNotConfigured(LLMError):
     """The `openrouter` connector row is missing, disabled, or has no
     stored API key (R5) — or OpenRouter itself rejected the key
-    (401/403)."""
+    (401, or a 403 whose message names the key)."""
+
+
+class InputBlocked(LLMError):
+    """OpenRouter (or the provider) refused this request's input (HTTP 403
+    other than a key problem) — e.g. its prompt-injection or moderation
+    filter flagged attacker-controlled data inside the untrusted block.
+    Deliberately NOT escalated to another model: the filter sits in front
+    of every model on the key, so the next model gets the same verdict and
+    each attempt is a wasted request."""
 
 
 class LLMConfigError(LLMError):
@@ -1164,10 +1173,11 @@ def _attempt_model(
     "upstream_error" | "transport_error", "error_detail": ...}` once this
     MODEL's own attempts are exhausted (caller escalates to the next
     model). Raises `LLMRateLimited` / `LLMBudgetExhausted` /
-    `LLMNotConfigured` directly on 429-exhausted / 402-other / 401/403 —
-    those end the WHOLE call, never just this model: a rate limit, a
-    billing refusal, or a rejected key is not fixed by trying a different
-    model with the same account behind it.
+    `LLMNotConfigured` / `InputBlocked` directly on 429-exhausted /
+    402-other / 401 or key-403 / other-403 — those end the WHOLE call,
+    never just this model: a rate limit, a billing refusal, a rejected
+    key, or an input filter is not fixed by trying a different model with
+    the same account behind it.
     """
     _refuse_web_search(policy, role, models=[model, str(body.get("model", ""))], body=body)  # R8 backstop
     attempt_in_model = 0
@@ -1274,6 +1284,10 @@ def _attempt_model(
         if resp.status_code in (401, 403):
             msg = _error_message(resp)
             _record("upstream_error", error_detail=msg, latency_ms=latency_ms)
+            if resp.status_code == 403 and "key" not in msg.casefold():
+                # The provider refused the INPUT (e.g. an injection filter
+                # tripped by attacker-controlled data), not the key.
+                raise InputBlocked(f"OpenRouter blocked this request's input (HTTP 403): {msg}")
             raise LLMNotConfigured(f"OpenRouter rejected the API key (HTTP {resp.status_code}): {msg}")
 
         if resp.status_code >= 500:
