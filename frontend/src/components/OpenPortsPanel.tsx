@@ -1,5 +1,13 @@
-import { Radio } from "lucide-react"
+import { Radio, Sparkles } from "lucide-react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { WebClassificationSummary } from "@/components/ai/WebClassificationSummary"
+import { WebClassificationControls } from "@/components/ai/WebClassificationControls"
+import { api } from "@/lib/api"
+import { useAuthStore } from "@/lib/auth"
+import type { WebEndpointState } from "@/lib/webClassification"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { relativeTime } from "@/lib/time"
 import type { ProbeClass } from "@/lib/api"
@@ -86,6 +94,7 @@ export type OpenPortEntry = {
   l7_confirmed?: boolean
   tech_stack?: string[]
   http_title?: string
+  http_status?: number
   favicon_hash?: string
   jarm?: string
   cert_summary?: CertSummary
@@ -174,6 +183,7 @@ export function OpenPortsPanel({
   legacyShodanPorts,
   probeClass,
   lastPortScanAt,
+  classifyAssetId,
 }: {
   entries: OpenPortEntry[]
   /**
@@ -190,7 +200,32 @@ export function OpenPortsPanel({
    *  between the two `direct_addressable` empty states; see
    *  NO_PORT_SCAN_RECORDED. */
   lastPortScanAt?: string | null
+  /** planning#231 � the asset whose ports are shown. When set, each web port
+   *  also shows its AI classification (applied, labelled as inferred). */
+  classifyAssetId?: string | null
 }) {
+  const qc = useQueryClient()
+  const isAdmin = useAuthStore(s => s.user?.role) === "admin"
+  const { data: webData } = useQuery({
+    queryKey: ["web-classifications", classifyAssetId],
+    queryFn: () => api.get<{ endpoints: WebEndpointState[] }>(`/assets/${classifyAssetId}/web-classifications`),
+    enabled: !!classifyAssetId,
+    refetchInterval: q => (q.state.data?.endpoints.some(e => e.active) ? 3000 : false),
+  })
+  const webEndpoints = webData?.endpoints ?? []
+  const webByPort = new Map<number, WebEndpointState>(webEndpoints.map(e => [e.port, e]))
+  const allClassified = webEndpoints.length > 0 && webEndpoints.every(e => e.ai !== null)
+  const classify = useMutation({
+    mutationFn: (force: boolean) =>
+      api.post<{ queued: number; cached: number }>(`/assets/${classifyAssetId}/web-classifications?force=${force}`),
+    onSuccess: r => {
+      toast.success(`Queued ${r.queued}, ${r.cached} unchanged`)
+      qc.invalidateQueries({ queryKey: ["web-classifications"] })
+      qc.invalidateQueries({ queryKey: ["web-endpoints"] })
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   const merged = mergeEntries(entries, legacyShodanPorts ?? [])
   if (merged.length === 0 && probeClass == null) return null
 
@@ -226,18 +261,36 @@ export function OpenPortsPanel({
         <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
           {merged.length > 0 ? `Open ports (${merged.length})` : "Open ports"}
         </p>
-        {lastScanAt && (
-          <span
-            className="text-[10px] text-muted-foreground"
-            title={new Date(lastScanAt).toLocaleString()}
-          >
-            scanned {relativeTime(lastScanAt)}
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {isAdmin && classifyAssetId && webEndpoints.length > 0 && (
+            <>
+              <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
+                disabled={classify.isPending} onClick={() => classify.mutate(false)}>
+                <Sparkles className="h-3 w-3" />Classify
+              </Button>
+              {allClassified && (
+                <Button variant="ghost" size="sm" className="h-6 text-xs"
+                  disabled={classify.isPending} onClick={() => classify.mutate(true)}>
+                  Re-classify
+                </Button>
+              )}
+            </>
+          )}
+          {lastScanAt && (
+            <span
+              className="text-[10px] text-muted-foreground"
+              title={new Date(lastScanAt).toLocaleString()}
+            >
+              scanned {relativeTime(lastScanAt)}
+            </span>
+          )}
+        </div>
       </div>
       {merged.length > 0 && (
         <div className="rounded-md border divide-y text-sm">
-          {merged.map(entry => <PortRow key={entry.port} entry={entry} />)}
+          {merged.map(entry => (
+            <PortRow key={entry.port} entry={entry} web={webByPort.get(entry.port)} assetId={classifyAssetId ?? undefined} />
+          ))}
         </div>
       )}
       {note && <p className="text-xs text-muted-foreground">{note}</p>}
@@ -245,9 +298,11 @@ export function OpenPortsPanel({
   )
 }
 
-function PortRow({ entry }: { entry: OpenPortEntry }) {
+function PortRow({ entry, web, assetId }: { entry: OpenPortEntry; web?: WebEndpointState; assetId?: string }) {
   const proto = entry.protocol ?? "tcp"
   const service = entry.service ?? WELL_KNOWN[entry.port]
+  const httpTitle = entry.http_title || web?.http_title || null
+  const httpStatus = web?.http_status ?? entry.http_status ?? null
   const sources = entry.sources ?? []
   // "Unverified" = our stack hasn't confirmed a real application-layer service:
   //  - l7_confirmed === false: nmap -sV scanned it but got no real service
@@ -325,6 +380,18 @@ function PortRow({ entry }: { entry: OpenPortEntry }) {
           title={secondary}
         >
           {secondary}
+        </div>
+      )}
+      {(httpTitle || httpStatus != null) && (
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground/80 pl-[5.75rem]">
+          {httpStatus != null && <span className="shrink-0 tabular-nums">HTTP {httpStatus}</span>}
+          {httpTitle && <span className="truncate" title={httpTitle}>{httpTitle}</span>}
+        </div>
+      )}
+      {web && (
+        <div className="flex items-start justify-between gap-2 pl-[5.75rem]">
+          <WebClassificationSummary state={web} compact />
+          {assetId && <WebClassificationControls assetId={assetId} state={web} />}
         </div>
       )}
       {entry.tech_stack && entry.tech_stack.length > 0 && (

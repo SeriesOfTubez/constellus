@@ -79,7 +79,7 @@ export function useUrlFlag(key: string) {
 }
 
 export type ListViewMode = "table" | "card"
-export type GroupMode = "none" | "band" | "asset" | "apex" | "impact"
+export type GroupMode = "none" | "band" | "asset" | "apex" | "impact" | "kind" | "source"
 
 /**
  * Table-vs-card and the grouping axis, both URL-backed. Grouping render (band /
