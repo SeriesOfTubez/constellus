@@ -1,7 +1,7 @@
 import React, { useState } from "react"
 import { Link } from "react-router-dom"
 import { useFlyout } from "@/lib/flyout"
-import { useListView, useUrlFlag, type GroupMode } from "@/lib/listView"
+import { useListView, useUrlFlag, useUrlState, type GroupMode } from "@/lib/listView"
 import { ViewToggle, GroupBySelect } from "@/components/ListControls"
 import { AssetCard } from "@/components/AssetCard"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
@@ -15,6 +15,9 @@ import {
 import { ConnectedEntities, type ObservedName } from "@/components/ConnectedEntities"
 import { OpenPortsPanel, lastPortScanAtOf, type OpenPortEntry } from "@/components/OpenPortsPanel"
 import { WorkspaceShell, type TabDef } from "@/components/WorkspaceShell"
+import { EndpointsTable } from "@/components/EndpointsTable"
+import { EndpointSheet } from "@/components/EndpointSheet"
+import { KINDS, KIND_LABELS, endpointKey, type WebEndpointState } from "@/lib/webClassification"
 import { PivotTable, type PivotSummaryRow, type PivotAssetRow, SENSITIVE_PORTS } from "@/components/PivotTable"
 import { IndeterminateCheckbox } from "@/components/ui/indeterminate-checkbox"
 import { OverflowCell } from "@/components/ui/overflow-cell"
@@ -88,6 +91,46 @@ function isRowVisible(asset: Asset, allAssets: Asset[]): boolean {
 
 function isNew(asset: Asset): boolean {
   return (Date.now() - new Date(asset.first_seen_at).getTime()) < NEW_ASSET_DAYS * 86_400_000
+}
+
+// ── Web endpoints tab (planning#231) ──────────────────────────────────────────
+
+const ENDPOINT_PAGE = 200
+type EndpointPage = { items: WebEndpointState[]; total: number; limit: number; offset: number }
+
+const ENDPOINT_SOURCE_OPTIONS = [
+  { value: "all",  label: "All sources" },
+  { value: "ai",   label: "Inferred by AI" },
+  { value: "user", label: "Set by admin" },
+  { value: "none", label: "Unclassified" },
+]
+const ENDPOINT_GROUP_OPTIONS: Array<{ value: GroupMode; label: string }> = [
+  { value: "none",   label: "No grouping" },
+  { value: "kind",   label: "Group by kind" },
+  { value: "source", label: "Group by source" },
+]
+const ENDPOINT_SOURCE_LABEL: Record<string, string> = Object.fromEntries(
+  ENDPOINT_SOURCE_OPTIONS.map(o => [o.value, o.label]),
+)
+
+/** Client-side grouping of the loaded page. */
+function groupEndpoints(rows: WebEndpointState[], group: GroupMode) {
+  if (group !== "kind" && group !== "source") return [{ key: "all", label: null as string | null, rows }]
+  const by = new Map<string, WebEndpointState[]>()
+  for (const r of rows) {
+    const k = group === "source" ? r.source : r.source === "none" ? "none" : (r.kind ?? "unknown")
+    by.set(k, [...(by.get(k) ?? []), r])
+  }
+  const order = group === "source" ? ["ai", "user", "none"] : [...KINDS, "none"]
+  return [...by.keys()]
+    .sort((a, b) => order.indexOf(a) - order.indexOf(b))
+    .map(k => ({
+      key: k,
+      label: group === "source"
+        ? ENDPOINT_SOURCE_LABEL[k] ?? k
+        : k === "none" ? "Unclassified" : KIND_LABELS[k as keyof typeof KIND_LABELS] ?? k,
+      rows: by.get(k)!,
+    }))
 }
 
 // ── Port / service pivot derives ──────────────────────────────────────────────
@@ -257,7 +300,12 @@ function derivePivotServiceRows(assets: Asset[]): PivotSummaryRow[] {
 
 const ASSET_TAB_KEYS = ["all", "dns_record", "ip_address"] as const
 
-function buildTabs(assets: Asset[] | undefined, pivotPortRows: PivotSummaryRow[], pivotServiceRows: PivotSummaryRow[]): TabDef[] {
+function buildTabs(
+  assets: Asset[] | undefined,
+  pivotPortRows: PivotSummaryRow[],
+  pivotServiceRows: PivotSummaryRow[],
+  endpointTotal: number,
+): TabDef[] {
   const counts: Record<string, number> = { all: 0 }
   for (const a of assets ?? []) {
     counts.all = (counts.all ?? 0) + 1
@@ -270,6 +318,7 @@ function buildTabs(assets: Asset[] | undefined, pivotPortRows: PivotSummaryRow[]
   const pivotTabs: TabDef[] = [
     { key: "ports",    label: "Ports",    count: pivotPortRows.length },
     { key: "services", label: "Services", count: pivotServiceRows.length },
+    { key: "endpoints", label: "Endpoints", count: endpointTotal },
   ].filter(t => t.count > 0)
 
   return [...assetTabs, ...pivotTabs]
@@ -532,6 +581,7 @@ function AssetDetailSheet({
                   legacyShodanPorts={legacyShodanPorts}
                   probeClass={portSubject?.probe_class ?? null}
                   lastPortScanAt={lastPortScanAtOf(portSubject)}
+                  classifyAssetId={portSubject?.id ?? null}
                 />
 
                 {eolServices.length > 0 && (
@@ -849,8 +899,36 @@ export default function Assets() {
   const availableTags = [...new Set((assets ?? []).flatMap(a => a.tags ?? []))].sort()
   const pivotPortRows    = React.useMemo(() => derivePivotPortRows(assets ?? []),    [assets])
   const pivotServiceRows = React.useMemo(() => derivePivotServiceRows(assets ?? []), [assets])
-  const tabs = buildTabs(assets, pivotPortRows, pivotServiceRows)
-  const isPivotTab = activeTab === "ports" || activeTab === "services"
+  const { data: endpointCount } = useQuery({
+    queryKey: ["web-endpoints", "count"],
+    queryFn: () => api.get<EndpointPage>("/web-endpoints?limit=1"),
+  })
+  const tabs = buildTabs(assets, pivotPortRows, pivotServiceRows, endpointCount?.total ?? 0)
+  const isEndpointsTab = activeTab === "endpoints"
+  // The endpoints tab replaces the asset-specific toolbar controls, like the pivots do.
+  const isPivotTab = activeTab === "ports" || activeTab === "services" || isEndpointsTab
+  const [epSource, setEpSource] = useUrlState("ep_source", "all")
+  const [epKind, setEpKind] = useUrlState("ep_kind", "all")
+  const [epGroupRaw, setEpGroup] = useUrlState("ep_group", "none")
+  const epGroup = epGroupRaw as GroupMode
+  const [epOffset, setEpOffset] = useState(0)
+  const { data: endpointPage, isLoading: endpointsLoading } = useQuery({
+    queryKey: ["web-endpoints", epKind, epSource, epOffset],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: String(ENDPOINT_PAGE), offset: String(epOffset) })
+      if (epKind !== "all") params.set("kind", epKind)
+      if (epSource !== "all") params.set("source", epSource)
+      return api.get<EndpointPage>(`/web-endpoints?${params}`)
+    },
+    enabled: isEndpointsTab,
+  })
+  const endpointRows = React.useMemo(
+    () => (endpointPage?.items ?? []).map(r => ({ ...r, id: endpointKey(r) })),
+    [endpointPage],
+  )
+  const endpointGroups = React.useMemo(() => groupEndpoints(endpointRows, epGroup), [endpointRows, epGroup])
+  // Looked up by key from the query data so a correction re-renders the flyout.
+  const { selected: selectedEndpoint, open: openEndpoint, close: closeEndpoint } = useFlyout(endpointRows, "endpoint")
   // Look up the selected asset across ALL assets (not just visibleRows) so the
   // flyout opens for IPs shown only in the Ports/Services pivots (hidden children).
   const { selected: selectedAsset, open: openAsset, close: closeAsset } = useFlyout(visibleRows, "id", assets ?? [])
@@ -884,15 +962,36 @@ export default function Assets() {
   const searchPlaceholder =
     activeTab === "ports"    ? "Filter by port or service…" :
     activeTab === "services" ? "Filter by service…" :
+    isEndpointsTab ? "Filter by value…" :
     "Filter by value…"
 
   const toolbar = (
     <>
-      <div className="relative flex-1 min-w-48 max-w-sm">
-        <Filter className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-        <Input className="pl-8 h-9 text-sm" placeholder={searchPlaceholder}
-          value={search} onChange={e => setSearch(e.target.value)} />
-      </div>
+      {!isEndpointsTab && (
+        <div className="relative flex-1 min-w-48 max-w-sm">
+          <Filter className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          <Input className="pl-8 h-9 text-sm" placeholder={searchPlaceholder}
+            value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+      )}
+
+      {isEndpointsTab && (
+        <>
+          <Select value={epSource} onValueChange={v => { setEpSource(v); setEpOffset(0) }}>
+            <SelectTrigger className="w-40 h-9 text-sm"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {ENDPOINT_SOURCE_OPTIONS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={epKind} onValueChange={v => { setEpKind(v); setEpOffset(0) }}>
+            <SelectTrigger className="w-44 h-9 text-sm"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All kinds</SelectItem>
+              {KINDS.map(k => <SelectItem key={k} value={k}>{KIND_LABELS[k]}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </>
+      )}
 
       {!isPivotTab && availableTags.length > 0 && (
         <Select value={tagFilter} onValueChange={setTagFilter}>
@@ -935,11 +1034,14 @@ export default function Assets() {
       <div className="ml-auto flex items-center gap-2">
         <span className="text-xs text-muted-foreground">
           {isPivotTab
-            ? activeTab === "ports"
-              ? `${filteredPivotPortRows.length} port${filteredPivotPortRows.length !== 1 ? "s" : ""}`
-              : `${filteredPivotServiceRows.length} service${filteredPivotServiceRows.length !== 1 ? "s" : ""}`
+            ? isEndpointsTab
+              ? `${endpointPage?.total ?? 0} endpoint${(endpointPage?.total ?? 0) !== 1 ? "s" : ""}`
+              : activeTab === "ports"
+                ? `${filteredPivotPortRows.length} port${filteredPivotPortRows.length !== 1 ? "s" : ""}`
+                : `${filteredPivotServiceRows.length} service${filteredPivotServiceRows.length !== 1 ? "s" : ""}`
             : `${visibleRows.length} asset${visibleRows.length !== 1 ? "s" : ""}`}
         </span>
+        {isEndpointsTab && <GroupBySelect group={epGroup} onChange={setEpGroup} options={ENDPOINT_GROUP_OPTIONS} />}
         {!isPivotTab && <GroupBySelect group={group} onChange={setGroup} options={ASSETS_GROUP_OPTIONS} />}
         {!isPivotTab && <ViewToggle view={view} onChange={setView} />}
       </div>
@@ -988,12 +1090,33 @@ export default function Assets() {
         subtitle="Discovered public-facing assets and their correlation chain"
         tabs={tabs}
         activeTab={activeTab}
-        onTabChange={(key) => { setActiveTab(key); setSelectedIds(new Set()) }}
+        onTabChange={(key) => { setActiveTab(key); setSelectedIds(new Set()); setEpOffset(0) }}
         toolbar={toolbar}
         bulkBar={bulkBar}
       >
-        {isLoading ? (
+        {isLoading || (isEndpointsTab && endpointsLoading) ? (
           <div className="space-y-2">{Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}</div>
+        ) : isEndpointsTab ? (
+          <div className="space-y-3">
+            <EndpointsTable
+              groups={endpointGroups}
+              onOpen={openEndpoint}
+              filtered={epSource !== "all" || epKind !== "all"}
+            />
+            {endpointPage && endpointPage.total > ENDPOINT_PAGE && (
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>
+                  Showing {endpointPage.offset + 1}–{Math.min(endpointPage.offset + endpointPage.items.length, endpointPage.total)} of {endpointPage.total}
+                </span>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" disabled={epOffset === 0}
+                    onClick={() => setEpOffset(Math.max(0, epOffset - ENDPOINT_PAGE))}>Prev</Button>
+                  <Button size="sm" variant="outline" disabled={epOffset + ENDPOINT_PAGE >= endpointPage.total}
+                    onClick={() => setEpOffset(epOffset + ENDPOINT_PAGE)}>Next</Button>
+                </div>
+              </div>
+            )}
+          </div>
         ) : activeTab === "ports" ? (
           <PivotTable rows={filteredPivotPortRows} mode="ports" onAssetClick={handlePivotAssetClick} emptyMessage="No open ports discovered" />
         ) : activeTab === "services" ? (
@@ -1246,6 +1369,10 @@ export default function Assets() {
           </div>
         )}
       </WorkspaceShell>
+
+      {isEndpointsTab && selectedEndpoint && (
+        <EndpointSheet row={selectedEndpoint} onClose={closeEndpoint} />
+      )}
 
       {selectedAsset && (
         <AssetDetailSheet

@@ -350,6 +350,7 @@ function AssetDetailBody({
             legacyShodanPorts={legacyShodanPorts}
             probeClass={portSubject?.probe_class ?? null}
             lastPortScanAt={lastPortScanAtOf(portSubject)}
+            classifyAssetId={portSubject?.id ?? null}
           />
 
           {/* Software inventory (EOL) */}

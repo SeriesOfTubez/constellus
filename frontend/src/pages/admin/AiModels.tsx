@@ -60,6 +60,7 @@ interface LlmStatus {
   key_error: string | null
   budget: { daily_budget_usd: number; spent_today_usd: number }
   auto_writeups: AutoWriteups
+  auto_web_classifications: AutoWriteups
 }
 
 interface AutoWriteups {
@@ -148,6 +149,58 @@ function AutoWriteupsCard({ auto }: { auto: AutoWriteups | undefined }) {
           </div>
         </div>
         {!valid && <p className="mt-2 text-xs text-destructive">A whole number from 0 to {AUTO_CAP_MAX}.</p>}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ── automatic web classification (planning#231) ────────────────────────
+
+const WEB_CAP_MAX = 10000
+
+function AutoWebClassificationsCard({ auto }: { auto: AutoWriteups | undefined }) {
+  const qc = useQueryClient()
+  const [draft, setDraft] = useState<string>("")
+  useEffect(() => {
+    if (auto) setDraft(String(auto.daily_cap))
+  }, [auto?.daily_cap])
+  const parsed = Number(draft)
+  const valid = draft.trim() !== "" && Number.isInteger(parsed) && parsed >= 0 && parsed <= WEB_CAP_MAX
+  const dirty = auto !== undefined && valid && parsed !== auto.daily_cap
+  const save = useMutation({
+    mutationFn: (cap: number) => api.put<AutoWriteups>("/llm/web-classification-settings", { daily_cap: cap }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["llm-status"] })
+      toast.success(r.daily_cap === 0 ? "Automatic web classification turned off" : `Automatic web classification: up to ${r.daily_cap} a day`)
+    },
+    onError: (e: Error) => toast.error(`Save failed: ${e.message}`),
+  })
+  if (!auto) return <Skeleton className="h-28" />
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">Automatic web classification</CardTitle>
+        <CardDescription className="text-xs">
+          Classify new web endpoints after each scan, up to this many per day (UTC). 0 turns it off.
+          Each classification is applied and shown as inferred by AI; admins can correct it.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-end gap-6 text-sm">
+          <div className="space-y-1">
+            <Label htmlFor="auto-web-classification-cap" className="text-xs text-muted-foreground">Per day</Label>
+            <div className="flex gap-2">
+              <Input id="auto-web-classification-cap" type="number" min={0} max={WEB_CAP_MAX} step={1} className="h-8 w-24 text-xs"
+                value={draft} onChange={(e) => setDraft(e.target.value)} aria-invalid={!valid} />
+              <Button size="sm" className="h-8" aria-label="Save automatic web classification cap" disabled={!dirty || save.isPending} onClick={() => save.mutate(parsed)}>Save</Button>
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Today</div>
+            <div className="tabular-nums">{auto.daily_cap === 0 ? `${auto.today} (off)` : `${auto.today} of ${auto.daily_cap}`}</div>
+          </div>
+        </div>
+        {!valid && <p className="mt-2 text-xs text-destructive">A whole number from 0 to {WEB_CAP_MAX}.</p>}
       </CardContent>
     </Card>
   )
@@ -391,6 +444,7 @@ export default function AiModels() {
 
       <StatusCards status={status} />
       <AutoWriteupsCard auto={status?.auto_writeups} />
+      <AutoWebClassificationsCard auto={status?.auto_web_classifications} />
 
       {saved && !saved.configured && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm flex items-start gap-2">
