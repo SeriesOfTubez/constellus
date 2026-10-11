@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { exploreHref, isInternalHref, type QueryObject } from "@/lib/chat"
 import {
-  SECTION_LABELS, SECTION_ORDER, citationHref, formatCount,
+  KIND_LABELS, SECTIONS_BY_KIND, citationHref, formatCount, listRowText,
   type Report, type Statement,
 } from "@/lib/reports"
 
@@ -85,12 +85,12 @@ function Narrative({ report }: { report: Report }) {
   let next = 1
   return (
     <div className="space-y-4">
-      {SECTION_ORDER.map(section => {
+      {SECTIONS_BY_KIND[report.kind].map(({ key: section, label }) => {
         const items = statements.filter(s => s.section === section)
         if (!items.length) return null
         return (
           <section key={section} className="space-y-1.5">
-            <h3 className="text-sm font-semibold">{SECTION_LABELS[section]}</h3>
+            <h3 className="text-sm font-semibold">{label}</h3>
             <ul className="list-disc pl-5 space-y-1.5">
               {items.map((s, i) => {
                 const first = next
@@ -102,6 +102,54 @@ function Narrative({ report }: { report: Report }) {
         )
       })}
     </div>
+  )
+}
+
+function FactLists({ report }: { report: Report }) {
+  const lists = report.facts?.lists
+  const order = (report.facts?.list_order ?? []).filter(k => lists && k in lists)
+  if (!lists || !order.length) return null
+  return (
+    <>
+      {order.map(key => {
+        const list = lists[key]
+        return (
+          <section key={key} className="space-y-2">
+            <h3 className="text-sm font-semibold flex items-center gap-2">
+              {list.label}
+              <Link
+                to={exploreHref(list.query as QueryObject)}
+                title="Open in Explore"
+                aria-label={`Open ${list.label} in Explore`}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+              </Link>
+            </h3>
+            {list.rows.length === 0 ? (
+              <p className="text-sm text-muted-foreground">None recorded.</p>
+            ) : (
+              <ul className="list-disc pl-5 space-y-1">
+                {list.rows.map((row, i) => {
+                  const text = listRowText(key, row)
+                  const href = `/entities/${row.entity_id}`
+                  return (
+                    <li key={i} className="text-sm">
+                      {row.entity_id && isInternalHref(href)
+                        ? <Link to={href} className="hover:underline">{text}</Link>
+                        : text}
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+            {list.truncated && (
+              <p className="text-xs text-muted-foreground">Showing the first {list.rows.length}; more exist.</p>
+            )}
+          </section>
+        )
+      })}
+    </>
   )
 }
 
@@ -139,8 +187,16 @@ export function ReportView({ report, engagementName, onDelete, onDownload }: Pro
   return (
     <div className="space-y-5">
       <header className="space-y-1">
-        <h2 className="text-lg font-semibold">Executive summary</h2>
+        <h2 className="text-lg font-semibold">{KIND_LABELS[report.kind]}</h2>
         <p className="text-sm text-muted-foreground">{engagementName}</p>
+        {report.kind === "ma_brief" && report.facts?.subject && (
+          <p className="text-sm text-muted-foreground">
+            Subject:{" "}
+            {isInternalHref(`/entities/${report.facts.subject.id}`)
+              ? <Link to={`/entities/${report.facts.subject.id}`} className="hover:underline">{report.facts.subject.name}</Link>
+              : report.facts.subject.name}
+          </p>
+        )}
         <p className="text-xs text-muted-foreground">
           As of {new Date(report.as_of).toLocaleString()}
           {report.model ? ` · ${report.model}` : ""}
@@ -171,13 +227,16 @@ export function ReportView({ report, engagementName, onDelete, onDownload }: Pro
       {(report.status === "done" || report.status === "failed") && report.facts && (
         <>
           <MetricsTable report={report} />
+          <FactLists report={report} />
           {report.status === "done" && <TopFindings report={report} />}
         </>
       )}
 
       {report.status === "done" && report.statements_dropped > 0 && (
         <p className="text-xs text-muted-foreground">
-          {report.statements_dropped} statement{report.statements_dropped === 1 ? " was" : "s were"} dropped because they could not be tied to the data.
+          {report.statements_dropped === 1
+            ? "1 statement was dropped because it could not be tied to the data."
+            : `${report.statements_dropped} statements were dropped because they could not be tied to the data.`}
         </p>
       )}
 

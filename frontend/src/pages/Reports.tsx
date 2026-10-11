@@ -11,8 +11,8 @@ import { ReportView } from "@/components/reports/ReportView"
 import { api, ApiError, type Engagement } from "@/lib/api"
 import { useAuthStore } from "@/lib/auth"
 import {
-  canGenerateReports, downloadMarkdown, reportsApi,
-  type ReportListItem, type ReportStatus,
+  KIND_LABELS, canGenerateReports, downloadMarkdown, reportsApi,
+  type ReportKind, type ReportListItem, type ReportStatus,
 } from "@/lib/reports"
 
 const STATUS_BADGE: Record<ReportStatus, "default" | "secondary" | "destructive" | "outline"> = {
@@ -79,7 +79,8 @@ export default function Reports() {
     queryFn: () => api.get<Engagement[]>("/engagements/"),
   })
   const engagementId = chosen || engagements?.[0]?.id || ""
-  const engagementName = engagements?.find(e => e.id === engagementId)?.name ?? ""
+  const selectedEngagement = engagements?.find(e => e.id === engagementId)
+  const engagementName = selectedEngagement?.name ?? ""
 
   const { data: reports, isLoading } = useQuery({
     queryKey: ["reports", engagementId],
@@ -91,7 +92,7 @@ export default function Reports() {
   const busy = (reports ?? []).some(r => r.status === "queued" || r.status === "running")
 
   const generate = useMutation({
-    mutationFn: () => reportsApi.create(engagementId),
+    mutationFn: (kind: ReportKind) => reportsApi.create(engagementId, kind),
     onMutate: () => setGenError(null),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["reports", engagementId] }),
     onError: (e: unknown) => setGenError(
@@ -112,7 +113,13 @@ export default function Reports() {
             </Select>
           )}
           {!!engagementId && (
-            <GenerateControl role={user?.role} busy={busy || generate.isPending} onClick={() => generate.mutate()} />
+            <GenerateControl
+              role={user?.role}
+              busy={busy || generate.isPending}
+              onClick={() => generate.mutate("exec_summary")}
+              onGenerateMa={() => generate.mutate("ma_brief")}
+              noSubject={!selectedEngagement?.subject_entity_id}
+            />
           )}
         </div>
       </div>
@@ -132,6 +139,7 @@ export default function Reports() {
           <TableHeader>
             <TableRow>
               <TableHead>Created</TableHead>
+              <TableHead>Type</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Statements kept / dropped</TableHead>
               <TableHead className="text-right">Cost</TableHead>
@@ -141,6 +149,7 @@ export default function Reports() {
             {reports.map((r: ReportListItem) => (
               <TableRow key={r.id} className="cursor-pointer" onClick={() => setOpenId(r.id)}>
                 <TableCell>{new Date(r.created_at).toLocaleString()}</TableCell>
+                <TableCell>{KIND_LABELS[r.kind]}</TableCell>
                 <TableCell><Badge variant={STATUS_BADGE[r.status]}>{r.status}</Badge></TableCell>
                 <TableCell>{r.statements_returned} / {r.statements_dropped}</TableCell>
                 <TableCell className="text-right tabular-nums">

@@ -33,6 +33,25 @@ def finding_clause(user: User, finding: Any, asset: Any) -> ColumnElement[bool]:
     return true()
 
 
+def entity_clause(user: User, entity: Any) -> ColumnElement[bool]:
+    """WHERE clause limiting `entity` (an OrgEntity entity or alias) to what `user` may read.
+    The query language applies it to the `entity` root and to the entity joined onto a
+    `relation` or `domain` row. **Today this grants everything**; planning#261 fills it."""
+    return true()
+
+
+def relation_clause(user: User, relation: Any) -> ColumnElement[bool]:
+    """WHERE clause limiting `relation` (an EntityRelation entity) to what `user` may read.
+    **Today this grants everything**; planning#261 fills it."""
+    return true()
+
+
+def domain_clause(user: User, domain: Any) -> ColumnElement[bool]:
+    """WHERE clause limiting `domain` (a CandidateDomain entity) to what `user` may read.
+    **Today this grants everything**; planning#261 fills it."""
+    return true()
+
+
 def engagement_visible(user: User, engagement_id: Any) -> bool:
     """May `user` see `engagement_id`, and so its reports? The hook planning#261
     fills; report list, view and download all call it, and answer 404 (not 403)

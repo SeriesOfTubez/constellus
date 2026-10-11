@@ -158,8 +158,9 @@ def test_every_field_and_operator_compiles_against_the_database(surface):
             pred = {"field": f.name, "op": op, "value": v}
             if f.namespace == "port":
                 pred = {"exists": {"relation": "port", "where": pred}}
-            if f.namespace == "finding":
-                _run({"entity": "finding", "where": pred, "limit": 1})
+            if f.namespace in ("finding", "entity", "relation", "domain"):
+                # these namespaces are each their own root entity's
+                _run({"entity": f.namespace, "where": pred, "limit": 1})
             else:
                 _run(_scoped(p, pred, limit=1))
 

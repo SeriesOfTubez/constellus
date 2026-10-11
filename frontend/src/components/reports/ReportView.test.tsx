@@ -101,6 +101,8 @@ describe("ReportView narrative", () => {
     const none = render(make({ statements_dropped: 0 }, []))
     expect(none).toContain("No statement could be tied to the data, so none is shown.")
     expect(none).not.toContain("dropped because")
+    const one = render(make({ statements_dropped: 1 }, []))
+    expect(one).toContain("1 statement was dropped because it could not be tied to the data.")
     const dropped = render(make({ statements_dropped: 2 }, []))
     expect(dropped).toContain("2 statements were dropped because they could not be tied to the data.")
   })
@@ -164,5 +166,95 @@ describe("GenerateControl", () => {
   it("is disabled while busy", () => {
     expect(html("admin", true)).toContain(" disabled=\"\"")
     expect(html("admin", false)).not.toContain(" disabled=\"\"")
+  })
+})
+
+describe("ReportView ma_brief", () => {
+  const EID = "7a1b2c3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d"
+  const SID = "11111111-2222-4333-8444-555555555555"
+  const EXPLORE = { version: 1, entity: "entity" }
+  const hostile = "Evil [x](https://evil.example) <b>Ltd</b>"
+
+  function makeMa(entityId: string | null = EID, name = "Example Holdings B"): Report {
+    const base = make({ kind: "ma_brief" }, [
+      { section: "gaps", text: "gap text", citations: [] },
+      { section: "family", text: "family text", citations: [
+        { path: "lists.family.rows[0]", value: name, kind: "entity", ref: EID },
+      ] },
+      { section: "domains", text: "domain text", citations: [] },
+    ])
+    base.facts = {
+      ...base.facts!,
+      subject: { id: SID, name: "Example Holdings A" },
+      list_order: ["family", "acquisitions", "former_names", "domains"],
+      lists: {
+        family: { label: "Corporate family", query: EXPLORE, truncated: true,
+          rows: [{ entity_id: entityId, name, relationship: "subsidiary" }] },
+        acquisitions: { label: "Acquisitions", query: EXPLORE, truncated: false,
+          rows: [{ entity_id: EID, acquirer: "Example Holdings A", acquired: "Example Holdings B", event_date: "2020-01-01" }] },
+        former_names: { label: "Former names", query: EXPLORE, truncated: false, rows: [] },
+        domains: { label: "Domains", query: EXPLORE, truncated: false,
+          rows: [{ entity_id: EID, domain: "fabrikam.com", entity_name: "Example Holdings B" }] },
+      },
+    }
+    return base
+  }
+
+  it("renders title, subject link, sections in order, list rows, entity citation and truncation note", () => {
+    const html = render(makeMa())
+    expect(html).toContain("M&amp;A due-diligence brief")
+    expect(html).toContain(`Subject:`)
+    expect(html).toContain(`href="/entities/${SID}"`)
+    const i = ["Corporate family", "Domains", "What we still don&#x27;t know"].map(h => html.indexOf(`>${h}<`))
+    expect(i.every(n => n > -1)).toBe(true)
+    expect(i[0]).toBeLessThan(i[1])
+    expect(i[1]).toBeLessThan(i[2])
+    expect(html).not.toContain(">Acquisitions</h3><ul class=\"list-disc pl-5 space-y-1.5\"")  // no statements for it
+    expect(html).toContain("Example Holdings B (subsidiary)")
+    expect(html).toContain("Example Holdings A acquired Example Holdings B (2020-01-01)")
+    expect(html).toContain("fabrikam.com (Example Holdings B)")
+    expect(html).toContain(`href="/entities/${EID}"`)
+    expect(html).toMatch(/<sup[^>]*><a [^>]*href="\/entities\/7a1b2c3d/)
+    expect(html).toContain("Showing the first 1; more exist.")
+    expect(html).toContain("None recorded.")
+    expect(html).toMatch(/aria-label="Open Corporate family in Explore"/)
+  })
+
+  it("renders a hostile entity name as literal text", () => {
+    const html = render(makeMa(EID, hostile))
+    expect(html).toContain("Evil [x](https://evil.example) &lt;b&gt;Ltd&lt;/b&gt;")
+    expect(html).not.toMatch(/<a [^>]*href="https?:/)
+    expect(html).not.toContain("<b>")
+  })
+
+  it("gives a non-uuid entity_id no anchor", () => {
+    const html = render(makeMa("not-a-uuid"))
+    expect(html).toContain("Example Holdings B (subsidiary)")
+    expect(html).not.toContain("not-a-uuid")
+  })
+
+  it("leaves the exec_summary title unchanged", () => {
+    expect(render(make())).toContain("Executive summary")
+  })
+})
+
+describe("GenerateControl M&A", () => {
+  const html = (role: string | undefined, noSubject: boolean, busy = false) =>
+    renderToStaticMarkup(<GenerateControl role={role} busy={busy} noSubject={noSubject} onClick={() => {}} onGenerateMa={() => {}} />)
+  const maButton = (h: string) => /<button[^>]*>Generate M&amp;A brief<\/button>/.exec(h)![0]
+
+  it("disables the M&A action without a subject, with the reason as title", () => {
+    const b = maButton(html("admin", true))
+    expect(b).toContain(' disabled=""')
+    expect(b).toContain('title="This engagement has no subject entity"')
+  })
+
+  it("enables it with a subject, and disables it while busy", () => {
+    expect(maButton(html("admin", false))).not.toContain(" disabled=\"\"")
+    expect(maButton(html("report_admin", false, true))).toContain(' disabled=""')
+  })
+
+  it("shows no generate actions to a viewer", () => {
+    expect(html("viewer", false)).toBe("")
   })
 })
