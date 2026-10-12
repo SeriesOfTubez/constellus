@@ -6,6 +6,7 @@ import {
   ENV_LABELS, effectiveLabel, endpointFlags, endpointKey,
   type WebEndpointState,
 } from "@/lib/webClassification"
+import { statusCell, titleCell } from "@/lib/redirectChain"
 
 /** Web endpoints (planning#231). All text is rendered as plain React text nodes. */
 export function EndpointsTable({
@@ -67,13 +68,16 @@ function GroupRows({
         const id = endpointKey(row)
         const warn = endpointFlags(row).filter(f => f.tone === "warn")
         const none = row.source === "none"
+        const title = titleCell(row.http_title, row.redirect_chain)
         return (
           <TableRow key={id} className="cursor-pointer" onClick={() => onOpen({ ...row, id })}>
             <TableCell className="font-mono text-sm">{row.asset_value}:{row.port}</TableCell>
             <TableCell className="max-w-xs text-xs text-muted-foreground">
-              <div className="truncate" title={row.http_title ?? undefined}>{row.http_title ?? "—"}</div>
+              <div className={title.destination ? "truncate italic text-muted-foreground/70" : "truncate"} title={title.tooltip}>
+                {title.text}
+              </div>
             </TableCell>
-            <TableCell className="text-xs tabular-nums">{row.http_status ?? "—"}</TableCell>
+            <TableCell className="text-xs tabular-nums whitespace-nowrap">{statusCell(row.http_status, row.redirect_chain)}</TableCell>
             <TableCell>
               <span className="inline-flex flex-wrap items-center gap-1.5 text-xs">
                 <span className={none ? "text-muted-foreground" : "font-medium"}>{effectiveLabel(row)}</span>

@@ -42,3 +42,35 @@ export function hopSummary(hop: RedirectHop): string {
   }
   return `Not followed: ${refusedReasonText(hop.reason ?? "")}`
 }
+
+const DEST_TITLE_NOTE = "Page title of the destination, not of this endpoint"
+
+/** Endpoints-table Title cell. The endpoint's own title always wins; only
+ *  when it has none does the cell show the chain's LAST hop, marked "↪" and
+ *  muted so it never reads as the endpoint's own title. */
+export function titleCell(
+  ownTitle: string | null, chain: RedirectHop[],
+): { text: string; tooltip?: string; destination: boolean } {
+  if (ownTitle) return { text: ownTitle, tooltip: ownTitle, destination: false }
+  const last = chain[chain.length - 1]
+  if (!last) return { text: "—", destination: false }
+  if (!last.followed) {
+    const reason = last.reason ?? ""
+    return {
+      text: "↪ not followed",
+      tooltip: `Redirects to ${last.url}. Not followed: ${refusedReasonText(reason)} (rule: ${reason})`,
+      destination: true,
+    }
+  }
+  if (!last.http_title) return { text: "—", tooltip: `Redirects to ${last.url}`, destination: true }
+  return { text: `↪ ${last.http_title}`, tooltip: `Redirects to ${last.url}. ${DEST_TITLE_NOTE}`, destination: true }
+}
+
+/** Endpoints-table Status cell: the endpoint's own status, then "→ <final
+ *  status>" when the chain's last hop was followed and answered. */
+export function statusCell(ownStatus: number | null, chain: RedirectHop[]): string {
+  const last = chain[chain.length - 1]
+  if (ownStatus == null) return "—"
+  if (last?.followed && last.http_status != null) return `${ownStatus} → ${last.http_status}`
+  return String(ownStatus)
+}
