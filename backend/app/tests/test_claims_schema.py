@@ -73,8 +73,9 @@ def test_observers_seeded_with_23_rows_and_correct_addressing():
     # `edgar_8k_items` — migration 0062, planning#213) + 2 (`edgar_ex21`,
     # `edgar_10k_footnote` — migration 0063, planning#213 slice 2) + 1
     # (`edgar_10k_website` — migration 0064, planning#216) + 1
-    # (`llm_acquisition_reader` — migration 0066, planning#218).
-    assert len(by_name) == 29, f"expected 29 seeded observers, got {len(by_name)}: {sorted(by_name)}"
+    # (`llm_acquisition_reader` — migration 0066, planning#218) + 1
+    # (`redirect` — migration 0077, planning#268).
+    assert len(by_name) == 30, f"expected 30 seeded observers, got {len(by_name)}: {sorted(by_name)}"
     assert by_name["naabu"] == "ip"
     assert by_name["banner_grab"] == "ip"
     assert by_name["tlsx"] == "name"
@@ -150,6 +151,8 @@ _EXPECTED_NOISE_CLASSES = {
     # migration 0064, planning#216 — reads the same stored 10-K.
     "edgar_10k_website": "silent",
     "llm_acquisition_reader": "silent",
+    # migration 0077, planning#268 — a hostname first seen as a Location header.
+    "redirect": "silent",
 }
 
 
@@ -168,8 +171,9 @@ def test_observers_noise_class_matches_the_planning_196_classification_map():
     # `edgar_8k_items` — migration 0062, planning#213) + 2 (`edgar_ex21`,
     # `edgar_10k_footnote` — migration 0063, planning#213 slice 2) + 1
     # (`edgar_10k_website` — migration 0064, planning#216) + 1
-    # (`llm_acquisition_reader` — migration 0066, planning#218).
-    assert len(by_name) == 29, f"expected 29 seeded observers, got {len(by_name)}: {sorted(by_name)}"
+    # (`llm_acquisition_reader` — migration 0066, planning#218) + 1
+    # (`redirect` — migration 0077, planning#268).
+    assert len(by_name) == 30, f"expected 30 seeded observers, got {len(by_name)}: {sorted(by_name)}"
 
     bad_vocab = {name: nc for name, nc in by_name.items() if nc not in OBSERVER_NOISE}
     assert not bad_vocab, f"noise_class outside OBSERVER_NOISE: {bad_vocab}"
@@ -183,7 +187,7 @@ def test_observers_noise_class_matches_the_planning_196_classification_map():
     # `edgar_10k_footnote`), migration 0064 (planning#216) one more
     # (`edgar_10k_website`), and migration 0066 (planning#218) one more
     # (`llm_acquisition_reader`).
-    assert counts == {"target_host": 8, "target_infra": 2, "third_party_infra": 3, "silent": 16}, counts
+    assert counts == {"target_host": 8, "target_infra": 2, "third_party_infra": 3, "silent": 17}, counts
 
     assert by_name == _EXPECTED_NOISE_CLASSES, (
         f"only in table: {set(by_name) - set(_EXPECTED_NOISE_CLASSES)}; "

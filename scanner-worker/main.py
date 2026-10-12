@@ -1530,6 +1530,203 @@ def httpx_probe(req: HttpxProbeRequest, _: None = Depends(_require_token)) -> di
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# /httpx/fetch — fetch exactly ONE url at ONE ip literal, never follow
+# redirects (planning#268). The backend follows redirects hop by hop, deciding
+# every hop through its own probe gate and pinning the resolved IP; the worker
+# does no DNS of its own and trusts nothing but what it validates here.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_FETCH_MAX_READ_BYTES = 1048576
+_FETCH_ID_RE = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}$")
+_FETCH_PATH_RE = re.compile(r"^/[\x21-\x7e]{0,2047}$")
+_FETCH_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+class HttpxFetchTarget(BaseModel):
+    id: str
+    ip: str
+    port: int
+    scheme: str
+    path: str
+    host: str | None = None
+
+    @field_validator("id")
+    @classmethod
+    def _v_id(cls, v: str) -> str:
+        if not _FETCH_ID_RE.fullmatch(v):
+            raise ValueError("id must be 1..64 chars of [A-Za-z0-9_.:-]")
+        return v
+
+    @field_validator("ip")
+    @classmethod
+    def _v_ip(cls, v: str) -> str:
+        # An IP LITERAL only: the worker never resolves names for this endpoint.
+        try:
+            return str(ipaddress.ip_address(v))
+        except ValueError:
+            raise ValueError("ip must be an IP literal")
+
+    @field_validator("port")
+    @classmethod
+    def _v_port(cls, v: int) -> int:
+        if not (1 <= v <= 65535):
+            raise ValueError("port out of range")
+        return v
+
+    @field_validator("scheme")
+    @classmethod
+    def _v_scheme(cls, v: str) -> str:
+        if v not in ("http", "https"):
+            raise ValueError("scheme must be http or https")
+        return v
+
+    @field_validator("path")
+    @classmethod
+    def _v_path(cls, v: str) -> str:
+        if not _FETCH_PATH_RE.fullmatch(v) or v.startswith("//") or "#" in v:
+            raise ValueError("invalid path")
+        return v
+
+    @field_validator("host")
+    @classmethod
+    def _v_host(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        # A leading '-' is never a valid hostname label, and this value is
+        # handed to httpx as a flag value: refuse it outright.
+        if _NAABU_HOST_RE.fullmatch(v) and not v.startswith("-"):
+            return v
+        try:
+            return str(ipaddress.ip_address(v))
+        except ValueError:
+            raise ValueError("host must be a hostname or IP literal")
+
+
+class HttpxFetchRequest(BaseModel):
+    targets: list[HttpxFetchTarget]
+    timeout: float = 5.0
+    concurrency: int = 5
+
+    @field_validator("targets")
+    @classmethod
+    def _v_targets(cls, v: list[HttpxFetchTarget]) -> list[HttpxFetchTarget]:
+        if len(v) > 200:
+            raise ValueError("at most 200 targets")
+        return v
+
+    @field_validator("timeout")
+    @classmethod
+    def _v_timeout(cls, v: float) -> float:
+        if not (1 <= v <= 60):
+            raise ValueError("timeout must be 1..60 seconds")
+        return v
+
+    @field_validator("concurrency")
+    @classmethod
+    def _v_concurrency(cls, v: int) -> int:
+        if not (1 <= v <= 20):
+            raise ValueError("concurrency must be 1..20")
+        return v
+
+
+def _fetch_text(value, limit: int) -> str | None:
+    if value is None:
+        return None
+    return _FETCH_CTRL_RE.sub("", str(value))[:limit]
+
+
+def _httpx_fetch_one(t: HttpxFetchTarget, timeout: float) -> dict:
+    result = {"id": t.id, "status_code": None, "title": None, "location": None, "error": None}
+    if _is_blocked_ip(ipaddress.ip_address(t.ip)):
+        result["error"] = "blocked"
+        return result
+
+    ip_fmt = f"[{t.ip}]" if ":" in t.ip else t.ip
+    url = f"{t.scheme}://{ip_fmt}:{t.port}{t.path}"
+    timeout_int = int(timeout)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        targets_path = f"{tmpdir}/targets.txt"
+        output_path = f"{tmpdir}/results.jsonl"
+        with open(targets_path, "w") as f:
+            f.write(url + "\n")
+
+        cmd = [
+            "httpx",
+            "-l", targets_path,
+            "-json", "-silent",
+            "-title", "-status-code", "-location",
+            # Redirects are deliberately NOT followed (no -fr /
+            # -follow-redirects / -follow-host-redirects / -maxr): the
+            # Location target is chosen by whoever controls the response and
+            # the backend must vet every hop itself.
+            "-timeout", str(timeout_int),
+            "-threads", "1",
+            "-disable-update-check",
+            "-o", output_path,
+            # Use the input's scheme only; no fallback to the other scheme.
+            "-nfs",
+            "-rstr", str(_FETCH_MAX_READ_BYTES),
+        ]
+        # A hostname needs BOTH -H and -sni (see _httpx_probe_one's docstring).
+        if t.host and not _is_ip_literal(t.host):
+            # `-sni=<host>` (one argv element) so the value can never be
+            # parsed as a flag, whatever the validator above lets through.
+            cmd.extend(["-H", f"Host: {t.host}", f"-sni={t.host}"])
+
+        proc, timed_out = _run_subprocess_soft(
+            cmd, timeout=timeout_int + 10, tool="httpx /httpx/fetch",
+        )
+        row = None
+        try:
+            with open(output_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        parsed = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(parsed, dict):
+                        row = parsed
+                    break
+        except FileNotFoundError:
+            pass
+
+    if row is None or row.get("failed"):
+        result["error"] = "timeout" if timed_out else "no_response"
+        return result
+
+    sc = row.get("status_code", row.get("status-code"))
+    if isinstance(sc, int) and not isinstance(sc, bool) and 100 <= sc <= 599:
+        result["status_code"] = sc
+    result["title"] = _fetch_text(row.get("title"), 512)
+    result["location"] = _fetch_text(row.get("location"), 300)
+    return result
+
+
+def _is_ip_literal(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+@app.post("/httpx/fetch")
+def httpx_fetch(req: HttpxFetchRequest, _: None = Depends(_require_token)) -> dict:
+    """Fetch each (ip, port, scheme, path) once, optionally with a Host/SNI
+    override. One result per input target, in input order. Never follows a
+    redirect and never resolves a name."""
+    if not req.targets:
+        return {"results": []}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=req.concurrency) as ex:
+        futures = [ex.submit(_httpx_fetch_one, t, req.timeout) for t in req.targets]
+        return {"results": [fut.result() for fut in futures]}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # nmap verification — port state confirmation + service enrichment.
 #
 # Runs after naabu to filter out false-positive ports (e.g. firewalls that

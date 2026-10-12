@@ -106,7 +106,7 @@ def resolve_names(
     return _emit_assets(name_records, source, apex, owned_domains)
 
 
-def _third_party_node(fqdn: str, source: str) -> DiscoveredAsset:
+def _third_party_node(fqdn: str, source: str, discovered_via: str = "cname") -> DiscoveredAsset:
     """The customer->third-party CNAME boundary target, as a context node
     (planning#147, "stop destroying nodes").
 
@@ -135,7 +135,7 @@ def _third_party_node(fqdn: str, source: str) -> DiscoveredAsset:
             "sources": [source],
             "third_party": True,
             "relationship": "dependency",
-            "discovered_via": "cname",
+            "discovered_via": discovered_via,
         },
     )
 
