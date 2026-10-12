@@ -25,7 +25,10 @@ class WebClassification(Base):
     frozen by a trigger.
 
     Nothing that scores, attributes or hosts an asset reads this table, and
-    nothing here writes tags; `test_web_classifier.py` asserts it."""
+    nothing here writes tags; `test_web_classifier.py` asserts it.
+
+    `example_override_ids` (migration 0078, slice 3) holds the ids of the
+    corrections sent to the model as examples with this request."""
 
     __tablename__ = "web_classifications"
 
@@ -48,6 +51,8 @@ class WebClassification(Base):
     model: Mapped[str | None] = mapped_column(Text, nullable=True)
     ledger_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"))
     forced_strict: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    example_override_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"))
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     requested_by_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
