@@ -1,3 +1,4 @@
+import type { RedirectHop } from "@/lib/redirectChain"
 // planning#231 — web endpoint classification: types and pure helpers.
 //
 // The AI's classification of a web endpoint is APPLIED and shown as inferred;
@@ -60,6 +61,8 @@ export interface WebEndpointState {
   ai_inputs_changed: boolean | null
   override_stale: boolean | null
   ai_suggests: { kind: Kind; environment: Env } | null
+  // planning#271 — always present, [] when none, ordered by hop_index
+  redirect_chain: RedirectHop[]
   // list endpoint only
   asset_id?: string
   asset_value?: string

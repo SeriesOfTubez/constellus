@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom"
 import { SquareArrowOutUpRight } from "lucide-react"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { RedirectChain } from "@/components/RedirectChain"
 import { WebClassificationSummary } from "@/components/ai/WebClassificationSummary"
 import { WebClassificationControls } from "@/components/ai/WebClassificationControls"
 import { KIND_LABELS, type WebEndpointState } from "@/lib/webClassification"
@@ -25,10 +26,7 @@ export function EndpointSheet({ row, onClose }: { row: WebEndpointState; onClose
           <SheetDescription className="sr-only">Web endpoint classification for {endpoint}</SheetDescription>
         </SheetHeader>
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
-          <div className="space-y-0.5 text-xs">
-            <p className="break-words">{row.http_title ?? "No page title recorded"}</p>
-            {row.http_status !== null && <p className="text-muted-foreground">HTTP status {row.http_status}</p>}
-          </div>
+          <EndpointHttpSummary row={row} />
           <WebClassificationSummary state={row} />
           {row.ai && (
             <p className="text-[11px] text-muted-foreground">
@@ -41,5 +39,18 @@ export function EndpointSheet({ row, onClose }: { row: WebEndpointState; onClose
         </div>
       </SheetContent>
     </Sheet>
+  )
+}
+
+/** The endpoint's own title/status, then its redirect chain. Extracted so it
+ *  can be rendered in tests (the Sheet's Radix portal renders nothing under
+ *  renderToStaticMarkup). A hop title is never the endpoint's title. */
+export function EndpointHttpSummary({ row }: { row: WebEndpointState }) {
+  return (
+    <div className="space-y-0.5 text-xs">
+      <p className="break-words">{row.http_title ?? "No page title recorded"}</p>
+      {row.http_status !== null && <p className="text-muted-foreground">HTTP status {row.http_status}</p>}
+      <RedirectChain chain={row.redirect_chain} />
+    </div>
   )
 }

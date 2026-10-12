@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { RedirectChain } from "@/components/RedirectChain"
 import { WebClassificationSummary } from "@/components/ai/WebClassificationSummary"
 import { WebClassificationControls } from "@/components/ai/WebClassificationControls"
 import { api } from "@/lib/api"
@@ -387,6 +388,9 @@ function PortRow({ entry, web, assetId }: { entry: OpenPortEntry; web?: WebEndpo
           {httpStatus != null && <span className="shrink-0 tabular-nums">HTTP {httpStatus}</span>}
           {httpTitle && <span className="truncate" title={httpTitle}>{httpTitle}</span>}
         </div>
+      )}
+      {web && web.redirect_chain.length > 0 && (
+        <div className="pl-[5.75rem]"><RedirectChain chain={web.redirect_chain} compact /></div>
       )}
       {web && (
         <div className="flex items-start justify-between gap-2 pl-[5.75rem]">
