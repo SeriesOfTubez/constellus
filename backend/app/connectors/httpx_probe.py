@@ -234,6 +234,57 @@ class HttpxConnector(ScanningConnector):
 
         return self._build_phase_result(results, cdn_targets=cdn_targets)
 
+    # planning#268 -- fetch one URL path per target on an already-pinned IP.
+    # Callers (app.services.redirect_follow) have already put the destination
+    # through the probe gate and the SSRF pin; the worker re-checks the IP.
+    FETCH_CHUNK = 200
+    FETCH_CONCURRENCY = 5
+
+    def fetch_urls(self, targets: list[dict], *, timeout: float) -> list[dict]:
+        """POST `targets` to the worker's /httpx/fetch in chunks of at most
+        FETCH_CHUNK. Returns one result per target, each `{"id", "status_code",
+        "title", "location", "error"}`; `error` is `blocked` / `no_response` /
+        `timeout` / `worker_unavailable` / None. A failed chunk yields a
+        `worker_unavailable` result for each of its targets; this never
+        raises."""
+        results: list[dict] = []
+        for start in range(0, len(targets), self.FETCH_CHUNK):
+            chunk = targets[start:start + self.FETCH_CHUNK]
+            payload: dict[str, Any] = {
+                "targets": chunk,
+                "timeout": timeout,
+                "concurrency": self.FETCH_CONCURRENCY,
+            }
+            outer_timeout = max(60.0, timeout * (len(chunk) / self.FETCH_CONCURRENCY + 2))
+            try:
+                resp = httpx.post(
+                    f"{_SCANNER_URL}/httpx/fetch",
+                    json=payload,
+                    headers=_HEADERS,
+                    timeout=outer_timeout,
+                )
+                resp.raise_for_status()
+                body = resp.json()
+                rows = body.get("results", []) or []
+                by_id = {r.get("id"): r for r in rows if isinstance(r, dict)}
+                for t in chunk:
+                    row = by_id.get(t["id"])
+                    if row is None:
+                        results.append({
+                            "id": t["id"], "status_code": None, "title": None,
+                            "location": None, "error": "no_response",
+                        })
+                    else:
+                        results.append(row)
+            except (httpx.HTTPError, ValueError):
+                log.exception("httpx fetch worker request failed (targets=%d)", len(chunk))
+                results.extend(
+                    {"id": t["id"], "status_code": None, "title": None, "location": None,
+                     "error": "worker_unavailable"}
+                    for t in chunk
+                )
+        return results
+
     # ── internals ────────────────────────────────────────────────────────
 
     def _invoke_worker(

@@ -93,6 +93,9 @@ _EGRESS: dict[str, tuple[str, str, str | None]] = {
     "discovery/cert_transparency.py": (
         "TARGET", "CT log query ABOUT the target; third_party_infra noise, still gated", "scan_executor.py",
     ),
+    "redirect_follow.py": (
+        "TARGET", "follows an attacker-supplied Location; every hop through authorise_probes (planning#268)", "self",
+    ),
     "domain_verification.py": (
         "ESTABLISHES_AUTH", "reads _constellus-verify TXT — this IS the authorisation step", None,
     ),

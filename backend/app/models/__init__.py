@@ -49,6 +49,7 @@ from app.models.candidate_domain import CandidateDomain, CANDIDATE_SOURCES, CAND
 from app.models.entity_ingest_run import EntityIngestRun, INGEST_RUN_STATUSES
 from app.models.chat import ChatConversation, ChatMessage
 from app.models.report import Report
+from app.models.http_redirect_hop import HttpRedirectHop
 
 __all__ = [
     "User", "UserRole",
@@ -121,4 +122,5 @@ __all__ = [
     "ChatConversation",
     "ChatMessage",
     "Report",
+    "HttpRedirectHop",
 ]

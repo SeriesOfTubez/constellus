@@ -24,8 +24,11 @@ Run with:  python -m app.tests.test_ssrf
 """
 
 import ipaddress
+import socket
 
-from app.core.ssrf import DEFAULT_BLOCKED_NETWORKS, _embedded_ipv4, is_blocked
+import httpx
+
+from app.core.ssrf import DEFAULT_BLOCKED_NETWORKS, SSRFBlockedError, _embedded_ipv4, is_blocked, pin_address
 from app.services.saml import _validate_metadata_url
 
 
@@ -222,6 +225,84 @@ def test_default_blocklist_covers_the_documented_ranges():
         "169.254.0.0/16", "100.64.0.0/10", "0.0.0.0/8", "64:ff9b:1::/48",
     ):
         assert net in present, f"{net} dropped from the default blocklist"
+
+
+# -- pin_address: strict resolve-and-pin for attacker-chosen destinations ------
+
+def _gai(*addresses: str):
+    """A stand-in for socket.getaddrinfo answering with `addresses`."""
+    calls: list[tuple] = []
+
+    def fake(host, port, *args, **kwargs):
+        calls.append((host, port))
+        out = []
+        for a in addresses:
+            fam = socket.AF_INET6 if ":" in a else socket.AF_INET
+            sockaddr = (a, port, 0, 0) if ":" in a else (a, port)
+            out.append((fam, socket.SOCK_STREAM, 6, "", sockaddr))
+        return out
+
+    return fake, calls
+
+
+def _with_gai(fake, fn):
+    real = socket.getaddrinfo
+    socket.getaddrinfo = fake
+    try:
+        return fn()
+    finally:
+        socket.getaddrinfo = real
+
+
+def _raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    return False
+
+
+def test_pin_address_literal_blocked_and_ok_without_dns():
+    fake, calls = _gai("203.0.113.5")
+    assert _with_gai(fake, lambda: _raises(SSRFBlockedError, lambda: pin_address("169.254.169.254", 80)))
+    assert _with_gai(fake, lambda: pin_address("198.51.100.7", 80)) == "198.51.100.7"
+    assert calls == [], "an IP literal must not trigger a DNS lookup"
+
+
+def test_pin_address_blocks_ipv6_embedded_ipv4_literal():
+    assert _raises(SSRFBlockedError, lambda: pin_address("::ffff:10.0.0.1", 80))
+    assert _raises(SSRFBlockedError, lambda: pin_address("::ffff:169.254.169.254", 443))
+
+
+def test_pin_address_name_all_public_returns_first():
+    fake, calls = _gai("203.0.113.5", "198.51.100.7")
+    assert _with_gai(fake, lambda: pin_address("login.example.com", 443)) == "203.0.113.5"
+    assert calls == [("login.example.com", 443)]
+
+
+def test_pin_address_name_all_blocked_raises():
+    fake, _ = _gai("169.254.169.254")
+    assert _with_gai(fake, lambda: _raises(SSRFBlockedError, lambda: pin_address("login.example.com", 80)))
+
+
+def test_pin_address_mixed_public_and_private_raises_in_either_order():
+    """Stricter than the transport on purpose: one blocked answer refuses the
+    whole name (rebinding pattern), whichever answer comes first."""
+    for answers in (("203.0.113.5", "10.0.0.1"), ("10.0.0.1", "203.0.113.5")):
+        fake, _ = _gai(*answers)
+        assert _with_gai(fake, lambda: _raises(SSRFBlockedError, lambda: pin_address("login.example.com", 80)))
+
+
+def test_pin_address_name_resolving_to_ipv6_embedded_ipv4_raises():
+    fake, _ = _gai("203.0.113.5", "::ffff:10.0.0.1")
+    assert _with_gai(fake, lambda: _raises(SSRFBlockedError, lambda: pin_address("login.example.com", 80)))
+
+
+def test_pin_address_dns_failure_is_connect_error():
+    def boom(*a, **k):
+        raise socket.gaierror("nope")
+
+    assert _with_gai(boom, lambda: _raises(httpx.ConnectError, lambda: pin_address("login.example.com", 80)))
 
 
 if __name__ == "__main__":

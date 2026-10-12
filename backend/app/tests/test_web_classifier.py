@@ -454,7 +454,7 @@ def test_build_input_carries_headers_and_location_capped_and_typed():
 
 
 def test_an_endpoint_without_headers_has_the_same_input_as_before_and_only_the_version_moves_the_hash(monkeypatch):
-    assert wc.PROMPT_VERSION == "231.2"
+    assert wc.PROMPT_VERSION == "268.1"
     data = wc.build_input(_fake_asset(), _web_port())
     assert set(data["endpoint"]) == {"port", "service", "server", "http_status", "title", "tech", "favicon_hash",
                                      "banner", "tls"}

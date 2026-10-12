@@ -45,6 +45,7 @@ from app.services import aggressiveness
 from app.services import app_settings as settings_svc
 from app.services import nuclei_tag_filter
 from app.services import probe_authorisation
+from app.services import redirect_follow
 from app.services import projector
 from app.services import target_scope
 from app.services.asset_writer import write_assets
@@ -1132,6 +1133,30 @@ def _run_pipeline(
                         touched_asset_ids.update(asset_ids)
                     all_assets.extend(result.assets)
                     connectors_used.append(cid)
+                    if cid == "httpx_probe":
+                        # planning#268 -- follow the redirects httpx just
+                        # recorded, every hop through the probe gate. A
+                        # fail-soft unit of work of its own: the helpers
+                        # flush, this block commits or rolls back.
+                        try:
+                            chunk_target_ids = [
+                                t_id for (t_id,) in db.query(Target.id).filter(Target.value.in_(domains)).all()
+                            ]
+                            redirect_stats = redirect_follow.follow_redirects(
+                                db, connector=connector, patches=result.assets, scope=chunk_scope,
+                                scan_run_id=scan_run_id, owned_domains=owned_domains,
+                                target_ids=chunk_target_ids,
+                                timeout=float(aggressiveness.httpx_profile(tier).get("timeout", 5.0)),
+                            )
+                            db.commit()
+                            log.info("Redirect follow: %s", redirect_stats)
+                        except Exception:
+                            db.rollback()
+                            log.exception("Redirect follow failed")
+                            if degraded is not None:
+                                degraded.append(
+                                    "redirect_follow: failed - redirect chains from this run were not recorded"
+                                )
                 if result.findings:
                     finding_ids = write_findings(db, scan_run_id, result.findings, new_canonical_ids_out=new_finding_ids)
                     if touched_finding_ids is not None:

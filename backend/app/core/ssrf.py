@@ -140,6 +140,48 @@ class SSRFGuardTransport(httpx.HTTPTransport):
         return super().handle_request(pinned)
 
 
+def pin_address(host: str, port: int, blocked_networks: Iterable = DEFAULT_BLOCKED_NETWORKS) -> str:
+    """Resolve `host` once and return the address to connect to, refusing the
+    destination if ANY resolved address is blocked.
+
+    STRICTER than `SSRFGuardTransport` on purpose: the transport skips blocked
+    answers and picks the first good one, which suits a fixed SAML endpoint.
+    Here the destination is attacker-chosen (an HTTP Location header), and a
+    name that answers with a mix of public and private addresses is a DNS
+    rebinding pattern, so the whole name is refused.
+
+    An IP literal is checked directly with no DNS. A DNS failure raises
+    `httpx.ConnectError`, matching the transport. The caller connects to the
+    returned literal, so the lookup cannot be raced.
+    """
+    blocked = tuple(blocked_networks)
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if is_blocked(literal, blocked):
+            raise SSRFBlockedError(f"Blocked address: {literal}")
+        return str(literal)
+
+    try:
+        addrs = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise httpx.ConnectError(f"DNS resolution failed: {exc}")
+
+    resolved: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for _family, _type, _proto, _canon, sockaddr in addrs:
+        try:
+            resolved.append(ipaddress.ip_address(sockaddr[0]))
+        except ValueError:
+            continue
+    if not resolved:
+        raise httpx.ConnectError(f"DNS resolution for {host} returned no usable address")
+    if any(is_blocked(ip, blocked) for ip in resolved):
+        raise SSRFBlockedError(f"A resolved address for {host} is on the SSRF blocklist")
+    return str(resolved[0])
+
+
 def ssrf_safe_client(
     timeout: float = 15.0,
     follow_redirects: bool = False,
