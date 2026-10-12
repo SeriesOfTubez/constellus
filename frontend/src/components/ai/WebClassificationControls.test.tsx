@@ -8,7 +8,7 @@ function state(over: Partial<WebEndpointState> = {}): WebEndpointState {
   return {
     port: 443, kind: "login_portal", environment: "production", product: null, source: "ai",
     http_title: null, http_status: null, service: null, ai: null, override: null, active: null,
-    last_failure: null, ai_inputs_changed: null, override_stale: null, ai_suggests: null,
+    last_failure: null, ai_inputs_changed: null, override_stale: null, ai_suggests: null, redirect_chain: [],
     ...over,
   }
 }

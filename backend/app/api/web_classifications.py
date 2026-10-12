@@ -16,6 +16,11 @@ ADMIN-only until custom roles land (planning#243).
 - `GET  /api/web-endpoints` - every web endpoint the caller may read, with
   the same state, filterable by effective kind and source.
 
+Every endpoint state carries its `redirect_chain` (planning#271): the hops
+`app.services.redirect_follow` recorded for it, read-only, loaded in one
+query per response. A hop's title belongs to the hop's URL, never to the
+endpoint; `http_title` stays the endpoint's own.
+
 Nothing here writes a score, attribution, estate or tag (see
 `app.services.web_classifier`). Reads are limited to the assets
 `read_scope.asset_clause` lets the caller see.
@@ -26,12 +31,13 @@ from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, select, tuple_
+from sqlalchemy.orm import Session, aliased
 
 from app.api.deps import get_current_user, require_role
 from app.core.database import get_db
 from app.models.asset_canonical import AssetCanonical
+from app.models.http_redirect_hop import HttpRedirectHop
 from app.models.user import User, UserRole
 from app.models.web_classification import REASON_CAP, WebClassification, WebEndpointOverride
 from app.services import audit, read_scope, web_classifier
@@ -89,7 +95,42 @@ def _override_out(db: Session, ov: WebEndpointOverride) -> dict:
     }
 
 
-def _state_out(db: Session, st: dict, *, with_asset: bool = False) -> dict:
+def _redirect_chains(db: Session, user: User, states: list[dict]) -> dict[tuple[uuid.UUID, int], list[dict]]:
+    """(asset id, port) -> its redirect hops in hop order, for every state in
+    one query. `hop_asset_id` is given only when the caller may read the
+    hop's asset (`read_scope`); the URL itself is the endpoint's own data."""
+    keys = {(st["asset"].id, st["port"]) for st in states}
+    if not keys:
+        return {}
+    hop_asset = aliased(AssetCanonical)
+    rows = db.execute(
+        select(HttpRedirectHop, hop_asset.id)
+        .outerjoin(hop_asset, and_(hop_asset.id == HttpRedirectHop.hop_asset_id,
+                                   read_scope.asset_clause(user, hop_asset)))
+        .where(tuple_(HttpRedirectHop.origin_asset_id, HttpRedirectHop.origin_port).in_(list(keys)))
+        .order_by(HttpRedirectHop.origin_asset_id, HttpRedirectHop.origin_port, HttpRedirectHop.hop_index)
+    ).all()
+    chains: dict[tuple[uuid.UUID, int], list[dict]] = {}
+    for hop, visible_hop_asset_id in rows:
+        chains.setdefault((hop.origin_asset_id, hop.origin_port), []).append({
+            "hop_index": hop.hop_index,
+            "url": hop.url,
+            "followed": hop.followed,
+            "reason": hop.reason,
+            "http_status": hop.http_status,
+            "http_title": hop.http_title,
+            "hop_asset_id": str(visible_hop_asset_id) if visible_hop_asset_id is not None else None,
+        })
+    return chains
+
+
+def _states_out(db: Session, user: User, states: list[dict], *, with_asset: bool = False) -> list[dict]:
+    chains = _redirect_chains(db, user, states)
+    return [_state_out(db, st, chains, with_asset=with_asset) for st in states]
+
+
+def _state_out(db: Session, st: dict, chains: dict[tuple[uuid.UUID, int], list[dict]], *,
+               with_asset: bool = False) -> dict:
     entry = st["entry"]
     out = {
         "port": st["port"],
@@ -107,6 +148,7 @@ def _state_out(db: Session, st: dict, *, with_asset: bool = False) -> dict:
         "ai_inputs_changed": st["ai_inputs_changed"],
         "override_stale": st["override_stale"],
         "ai_suggests": st["ai_suggests"],
+        "redirect_chain": chains.get((st["asset"].id, st["port"]), []),
     }
     if with_asset:
         out["asset_id"] = str(st["asset"].id)
@@ -115,8 +157,8 @@ def _state_out(db: Session, st: dict, *, with_asset: bool = False) -> dict:
     return out
 
 
-def _endpoints_state(db: Session, asset: AssetCanonical) -> list[dict]:
-    return [_state_out(db, st) for st in web_classifier.asset_endpoint_states(db, asset)]
+def _endpoints_state(db: Session, user: User, asset: AssetCanonical) -> list[dict]:
+    return _states_out(db, user, web_classifier.asset_endpoint_states(db, asset))
 
 
 def _visible_asset(db: Session, user: User, asset_id: uuid.UUID) -> AssetCanonical:
@@ -135,7 +177,7 @@ def get_web_classifications(
     current_user: User = Depends(get_current_user),
 ):
     asset = _visible_asset(db, current_user, asset_id)
-    return {"endpoints": _endpoints_state(db, asset)}
+    return {"endpoints": _endpoints_state(db, current_user, asset)}
 
 
 @router.post("/assets/{asset_id}/web-classifications")
@@ -165,7 +207,7 @@ def request_web_classifications(
         # planning#134: another on-demand background task the job queue retires.
         background_tasks.add_task(web_classifier.run_in_background, queued)
     asset = _visible_asset(db, current_user, asset_id)
-    return {"queued": len(queued), "cached": cached_count, "endpoints": _endpoints_state(db, asset)}
+    return {"queued": len(queued), "cached": cached_count, "endpoints": _endpoints_state(db, current_user, asset)}
 
 
 @router.put("/assets/{asset_id}/web-endpoints/{port}/classification")
@@ -194,7 +236,7 @@ def set_web_classification_override(
         }, reason_given=ov.reason is not None,
     )
     state = next(st for st in web_classifier.asset_endpoint_states(db, asset) if st["port"] == port)
-    return _state_out(db, state)
+    return _states_out(db, current_user, [state])[0]
 
 
 @router.delete("/assets/{asset_id}/web-endpoints/{port}/classification")
@@ -215,7 +257,7 @@ def clear_web_classification_override(
         request, asset_id=str(asset_id), port=port, web_classification_override={"from": removed, "to": None},
     )
     state = next((st for st in web_classifier.asset_endpoint_states(db, asset) if st["port"] == port), None)
-    return _state_out(db, state) if state is not None else {"port": port, "removed": True}
+    return _states_out(db, current_user, [state])[0] if state is not None else {"port": port, "removed": True}
 
 
 @router.get("/web-endpoints")
@@ -233,7 +275,7 @@ def list_web_endpoints(
         db, current_user, kind=kind, source=source, limit=limit, offset=offset,
     )
     return {
-        "items": [_state_out(db, st, with_asset=True) for st in page],
+        "items": _states_out(db, current_user, page, with_asset=True),
         "total": total,
         "limit": limit,
         "offset": offset,
