@@ -454,7 +454,7 @@ def test_build_input_carries_headers_and_location_capped_and_typed():
 
 
 def test_an_endpoint_without_headers_has_the_same_input_as_before_and_only_the_version_moves_the_hash(monkeypatch):
-    assert wc.PROMPT_VERSION == "268.1"
+    assert wc.PROMPT_VERSION == "231.3"
     data = wc.build_input(_fake_asset(), _web_port())
     assert set(data["endpoint"]) == {"port", "service", "server", "http_status", "title", "tech", "favicon_hash",
                                      "banner", "tls"}
@@ -942,7 +942,8 @@ def test_no_scoring_or_attribution_module_reads_web_classifications():
     executor may only start auto-classification, the LLM admin API may only
     read/set the cap, and app_settings names the setting."""
     root = pathlib.Path(__file__).resolve().parents[1]
-    allowed = {root / "services" / "web_classifier.py", root / "api" / "web_classifications.py",
+    allowed = {root / "services" / "web_classifier.py", root / "services" / "web_classifier_eval.py",
+               root / "api" / "web_classifications.py",
                root / "models" / "web_classification.py", root / "models" / "__init__.py"}
     cap_key = r"ai\.web_classifications\.auto_daily_cap"
     narrow = {

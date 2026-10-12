@@ -188,34 +188,44 @@ def _asset_ip(asset: AssetCanonical):
         return None
 
 
-def _targets_for_asset(db: Session, asset: AssetCanonical) -> list[Target]:
-    linked = set(db.execute(
-        select(TargetAssetLink.target_id).where(TargetAssetLink.asset_canonical_id == asset.id)
-    ).scalars())
-    names = {v.lower().rstrip(".") for v in (asset.value, asset.parent_value) if v}
-    ip = _asset_ip(asset)
-    out: list[Target] = []
-    for target in db.execute(select(Target)).scalars():
-        if target.id in linked:
-            out.append(target)
-            continue
-        value = (target.value or "").lower().rstrip(".")
-        if target.type == TargetType.DOMAIN.value:
-            if any(n == value or n.endswith("." + value) for n in names):
-                out.append(target)
-        elif ip is not None:
-            try:
-                network = ipaddress.ip_network(target.value, strict=False)
-            except ValueError:
-                continue
-            if ip.version == network.version and ip in network:
-                out.append(target)
+def _falls_under(target: Target, linked: set, names: set[str], ip) -> bool:
+    if target.id in linked:
+        return True
+    value = (target.value or "").lower().rstrip(".")
+    if target.type == TargetType.DOMAIN.value:
+        return any(n == value or n.endswith("." + value) for n in names)
+    if ip is None:
+        return False
+    try:
+        network = ipaddress.ip_network(target.value, strict=False)
+    except ValueError:
+        return False
+    return ip.version == network.version and ip in network
+
+
+def _targets_for_assets(db: Session, assets: list[AssetCanonical]) -> dict[uuid.UUID, list[Target]]:
+    """asset id -> every target the asset falls under: linked rows, plus
+    domain targets its name is under and CIDR/IP targets its address is in.
+    Two queries however many assets."""
+    if not assets:
+        return {}
+    linked: dict[uuid.UUID, set] = {}
+    for asset_id, target_id in db.execute(
+        select(TargetAssetLink.asset_canonical_id, TargetAssetLink.target_id)
+        .where(TargetAssetLink.asset_canonical_id.in_([a.id for a in assets]))
+    ):
+        linked.setdefault(asset_id, set()).add(target_id)
+    targets = list(db.execute(select(Target)).scalars())
+    out: dict[uuid.UUID, list[Target]] = {}
+    for asset in assets:
+        names = {v.lower().rstrip(".") for v in (asset.value, asset.parent_value) if v}
+        ip = _asset_ip(asset)
+        mine = linked.get(asset.id, set())
+        out[asset.id] = [t for t in targets if _falls_under(t, mine, names, ip)]
     return out
 
 
-def resolve_scope(db: Session, asset: AssetCanonical) -> Scope:
-    """See the module docstring's Scope section."""
-    targets = _targets_for_asset(db, asset)
+def _scope_of(targets: list[Target]) -> Scope:
     if not targets:
         return Scope(target_id=None, engagement=None, force_strict=False)
     engagement_ids = {t.engagement_id for t in targets}
@@ -223,6 +233,16 @@ def resolve_scope(db: Session, asset: AssetCanonical) -> Scope:
         chosen = min(targets, key=lambda t: str(t.id))
         return Scope(target_id=chosen.id, engagement=chosen.engagement, force_strict=False)
     return Scope(target_id=None, engagement=None, force_strict=True)
+
+
+def resolve_scopes(db: Session, assets: list[AssetCanonical]) -> dict[uuid.UUID, Scope]:
+    """`resolve_scope` for many assets at once (planning#231 slice 3)."""
+    return {asset_id: _scope_of(targets) for asset_id, targets in _targets_for_assets(db, assets).items()}
+
+
+def resolve_scope(db: Session, asset: AssetCanonical) -> Scope:
+    """See the module docstring's Scope section."""
+    return resolve_scopes(db, [asset])[asset.id]
 
 
 # ── input ────────────────────────────────────────────────────────────────────

@@ -597,7 +597,7 @@ def test_scope_finds_unlinked_domain_and_cidr_targets(world):
     tid = world.target(value=domain)
     db = SessionLocal()
     try:
-        assert [t.id for t in fw._targets_for_asset(db, db.get(AssetCanonical, host))] == [tid]
+        assert [t.id for t in fw._targets_for_assets(db, [db.get(AssetCanonical, host)])[host]] == [tid]
     finally:
         db.close()
 
@@ -606,7 +606,7 @@ def test_scope_finds_unlinked_domain_and_cidr_targets(world):
     cidr = world.target(type_="cidr", value=f"{ip_value}/32")
     db = SessionLocal()
     try:
-        assert cidr in [t.id for t in fw._targets_for_asset(db, db.get(AssetCanonical, ip))]
+        assert cidr in [t.id for t in fw._targets_for_assets(db, [db.get(AssetCanonical, ip)])[ip]]
     finally:
         db.close()
 
@@ -696,6 +696,11 @@ def test_no_scoring_module_reads_writeups():
         root / "services" / "app_settings.py": (re.compile(cap_key), '"ai.finding_writeups.auto_daily_cap": "0"'),
         # planning#231: the web classifier reuses the scope resolver and nothing else.
         root / "services" / "web_classifier.py": (
+            re.compile(r"from app\.services\.finding_writeup import resolve_scope, resolve_scopes\n"),
+            "from app.services.finding_writeup import resolve_scope, resolve_scopes\n",
+        ),
+        # planning#231 slice 3: the eval harness resolves scope the same way.
+        root / "services" / "web_classifier_eval.py": (
             re.compile(r"from app\.services\.finding_writeup import resolve_scope\n"),
             "from app.services.finding_writeup import resolve_scope\n",
         ),
