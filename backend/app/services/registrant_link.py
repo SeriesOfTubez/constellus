@@ -55,6 +55,7 @@ import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from typing import Callable
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -243,7 +244,7 @@ def _require_eligible(db: Session, entity_id: uuid.UUID) -> None:
         raise LinkConflict(ctx.reason)
 
 
-def _facts_for(db: Session, cik10: str) -> RegistrantFacts:
+def facts_for(db: Session, cik10: str) -> RegistrantFacts:
     content, _ct, _at, _url = sec_edgar.fetch_submissions(cik10)
     facts = summarise_submissions(json.loads(content))
     facts.cik = cik10
@@ -253,11 +254,12 @@ def _facts_for(db: Session, cik10: str) -> RegistrantFacts:
     return facts
 
 
-def search(db: Session, *, entity_id: uuid.UUID, query: str, contains: bool = False) -> list[RegistrantFacts]:
-    """Up to `MAX_CANDIDATES` registrants for a name query, each with its
+def search_registrants(db: Session, *, query: str, contains: bool = False) -> list[RegistrantFacts]:
+    """Ungated name search: up to `MAX_CANDIDATES` registrants, each with its
     facts (one submissions fetch each). A CIK EDGAR lists but no longer
-    serves (404) is dropped; any other fetch failure propagates."""
-    _require_eligible(db, entity_id)
+    serves (404) is dropped; any other fetch failure propagates. Callers
+    own the authorisation (the link flow gates on the entity, onboarding
+    on the ADMIN role)."""
     edgar_ingest.require_user_agent()
     try:
         ciks = sec_edgar.search_companies(query, contains=contains)
@@ -266,10 +268,16 @@ def search(db: Session, *, entity_id: uuid.UUID, query: str, contains: bool = Fa
     out: list[RegistrantFacts] = []
     for cik in ciks[:MAX_CANDIDATES]:
         try:
-            out.append(_facts_for(db, cik))
+            out.append(facts_for(db, cik))
         except sec_edgar.SecNotFound:
             continue
     return out
+
+
+def search(db: Session, *, entity_id: uuid.UUID, query: str, contains: bool = False) -> list[RegistrantFacts]:
+    """`search_registrants`, for an entity that is eligible to be linked."""
+    _require_eligible(db, entity_id)
+    return search_registrants(db, query=query, contains=contains)
 
 
 def preview(db: Session, *, entity_id: uuid.UUID, cik: str) -> RegistrantFacts:
@@ -280,7 +288,7 @@ def preview(db: Session, *, entity_id: uuid.UUID, cik: str) -> RegistrantFacts:
     except ValueError:
         raise LinkInvalid("cik must be 1 to 10 digits")
     try:
-        return _facts_for(db, cik10)
+        return facts_for(db, cik10)
     except sec_edgar.SecNotFound:
         raise LinkInvalid("SEC has no registrant with that CIK")
 
@@ -308,7 +316,7 @@ def link(db: Session, *, entity_id: uuid.UUID, cik: str, user) -> tuple[OrgEntit
     if holder is not None:
         raise CikTaken(holder)
     try:
-        facts = _facts_for(db, cik10)
+        facts = facts_for(db, cik10)
     except sec_edgar.SecNotFound:
         raise LinkInvalid("SEC has no registrant with that CIK")
     db.rollback()  # end the read transaction before taking the row lock
@@ -341,21 +349,23 @@ def link(db: Session, *, entity_id: uuid.UUID, cik: str, user) -> tuple[OrgEntit
     return entity, run, facts
 
 
-def followup_read(db: Session, *, entity_id: uuid.UUID, cik10: str, user_id: uuid.UUID | None) -> tuple[EntityIngestRun | None, str | None]:
-    """After the link's ingest succeeded: queue the AI acquisition read, or
-    say why not. Under the entity's row lock, so an unlink cannot slip
-    between the check and the queued run (unlink refuses an active run).
-    Returns (run, None) or (None, reason)."""
+def queue_acquisition_read(
+    db: Session, *, entity_id: uuid.UUID, cik10: str, user_id: uuid.UUID | None,
+    still_valid: Callable[[OrgEntity | None], str | None],
+) -> tuple[EntityIngestRun | None, str | None]:
+    """After an ingest succeeded: queue the AI acquisition read, or say why
+    not. Under the entity's row lock, so the caller's precondition cannot
+    change between the check and the queued run. `still_valid` returns a
+    reason to skip, or None. Returns (run, None) or (None, reason)."""
     entity = db.execute(select(OrgEntity).where(OrgEntity.id == entity_id).with_for_update()).scalar_one_or_none()
-    reason = None
-    if entity is None or entity.cik != cik10 or entity.registrant_linked_at is None:
-        reason = "the registrant link was removed before the read could start"
-    elif not acquisition_reader.stored_sections(db, entity_id):
-        reason = "the registrant's filings have no Business Combinations section to read"
-    elif not llm_connector.is_configured(db):
-        reason = "the OpenRouter connector is not configured or not enabled"
-    elif not llm_connector.models_configured(db):
-        reason = "AI models not configured"
+    reason = still_valid(entity)
+    if reason is None:
+        if not acquisition_reader.stored_sections(db, entity_id):
+            reason = "the registrant's filings have no Business Combinations section to read"
+        elif not llm_connector.is_configured(db):
+            reason = "the OpenRouter connector is not configured or not enabled"
+        elif not llm_connector.models_configured(db):
+            reason = "AI models not configured"
     if reason is not None:
         db.rollback()
         return None, reason
@@ -368,6 +378,17 @@ def followup_read(db: Session, *, entity_id: uuid.UUID, cik10: str, user_id: uui
         return None, "an AI read of this company was already queued or running"
     db.refresh(run)
     return run, None
+
+
+def followup_read(db: Session, *, entity_id: uuid.UUID, cik10: str, user_id: uuid.UUID | None) -> tuple[EntityIngestRun | None, str | None]:
+    """After the link's ingest succeeded: queue the AI acquisition read, or
+    say why not (an unlink cannot slip in: it refuses an active run)."""
+    def still_valid(entity: OrgEntity | None) -> str | None:
+        if entity is None or entity.cik != cik10 or entity.registrant_linked_at is None:
+            return "the registrant link was removed before the read could start"
+        return None
+
+    return queue_acquisition_read(db, entity_id=entity_id, cik10=cik10, user_id=user_id, still_valid=still_valid)
 
 
 # ── undo ─────────────────────────────────────────────────────────────────────

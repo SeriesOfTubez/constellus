@@ -18,7 +18,9 @@ import { CORE_IMPACT_COPY } from "@/lib/connector-copy"
 import { useAuthStore } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 
-const STEPS = ["Welcome", "Admin Account", "Connect data sources", "Done"]
+import { CompanySeedStep } from "@/pages/admin/CompanySeedStep"
+
+const STEPS = ["Welcome", "Admin Account", "Connect data sources", "Your company", "Done"]
 
 // Curated allowlist of connectors to surface during first-run setup — keeps
 // the step focused (no notification channels, no SSO, etc.). To add a future
@@ -355,8 +357,11 @@ export default function Setup() {
           {/* Step 2: Connect data sources */}
           {step === 2 && <ConnectSourcesStep onContinue={() => setStep(3)} />}
 
-          {/* Step 3: Done */}
-          {step === 3 && (
+          {/* Step 3: Your company (planning#232) */}
+          {step === 3 && <CompanySeedStep onContinue={() => setStep(4)} />}
+
+          {/* Step 4: Done */}
+          {step === 4 && (
             <Card>
               <CardHeader className="items-center text-center">
                 <CheckCircle2 className="h-12 w-12 text-emerald-500 mb-2" />

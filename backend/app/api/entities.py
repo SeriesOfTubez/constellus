@@ -19,6 +19,7 @@ import dataclasses
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Callable, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -45,6 +46,7 @@ from app.services import (
     entity_graph,
     entity_relationship,
     llm_connector,
+    onboarding,
     registrant_link,
     sec_edgar,
 )
@@ -1176,11 +1178,15 @@ def registrant_candidates(
     return [_to_candidate(f) for f in facts]
 
 
-def _run_registrant_link(run_id: uuid.UUID, entity_id: uuid.UUID, cik: str, user_id: uuid.UUID | None) -> None:
+def _run_ingest_then_read(
+    run_id: uuid.UUID, entity_id: uuid.UUID, cik: str, user_id: uuid.UUID | None, followup_read: Callable,
+) -> None:
     """The ingest, then (if it succeeded) the AI acquisition read, as one
     background task: Jason, 2026-10-02 — after a confirmed link everything
-    runs automatically. Why a read did not run is recorded on the INGEST
-    run's result (`acquisition_read`), never silently dropped."""
+    runs automatically; first-run onboarding (planning#232) does the same.
+    `followup_read` is the flow's own service function. Why a read did not
+    run is recorded on the INGEST run's result (`acquisition_read`), never
+    silently dropped."""
     _run_edgar_ingest(run_id, cik)
     db = SessionLocal()
     read_run = None
@@ -1191,19 +1197,110 @@ def _run_registrant_link(run_id: uuid.UUID, entity_id: uuid.UUID, cik: str, user
         if run is None or run.status != "succeeded":
             followup = {"status": "skipped", "reason": "the ingest did not succeed"}
         else:
-            read_run, reason = registrant_link.followup_read(db, entity_id=entity_id, cik10=cik, user_id=user_id)
+            read_run, reason = followup_read(db, entity_id=entity_id, cik10=cik, user_id=user_id)
             followup = (
                 {"status": "queued", "run_id": str(read_run.id)} if read_run else {"status": "skipped", "reason": reason}
             )
     except Exception as exc:
         db.rollback()
-        log.exception("registrant link follow-up failed for entity_id=%s", entity_id)
+        log.exception("ingest follow-up failed for entity_id=%s", entity_id)
         followup = {"status": "skipped", "reason": type(exc).__name__}
     finally:
         db.close()
     _mark_run(run_id, result={**result, "acquisition_read": followup})
     if read_run is not None:
         _run_acquisition_read(read_run.id, entity_id)
+
+
+def _run_registrant_link(run_id: uuid.UUID, entity_id: uuid.UUID, cik: str, user_id: uuid.UUID | None) -> None:
+    _run_ingest_then_read(run_id, entity_id, cik, user_id, registrant_link.followup_read)
+
+
+# ── first-run onboarding (planning#232) ─────────────────────────────────────
+
+class OnboardingSeedRequest(BaseModel):
+    cik: str
+
+
+class OnboardingSeedAccepted(BaseModel):
+    entity_id: uuid.UUID
+    entity_name: str
+    cik: str
+    relationship_previous: str | None
+    ours_set_now: bool
+    run_id: uuid.UUID | None
+    ingest: Literal["queued", "already_running"]
+
+
+def _onboarding_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, onboarding.OnboardingInvalid):
+        return HTTPException(status_code=422, detail=str(exc))
+    if isinstance(exc, onboarding.OnboardingNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, onboarding.OnboardingConflict):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, entity_relationship.RelationshipError):
+        return _relationship_http_error(exc)
+    return _link_http_error(exc)  # EdgarNotConfigured (409) and SEC failures (502, class name only)
+
+
+_ONBOARDING_ERRORS = (
+    onboarding.OnboardingError, entity_relationship.RelationshipError, *_LINK_ERRORS,
+)
+
+
+@router.get("/onboarding/registrant-search", response_model=list[RegistrantCandidate])
+def onboarding_registrant_search(
+    q: str,
+    contains: bool = False,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(UserRole.ADMIN)),
+):
+    """ADMIN only: every call sends requests to SEC (one search plus one
+    submissions fetch per candidate). Results are hints for a person to
+    choose from; nothing is matched or created here."""
+    try:
+        facts = onboarding.search(db, query=q, contains=contains)
+    except _ONBOARDING_ERRORS as exc:
+        raise _onboarding_http_error(exc)
+    return [_to_candidate(f) for f in facts]
+
+
+@router.post("/onboarding/seed", response_model=OnboardingSeedAccepted, status_code=202)
+def onboarding_seed(
+    data: OnboardingSeedRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Mark the chosen registrant as ours and queue its ingest (and, when AI
+    is configured, the acquisition read). Creates no Target and accepts no
+    candidate domain: nothing seeded enters scope."""
+    try:
+        outcome = onboarding.seed(db, cik=data.cik, user=current_user)
+    except _ONBOARDING_ERRORS as exc:
+        raise _onboarding_http_error(exc)
+    entity, run = outcome.entity, outcome.run
+    audit.record_detail(
+        request,
+        entity=str(entity.id),
+        cik=entity.cik,
+        relationship={"from": outcome.previous_relationship, "to": "ours"},
+        # NOT a key containing "auth": `audit.scrub` would redact it.
+        reference=onboarding.ONBOARDING_REFERENCE,
+        ours_set_now=outcome.ours_set_now,
+        run_id=str(run.id) if run else None,
+    )
+    if run is not None:
+        background_tasks.add_task(
+            _run_ingest_then_read, run.id, entity.id, entity.cik, current_user.id, onboarding.followup_read
+        )
+    return OnboardingSeedAccepted(
+        entity_id=entity.id, entity_name=entity.legal_name, cik=entity.cik,
+        relationship_previous=outcome.previous_relationship, ours_set_now=outcome.ours_set_now,
+        run_id=run.id if run else None, ingest="queued" if run else "already_running",
+    )
 
 
 @router.post("/{entity_id}/registrant-link", response_model=RegistrantLinkAccepted, status_code=202)
