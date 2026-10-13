@@ -358,6 +358,17 @@ export type RegistrantCandidate = {
   taken_by_name: string | null
 }
 
+// planning#232 — `POST /entities/onboarding/seed` (202).
+export type OnboardingSeedAccepted = {
+  entity_id: string
+  entity_name: string
+  cik: string
+  relationship_previous: string | null
+  ours_set_now: boolean
+  run_id: string | null
+  ingest: "queued" | "already_running"
+}
+
 export type RegistrantUnlinkResult = {
   entity: OrgEntity
   cik: string
