@@ -6,21 +6,24 @@ summary email via the enabled NotificationConnector.
 """
 
 import logging
+import re
 import uuid
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_role
 from app.core.database import get_db
 from app.models.alert_event import AlertDelivery, AlertDispatch, AlertEvent
 from app.models.asset_canonical import AssetCanonical
+from app.models.digest import Digest
 from app.models.finding_canonical import FindingCanonical
-from app.models.notification_rule import NotificationRule
+from app.models.notification_rule import RULE_MODES, NotificationRule
 from app.models.user import UserRole
+from app.services import app_settings, audit, digest as digest_svc
 from app.services.notification_dispatcher import _SEVERITY_RANK
 
 log = logging.getLogger(__name__)
@@ -30,6 +33,13 @@ router = APIRouter()
 _VALID_SEVERITIES = {"info", "low", "medium", "high", "critical"}
 
 
+def _check_mode(v: str) -> str:
+    v = v.strip().lower()
+    if v not in RULE_MODES:
+        raise ValueError(f"mode must be one of {sorted(RULE_MODES)}")
+    return v
+
+
 class RuleResponse(BaseModel):
     id: uuid.UUID
     name: str
@@ -37,6 +47,7 @@ class RuleResponse(BaseModel):
     severity_threshold: str
     categories: list[str]
     recipients: list[str]
+    mode: str
 
     model_config = {"from_attributes": True}
 
@@ -47,6 +58,12 @@ class RuleCreate(BaseModel):
     categories: list[str] = []
     recipients: list[str]
     enabled: bool = True
+    mode: str = "immediate"
+
+    @field_validator("mode")
+    @classmethod
+    def _mode(cls, v: str) -> str:
+        return _check_mode(v)
 
     @field_validator("name")
     @classmethod
@@ -79,6 +96,12 @@ class RuleUpdate(BaseModel):
     categories: list[str] | None = None
     recipients: list[str] | None = None
     enabled: bool | None = None
+    mode: str | None = None
+
+    @field_validator("mode")
+    @classmethod
+    def _mode(cls, v: str | None) -> str | None:
+        return None if v is None else _check_mode(v)
 
     @field_validator("severity_threshold")
     @classmethod
@@ -112,6 +135,7 @@ def create_rule(
         severity_threshold=data.severity_threshold,
         categories=data.categories,
         recipients=data.recipients,
+        mode=data.mode,
     )
     db.add(rule)
     db.commit()
@@ -143,6 +167,8 @@ def update_rule(
         rule.recipients = cleaned
     if data.enabled is not None:
         rule.enabled = data.enabled
+    if data.mode is not None:
+        rule.mode = data.mode
     db.commit()
     db.refresh(rule)
     return rule
@@ -252,3 +278,104 @@ def list_alerts(
             ],
         ))
     return out
+
+
+# ── Digests (planning#233 slice 2a) ──────────────────────────────────────────
+
+_ADMIN = (UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)
+
+
+class DigestOut(BaseModel):
+    id: uuid.UUID
+    rule_id: uuid.UUID | None
+    rule_name: str
+    period_start: datetime
+    period_end: datetime
+    event_count: int
+    finding_count: int
+    outcome: str
+    narrative_status: str | None
+    narrative_reason: str | None
+    deliveries: list[dict]
+    created_at: datetime
+    sent_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class DigestDetailOut(DigestOut):
+    body: dict
+    narrative: dict | None
+
+
+@router.get("/digests", response_model=list[DigestOut])
+def list_digests(
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _=Depends(require_role(*_ADMIN)),
+):
+    return db.query(Digest).order_by(Digest.created_at.desc(), Digest.id.desc()).limit(limit).all()
+
+
+@router.get("/digests/{digest_id}", response_model=DigestDetailOut)
+def get_digest(
+    digest_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(*_ADMIN)),
+):
+    row = db.get(Digest, digest_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Digest not found")
+    return row
+
+
+_BASE_URL_RE = re.compile(r"https?://[^\s/?#@]+(/[^\s?#]*)?")
+
+
+class DigestSettings(BaseModel):
+    digest_hour_utc: int
+    app_base_url: str
+
+
+class DigestSettingsUpdate(BaseModel):
+    digest_hour_utc: int | None = Field(default=None, ge=0, le=23)
+    app_base_url: str | None = Field(default=None, max_length=200)
+
+    @field_validator("app_base_url")
+    @classmethod
+    def _base_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if v and not _BASE_URL_RE.fullmatch(v):
+            raise ValueError("app_base_url must be empty or an http(s) URL without a query or fragment")
+        return v.rstrip("/")
+
+
+def _digest_settings(db: Session) -> DigestSettings:
+    return DigestSettings(digest_hour_utc=digest_svc.digest_hour(db), app_base_url=digest_svc.app_base_url(db))
+
+
+@router.get("/digest-settings", response_model=DigestSettings)
+def get_digest_settings(
+    db: Session = Depends(get_db),
+    _=Depends(require_role(*_ADMIN)),
+):
+    return _digest_settings(db)
+
+
+@router.put("/digest-settings", response_model=DigestSettings)
+def put_digest_settings(
+    data: DigestSettingsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(*_ADMIN)),
+):
+    old = _digest_settings(db)
+    if data.digest_hour_utc is not None:
+        app_settings.set_value(db, digest_svc.DIGEST_HOUR_KEY, str(data.digest_hour_utc))
+        audit.record_detail(request, digest_hour_utc={"from": old.digest_hour_utc, "to": data.digest_hour_utc})
+    if data.app_base_url is not None:
+        app_settings.set_value(db, digest_svc.BASE_URL_KEY, data.app_base_url)
+        audit.record_detail(request, app_base_url={"from": old.app_base_url, "to": data.app_base_url})
+    return _digest_settings(db)

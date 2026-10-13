@@ -27,6 +27,7 @@ describe("deliveryLabel", () => {
     expect(deliveryLabel({ outcome: "raised", connector_id: "smtp", recipient_count: 0 })).toBe("Send error (smtp)")
     expect(deliveryLabel({ outcome: "no_channel", connector_id: null, recipient_count: 0 })).toBe("Not sent: no notification channel enabled")
     expect(deliveryLabel({ outcome: "no_recipients", connector_id: null, recipient_count: 0 })).toBe("Not sent: rule has no recipients")
+    expect(deliveryLabel({ outcome: "deferred_to_digest", connector_id: null, recipient_count: 0 })).toBe("Held for the daily digest")
     expect(deliveryLabel({ outcome: "weird", connector_id: null, recipient_count: 0 })).toBe("weird")
   })
 })

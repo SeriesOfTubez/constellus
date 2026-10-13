@@ -10,7 +10,7 @@ from app.core.database import Base
 # Mirror the CHECK-backed vocabularies in migration 0079 by hand (the same
 # pattern as `finding_ai_writeup.py`).
 ALERT_KINDS: frozenset[str] = frozenset({"new", "promotion"})
-DELIVERY_OUTCOMES: frozenset[str] = frozenset({"sent", "failed", "raised", "no_channel", "no_recipients"})
+DELIVERY_OUTCOMES: frozenset[str] = frozenset({"sent", "failed", "raised", "no_channel", "no_recipients", "deferred_to_digest"})
 
 
 class AlertDispatch(Base):
@@ -25,6 +25,10 @@ class AlertDispatch(Base):
     )
     rule_name: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
+    # The digest that claimed this dispatch (migration 0080); NULL = unclaimed.
+    digest_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("digests.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
@@ -48,7 +52,7 @@ class AlertEvent(Base):
 
 class AlertDelivery(Base):
     """One outcome per dispatch per connector. `no_channel` / `no_recipients`
-    carry a NULL `connector_id` (enforced by a CHECK in 0079)."""
+    and `deferred_to_digest` carry a NULL `connector_id` (CHECK in 0079/0080)."""
 
     __tablename__ = "alert_deliveries"
 

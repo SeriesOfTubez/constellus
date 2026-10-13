@@ -69,6 +69,7 @@ def start() -> None:
     _register_partition_maintenance()
     _register_hygiene_scoring()
     _register_nightly_rescore()
+    _register_alert_digests()
     _register_run_reaper()
     _register_llm_ledger_pruner()
     _register_llm_models_refresher()
@@ -391,6 +392,31 @@ def _run_nightly_rescore() -> None:
         log.error("Nightly risk re-scoring failed", exc_info=True)
     finally:
         db.close()
+
+
+def _register_alert_digests() -> None:
+    """Register the hourly alert-digest check (planning#233 slice 2a). Hourly
+    at :05 UTC rather than once a day: the send hour is an admin setting, and
+    `digest.run_due` sends only for rules whose newest digest is older than
+    the current cut-off, so a run in a non-send hour is a cheap no-op."""
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        _run_alert_digests,
+        trigger=CronTrigger(minute=5, timezone="UTC"),
+        id="alert_digests",
+        name="Alert digests (hourly check)",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    log.info("Scheduled alert_digests (hourly at :05 UTC)")
+
+
+def _run_alert_digests() -> None:
+    from app.services import digest
+
+    digest.run_due()
 
 
 _reaper_started = False

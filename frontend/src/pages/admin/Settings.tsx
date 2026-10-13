@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Loader2, Plus, Trash2, Clock, Bell, Gauge, AlertTriangle, Palette } from "lucide-react"
@@ -13,8 +13,10 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { AlertHistoryList } from "@/components/AlertHistoryList"
+import { DigestHistoryList } from "@/components/DigestHistoryList"
+import { BASE_URL_MAX, digestHourWarning, validBaseUrl, validDigestHour } from "@/lib/digestSettings"
 import { Switch } from "@/components/ui/switch"
-import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type SystemStatus } from "@/lib/api"
+import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type DigestSettings, type DigestSummary, type SystemStatus } from "@/lib/api"
 
 type MonitoringPolicy = {
   id: string
@@ -249,7 +251,14 @@ type NotificationRule = {
   severity_threshold: "info" | "low" | "medium" | "high" | "critical"
   categories: string[]
   recipients: string[]
+  mode: "immediate" | "digest" | "both"
 }
+
+const DELIVERY_MODES: { value: NotificationRule["mode"]; label: string }[] = [
+  { value: "immediate", label: "Immediately (each scan)" },
+  { value: "digest", label: "Daily digest only" },
+  { value: "both", label: "Both" },
+]
 
 const SEVERITIES = ["info", "low", "medium", "high", "critical"] as const
 
@@ -265,11 +274,12 @@ function NotificationRuleDialog({
   const [severity, setSeverity] = useState<NotificationRule["severity_threshold"]>(rule?.severity_threshold ?? "high")
   const [recipientsText, setRecipientsText] = useState((rule?.recipients ?? []).join(", "))
   const [enabled, setEnabled] = useState(rule?.enabled ?? true)
+  const [mode, setMode] = useState<NotificationRule["mode"]>(rule?.mode ?? "immediate")
 
   const mutation = useMutation({
     mutationFn: () => {
       const recipients = recipientsText.split(/[,\s]+/).map(s => s.trim()).filter(Boolean)
-      const body = { name: name.trim(), severity_threshold: severity, recipients, enabled }
+      const body = { name: name.trim(), severity_threshold: severity, recipients, enabled, mode }
       if (isNew) return api.post<NotificationRule>("/notifications/rules", body)
       return api.patch<NotificationRule>(`/notifications/rules/${rule!.id}`, body)
     },
@@ -308,6 +318,18 @@ function NotificationRuleDialog({
             </p>
           </div>
           <div className="space-y-1.5">
+            <Label>Delivery</Label>
+            <Select value={mode} onValueChange={(v) => setMode(v as NotificationRule["mode"])}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {DELIVERY_MODES.map(m => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Daily digest groups the day's alerts into one email at the digest hour below. Alerts are recorded either way.
+            </p>
+          </div>
+          <div className="space-y-1.5">
             <Label htmlFor="rule-recipients">Recipients</Label>
             <Input
               id="rule-recipients"
@@ -334,6 +356,76 @@ function NotificationRuleDialog({
   )
 }
 
+function DigestSettingsBlock() {
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ["digest-settings"],
+    queryFn: () => api.get<DigestSettings>("/notifications/digest-settings"),
+  })
+  const [hourDraft, setHourDraft] = useState("")
+  const [urlDraft, setUrlDraft] = useState("")
+  const [hourErr, setHourErr] = useState<string | null>(null)
+  const [urlErr, setUrlErr] = useState<string | null>(null)
+  // One effect per field: saving one field must not reset an in-progress
+  // edit of the other when the query refetches.
+  useEffect(() => {
+    if (data) setHourDraft(String(data.digest_hour_utc))
+  }, [data?.digest_hour_utc])
+  useEffect(() => {
+    if (data) setUrlDraft(data.app_base_url)
+  }, [data?.app_base_url])
+
+  const hourNum = hourDraft.trim() === "" ? NaN : Number(hourDraft)
+  const hourValid = validDigestHour(hourNum)
+  const urlValid = validBaseUrl(urlDraft.trim())
+  const warning = hourValid ? digestHourWarning(hourNum) : null
+
+  const save = useMutation({
+    mutationFn: (body: Partial<DigestSettings>) => api.put<DigestSettings>("/notifications/digest-settings", body),
+    onSuccess: () => {
+      toast.success("Digest settings saved")
+      qc.invalidateQueries({ queryKey: ["digest-settings"] })
+    },
+  })
+  const run = (body: Partial<DigestSettings>, setErr: (m: string | null) => void) => {
+    setErr(null)
+    save.mutate(body, { onError: (e: Error) => setErr(e.message) })
+  }
+
+  return (
+    <div className="space-y-3">
+      <h4 className="text-sm font-medium">Digest settings</h4>
+      <div className="space-y-1.5">
+        <Label htmlFor="digest-hour">Digest hour (UTC, 0-23)</Label>
+        <div className="flex gap-2">
+          <Input id="digest-hour" type="number" min={0} max={23} step={1} className="h-8 w-24 text-xs"
+            value={hourDraft} onChange={e => setHourDraft(e.target.value)} aria-invalid={!hourValid} />
+          <Button size="sm" className="h-8" disabled={!hourValid || save.isPending}
+            onClick={() => run({ digest_hour_utc: hourNum }, setHourErr)}>Save</Button>
+        </div>
+        {!hourValid && <p className="text-xs text-destructive">A whole number from 0 to 23.</p>}
+        {warning && <p className="text-xs text-amber-600 dark:text-amber-500">{warning}</p>}
+        {hourErr && <p className="text-xs text-destructive">{hourErr}</p>}
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="digest-base-url">App link base URL (optional)</Label>
+        <div className="flex gap-2">
+          <Input id="digest-base-url" className="h-8 text-xs"
+            value={urlDraft} onChange={e => setUrlDraft(e.target.value)} aria-invalid={!urlValid}
+            placeholder="https://easm.example.com" />
+          <Button size="sm" className="h-8" disabled={!urlValid || save.isPending}
+            onClick={() => run({ app_base_url: urlDraft.trim() }, setUrlErr)}>Save</Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Used to turn record paths in digest emails into links, e.g. https://easm.example.com
+        </p>
+        {!urlValid && <p className="text-xs text-destructive">Must be empty or an http(s) URL of at most {BASE_URL_MAX} characters.</p>}
+        {urlErr && <p className="text-xs text-destructive">{urlErr}</p>}
+      </div>
+    </div>
+  )
+}
+
 function NotificationRulesCard() {
   const qc = useQueryClient()
   const [editing, setEditing] = useState<NotificationRule | null | undefined>(undefined)
@@ -346,6 +438,11 @@ function NotificationRulesCard() {
   const { data: alerts, isLoading: alertsLoading, isError: alertsError } = useQuery({
     queryKey: ["notification-alerts"],
     queryFn: () => api.get<AlertDispatch[]>("/notifications/alerts?limit=20"),
+  })
+
+  const { data: digests, isLoading: digestsLoading, isError: digestsError } = useQuery({
+    queryKey: ["notification-digests"],
+    queryFn: () => api.get<DigestSummary[]>("/notifications/digests?limit=10"),
   })
 
   const toggleMutation = useMutation({
@@ -398,6 +495,11 @@ function NotificationRulesCard() {
                       {r.name}
                     </button>
                     <Badge variant="outline" className="text-[10px] uppercase">{r.severity_threshold}+</Badge>
+                    {r.mode && r.mode !== "immediate" && (
+                      <Badge variant="secondary" className="text-[10px] text-muted-foreground">
+                        {r.mode === "digest" ? "Digest" : "Immediate + digest"}
+                      </Badge>
+                    )}
                   </div>
                   <p className="mt-0.5 text-xs text-muted-foreground truncate">
                     → {r.recipients.join(", ")}
@@ -421,6 +523,8 @@ function NotificationRulesCard() {
           </div>
         )}
         <Separator className="my-4" />
+        <DigestSettingsBlock />
+        <Separator className="my-4" />
         <h4 className="text-sm font-medium mb-2">Recent alerts</h4>
         {alertsLoading ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
@@ -428,6 +532,14 @@ function NotificationRulesCard() {
           <p className="text-sm text-muted-foreground">Could not load alert history.</p>
         ) : (
           <AlertHistoryList dispatches={alerts ?? []} />
+        )}
+        <h4 className="text-sm font-medium mt-4 mb-2">Recent digests</h4>
+        {digestsLoading ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : digestsError ? (
+          <p className="text-sm text-muted-foreground">Could not load digest history.</p>
+        ) : (
+          <DigestHistoryList digests={digests ?? []} />
         )}
       </CardContent>
       {editing !== undefined && (
