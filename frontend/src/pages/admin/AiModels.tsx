@@ -61,6 +61,7 @@ interface LlmStatus {
   budget: { daily_budget_usd: number; spent_today_usd: number }
   auto_writeups: AutoWriteups
   auto_web_classifications: AutoWriteups
+  digest_narratives?: AutoWriteups
 }
 
 interface AutoWriteups {
@@ -149,6 +150,59 @@ function AutoWriteupsCard({ auto }: { auto: AutoWriteups | undefined }) {
           </div>
         </div>
         {!valid && <p className="mt-2 text-xs text-destructive">A whole number from 0 to {AUTO_CAP_MAX}.</p>}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ── AI digest summaries (planning#233 slice 2) ──────────────────────────
+
+const DIGEST_CAP_MAX = 1000
+
+function DigestNarrativesCard({ digest }: { digest: AutoWriteups | undefined }) {
+  const qc = useQueryClient()
+  const [draft, setDraft] = useState<string>("")
+  useEffect(() => {
+    if (digest) setDraft(String(digest.daily_cap))
+  }, [digest?.daily_cap])
+  const parsed = Number(draft)
+  const valid = draft.trim() !== "" && Number.isInteger(parsed) && parsed >= 0 && parsed <= DIGEST_CAP_MAX
+  const dirty = digest !== undefined && valid && parsed !== digest.daily_cap
+  const save = useMutation({
+    mutationFn: (cap: number) => api.put<LlmStatus>("/llm/digest-settings", { narrative_daily_cap: cap }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["llm-status"] })
+      const c = r.digest_narratives?.daily_cap
+      toast.success(c === 0 ? "AI digest summaries turned off" : `AI digest summaries: up to ${c} a day`)
+    },
+    onError: (e: Error) => toast.error(`Save failed: ${e.message}`),
+  })
+  if (!digest) return <Skeleton className="h-28" />
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">AI digest summaries</CardTitle>
+        <CardDescription className="text-xs">
+          Daily digests include an AI summary of what changed, capped per UTC day. Each statement must cite the records
+          it describes; any that cannot are dropped. The digest is sent either way. 0 turns summaries off.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-end gap-6 text-sm">
+          <div className="space-y-1">
+            <Label htmlFor="digest-narrative-cap" className="text-xs text-muted-foreground">Per day</Label>
+            <div className="flex gap-2">
+              <Input id="digest-narrative-cap" type="number" min={0} max={DIGEST_CAP_MAX} step={1} className="h-8 w-24 text-xs"
+                value={draft} onChange={(e) => setDraft(e.target.value)} aria-invalid={!valid} />
+              <Button size="sm" className="h-8" aria-label="Save AI digest summary cap" disabled={!dirty || save.isPending} onClick={() => save.mutate(parsed)}>Save</Button>
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Today</div>
+            <div className="tabular-nums">{digest.daily_cap === 0 ? `${digest.today} (off)` : `${digest.today} / ${digest.daily_cap}`}</div>
+          </div>
+        </div>
+        {!valid && <p className="mt-2 text-xs text-destructive">A whole number from 0 to {DIGEST_CAP_MAX}.</p>}
       </CardContent>
     </Card>
   )
@@ -444,6 +498,7 @@ export default function AiModels() {
 
       <StatusCards status={status} />
       <AutoWriteupsCard auto={status?.auto_writeups} />
+      <DigestNarrativesCard digest={status?.digest_narratives} />
       <AutoWebClassificationsCard auto={status?.auto_web_classifications} />
 
       {saved && !saved.configured && (

@@ -28,6 +28,8 @@ Three concerns, all ADMIN-only:
   (planning#228), audited the same way; `GET /status` reports it.
   `PUT /api/llm/web-classification-settings` sets
   `ai.web_classifications.auto_daily_cap` (planning#231), likewise.
+  `PUT /api/llm/digest-settings` sets `ai.digests.narrative_daily_cap`
+  (planning#233 slice 2a); `GET /status` reports it as `digest_narratives`.
 
 There is no code default for the bindings (item 5): until the first PUT,
 `GET /role-bindings` answers `configured: false` and AI features report
@@ -45,6 +47,7 @@ from app.core.database import get_db
 from app.models.user import UserRole
 from app.services import app_settings, audit, finding_writeup, llm_connector
 from app.services import chat, web_classifier
+from app.services import digest
 from app.services.llm_connector import Role, RoleBinding
 
 router = APIRouter()
@@ -95,6 +98,7 @@ class LlmStatusResponse(BaseModel):
     auto_writeups: AutoWriteupStatus
     auto_web_classifications: AutoWriteupStatus
     chat_transcript_retention_days: int
+    digest_narratives: AutoWriteupStatus
 
 
 class LlmSettingsUpdate(BaseModel):
@@ -208,6 +212,10 @@ def refresh_allowed_models(
     return AllowedModelsResponse(fetched_at=allowed.fetched_at.isoformat(), models=allowed.entries)
 
 
+def _digest_narratives(db: Session) -> AutoWriteupStatus:
+    return AutoWriteupStatus(daily_cap=digest.narrative_daily_cap(db), today=digest.narrative_count_today(db))
+
+
 @router.get("/status", response_model=LlmStatusResponse)
 def get_status(
     request: Request,
@@ -240,6 +248,7 @@ def get_status(
             daily_cap=web_classifier.auto_daily_cap(db), today=web_classifier.auto_count_today(db),
         ),
         chat_transcript_retention_days=chat.retention_days(db),
+        digest_narratives=_digest_narratives(db),
     )
 
 
@@ -297,3 +306,23 @@ def put_chat_settings(
     app_settings.set_value(db, chat.RETENTION_KEY, str(data.transcript_retention_days))
     audit.record_detail(request, chat_transcript_retention_days={"from": old, "to": data.transcript_retention_days})
     return ChatSettings(transcript_retention_days=chat.retention_days(db))
+
+
+class DigestSettingsUpdate(BaseModel):
+    # An upper bound so a typo cannot authorise thousands of calls; the
+    # global daily budget still bites first in practice.
+    narrative_daily_cap: int = Field(ge=0, le=1000)
+
+
+@router.put("/digest-settings", response_model=AutoWriteupStatus)
+def put_digest_settings(
+    data: DigestSettingsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(UserRole.ADMIN)),
+):
+    """Set `ai.digests.narrative_daily_cap` (0 = off), audited old -> new."""
+    old = digest.narrative_daily_cap(db)
+    app_settings.set_value(db, digest.NARRATIVE_CAP_KEY, str(data.narrative_daily_cap))
+    audit.record_detail(request, digest_narrative_daily_cap={"from": old, "to": data.narrative_daily_cap})
+    return _digest_narratives(db)
