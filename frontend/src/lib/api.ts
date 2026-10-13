@@ -639,6 +639,45 @@ export type Finding = {
   } | null
 }
 
+export type AlertEventSummary = {
+  finding_id: string
+  title: string
+  severity: "critical" | "high" | "medium" | "low" | "info" | null
+  asset_value: string
+  detail: Record<string, unknown>
+}
+
+export type AlertDelivery = {
+  connector_id: string | null
+  outcome: "sent" | "failed" | "raised" | "no_channel" | "no_recipients"
+  recipient_count: number
+}
+
+export type AlertDispatch = {
+  id: string
+  rule_id: string | null
+  rule_name: string
+  kind: "new" | "promotion"
+  created_at: string
+  event_count: number
+  events: AlertEventSummary[]
+  deliveries: AlertDelivery[]
+}
+
+export type FindingCluster = {
+  finding_type: string
+  source: string
+  fingerprint: string
+  title: string
+  max_severity: Finding["severity"]
+  finding_count: number
+  asset_count: number
+  cve_id: string | null
+  first_seen_at: string
+  last_seen_at: string
+  member_ids: string[]
+}
+
 export type ScanTemplate = {
   id: string
   name: string

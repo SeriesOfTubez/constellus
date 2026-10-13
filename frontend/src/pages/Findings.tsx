@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, type ReactNode } from "react"
 import { Link } from "react-router-dom"
 import { useFlyout } from "@/lib/flyout"
-import { useUrlState, useUrlFlag, useListView, useDebouncedUrlState } from "@/lib/listView"
+import { useUrlState, useUrlFlag, useListView, useDebouncedUrlState, type GroupMode } from "@/lib/listView"
 import { ViewToggle, GroupBySelect } from "@/components/ListControls"
 import { FindingCard } from "@/components/FindingCard"
 import { AssetRiskCard } from "@/components/AssetRiskCard"
@@ -31,7 +31,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { TagBadge } from "@/components/ui/tag-badge"
 import { TagEditor } from "@/components/ui/tag-editor"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import { api, ApiError, type Finding, type Asset } from "@/lib/api"
+import { api, ApiError, type Finding, type Asset, type FindingCluster } from "@/lib/api"
+import { groupByCluster } from "@/lib/findingClusters"
 import { useAuthStore } from "@/lib/auth"
 import { canMutate } from "@/lib/roles"
 import {
@@ -48,6 +49,15 @@ import {
 } from "@/components/finding-badges"
 
 const NEW_FINDING_DAYS = 7
+
+// Findings-only group axes: the shared defaults plus the server-computed "same issue" clusters.
+const FINDINGS_GROUP_OPTIONS: Array<{ value: GroupMode; label: string }> = [
+  { value: "none", label: "No grouping" },
+  { value: "band", label: "Group by band" },
+  { value: "impact", label: "Group by impact" },
+  { value: "asset", label: "Group by asset" },
+  { value: "issue", label: "Group by same issue" },
+]
 
 // Epic#81 Phase D — the one curated "Ownership Unverifiable" saved view.
 // A sentinel activeTab value, NOT a category: per the locked IA rule
@@ -534,6 +544,17 @@ export default function Findings() {
     enabled: group === "asset",
   })
 
+  // "Same issue" clusters back group=issue (deterministic, server-computed).
+  const { data: clusters, isLoading: clustersLoading, isError: clustersError } = useQuery({
+    queryKey: ["finding-clusters", stateFilter],
+    queryFn: () => {
+      // "all" is explicit: the route defaults to open when no state is sent.
+      const params = new URLSearchParams({ state: stateFilter })
+      return api.get<FindingCluster[]>(`/findings/clusters?${params}`)
+    },
+    enabled: group === "issue",
+  })
+
   const stateMutation = useMutation({
     mutationFn: ({ id, state }: { id: string; state: string }) =>
       api.patch(`/findings/${id}/state`, { state }),
@@ -654,7 +675,7 @@ export default function Findings() {
   const { selected: selectedFinding, open: openFinding, close: closeFinding } = useFlyout(filtered)
 
   // ── Grouping (client-side view transform over the filtered list) ──────────────
-  type Group = { key: string; label: string; items: Finding[] }
+  type Group = { key: string; label: string; items: Finding[]; cluster?: FindingCluster | null }
   const worstBandIndex = (items: Finding[]) =>
     Math.min(...items.map(f => RISK_BAND_ORDER.indexOf(effectiveBand(f))).filter(i => i >= 0))
   const groups: Group[] =
@@ -678,6 +699,14 @@ export default function Findings() {
             items: filtered.filter(f => (f.impact_class ?? "__none") === k),
           }))
           .filter(g => g.items.length > 0)
+      : group === "issue"
+      ? (clustersLoading || !clusters
+          // Clusters loading (or failed): keep the rows visible under one group, never flash
+          // "no findings"; a failed fetch says so rather than passing for an ungrouped list.
+          ? (filtered.length > 0
+              ? [{ key: "__all", label: clustersError ? "Could not load same-issue groups: all findings" : "All findings", items: filtered, cluster: null }]
+              : [])
+          : groupByCluster(filtered, clusters))
       : []
 
   // "See all findings for this asset" — flat card view scoped to the asset,
@@ -853,7 +882,7 @@ export default function Findings() {
         <span className="text-xs text-muted-foreground">
           {filtered.length} finding{filtered.length !== 1 ? "s" : ""}
         </span>
-        <GroupBySelect group={group} onChange={setGroup} />
+        <GroupBySelect group={group} onChange={setGroup} options={FINDINGS_GROUP_OPTIONS} />
         <ViewToggle view={view} onChange={setView} />
       </div>
     </>
@@ -948,6 +977,9 @@ export default function Findings() {
     </TableRow>
   )
 
+  const clusterBadge = (g: Group) =>
+    g.cluster ? <SeverityBadge severity={g.cluster.max_severity} /> : null
+
   const sectionHeaderRow = (g: Group) => {
     const isCollapsed = collapsedGroups.has(g.key)
     return (
@@ -956,6 +988,7 @@ export default function Findings() {
           <span className="inline-flex items-center gap-1.5">
             {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
             {g.label} <span className="text-muted-foreground/60">· {g.items.length}</span>
+            {clusterBadge(g)}
           </span>
         </TableCell>
       </TableRow>
@@ -1031,6 +1064,7 @@ export default function Findings() {
               >
                 {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                 {g.label} <span className="text-muted-foreground/60">· {g.items.length}</span>
+                {clusterBadge(g)}
               </button>
               {!isCollapsed && cardGrid(g.items)}
             </section>

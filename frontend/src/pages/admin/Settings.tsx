@@ -12,8 +12,9 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import { AlertHistoryList } from "@/components/AlertHistoryList"
 import { Switch } from "@/components/ui/switch"
-import { api, type AggressivenessTier, type AppSettings, type SystemStatus } from "@/lib/api"
+import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type SystemStatus } from "@/lib/api"
 
 type MonitoringPolicy = {
   id: string
@@ -342,6 +343,11 @@ function NotificationRulesCard() {
     queryFn: () => api.get<NotificationRule[]>("/notifications/rules"),
   })
 
+  const { data: alerts, isLoading: alertsLoading, isError: alertsError } = useQuery({
+    queryKey: ["notification-alerts"],
+    queryFn: () => api.get<AlertDispatch[]>("/notifications/alerts?limit=20"),
+  })
+
   const toggleMutation = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       api.patch(`/notifications/rules/${id}`, { enabled }),
@@ -413,6 +419,15 @@ function NotificationRulesCard() {
               </div>
             ))}
           </div>
+        )}
+        <Separator className="my-4" />
+        <h4 className="text-sm font-medium mb-2">Recent alerts</h4>
+        {alertsLoading ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : alertsError ? (
+          <p className="text-sm text-muted-foreground">Could not load alert history.</p>
+        ) : (
+          <AlertHistoryList dispatches={alerts ?? []} />
         )}
       </CardContent>
       {editing !== undefined && (

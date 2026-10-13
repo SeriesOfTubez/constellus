@@ -6,8 +6,11 @@ finding writer has committed. The dispatcher:
   1. Loads enabled notification rules.
   2. For each rule, filters the new findings to those meeting the
      severity threshold and (optional) category list.
-  3. Renders a single summary email per rule and hands it to the
-     enabled NotificationConnector.
+  3. Records each rule's selection (alert_dispatches / alert_events) BEFORE
+     sending, whether or not any channel is enabled (planning#233).
+  4. Renders a single summary email per rule and hands it to the
+     enabled NotificationConnector, recording each outcome
+     (alert_deliveries).
 
 Re-observations of a previously-resolved finding are NOT re-dispatched —
 the writer reopens them in place; only the very first insert of a
@@ -44,6 +47,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
+from app.models.alert_event import AlertDelivery, AlertDispatch, AlertEvent
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
 from app.models.notification_rule import NotificationRule
 from app.services import claims_query
@@ -107,40 +111,7 @@ def _dispatch(db: Session, new_finding_ids: list[uuid.UUID]) -> None:
     if not findings:
         return
 
-    connectors = _enabled_notification_connectors(db)
-    if not connectors:
-        log.info(
-            "notification_dispatcher: %d new finding(s) but no notification connector is enabled",
-            len(findings),
-        )
-        return
-
-    for rule in rules:
-        matches = [f for f in findings if _rule_matches(rule, f)]
-        if not matches:
-            continue
-        recipients = [r for r in (rule.recipients or []) if r]
-        if not recipients:
-            log.warning("notification_dispatcher: rule %s has no recipients — skipping", rule.id)
-            continue
-
-        subject, text_body, html_body = _render(rule, matches)
-        for cid, connector, config in connectors:
-            try:
-                ok = connector.send(
-                    subject=subject,
-                    body_text=text_body,
-                    recipients=recipients,
-                    config=config,
-                    body_html=html_body,
-                )
-                if ok:
-                    log.info(
-                        "notification_dispatcher: sent rule=%s via %s to %d recipient(s) (%d finding(s))",
-                        rule.name, cid, len(recipients), len(matches),
-                    )
-            except Exception:
-                log.exception("notification_dispatcher: connector %s send raised", cid)
+    _select_record_send(db, rules, findings, kind="new")
 
 
 def dispatch_promotions(promotions: list) -> None:
@@ -199,24 +170,131 @@ def _dispatch_promotions(db: Session, promotions: list) -> None:
     if not findings:
         return
 
-    connectors = _enabled_notification_connectors(db)
-    if not connectors:
-        log.info(
-            "notification_dispatcher: %d promotion(s) but no notification connector is enabled",
-            len(findings),
-        )
-        return
+    _select_record_send(
+        db, rules, findings, kind="promotion", promotions_by_finding=promotions_by_finding
+    )
 
+
+# ── Internal ──────────────────────────────────────────────────────────────────
+
+def _promotion_detail(p) -> dict:
+    return {
+        "previous_band": p.previous_band,
+        "new_band": p.new_band,
+        "previous_score": p.previous_score,
+        "new_score": p.new_score,
+        "velocity_started": p.velocity_started,
+    }
+
+
+def _select_record_send(
+    db: Session,
+    rules: list[NotificationRule],
+    findings: list[FindingCanonical],
+    *,
+    kind: str,
+    promotions_by_finding: dict | None = None,
+) -> None:
+    """The one shared tail of `_dispatch` (kind="new") and
+    `_dispatch_promotions` (kind="promotion"): select, record, send, record
+    outcomes. One helper so the two paths cannot diverge.
+
+    Selection is recorded BEFORE the channel check (planning#233): the
+    digest must equal what the rules selected, including alerts that had no
+    channel to go out on (a fresh install has none), so "no connector
+    enabled" no longer short-circuits before rule matching. Jason,
+    2026-10-12 (#233 6137620127).
+
+    Transaction ownership: `dispatch()` / `dispatch_promotions()` open the
+    session; `_dispatch*` are only ever called with a session the caller
+    owns, so the commits live here, as separate fail-soft units of work
+    (selection; then deliveries). Bookkeeping never blocks alerting: if
+    recording fails we roll back, log, and send anyway, writing no delivery
+    rows (there is no dispatch id to hang them on).
+    """
+    # Everything the send needs is snapshotted and rendered HERE, before the
+    # recording commit: a commit (or the rollback after a failed one) expires
+    # every loaded rule and finding, and reloading them during the send would
+    # make the send depend on the database answering. When recording failed
+    # because the database went away, alerting must still go out.
+    selected = []  # [(rule_id, rule_name, recipients, matches, rendered | None)]
     for rule in rules:
         matches = [f for f in findings if _rule_matches(rule, f)]
         if not matches:
             continue
         recipients = [r for r in (rule.recipients or []) if r]
-        if not recipients:
-            log.warning("notification_dispatcher: rule %s has no recipients — skipping", rule.id)
+        rendered = None
+        if recipients:
+            rendered = (
+                _render_promotions(rule, matches, promotions_by_finding or {})
+                if kind == "promotion" else _render(rule, matches)
+            )
+        selected.append((rule.id, rule.name, recipients, matches, rendered))
+    if not selected:
+        return
+
+    # rule.id -> dispatch id; empty after a failed recording.
+    recorded: dict[uuid.UUID, uuid.UUID] = {}
+    try:
+        for rule_id, rule_name, _recipients, matches, _rendered in selected:
+            dispatch_row = AlertDispatch(rule_id=rule_id, rule_name=rule_name, kind=kind)
+            db.add(dispatch_row)
+            db.flush()
+            for f in matches:
+                detail = (
+                    _promotion_detail(promotions_by_finding[f.id])
+                    if kind == "promotion" and promotions_by_finding
+                    else {}
+                )
+                db.add(AlertEvent(
+                    dispatch_id=dispatch_row.id, finding_id=f.id,
+                    severity=f.severity, detail=detail,
+                ))
+            recorded[rule_id] = dispatch_row.id
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("notification_dispatcher: recording the alert selection failed; sending anyway")
+        recorded = {}
+
+    deliveries: list[AlertDelivery] = []
+
+    def _delivery(rule_id, connector_id, outcome, count) -> None:
+        dispatch_id = recorded.get(rule_id)
+        if dispatch_id is not None:
+            deliveries.append(AlertDelivery(
+                dispatch_id=dispatch_id, connector_id=connector_id,
+                outcome=outcome, recipient_count=count,
+            ))
+
+    def _flush_deliveries() -> None:
+        if not deliveries:
+            return
+        try:
+            db.add_all(deliveries)
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception("notification_dispatcher: recording alert deliveries failed")
+
+    connectors = _enabled_notification_connectors(db)
+    if not connectors:
+        log.info(
+            "notification_dispatcher: %d %s finding(s) but no notification connector is enabled",
+            len(findings), kind,
+        )
+        for rule_id, *_rest in selected:
+            _delivery(rule_id, None, "no_channel", 0)
+        _flush_deliveries()
+        return
+
+    for rule_id, rule_name, recipients, matches, rendered in selected:
+        if rendered is None:
+            log.warning("notification_dispatcher: rule %s has no recipients — skipping", rule_id)
+            _delivery(rule_id, None, "no_recipients", 0)
             continue
 
-        subject, text_body, html_body = _render_promotions(rule, matches, promotions_by_finding)
+        subject, text_body, html_body = rendered
         for cid, connector, config in connectors:
             try:
                 ok = connector.send(
@@ -228,14 +306,15 @@ def _dispatch_promotions(db: Session, promotions: list) -> None:
                 )
                 if ok:
                     log.info(
-                        "notification_dispatcher: sent promotion rule=%s via %s to %d recipient(s) (%d finding(s))",
-                        rule.name, cid, len(recipients), len(matches),
+                        "notification_dispatcher: sent %s rule=%s via %s to %d recipient(s) (%d finding(s))",
+                        kind, rule_name, cid, len(recipients), len(matches),
                     )
+                _delivery(rule_id, cid, "sent" if ok else "failed", len(recipients))
             except Exception:
                 log.exception("notification_dispatcher: connector %s send raised", cid)
+                _delivery(rule_id, cid, "raised", len(recipients))
+    _flush_deliveries()
 
-
-# ── Internal ──────────────────────────────────────────────────────────────────
 
 def _drop_not_ours(db: Session, findings: list[FindingCanonical]) -> list[FindingCanonical]:
     """Drop findings whose ASSET is `not_ours` at the estate layer
