@@ -17,6 +17,7 @@ from app.models.target_asset_link import TargetAssetLink
 from app.models.asset_edge import AssetEdge, EDGE_TYPES, NODE_TYPES
 from app.models.ct_query_cache import CTQueryCache
 from app.models.notification_rule import NotificationRule
+from app.models.alert_event import AlertDispatch, AlertEvent, AlertDelivery
 from app.models.cpe_cve_range import CpeCveRange
 from app.models.observer import Observer, OBSERVER_KINDS, OBSERVER_TRUST, OBSERVER_ADDRESSING
 from app.models.claim_type import ClaimType
@@ -73,6 +74,9 @@ __all__ = [
     "NODE_TYPES",
     "CTQueryCache",
     "NotificationRule",
+    "AlertDispatch",
+    "AlertEvent",
+    "AlertDelivery",
     "CpeCveRange",
     "Observer",
     "OBSERVER_KINDS",

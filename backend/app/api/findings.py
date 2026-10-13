@@ -3,7 +3,8 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import or_
+from sqlalchemy import and_, case, func, or_
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import Session
 
 from app.api.connectors import REGISTRY
@@ -14,7 +15,7 @@ from app.models.finding import FindingState
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.user import User, UserRole
-from app.services import audit, bod_sla, finding_writeup, projector, scan_executor
+from app.services import audit, bod_sla, finding_writeup, projector, read_scope, scan_executor
 from app.services.asset_chain import chain_target_ids
 from app.services.finding_confidence import confidence_for, strongest
 
@@ -339,6 +340,133 @@ def security_score(
         "worst_band_resolved": worst_band_resolved,
         "breakdown": breakdown,
     }
+
+
+_CLUSTER_GROUP_CAP = 500
+_CLUSTER_MEMBER_CAP = 2000
+_SEVERITY_BY_RANK = {0: "info", 1: "low", 2: "medium", 3: "high", 4: "critical"}
+
+
+def _severity_rank_expr():
+    """SQL severity rank (same ordering as the dispatcher's `_SEVERITY_RANK`),
+    built with `case()` so no SQL text is assembled at runtime."""
+    return case(
+        (FindingCanonical.severity == "critical", 4),
+        (FindingCanonical.severity == "high", 3),
+        (FindingCanonical.severity == "medium", 2),
+        (FindingCanonical.severity == "low", 1),
+        else_=0,
+    )
+
+
+def _cluster_base_filters(user, state: str | None):
+    """WHERE terms shared by both cluster routes. `read_scope.finding_clause`
+    is part of the WHERE so it applies BEFORE any grouping: counts never
+    include rows the caller cannot read. `state="all"` is the Findings page's
+    "all" filter: no state term, default exclusion kept (as `list_findings`
+    does with no state)."""
+    if state == "all":
+        state = None
+    filters = [read_scope.finding_clause(user, FindingCanonical, AssetCanonical)]
+    if state:
+        filters.append(FindingCanonical.state == state)
+    if state in (None, "open", "acknowledged"):
+        filters.append(_NOT_EXCLUDED_FROM_MAIN)
+    return filters
+
+
+@router.get("/clusters")
+def list_finding_clusters(
+    state: str | None = "open",
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Findings that share one identity key `(finding_type, source,
+    fingerprint)` across more than one asset (planning#233 slice 1). The
+    frontend groups its already-loaded rows by matching `rolled_up_ids`
+    against `member_ids`."""
+    rank = _severity_rank_expr()
+    cve = FindingCanonical.cve_id
+    max_rank = func.max(rank)
+    asset_count = func.count(func.distinct(FindingCanonical.asset_canonical_id))
+    rows = (
+        db.query(
+            FindingCanonical.finding_type,
+            FindingCanonical.source,
+            FindingCanonical.fingerprint,
+            max_rank.label("max_rank"),
+            func.count(FindingCanonical.id).label("finding_count"),
+            asset_count.label("asset_count"),
+            func.array_agg(
+                aggregate_order_by(FindingCanonical.title, rank.desc(), FindingCanonical.last_seen_at.desc())
+            )[1].label("title"),
+            func.array_agg(FindingCanonical.id).label("member_ids"),
+            case(
+                (
+                    and_(func.count(func.distinct(cve)) == 1, func.count(cve) == func.count(FindingCanonical.id)),
+                    func.min(cve),
+                ),
+                else_=None,
+            ).label("cve_id"),
+            func.min(FindingCanonical.first_seen_at).label("first_seen_at"),
+            func.max(FindingCanonical.last_seen_at).label("last_seen_at"),
+        )
+        .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
+        .filter(*_cluster_base_filters(user, state))
+        .group_by(FindingCanonical.finding_type, FindingCanonical.source, FindingCanonical.fingerprint)
+        .having(asset_count > 1)
+        .order_by(max_rank.desc(), asset_count.desc(), FindingCanonical.finding_type)
+        .limit(_CLUSTER_GROUP_CAP)
+        .all()
+    )
+    return [
+        {
+            "finding_type": r.finding_type,
+            "source": r.source,
+            "fingerprint": r.fingerprint,
+            "title": r.title,
+            "max_severity": _SEVERITY_BY_RANK.get(r.max_rank, "info"),
+            "finding_count": r.finding_count,
+            "asset_count": r.asset_count,
+            "cve_id": r.cve_id,
+            "first_seen_at": r.first_seen_at,
+            "last_seen_at": r.last_seen_at,
+            "member_ids": [str(i) for i in r.member_ids],
+        }
+        for r in rows
+    ]
+
+
+@router.get("/clusters/members")
+def list_cluster_members(
+    finding_type: str,
+    source: str,
+    fingerprint: str,
+    state: str | None = "open",
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """The findings of ONE cluster key, same state/exclusion/read-scope rules
+    as `/clusters`. Deliberately NOT passed through `_rollup_cve_findings`: a
+    cluster is one key, and the rollup would merge across sources."""
+    rows = (
+        db.query(FindingCanonical, AssetCanonical)
+        .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
+        .filter(
+            FindingCanonical.finding_type == finding_type,
+            FindingCanonical.source == source,
+            FindingCanonical.fingerprint == fingerprint,
+            *_cluster_base_filters(user, state),
+        )
+        .order_by(
+            FindingCanonical.risk_score.desc().nullslast(),
+            FindingCanonical.last_seen_at.desc(),
+        )
+        .limit(_CLUSTER_MEMBER_CAP)
+        .all()
+    )
+    states = projector.load_states(db, {f.asset_canonical_id for f, _a in rows})
+    return [_serialize_finding(f, a, states.get(f.asset_canonical_id)) for f, a in rows]
 
 
 @router.get("/{finding_id}")

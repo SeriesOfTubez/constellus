@@ -8,14 +8,20 @@ summary email via the enabled NotificationConnector.
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_role
 from app.core.database import get_db
+from app.models.alert_event import AlertDelivery, AlertDispatch, AlertEvent
+from app.models.asset_canonical import AssetCanonical
+from app.models.finding_canonical import FindingCanonical
 from app.models.notification_rule import NotificationRule
 from app.models.user import UserRole
+from app.services.notification_dispatcher import _SEVERITY_RANK
 
 log = logging.getLogger(__name__)
 
@@ -153,3 +159,96 @@ def delete_rule(
         raise HTTPException(status_code=404, detail="Rule not found")
     db.delete(rule)
     db.commit()
+
+
+# ── Alert history (planning#233) ─────────────────────────────────────────────
+
+_EVENTS_PER_DISPATCH = 5
+
+
+class AlertEventOut(BaseModel):
+    finding_id: uuid.UUID
+    title: str | None
+    severity: str | None
+    asset_value: str | None
+    detail: dict
+
+
+class AlertDeliveryOut(BaseModel):
+    connector_id: str | None
+    outcome: str
+    recipient_count: int
+
+
+class AlertDispatchOut(BaseModel):
+    id: uuid.UUID
+    rule_id: uuid.UUID | None
+    rule_name: str
+    kind: str
+    created_at: datetime
+    event_count: int
+    events: list[AlertEventOut]
+    deliveries: list[AlertDeliveryOut]
+
+
+@router.get("/alerts", response_model=list[AlertDispatchOut])
+def list_alerts(
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+):
+    """Newest-first alert history: what each rule selected and what became of
+    it. Three queries total (dispatches, events, deliveries), no N+1."""
+    dispatches = (
+        db.query(AlertDispatch)
+        .order_by(AlertDispatch.created_at.desc(), AlertDispatch.id.desc())
+        .limit(limit)
+        .all()
+    )
+    if not dispatches:
+        return []
+    ids = [d.id for d in dispatches]
+
+    event_rows = (
+        db.query(AlertEvent, FindingCanonical.title, AssetCanonical.value)
+        .join(FindingCanonical, FindingCanonical.id == AlertEvent.finding_id)
+        .outerjoin(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
+        .filter(AlertEvent.dispatch_id.in_(ids))
+        .all()
+    )
+    events_by: dict[uuid.UUID, list] = {}
+    for ev, title, asset_value in event_rows:
+        events_by.setdefault(ev.dispatch_id, []).append((ev, title, asset_value))
+
+    deliveries_by: dict[uuid.UUID, list] = {}
+    for dl in (
+        db.query(AlertDelivery)
+        .filter(AlertDelivery.dispatch_id.in_(ids))
+        .order_by(AlertDelivery.created_at, AlertDelivery.id)
+        .all()
+    ):
+        deliveries_by.setdefault(dl.dispatch_id, []).append(dl)
+
+    out = []
+    for d in dispatches:
+        evs = events_by.get(d.id, [])
+        evs.sort(key=lambda t: (-_SEVERITY_RANK.get(t[0].severity or "info", 0), t[1] or ""))
+        out.append(AlertDispatchOut(
+            id=d.id, rule_id=d.rule_id, rule_name=d.rule_name, kind=d.kind,
+            created_at=d.created_at, event_count=len(evs),
+            events=[
+                AlertEventOut(
+                    finding_id=ev.finding_id, title=title, severity=ev.severity,
+                    asset_value=asset_value, detail=ev.detail or {},
+                )
+                for ev, title, asset_value in evs[:_EVENTS_PER_DISPATCH]
+            ],
+            deliveries=[
+                AlertDeliveryOut(
+                    connector_id=dl.connector_id, outcome=dl.outcome,
+                    recipient_count=dl.recipient_count,
+                )
+                for dl in deliveries_by.get(d.id, [])
+            ],
+        ))
+    return out
