@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Remove a worktree made by scripts/wt-new.sh: junctions first, then the
+# Remove a worktree made by scripts/wt-new.sh: symlinks first, then the
 # worktree, then the local branch IF it is merged into origin/dev (a squash
 # merge is not detected that way, so pass --delete-branch to force it once
 # the PR is confirmed merged).
@@ -18,25 +18,24 @@ FORCE_BRANCH="${2:-}"
 MAIN="$(cd "$(dirname "$0")/.." && pwd)"
 WT="$(dirname "$MAIN")/constellus-wt$N"
 
-case "$WT" in *" "*) echo "refusing: path contains a space" >&2; exit 1 ;; esac
 if [ ! -d "$WT" ]; then
     echo "nothing to do: $WT does not exist" >&2
     exit 1
 fi
 BRANCH="$(git -C "$WT" branch --show-current)"
 
-# `rmdir` (no /s) removes a junction without touching its target, and FAILS
-# on a real non-empty directory — so it can never delete the main venv.
+# Only a symlink is removed (plain `rm`, never -r), so this can never delete
+# the main venv; a real directory in its place is refused.
 for dir in backend/.venv frontend/node_modules; do
-    if [ -e "$WT/$dir" ]; then
-        cmd //c "rmdir $(cygpath -w "$WT/$dir")" || {
-            echo "refusing: $WT/$dir is not a junction (rmdir failed); remove it by hand" >&2
-            exit 1
-        }
+    if [ -L "$WT/$dir" ]; then
+        rm "$WT/$dir"
+    elif [ -e "$WT/$dir" ]; then
+        echo "refusing: $WT/$dir is not a symlink; remove it by hand" >&2
+        exit 1
     fi
 done
 
-if [ ! -x "$MAIN/backend/.venv/Scripts/python.exe" ]; then
+if [ ! -x "$MAIN/backend/.venv/bin/python" ]; then
     echo "WARNING: the main checkout's venv is missing — investigate before continuing" >&2
     exit 1
 fi

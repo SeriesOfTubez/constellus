@@ -11,6 +11,8 @@ arguments and heredoc bodies) plus every body file it names with
 `-F`/`--body-file`/`--file`/`--input` or a `field=@file` argument.
 
 Fails CLOSED when:
+  - the payload is not JSON or has no `tool_input` object, or the hook
+    itself raises (any exit but 2 would let the command through), or
   - a denylist snapshot is missing (run refresh_target_denylist.py), or
   - a named body file cannot be read — e.g. its path is a shell variable
     (`-F $S/body.md`) the hook cannot expand. Pass a literal path instead.
@@ -46,7 +48,9 @@ BODY_FILE = re.compile(
 
 
 def _to_native(path: str) -> str:
-    # Git Bash style /c/foo -> C:/foo
+    # Git Bash style /c/foo -> C:/foo (Windows only; on macOS /c/foo is a real path)
+    if os.name != "nt":
+        return path
     m = re.match(r"^/([a-zA-Z])/(.*)$", path)
     return f"{m.group(1).upper()}:/{m.group(2)}" if m else path
 
@@ -71,11 +75,27 @@ def _block(message: str) -> None:
 
 
 def main() -> None:
+    # Claude Code treats any exit other than 2 as "allow", so an uncaught
+    # exception (exit 1) would fail OPEN. Every unexpected path blocks instead.
+    try:
+        _check()
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 — fail closed on our own bug
+        _block(f"the hook itself failed ({type(exc).__name__}: {exc}); failing closed.")
+
+
+def _check() -> None:
     try:
         payload = json.load(sys.stdin)
     except ValueError:
-        sys.exit(0)  # not a payload we understand; never block on our own parse error
-    command = (payload.get("tool_input") or {}).get("command") or ""
+        _block("the hook payload is not valid JSON, so the command cannot be checked; failing closed.")
+    tool_input = payload.get("tool_input") if isinstance(payload, dict) else None
+    if not isinstance(tool_input, dict):
+        _block("the hook payload has no tool_input object, so the command cannot be checked; failing closed.")
+    command = tool_input.get("command") or ""
+    if not isinstance(command, str):
+        _block("the hook payload's command is not a string; failing closed.")
     if not PUBLISHING.search(command):
         sys.exit(0)
 
