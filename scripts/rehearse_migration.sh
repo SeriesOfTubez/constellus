@@ -51,7 +51,11 @@ check "copy of dev"
 export DATABASE_URL="postgresql://${PGUSER}:${PGPASS}@${PGHOST}:${PGPORT}/${DB}"
 case "$DATABASE_URL" in *_test) ;; *) echo "refusing: $DATABASE_URL is not a _test database" >&2; exit 1 ;; esac
 cd "$WT/backend"
-PY=".venv/Scripts/python.exe"
+if [ -x ".venv/bin/python" ]; then
+    PY=".venv/bin/python"              # macOS/Linux
+else
+    PY=".venv/Scripts/python.exe"      # Windows
+fi
 
 # Quiet alembic's INFO lines, but never its failure: a rehearsal that hides a
 # failed migration is worse than none.

@@ -27,7 +27,7 @@ Run this after adding/removing targets OR mapping a company in the dev
 environment; the git hooks (scripts/check_target_domains.py) and the Claude
 Code hook (scripts/check_outbound_text.py) warn if a snapshot looks stale.
 
-Usage: backend/.venv/Scripts/python.exe scripts/refresh_target_denylist.py
+Usage: backend/.venv/bin/python scripts/refresh_target_denylist.py
 (needs SQLAlchemy — run it with the backend venv's interpreter, not system Python)
 Requires DATABASE_URL (defaults to the standard local docker-compose value).
 """

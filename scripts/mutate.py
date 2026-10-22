@@ -2,7 +2,7 @@
 must pass), then once per mutation, and report which mutations the tests
 kill.
 
-    backend/.venv/Scripts/python.exe scripts/mutate.py <worktree> <mutations.py> [label-prefix ...]
+    backend/.venv/bin/python scripts/mutate.py <worktree> <mutations.py> [label-prefix ...]
 
 `<mutations.py>` is a plain Python file (keep it in your scratchpad, not the
 repo) defining:

@@ -43,7 +43,7 @@ def git_common_dir() -> Path:
 
 TARGET_PATH = git_common_dir() / "target-denylist.txt"
 ENTITY_PATH = git_common_dir() / "entity-denylist.txt"
-REFRESH_HINT = "backend/.venv/Scripts/python.exe scripts/refresh_target_denylist.py"
+REFRESH_HINT = "backend/.venv/bin/python scripts/refresh_target_denylist.py"
 
 
 class DenylistMissing(Exception):

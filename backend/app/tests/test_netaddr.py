@@ -5,7 +5,7 @@ whether an address may be probed / looked up / counted as internet-facing.
 Run directly (from backend/):
     python -m app.tests.test_netaddr
 or via pytest:
-    ./.venv/Scripts/python.exe -m pytest app/tests/test_netaddr.py -q
+    bash scripts/test.sh app/tests/test_netaddr.py -q
 
 Address hygiene: this file is an exception to the usual RFC-5737-only rule,
 because the whole point is a routability case table and RFC-5737 addresses
