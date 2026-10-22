@@ -22,6 +22,7 @@ What it adds per port:
 
 import ipaddress
 import logging
+import math
 import os
 from typing import Any
 
@@ -144,6 +145,7 @@ class TlsxConnector(ScanningConnector):
             targets=targets,
             timeout=timeout,
             concurrency=concurrency,
+            hostname_runs=len(cdn_targets),
         )
 
         log.info("tlsx scan returned %d results", len(results))
@@ -158,13 +160,24 @@ class TlsxConnector(ScanningConnector):
         targets: list[dict],
         timeout: float,
         concurrency: int,
+        hostname_runs: int = 0,
     ) -> list[dict]:
         payload: dict[str, Any] = {
             "targets": targets,
             "timeout": timeout,
             "concurrency": concurrency,
         }
-        outer_timeout = max(60.0, timeout * (len(targets) / max(concurrency, 1) + 2))
+        # The worker runs each hostname target as its own pinned tool run
+        # (planning#270), in waves of `concurrency`; each wave can take up to
+        # ~3 probe timeouts, so the outer timeout must cover those waves too.
+        outer_timeout = max(
+            60.0,
+            timeout * (
+                len(targets) / max(concurrency, 1)
+                + 3 * math.ceil(hostname_runs / max(concurrency, 1))
+                + 2
+            ),
+        )
 
         try:
             resp = httpx.post(
