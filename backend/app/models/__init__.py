@@ -18,6 +18,7 @@ from app.models.asset_edge import AssetEdge, EDGE_TYPES, NODE_TYPES
 from app.models.ct_query_cache import CTQueryCache
 from app.models.notification_rule import NotificationRule
 from app.models.alert_event import AlertDispatch, AlertEvent, AlertDelivery
+from app.models.cluster_ai_writeup import ClusterAiWriteup
 from app.models.digest import Digest
 from app.models.cpe_cve_range import CpeCveRange
 from app.models.observer import Observer, OBSERVER_KINDS, OBSERVER_TRUST, OBSERVER_ADDRESSING
@@ -105,6 +106,7 @@ __all__ = [
     "LLM_CALL_DATA_POLICIES",
     "LLM_CALL_STATUSES",
     "FindingAiWriteup",
+    "ClusterAiWriteup",
     "Engagement",
     "EngagementPosture",
     "OrgEntity",

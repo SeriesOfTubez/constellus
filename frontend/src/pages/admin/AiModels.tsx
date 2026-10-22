@@ -16,7 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { api } from "@/lib/api"
+import { api, type ClusterWriteupMode } from "@/lib/api"
 import { relativeTime } from "@/lib/time"
 
 // planning#224 — Admin → AI models. The OpenRouter key's guardrail decides
@@ -62,6 +62,7 @@ interface LlmStatus {
   auto_writeups: AutoWriteups
   auto_web_classifications: AutoWriteups
   digest_narratives?: AutoWriteups
+  cluster_writeups?: { mode: ClusterWriteupMode; daily_cap: number; today: number }
 }
 
 interface AutoWriteups {
@@ -203,6 +204,78 @@ function DigestNarrativesCard({ digest }: { digest: AutoWriteups | undefined }) 
           </div>
         </div>
         {!valid && <p className="mt-2 text-xs text-destructive">A whole number from 0 to {DIGEST_CAP_MAX}.</p>}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ── AI cluster write-ups (planning#233 slice 2b) ────────────────────────
+
+const CLUSTER_CAP_MAX = 1000
+
+export const CLUSTER_MODES: { value: ClusterWriteupMode; label: string; description: string }[] = [
+  { value: "on_demand", label: "On demand only", description: "Admins write up an issue from the Findings page. Nothing runs automatically." },
+  { value: "auto_high", label: "Automatic for High and Critical", description: "After a scan, High and Critical issues whose members changed get a write-up. On demand stays available." },
+  { value: "auto_high_in_digest", label: "Automatic, and included in digests", description: "As above, and digests show the write-up summary under each issue." },
+]
+
+export function ClusterWriteupsCard({ cw }: { cw: LlmStatus["cluster_writeups"] }) {
+  const qc = useQueryClient()
+  const [mode, setMode] = useState<ClusterWriteupMode>("on_demand")
+  const [draft, setDraft] = useState<string>("")
+  useEffect(() => {
+    if (cw) { setMode(cw.mode); setDraft(String(cw.daily_cap)) }
+  }, [cw?.mode, cw?.daily_cap])
+  const parsed = Number(draft)
+  const valid = draft.trim() !== "" && Number.isInteger(parsed) && parsed >= 0 && parsed <= CLUSTER_CAP_MAX
+  const dirty = cw !== undefined && valid && (parsed !== cw.daily_cap || mode !== cw.mode)
+  const auto = mode !== "on_demand"
+  const save = useMutation({
+    mutationFn: () => api.put<{ mode: ClusterWriteupMode; daily_cap: number; today: number }>(
+      "/llm/cluster-writeup-settings", { mode, auto_daily_cap: parsed }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["llm-status"] })
+      toast.success("AI cluster write-up settings saved")
+    },
+    onError: (e: Error) => toast.error(`Save failed: ${e.message}`),
+  })
+  if (!cw) return <Skeleton className="h-28" />
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">AI cluster write-ups</CardTitle>
+        <CardDescription className="text-xs">
+          An AI write-up of one issue across every asset it affects. On demand is always available to admins.
+          The cap counts automatic write-ups per UTC day.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="space-y-1">
+          <Label htmlFor="cluster-writeup-mode" className="text-xs text-muted-foreground">Mode</Label>
+          <Select value={mode} onValueChange={(v) => setMode(v as ClusterWriteupMode)}>
+            <SelectTrigger id="cluster-writeup-mode" className="h-8 w-80 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {CLUSTER_MODES.map(m => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <ul className="space-y-0.5 text-xs text-muted-foreground">
+            {CLUSTER_MODES.map(m => <li key={m.value}><span className="font-medium">{m.label}:</span> {m.description}</li>)}
+          </ul>
+        </div>
+        <div className="flex items-end gap-6 text-sm">
+          <div className="space-y-1">
+            <Label htmlFor="cluster-writeup-cap" className="text-xs text-muted-foreground">Per day</Label>
+            <Input id="cluster-writeup-cap" type="number" min={0} max={CLUSTER_CAP_MAX} step={1} className="h-8 w-24 text-xs"
+              value={draft} disabled={!auto} onChange={(e) => setDraft(e.target.value)} aria-invalid={!valid} />
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Today</div>
+            <div className="tabular-nums">{cw.today} / {cw.daily_cap}</div>
+          </div>
+          <Button size="sm" className="h-8" aria-label="Save AI cluster write-up settings" disabled={!dirty || save.isPending} onClick={() => save.mutate()}>Save</Button>
+        </div>
+        {!auto && <p className="text-xs text-muted-foreground">The daily cap is only used in automatic modes.</p>}
+        {!valid && <p className="text-xs text-destructive">A whole number from 0 to {CLUSTER_CAP_MAX}.</p>}
       </CardContent>
     </Card>
   )
@@ -499,6 +572,7 @@ export default function AiModels() {
       <StatusCards status={status} />
       <AutoWriteupsCard auto={status?.auto_writeups} />
       <DigestNarrativesCard digest={status?.digest_narratives} />
+      <ClusterWriteupsCard cw={status?.cluster_writeups} />
       <AutoWebClassificationsCard auto={status?.auto_web_classifications} />
 
       {saved && !saved.configured && (

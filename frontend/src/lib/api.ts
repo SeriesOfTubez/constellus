@@ -694,6 +694,16 @@ export type DigestGroup = {
   max_severity: "critical" | "high" | "medium" | "low" | "info"
   key: string
   items: DigestItem[]
+  writeup?: DigestGroupWriteup
+}
+
+export type DigestGroupWriteup = {
+  id: string
+  summary: string | null
+  written_at: string
+  asset_count: number
+  finding_count: number
+  inputs_changed: boolean
 }
 
 export type DigestBody = {
@@ -751,6 +761,50 @@ export type FindingCluster = {
   first_seen_at: string
   last_seen_at: string
   member_ids: string[]
+}
+
+// planning#233 slice 2b — AI write-up for a cross-asset finding cluster.
+export type ClusterWriteupMode = "on_demand" | "auto_high" | "auto_high_in_digest"
+
+export type ClusterWriteup = {
+  id: string
+  created_at: string
+  finished_at: string | null
+  model: string | null
+  summary: string | null
+  context: { statement: string; source_field: string; value: string }[]
+  fix_steps: string[]
+  priority_note: string | null
+  statements_returned: number | null
+  statements_dropped: number | null
+  summary_dropped: boolean | null
+  priority_note_dropped: boolean | null
+  forced_strict: boolean
+  cost_usd: number | null
+  finding_count: number
+  asset_count: number
+  max_severity: string
+  auto: boolean
+}
+
+export type ClusterWriteupState = {
+  eligible: boolean
+  ineligible_reason: string | null
+  mode: ClusterWriteupMode
+  writeup: ClusterWriteup | null
+  hidden: boolean
+  inputs_changed: boolean | null
+  pending: { id: string; status: "queued" | "running"; created_at: string } | null
+  last_failure: { error: string; finished_at: string | null } | null
+}
+
+export type ClusterKey = Pick<FindingCluster, "finding_type" | "source" | "fingerprint">
+
+/** Fingerprints can contain any character, so never concatenate them into a URL. */
+export function clusterWriteupPath(k: ClusterKey, force?: boolean): string {
+  const p = new URLSearchParams({ finding_type: k.finding_type, source: k.source, fingerprint: k.fingerprint })
+  if (force !== undefined) p.set("force", force ? "true" : "false")
+  return `/findings/clusters/ai-writeup?${p.toString()}`
 }
 
 export type ScanTemplate = {

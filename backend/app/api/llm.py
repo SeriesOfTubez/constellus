@@ -30,6 +30,9 @@ Three concerns, all ADMIN-only:
   `ai.web_classifications.auto_daily_cap` (planning#231), likewise.
   `PUT /api/llm/digest-settings` sets `ai.digests.narrative_daily_cap`
   (planning#233 slice 2a); `GET /status` reports it as `digest_narratives`.
+  `PUT /api/llm/cluster-writeup-settings` sets `ai.cluster_writeups.mode` and
+  `ai.cluster_writeups.auto_daily_cap` (planning#233 slice 2b), both audited
+  old -> new; `GET /status` reports them as `cluster_writeups`.
 
 There is no code default for the bindings (item 5): until the first PUT,
 `GET /role-bindings` answers `configured: false` and AI features report
@@ -37,6 +40,7 @@ There is no code default for the bindings (item 5): until the first PUT,
 """
 
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
@@ -47,7 +51,7 @@ from app.core.database import get_db
 from app.models.user import UserRole
 from app.services import app_settings, audit, finding_writeup, llm_connector
 from app.services import chat, web_classifier
-from app.services import digest
+from app.services import cluster_writeup, digest
 from app.services.llm_connector import Role, RoleBinding
 
 router = APIRouter()
@@ -89,6 +93,12 @@ class AutoWriteupStatus(BaseModel):
     today: int
 
 
+class ClusterWriteupStatus(BaseModel):
+    mode: str
+    daily_cap: int
+    today: int
+
+
 class LlmStatusResponse(BaseModel):
     connector_configured: bool
     models_configured: bool
@@ -99,6 +109,7 @@ class LlmStatusResponse(BaseModel):
     auto_web_classifications: AutoWriteupStatus
     chat_transcript_retention_days: int
     digest_narratives: AutoWriteupStatus
+    cluster_writeups: ClusterWriteupStatus
 
 
 class LlmSettingsUpdate(BaseModel):
@@ -216,6 +227,13 @@ def _digest_narratives(db: Session) -> AutoWriteupStatus:
     return AutoWriteupStatus(daily_cap=digest.narrative_daily_cap(db), today=digest.narrative_count_today(db))
 
 
+def _cluster_writeups(db: Session) -> ClusterWriteupStatus:
+    return ClusterWriteupStatus(
+        mode=cluster_writeup.mode(db), daily_cap=cluster_writeup.auto_daily_cap(db),
+        today=cluster_writeup.auto_count_today(db),
+    )
+
+
 @router.get("/status", response_model=LlmStatusResponse)
 def get_status(
     request: Request,
@@ -249,6 +267,7 @@ def get_status(
         ),
         chat_transcript_retention_days=chat.retention_days(db),
         digest_narratives=_digest_narratives(db),
+        cluster_writeups=_cluster_writeups(db),
     )
 
 
@@ -326,3 +345,30 @@ def put_digest_settings(
     app_settings.set_value(db, digest.NARRATIVE_CAP_KEY, str(data.narrative_daily_cap))
     audit.record_detail(request, digest_narrative_daily_cap={"from": old, "to": data.narrative_daily_cap})
     return _digest_narratives(db)
+
+
+class ClusterWriteupSettingsUpdate(BaseModel):
+    # Must equal `cluster_writeup.MODES` (a test asserts it).
+    mode: Literal["on_demand", "auto_high", "auto_high_in_digest"]
+    # Same upper bound as the other AI caps: a typo cannot authorise thousands
+    # of calls; the global daily budget still bites first in practice.
+    auto_daily_cap: int = Field(ge=0, le=1000)
+
+
+@router.put("/cluster-writeup-settings", response_model=ClusterWriteupStatus)
+def put_cluster_writeup_settings(
+    data: ClusterWriteupSettingsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _=Depends(require_role(UserRole.ADMIN)),
+):
+    """Set `ai.cluster_writeups.mode` and `.auto_daily_cap` (0 = off), audited old -> new."""
+    old_mode, old_cap = cluster_writeup.mode(db), cluster_writeup.auto_daily_cap(db)
+    app_settings.set_value(db, cluster_writeup.MODE_KEY, data.mode)
+    app_settings.set_value(db, cluster_writeup.AUTO_CAP_KEY, str(data.auto_daily_cap))
+    audit.record_detail(
+        request,
+        cluster_writeup_mode={"from": old_mode, "to": data.mode},
+        cluster_writeup_auto_daily_cap={"from": old_cap, "to": data.auto_daily_cap},
+    )
+    return _cluster_writeups(db)
