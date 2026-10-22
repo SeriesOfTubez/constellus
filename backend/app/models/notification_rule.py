@@ -1,11 +1,14 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String, func, text
+from sqlalchemy import Boolean, DateTime, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+
+# Mirrors the CHECK in migration 0080.
+RULE_MODES: frozenset[str] = frozenset({"immediate", "digest", "both"})
 
 
 class NotificationRule(Base):
@@ -26,3 +29,7 @@ class NotificationRule(Base):
     categories: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default=text("'[]'"))
     recipients: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default=text("'[]'"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    # planning#233 slice 2a: "immediate" sends as findings land (the old
+    # behaviour), "digest" only in the daily digest, "both" does both. Events
+    # are recorded in every mode.
+    mode: Mapped[str] = mapped_column(Text, nullable=False, default="immediate", server_default=text("'immediate'"))

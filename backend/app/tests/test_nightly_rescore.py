@@ -35,6 +35,7 @@ from app.core.database import SessionLocal
 from app.models.asset_canonical import AssetCanonical
 from app.models.asset_state import AssetState
 from app.models.finding_canonical import FindingCanonical
+from app.models.alert_event import AlertDispatch
 from app.models.notification_rule import NotificationRule
 from app.models.score_history import ScoreHistory
 from app.services import nightly_rescore, notification_dispatcher, score_history
@@ -401,6 +402,9 @@ def test_dispatch_promotions_actually_applies_the_not_ours_gate():
             "a not_ours asset's promotion reached the connector — the gate is not wired in"
         )
     finally:
+        # The dispatcher records its selection (planning#233); deliveries and
+        # events cascade from the dispatch. The rule's delete would only NULL it.
+        db.query(AlertDispatch).filter(AlertDispatch.rule_id == rule.id).delete(synchronize_session=False)
         db.query(NotificationRule).filter(NotificationRule.id == rule.id).delete(synchronize_session=False)
         db.commit()
         db.close()
@@ -465,6 +469,9 @@ def test_new_finding_dispatch_applies_the_not_ours_gate_too():
             "into the new-finding path"
         )
     finally:
+        # The dispatcher records its selection (planning#233); deliveries and
+        # events cascade from the dispatch. The rule's delete would only NULL it.
+        db.query(AlertDispatch).filter(AlertDispatch.rule_id == rule.id).delete(synchronize_session=False)
         db.query(NotificationRule).filter(NotificationRule.id == rule.id).delete(synchronize_session=False)
         db.commit()
         db.close()

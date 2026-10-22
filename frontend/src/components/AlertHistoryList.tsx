@@ -17,6 +17,8 @@ export function deliveryLabel(d: { outcome: string; connector_id: string | null;
       return "Not sent: no notification channel enabled"
     case "no_recipients":
       return "Not sent: rule has no recipients"
+    case "deferred_to_digest":
+      return "Held for the daily digest"
     default:
       return d.outcome
   }

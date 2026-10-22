@@ -699,6 +699,12 @@ def test_no_scoring_module_reads_writeups():
             re.compile(r"from app\.services\.finding_writeup import resolve_scope, resolve_scopes\n"),
             "from app.services.finding_writeup import resolve_scope, resolve_scopes\n",
         ),
+        # planning#233 slice 2a: the digest narrative reuses the scope resolver, the
+        # de-escalation guard, the failure messages and the ledger lookup, nothing else.
+        root / "services" / "digest.py": (
+            re.compile(r"from app\.services\.finding_writeup import _DEESCALATION, _FAILURES, _ledger, resolve_scopes\n"),
+            "from app.services.finding_writeup import _DEESCALATION, _FAILURES, _ledger, resolve_scopes\n",
+        ),
         # planning#231 slice 3: the eval harness resolves scope the same way.
         root / "services" / "web_classifier_eval.py": (
             re.compile(r"from app\.services\.finding_writeup import resolve_scope\n"),

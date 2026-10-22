@@ -649,8 +649,83 @@ export type AlertEventSummary = {
 
 export type AlertDelivery = {
   connector_id: string | null
-  outcome: "sent" | "failed" | "raised" | "no_channel" | "no_recipients"
+  outcome: "sent" | "failed" | "raised" | "no_channel" | "no_recipients" | "deferred_to_digest"
   recipient_count: number
+}
+
+export type DigestOutcome =
+  "pending" | "empty" | "sent" | "partial" | "failed" | "no_channel" | "no_recipients" | "abandoned"
+
+export type DigestSummary = {
+  id: string
+  rule_id: string | null
+  rule_name: string
+  period_start: string
+  period_end: string
+  event_count: number
+  finding_count: number
+  outcome: DigestOutcome
+  narrative_status: "succeeded" | "failed" | "skipped" | null
+  narrative_reason: string | null
+  deliveries: { connector_id: string | null; outcome: string; recipient_count: number }[]
+  created_at: string
+  sent_at: string | null
+}
+
+export type DigestItem = {
+  finding_id: string
+  asset_id: string
+  asset: string
+  title: string
+  severity: "critical" | "high" | "medium" | "low" | "info"
+  cve_id: string | null
+  kinds: string[]
+  band_change: { from: string | null; to: string | null } | null
+  state_now: string | null
+  excluded_now: boolean
+  path: string
+}
+
+export type DigestGroup = {
+  kind: "cluster" | "asset"
+  label: string
+  finding_count: number
+  asset_count: number
+  max_severity: "critical" | "high" | "medium" | "low" | "info"
+  key: string
+  items: DigestItem[]
+}
+
+export type DigestBody = {
+  rule: { id: string; name: string; severity_threshold: string }
+  period: { start: string; end: string }
+  totals: {
+    events: number
+    findings: number
+    assets: number
+    new: number
+    promotions: number
+    by_severity: { critical: number; high: number; medium: number; low: number; info: number }
+  }
+  groups: DigestGroup[]
+  listed_findings: number
+  omitted_findings: number
+}
+
+export type DigestNarrative = {
+  statements: { text: string; cites: { source_field: string; value: string }[] }[]
+  returned: number
+  dropped: number
+}
+
+export type DigestDetail = DigestSummary & {
+  body: DigestBody
+  narrative: DigestNarrative | null
+}
+
+export type DigestSettings = {
+  digest_hour_utc: number
+  app_base_url: string
 }
 
 export type AlertDispatch = {

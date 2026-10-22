@@ -10,7 +10,11 @@ finding writer has committed. The dispatcher:
      sending, whether or not any channel is enabled (planning#233).
   4. Renders a single summary email per rule and hands it to the
      enabled NotificationConnector, recording each outcome
-     (alert_deliveries).
+     (alert_deliveries). A rule in `digest` mode is never sent here: it
+     records `deferred_to_digest` instead (whatever the channels or recipients
+     are), and the digest service sends it later. If recording the
+     selection failed, no digest could ever claim it, so it is sent here
+     instead. A `both` rule is sent here AND digested (planning#233 slice 2a).
 
 Re-observations of a previously-resolved finding are NOT re-dispatched —
 the writer reopens them in place; only the very first insert of a
@@ -217,26 +221,30 @@ def _select_record_send(
     # every loaded rule and finding, and reloading them during the send would
     # make the send depend on the database answering. When recording failed
     # because the database went away, alerting must still go out.
-    selected = []  # [(rule_id, rule_name, recipients, matches, rendered | None)]
+    selected = []  # [(rule_id, rule_name, recipients, matches, rendered | None, mode)]
     for rule in rules:
         matches = [f for f in findings if _rule_matches(rule, f)]
         if not matches:
             continue
         recipients = [r for r in (rule.recipients or []) if r]
+        mode = rule.mode or "immediate"
         rendered = None
+        # Rendered even for a digest-mode rule: if recording the selection
+        # fails there is no dispatch for a digest to claim, so the rule falls
+        # back to an immediate send (bookkeeping never loses an alert).
         if recipients:
             rendered = (
                 _render_promotions(rule, matches, promotions_by_finding or {})
                 if kind == "promotion" else _render(rule, matches)
             )
-        selected.append((rule.id, rule.name, recipients, matches, rendered))
+        selected.append((rule.id, rule.name, recipients, matches, rendered, mode))
     if not selected:
         return
 
     # rule.id -> dispatch id; empty after a failed recording.
     recorded: dict[uuid.UUID, uuid.UUID] = {}
     try:
-        for rule_id, rule_name, _recipients, matches, _rendered in selected:
+        for rule_id, rule_name, _recipients, matches, _rendered, _mode in selected:
             dispatch_row = AlertDispatch(rule_id=rule_id, rule_name=rule_name, kind=kind)
             db.add(dispatch_row)
             db.flush()
@@ -283,12 +291,21 @@ def _select_record_send(
             "notification_dispatcher: %d %s finding(s) but no notification connector is enabled",
             len(findings), kind,
         )
-        for rule_id, *_rest in selected:
-            _delivery(rule_id, None, "no_channel", 0)
+        for rule_id, _name, recipients, _matches, _rendered, mode in selected:
+            if mode == "digest" and rule_id in recorded:
+                _delivery(rule_id, None, "deferred_to_digest", len(recipients))
+            else:
+                _delivery(rule_id, None, "no_channel", 0)
         _flush_deliveries()
         return
 
-    for rule_id, rule_name, recipients, matches, rendered in selected:
+    for rule_id, rule_name, recipients, matches, rendered, mode in selected:
+        if mode == "digest" and rule_id in recorded:
+            # The decision to defer does not depend on channels or recipients.
+            # Unrecorded (recording failed): no digest could ever claim it, so
+            # it is sent now like an immediate rule.
+            _delivery(rule_id, None, "deferred_to_digest", len(recipients))
+            continue
         if rendered is None:
             log.warning("notification_dispatcher: rule %s has no recipients — skipping", rule_id)
             _delivery(rule_id, None, "no_recipients", 0)

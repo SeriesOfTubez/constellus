@@ -57,6 +57,11 @@ DEFAULTS = {
     # the ledger) are deleted this many days after a conversation's last
     # activity (app.services.chat.purge_transcripts, daily).
     "chat.transcript_retention_days": "30",
+    # planning#233 slice 2a - alert digests: the one global send hour (UTC, 0-23),
+    # the AI-narrative cap per UTC day, and the public base URL used for links.
+    "notifications.digest_hour_utc": "7",
+    "ai.digests.narrative_daily_cap": "10",
+    "notifications.app_base_url": "",
 }
 
 
