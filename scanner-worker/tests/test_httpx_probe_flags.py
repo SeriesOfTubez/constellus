@@ -42,6 +42,12 @@ def test_probe_asks_for_headers_and_location():
     assert "-irh" in flags and "-location" in flags
 
 
+def test_probe_keeps_no_fallback_flag():
+    flags = _command_flags(_probe_function())
+    assert flags[0] == "httpx"  # reached: this is the real command
+    assert "-nf" in flags
+
+
 def test_probe_never_follows_redirects():
     flags = set(_command_flags(_probe_function()))
     assert not (flags & _FOLLOW_FLAGS)

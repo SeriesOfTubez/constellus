@@ -541,6 +541,7 @@ def scan(req: ScanRequest, _: None = Depends(_require_token)) -> dict:
         # any that resolve only to private/internal addresses. The original
         # target string (with hostname, not a pinned IP) is what nuclei
         # receives — it needs the real hostname for correct Host header / SNI.
+        # The same DNS TOCTOU (nuclei re-resolves the name) is tracked in planning#276.
         resolved = _resolve_targets_parallel(req.targets, host_fn=_target_host)
         safe_targets = [t for t in req.targets if resolved.get(t) is not None]
         if not safe_targets:
@@ -1389,6 +1390,82 @@ async def zgrab2_scan(req: BannerGrabRequest, _: None = Depends(_require_token))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Pinned batch runs shared by /httpx/probe and /tlsx/scan (planning#270).
+#
+# The egress guard resolves each hostname target ONCE and checks the answer.
+# The tool must then be handed THAT address, never the name: httpx/tlsx would
+# otherwise re-resolve the name themselves and could connect to an address
+# other than the one that was checked (DNS TOCTOU). A hostname target
+# therefore becomes one tool run per hostname whose targets file holds only
+# the pinned IP, with the name supplied out of band as SNI (and Host header
+# for httpx), exactly like _httpx_fetch_one.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _split_pinned_targets(
+    safe_targets: list, resolved: dict[str, str | None],
+) -> tuple[list[tuple[str, int]], dict[str, list[tuple[str, int]]]]:
+    """Partition egress-checked targets into (ip_lines, hostname_groups).
+
+    ip_lines: (ip, port) for IP-literal targets, one shared run.
+    hostname_groups: {hostname: [(pinned_ip, port), ...]}, one run per name,
+    where pinned_ip is the address that PASSED the egress check. A hostname
+    beginning with '-' is dropped (the target-host regex permits it, and it
+    must never reach a command line or a file the tool reads as flags)."""
+    ip_lines: list[tuple[str, int]] = []
+    groups: dict[str, list[tuple[str, int]]] = {}
+    for t in safe_targets:
+        try:
+            ipaddress.ip_address(t.ip)
+            is_literal = True
+        except ValueError:
+            is_literal = False
+        if is_literal:
+            ip_lines.append((t.ip, t.port))
+            continue
+        if t.ip.startswith("-"):
+            log.warning("hostname target dropped (leading '-'): %r", t.ip)
+            continue
+        groups.setdefault(t.ip, []).append((str(resolved[t.ip]), t.port))
+    return ip_lines, groups
+
+
+def _execute_pinned_runs(runs: list, concurrency: int, one, *, tool: str) -> tuple[list[dict], bool]:
+    """Execute `runs` on a thread pool of min(len(runs), concurrency) workers.
+
+    `one(run)` returns (completed_process | None, timed_out, rows). A run whose
+    process exited non-zero is logged and contributes no rows; HTTP 500 is
+    raised only if EVERY run that produced a process exited non-zero AND no
+    run timed out: a timed-out run's partial rows are kept (planning#90), and
+    a 500 would throw them away."""
+    if not runs:
+        return [], False
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(len(runs), concurrency))) as ex:
+        outcomes = list(ex.map(one, runs))
+
+    rows: list[dict] = []
+    timed_out_any = False
+    failures: list = []
+    ran = 0
+    for result, timed_out, run_rows in outcomes:
+        timed_out_any = timed_out_any or timed_out
+        if result is not None:
+            ran += 1
+            if result.returncode != 0:
+                log.warning("%s exited %s: %s", tool, result.returncode, (result.stderr or "")[:200])
+                failures.append(result)
+                continue
+        rows.extend(run_rows)
+    if ran and len(failures) == ran and not timed_out_any:
+        first = failures[0]
+        raise HTTPException(
+            status_code=500,
+            detail=f"{tool} exited {first.returncode}: {(first.stderr or '')[:500]}",
+        )
+    return rows, timed_out_any
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # httpx probe — Service Identification Stack Layer 2.
 #
 # Port-agnostic HTTP probing of every open port: scheme/status, page title,
@@ -1425,108 +1502,130 @@ def httpx_probe(req: HttpxProbeRequest, _: None = Depends(_require_token)) -> di
 
     Response: `{"results": [{ip, port, scheme, status_code, title, webserver,
     tech: [...], favicon, jarm}, ...]}`. Non-HTTP ports produce no entry.
+
+    Hostname targets (CDN CNAME scanning) are pinned (planning#270): httpx is
+    given the address that passed the egress check, with the name sent as
+    Host header + TLS SNI, one run per hostname.
     """
     if not req.targets:
         return {"results": []}
 
     # Egress guard (planning#89) — resolve + validate each target's host/IP,
-    # dropping any that resolve only to private/internal addresses. httpx
-    # gets the original hostname (not a pinned IP): correct Host header / TLS
-    # SNI is the entire reason CDN-fronted targets are hostnames here.
+    # dropping any that resolve only to private/internal addresses. A hostname
+    # is resolved ONCE here and httpx is handed that checked IP, never the name
+    # (planning#270: httpx would otherwise re-resolve it, a DNS TOCTOU). The
+    # name still reaches the server as the Host header + TLS SNI, which is the
+    # entire reason CDN-fronted targets are hostnames here.
     ips = [t.ip for t in req.targets]
     resolved = _resolve_targets_parallel(ips)
     safe_targets = [t for t in req.targets if resolved.get(t.ip) is not None]
     if not safe_targets:
         return {"results": []}
 
+    ip_lines, host_groups = _split_pinned_targets(safe_targets, resolved)
+    # (hostname | None, [(ip, port), ...]); None = the shared IP-literal run.
+    runs: list[tuple[str | None, list[tuple[str, int]]]] = []
+    if ip_lines:
+        runs.append((None, ip_lines))
+    runs.extend(host_groups.items())
+
     timeout_arg = str(int(req.timeout))
-    threads_arg = str(int(req.concurrency))
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        targets_path = f"{tmpdir}/targets.txt"
-        output_path = f"{tmpdir}/results.jsonl"
+    def _one(run: tuple[str | None, list[tuple[str, int]]]):
+        name, lines = run
+        threads_arg = str(int(req.concurrency if name is None else min(req.concurrency, len(lines))))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            targets_path = f"{tmpdir}/targets.txt"
+            output_path = f"{tmpdir}/results.jsonl"
 
-        with open(targets_path, "w") as f:
-            for t in safe_targets:
-                f.write(f"{t.ip}:{t.port}\n")
+            with open(targets_path, "w") as f:
+                for line_ip, line_port in lines:
+                    f.write(_target_with_port(line_ip, line_port) + "\n")
 
-        cmd = [
-            "httpx",
-            "-l", targets_path,
-            "-json", "-silent",
-            "-td", "-title", "-favicon", "-jarm", "-server",
-            # planning#231: response headers + the Location header are
-            # classifier inputs. Redirects are deliberately NOT followed
-            # (no -fr / -follow-redirects / -follow-host-redirects): a
-            # followed redirect would fetch a host outside authorised scope.
-            "-irh", "-location",
-            "-timeout", timeout_arg,
-            "-threads", threads_arg,
-            "-disable-update-check",
-            "-o", output_path,
-            # Without -nf, a probe on a port with no real listener (e.g. a
-            # stale TLS port) falls back to the *default* port for the
-            # other scheme (typically 80) and reports that port instead —
-            # silently misattributing results to a port we never asked
-            # about. -nf disables that fallback so each result's "port"
-            # always matches one of our input targets.
-            "-nf",
-        ]
+            cmd = [
+                "httpx",
+                "-l", targets_path,
+                "-json", "-silent",
+                "-td", "-title", "-favicon", "-jarm", "-server",
+                # planning#231: response headers + the Location header are
+                # classifier inputs. Redirects are deliberately NOT followed
+                # (no -fr / -follow-redirects / -follow-host-redirects): a
+                # followed redirect would fetch a host outside authorised scope.
+                "-irh", "-location",
+                "-timeout", timeout_arg,
+                "-threads", threads_arg,
+                "-disable-update-check",
+                "-o", output_path,
+                # Without -nf, a probe on a port with no real listener (e.g. a
+                # stale TLS port) falls back to the *default* port for the
+                # other scheme (typically 80) and reports that port instead —
+                # silently misattributing results to a port we never asked
+                # about. -nf disables that fallback so each result's "port"
+                # always matches one of our input targets.
+                "-nf",
+            ]
+            if name is not None:
+                # A hostname needs BOTH -H and -sni (see _httpx_probe_one's
+                # docstring). `-sni=<name>` is ONE argv element so the value
+                # can never be parsed as a flag.
+                cmd.extend(["-H", f"Host: {name}", f"-sni={name}"])
 
-        result, timed_out = _run_subprocess_soft(cmd, timeout=300, tool="httpx /httpx/probe")
+            result, timed_out = _run_subprocess_soft(cmd, timeout=300, tool="httpx /httpx/probe")
 
-        if result is not None and result.returncode != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=f"httpx exited {result.returncode}: {result.stderr[:500]}",
-            )
+            rows: list[dict] = []
+            try:
+                with open(output_path) as f:
+                    for raw in f:
+                        raw = raw.strip()
+                        if not raw:
+                            continue
+                        try:
+                            row = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if row.get("failed"):
+                            continue
+                        host = row.get("host")
+                        port = row.get("port")
+                        if not host or port is None:
+                            continue
+                        if name is None:
+                            # httpx `host` is the *resolved* IP; `input` echoes
+                            # the target we sent ("host:port").
+                            raw_input = row.get("input") or ""
+                            out_ip = str(host)
+                            input_host = raw_input.rpartition(":")[0] or str(host)
+                        else:
+                            # Hostname run: the worker knows both the name and
+                            # the pinned IP, so set them rather than parse them.
+                            # The backend routes CDN results by `input_host`.
+                            out_ip = lines[0][0]
+                            input_host = name
+                        rows.append({
+                            "ip": out_ip,
+                            "input_host": input_host,
+                            "port": int(port),
+                            "scheme": row.get("scheme"),
+                            "status_code": row.get("status_code"),
+                            "title": row.get("title"),
+                            "webserver": row.get("webserver"),
+                            "tech": row.get("tech", []),
+                            "favicon": row.get("favicon"),
+                            "jarm": row.get("jarm_hash"),
+                            # httpx -irh -> `header` (map, lowercased keys with
+                            # '-' replaced by '_'); -location -> `location`.
+                            "header": row.get("header"),
+                            "location": row.get("location"),
+                        })
+            except FileNotFoundError:
+                pass
+            return result, timed_out, rows
 
-        results: list[dict] = []
-        try:
-            with open(output_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if row.get("failed"):
-                        continue
-                    host = row.get("host")
-                    port = row.get("port")
-                    if not host or port is None:
-                        continue
-                    # httpx `host` is the *resolved* IP; `input` echoes the
-                    # target we sent ("host:port"). Recover the original target
-                    # host so the backend can route hostname probes (CDN CNAME
-                    # scanning) back to the dns_record instead of the CDN IP.
-                    raw_input = row.get("input") or ""
-                    input_host = raw_input.rpartition(":")[0] or str(host)
-                    results.append({
-                        "ip": str(host),
-                        "input_host": input_host,
-                        "port": int(port),
-                        "scheme": row.get("scheme"),
-                        "status_code": row.get("status_code"),
-                        "title": row.get("title"),
-                        "webserver": row.get("webserver"),
-                        "tech": row.get("tech", []),
-                        "favicon": row.get("favicon"),
-                        "jarm": row.get("jarm_hash"),
-                        # httpx -irh -> `header` (map, lowercased keys with
-                        # '-' replaced by '_'); -location -> `location`.
-                        "header": row.get("header"),
-                        "location": row.get("location"),
-                    })
-        except FileNotFoundError:
-            pass
-
-        response: dict = {"results": results}
-        if timed_out:
-            response["timed_out"] = True
-        return response
+    results, timed_out = _execute_pinned_runs(runs, req.concurrency, _one, tool="httpx /httpx/probe")
+    response: dict = {"results": results}
+    if timed_out:
+        response["timed_out"] = True
+    return response
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1983,13 +2082,19 @@ def tlsx_scan(req: TlsxScanRequest, _: None = Depends(_require_token)) -> dict:
     Response: `{"results": [{ip, port, subject_cn, subject_an: [...],
     issuer_cn, issuer_org, not_before, not_after, cipher, tls_version, jarm,
     fingerprint (sha256), ja3, ja3s, serial}, ...]}`. Non-TLS ports produce no entry.
+
+    Hostname targets (CDN CNAME scanning) are pinned (planning#270): tlsx is
+    given the address that passed the egress check, with the name sent as TLS
+    SNI, one run per hostname.
     """
     if not req.targets:
         return {"results": []}
 
     # Egress guard (planning#89) — resolve + validate each target's host/IP,
-    # dropping any that resolve only to private/internal addresses. tlsx gets
-    # the original hostname (not a pinned IP): the correct TLS SNI is the
+    # dropping any that resolve only to private/internal addresses. A hostname
+    # is resolved ONCE here and tlsx is handed that checked IP, never the name
+    # (planning#270: tlsx would otherwise re-resolve it, a DNS TOCTOU). The
+    # name still reaches the server as the TLS SNI (-sni), which is the
     # entire reason CDN-fronted targets are hostnames here.
     ips = [t.ip for t in req.targets]
     resolved = _resolve_targets_parallel(ips)
@@ -1997,82 +2102,97 @@ def tlsx_scan(req: TlsxScanRequest, _: None = Depends(_require_token)) -> dict:
     if not safe_targets:
         return {"results": []}
 
+    ip_lines, host_groups = _split_pinned_targets(safe_targets, resolved)
+    # (hostname | None, [(ip, port), ...]); None = the shared IP-literal run.
+    runs: list[tuple[str | None, list[tuple[str, int]]]] = []
+    if ip_lines:
+        runs.append((None, ip_lines))
+    runs.extend(host_groups.items())
+
     timeout_arg = str(int(req.timeout))
-    concurrency_arg = str(int(req.concurrency))
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        targets_path = f"{tmpdir}/targets.txt"
-        output_path = f"{tmpdir}/results.jsonl"
+    def _one(run: tuple[str | None, list[tuple[str, int]]]):
+        name, lines = run
+        concurrency_arg = str(int(req.concurrency if name is None else min(req.concurrency, len(lines))))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            targets_path = f"{tmpdir}/targets.txt"
+            output_path = f"{tmpdir}/results.jsonl"
 
-        with open(targets_path, "w") as f:
-            for t in safe_targets:
-                f.write(f"{t.ip}:{t.port}\n")
+            with open(targets_path, "w") as f:
+                for line_ip, line_port in lines:
+                    f.write(_target_with_port(line_ip, line_port) + "\n")
 
-        cmd = [
-            "tlsx",
-            "-l", targets_path,
-            "-json", "-silent",
-            "-tv", "-cipher", "-jarm",
-            # -hash sha256 → cert fingerprint (cross-asset cert-reuse signal, #56);
-            # -ja3/-ja3s → client/server JA3 hashes. All emitted in the JSON row.
-            "-hash", "sha256", "-ja3", "-ja3s",
-            "-timeout", timeout_arg,
-            "-c", concurrency_arg,
-            "-disable-update-check",
-            "-o", output_path,
-        ]
+            cmd = [
+                "tlsx",
+                "-l", targets_path,
+                "-json", "-silent",
+                "-tv", "-cipher", "-jarm",
+                # -hash sha256 → cert fingerprint (cross-asset cert-reuse signal, #56);
+                # -ja3/-ja3s → client/server JA3 hashes. All emitted in the JSON row.
+                "-hash", "sha256", "-ja3", "-ja3s",
+                "-timeout", timeout_arg,
+                "-c", concurrency_arg,
+                "-disable-update-check",
+                "-o", output_path,
+            ]
+            if name is not None:
+                # `-sni=<name>` is ONE argv element so the value can never be
+                # parsed as a flag.
+                cmd.append(f"-sni={name}")
 
-        result, timed_out = _run_subprocess_soft(cmd, timeout=300, tool="tlsx /tlsx/scan")
+            result, timed_out = _run_subprocess_soft(cmd, timeout=300, tool="tlsx /tlsx/scan")
 
-        if result is not None and result.returncode != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=f"tlsx exited {result.returncode}: {result.stderr[:500]}",
-            )
+            rows: list[dict] = []
+            try:
+                with open(output_path) as f:
+                    for raw in f:
+                        raw = raw.strip()
+                        if not raw:
+                            continue
+                        try:
+                            row = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        raw_host = row.get("host") or ""
+                        ip = row.get("ip") or raw_host
+                        port = row.get("port")
+                        if not ip or port is None:
+                            continue
+                        if name is not None:
+                            # Hostname run: set the name and pinned IP
+                            # explicitly. The backend routes CDN results by
+                            # `host`.
+                            ip = lines[0][0]
+                            raw_host = name
+                        issuer_org = row.get("issuer_org")
+                        rows.append({
+                            "ip": str(ip),
+                            "host": str(raw_host) if raw_host else str(ip),
+                            "port": int(port),
+                            "subject_cn": row.get("subject_cn"),
+                            "subject_an": row.get("subject_an", []),
+                            "issuer_cn": row.get("issuer_cn"),
+                            "issuer_org": issuer_org[0] if issuer_org else None,
+                            "not_before": row.get("not_before"),
+                            "not_after": row.get("not_after"),
+                            "cipher": row.get("cipher"),
+                            "tls_version": row.get("tls_version"),
+                            "jarm": row.get("jarm_hash"),
+                            # sha256 cert fingerprint + JA3 hashes + serial (#56).
+                            "fingerprint": (row.get("fingerprint_hash") or {}).get("sha256"),
+                            "ja3": row.get("ja3_hash"),
+                            "ja3s": row.get("ja3s_hash"),
+                            "serial": row.get("serial"),
+                        })
+            except FileNotFoundError:
+                pass
+            return result, timed_out, rows
 
-        results: list[dict] = []
-        try:
-            with open(output_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    raw_host = row.get("host") or ""
-                    ip = row.get("ip") or raw_host
-                    port = row.get("port")
-                    if not ip or port is None:
-                        continue
-                    issuer_org = row.get("issuer_org")
-                    results.append({
-                        "ip": str(ip),
-                        "host": str(raw_host) if raw_host else str(ip),
-                        "port": int(port),
-                        "subject_cn": row.get("subject_cn"),
-                        "subject_an": row.get("subject_an", []),
-                        "issuer_cn": row.get("issuer_cn"),
-                        "issuer_org": issuer_org[0] if issuer_org else None,
-                        "not_before": row.get("not_before"),
-                        "not_after": row.get("not_after"),
-                        "cipher": row.get("cipher"),
-                        "tls_version": row.get("tls_version"),
-                        "jarm": row.get("jarm_hash"),
-                        # sha256 cert fingerprint + JA3 hashes + serial (#56).
-                        "fingerprint": (row.get("fingerprint_hash") or {}).get("sha256"),
-                        "ja3": row.get("ja3_hash"),
-                        "ja3s": row.get("ja3s_hash"),
-                        "serial": row.get("serial"),
-                    })
-        except FileNotFoundError:
-            pass
-
-        response: dict = {"results": results}
-        if timed_out:
-            response["timed_out"] = True
-        return response
+    results, timed_out = _execute_pinned_runs(runs, req.concurrency, _one, tool="tlsx /tlsx/scan")
+    response: dict = {"results": results}
+    if timed_out:
+        response["timed_out"] = True
+    return response
 
 
 # ──────────────────────────────────────────────────────────────────────────────
