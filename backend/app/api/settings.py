@@ -4,9 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
-from app.models.user import UserRole
+
 from app.services import aggressiveness as aggr
 from app.services import app_settings as svc
 
@@ -85,7 +86,7 @@ def get_branding(db: Session = Depends(get_db)):
 @router.get("/", response_model=SettingsResponse)
 def get_settings(
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.SETTINGS_READ)),
 ):
     return _current(db)
 
@@ -94,7 +95,7 @@ def get_settings(
 def update_settings(
     data: SettingsUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.SETTINGS_UPDATE)),
 ):
     if data.scan_authorisation_mode is not None:
         if data.scan_authorisation_mode not in SCAN_AUTH_MODES:

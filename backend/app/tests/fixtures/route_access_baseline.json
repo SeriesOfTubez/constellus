@@ -1,0 +1,738 @@
+{
+ "DELETE /api/assets/bulk": [
+  "admin",
+  "integration_admin"
+ ],
+ "DELETE /api/assets/by-apex": [
+  "admin",
+  "integration_admin"
+ ],
+ "DELETE /api/assets/{asset_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "DELETE /api/assets/{asset_id}/web-endpoints/{port}/classification": [
+  "admin"
+ ],
+ "DELETE /api/chat/conversations/{conversation_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "DELETE /api/engagements/{engagement_id}": [
+  "admin"
+ ],
+ "DELETE /api/entities/{entity_id}/registrant-link": [
+  "admin"
+ ],
+ "DELETE /api/logs/": [
+  "admin"
+ ],
+ "DELETE /api/monitoring/policies/{policy_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "DELETE /api/notifications/rules/{rule_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "DELETE /api/reports/{report_id}": [
+  "admin",
+  "report_admin"
+ ],
+ "DELETE /api/scan-templates/{template_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "DELETE /api/scans/{scan_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "DELETE /api/tags/rules/{rule_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "DELETE /api/targets/bulk": [
+  "admin",
+  "integration_admin"
+ ],
+ "DELETE /api/targets/{target_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/assets/": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/assets/whois": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/assets/whois-domain": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/assets/{asset_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/assets/{asset_id}/web-classifications": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/audit/": [
+  "admin"
+ ],
+ "GET /api/audit/facets": [
+  "admin"
+ ],
+ "GET /api/auth/me": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/auth/saml/config": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/auth/saml/config/preview-metadata": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/auth/saml/login": "public",
+ "GET /api/chat/conversations": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/chat/conversations/{conversation_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/claims/absence": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/claims/surface/{asset_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/connectors/": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/connectors/domains": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/connectors/{connector_id}/config": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/connectors/{connector_id}/zones": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/edges/{node_type}/{node_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/engagements/": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/engagements/{engagement_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/entities/": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/entities/edgar-ingest/runs": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/entities/edgar-ingest/runs/{run_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/entities/evidence/{fetch_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/entities/onboarding/registrant-search": [
+  "admin"
+ ],
+ "GET /api/entities/relations": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/entities/{entity_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/entities/{entity_id}/acquisition-read/runs": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/entities/{entity_id}/candidate-domains": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/entities/{entity_id}/destination": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/entities/{entity_id}/edges": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/entities/{entity_id}/filing-events": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/entities/{entity_id}/filing-sections": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/entities/{entity_id}/registrant-candidates": [
+  "admin"
+ ],
+ "GET /api/entities/{entity_id}/registrant-link": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/entities/{entity_id}/subsidiary-listings": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/findings/": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/findings/clusters": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/findings/clusters/ai-writeup": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/findings/clusters/members": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/findings/security-score": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/findings/{finding_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/findings/{finding_id}/ai-writeup": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/findings/{finding_id}/epss-history": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/health": "public",
+ "GET /api/hygiene/": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/hygiene/{asset_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/llm/models": [
+  "admin"
+ ],
+ "GET /api/llm/role-bindings": [
+  "admin"
+ ],
+ "GET /api/llm/status": [
+  "admin"
+ ],
+ "GET /api/logs/": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/logs/settings": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/logs/sources": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/monitoring/policies": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/notifications/alerts": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/notifications/digest-settings": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/notifications/digests": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/notifications/digests/{digest_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/notifications/rules": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/query/schema": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/reports": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/reports/{report_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/reports/{report_id}/markdown": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/scan-templates/": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/scan-templates/_/jobs": [
+  "admin"
+ ],
+ "GET /api/scan-templates/{template_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/scans/": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/scans/{scan_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/settings/": [
+  "admin"
+ ],
+ "GET /api/settings/branding": "public",
+ "GET /api/system/monitoring-status": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/system/status": "public",
+ "GET /api/tags/": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/tags/rules": [
+  "admin",
+  "integration_admin"
+ ],
+ "GET /api/targets/": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/targets/{target_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/users/": [
+  "admin"
+ ],
+ "GET /api/users/{user_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/web-endpoints": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "PATCH /api/assets/{asset_id}/ignore": [
+  "admin",
+  "integration_admin"
+ ],
+ "PATCH /api/auth/saml/config": [
+  "admin",
+  "integration_admin"
+ ],
+ "PATCH /api/engagements/{engagement_id}": [
+  "admin"
+ ],
+ "PATCH /api/findings/{finding_id}/state": [
+  "admin",
+  "integration_admin"
+ ],
+ "PATCH /api/monitoring/policies/{policy_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "PATCH /api/notifications/rules/{rule_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "PATCH /api/scan-templates/{template_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "PATCH /api/scans/{scan_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "PATCH /api/tags/assets/{asset_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "PATCH /api/tags/findings/{finding_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "PATCH /api/tags/rules/{rule_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "PATCH /api/tags/targets/{target_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "PATCH /api/targets/{target_id}": [
+  "admin",
+  "integration_admin"
+ ],
+ "PATCH /api/users/{user_id}": [
+  "admin"
+ ],
+ "POST /api/assets/bulk/recheck": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/assets/{asset_id}/scan": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/assets/{asset_id}/web-classifications": [
+  "admin"
+ ],
+ "POST /api/auth/login": "public",
+ "POST /api/auth/refresh": "public",
+ "POST /api/auth/saml/acs": "public",
+ "POST /api/auth/saml/config": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/auth/saml/config/refresh-metadata": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/auth/setup": "public",
+ "POST /api/chat/conversations": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "POST /api/chat/conversations/{conversation_id}/messages": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "POST /api/connectors/{connector_id}/disable": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/connectors/{connector_id}/enable": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/connectors/{connector_id}/sync": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/connectors/{connector_id}/test": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/engagements/": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/engagements/{engagement_id}/transition": [
+  "admin"
+ ],
+ "POST /api/entities/": [
+  "admin"
+ ],
+ "POST /api/entities/candidate-domains/{candidate_id}/accept": [
+  "admin"
+ ],
+ "POST /api/entities/candidate-domains/{candidate_id}/reject": [
+  "admin"
+ ],
+ "POST /api/entities/edgar-ingest": [
+  "admin"
+ ],
+ "POST /api/entities/onboarding/seed": [
+  "admin"
+ ],
+ "POST /api/entities/relations/{relation_id}/decision": [
+  "admin"
+ ],
+ "POST /api/entities/{entity_id}/acquisition-read": [
+  "admin"
+ ],
+ "POST /api/entities/{entity_id}/candidate-domains": [
+  "admin"
+ ],
+ "POST /api/entities/{entity_id}/registrant-link": [
+  "admin"
+ ],
+ "POST /api/findings/bulk/state": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/findings/clusters/ai-writeup": [
+  "admin"
+ ],
+ "POST /api/findings/{finding_id}/ai-writeup": [
+  "admin"
+ ],
+ "POST /api/findings/{finding_id}/verify": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/hygiene/recompute": [
+  "admin"
+ ],
+ "POST /api/llm/models/refresh": [
+  "admin"
+ ],
+ "POST /api/monitoring/policies": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/notifications/rules": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/query": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "POST /api/reports": [
+  "admin",
+  "report_admin"
+ ],
+ "POST /api/scan-templates/": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/scan-templates/{template_id}/run": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/scans/": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/scans/{scan_id}/cancel": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/tags/rules": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/tags/rules/evaluate": [
+  "admin"
+ ],
+ "POST /api/targets/": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/targets/bulk/aggressiveness": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/targets/bulk/recheck": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/targets/{target_id}/acknowledge": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/targets/{target_id}/verify": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/users/": [
+  "admin"
+ ],
+ "PUT /api/assets/{asset_id}/web-endpoints/{port}/classification": [
+  "admin"
+ ],
+ "PUT /api/connectors/{connector_id}/config": [
+  "admin",
+  "integration_admin"
+ ],
+ "PUT /api/connectors/{connector_id}/zones": [
+  "admin",
+  "integration_admin"
+ ],
+ "PUT /api/entities/{entity_id}/relationship": [
+  "admin",
+  "integration_admin"
+ ],
+ "PUT /api/llm/chat-settings": [
+  "admin"
+ ],
+ "PUT /api/llm/cluster-writeup-settings": [
+  "admin"
+ ],
+ "PUT /api/llm/digest-settings": [
+  "admin"
+ ],
+ "PUT /api/llm/role-bindings": [
+  "admin"
+ ],
+ "PUT /api/llm/settings": [
+  "admin"
+ ],
+ "PUT /api/llm/web-classification-settings": [
+  "admin"
+ ],
+ "PUT /api/logs/settings": [
+  "admin"
+ ],
+ "PUT /api/notifications/digest-settings": [
+  "admin",
+  "integration_admin"
+ ],
+ "PUT /api/settings/": [
+  "admin"
+ ]
+}

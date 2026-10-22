@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.domain_verification import DomainVerification
-from app.models.user import UserRole
+
 from app.services import domain_verification as dv_svc
 
 router = APIRouter()
@@ -33,7 +34,7 @@ class AddDomainRequest(BaseModel):
 @router.get("/", response_model=list[DomainVerificationResponse])
 def list_domains(
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.DOMAINS_READ)),
 ):
     rows = db.query(DomainVerification).order_by(DomainVerification.created_at.desc()).all()
     return [_to_response(r) for r in rows]
@@ -43,7 +44,7 @@ def list_domains(
 def add_domain(
     data: AddDomainRequest,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.DOMAINS_CREATE)),
 ):
     domain = data.domain.lower().strip().rstrip(".")
     record = dv_svc.ensure_pending(db, domain)
@@ -54,7 +55,7 @@ def add_domain(
 def verify_domain(
     domain_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.DOMAINS_VERIFY)),
 ):
     record = db.get(DomainVerification, domain_id)
     if not record:
@@ -75,7 +76,7 @@ def verify_domain(
 def delete_domain(
     domain_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.DOMAINS_DELETE)),
 ):
     record = db.get(DomainVerification, domain_id)
     if not record:

@@ -46,9 +46,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
-from app.models.user import UserRole
+
 from app.services import app_settings, audit, finding_writeup, llm_connector
 from app.services import chat, web_classifier
 from app.services import cluster_writeup, digest
@@ -141,7 +142,7 @@ def _bindings_response(db: Session) -> RoleBindingsResponse:
 def get_role_bindings(
     request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.LLM_READ)),
 ):
     return _bindings_response(db)
 
@@ -151,7 +152,7 @@ def put_role_bindings(
     data: RoleBindingsUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.LLM_CONFIGURE)),
 ):
     required = {r.value for r in Role}
     given = set(data.bindings)
@@ -192,7 +193,7 @@ def put_role_bindings(
 def get_allowed_models(
     request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.LLM_READ)),
 ):
     """The cached guardrail allow-list. `fetched_at` is null when it has
     never been refreshed (cold cache = the call path skips no model)."""
@@ -206,7 +207,7 @@ def get_allowed_models(
 def refresh_allowed_models(
     request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.LLM_REFRESH_MODELS)),
 ):
     """Re-fetch `/models/user` and re-cache it. A fetch failure leaves the
     last good cache intact (409 not-configured / 502 upstream)."""
@@ -238,7 +239,7 @@ def _cluster_writeups(db: Session) -> ClusterWriteupStatus:
 def get_status(
     request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.LLM_READ)),
 ):
     """Key credit (live `/api/v1/key`, item 7) + app budget + whether the
     connector and the role bindings are configured. Sends no inference
@@ -276,7 +277,7 @@ def put_settings(
     data: LlmSettingsUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.LLM_CONFIGURE)),
 ):
     old = finding_writeup.auto_daily_cap(db)
     app_settings.set_value(db, finding_writeup.AUTO_CAP_KEY, str(data.auto_writeups_daily_cap))
@@ -295,7 +296,7 @@ def put_web_classification_settings(
     data: WebClassificationSettingsUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.LLM_CONFIGURE)),
 ):
     """Set `ai.web_classifications.auto_daily_cap` (0 = off), audited old -> new."""
     old = web_classifier.auto_daily_cap(db)
@@ -319,7 +320,7 @@ def put_chat_settings(
     data: ChatSettingsUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.LLM_CONFIGURE)),
 ):
     old = chat.retention_days(db)
     app_settings.set_value(db, chat.RETENTION_KEY, str(data.transcript_retention_days))
@@ -338,7 +339,7 @@ def put_digest_settings(
     data: DigestSettingsUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.LLM_CONFIGURE)),
 ):
     """Set `ai.digests.narrative_daily_cap` (0 = off), audited old -> new."""
     old = digest.narrative_daily_cap(db)
@@ -360,7 +361,7 @@ def put_cluster_writeup_settings(
     data: ClusterWriteupSettingsUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.LLM_CONFIGURE)),
 ):
     """Set `ai.cluster_writeups.mode` and `.auto_daily_cap` (0 = off), audited old -> new."""
     old_mode, old_cap = cluster_writeup.mode(db), cluster_writeup.auto_daily_cap(db)

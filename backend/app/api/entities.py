@@ -26,7 +26,8 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission, has_permission
 from app.core.database import SessionLocal, get_db
 from app.models.candidate_domain import CandidateDomain
 from app.models.entity_filing_event import EntityFilingEvent
@@ -37,7 +38,7 @@ from app.models.entity_subsidiary_listing import EntitySubsidiaryListing
 from app.models.evidence import EvidenceBlob, EvidenceFetch
 from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.services import (
     acquisition_reader,
     audit,
@@ -206,7 +207,7 @@ def _to_entity_response(e: OrgEntity) -> EntityResponse:
 @router.get("/", response_model=list[EntityResponse])
 def list_entities(
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     entities = db.query(OrgEntity).order_by(OrgEntity.created_at.desc()).all()
     return [_to_entity_response(e) for e in entities]
@@ -216,7 +217,7 @@ def list_entities(
 def create_entity(
     data: CreateEntityRequest,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.ENTITIES_CREATE)),
 ):
     legal_name = data.legal_name.strip()
     if not legal_name:
@@ -240,7 +241,7 @@ def create_entity(
 def list_relations(
     status: str | None = None,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     """The review queue. **Never returns blob content** — `evidence_url` and
     `fetched_at` only; `GET /evidence/{fetch_id}` is the separate,
@@ -289,7 +290,7 @@ def list_relations(
 def get_evidence(
     fetch_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     """Returns the raw fetched bytes, `content-type` forced to
     `text/plain` — never render fetched HTML as HTML in our origin."""
@@ -318,7 +319,7 @@ def decide_relation(
     relation_id: uuid.UUID,
     data: DecisionRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_DECIDE_RELATION)),
 ):
     if data.status not in ("confirmed", "rejected"):
         raise HTTPException(status_code=422, detail="status must be 'confirmed' or 'rejected'")
@@ -432,7 +433,7 @@ def edgar_ingest_requested(
     data: EdgarIngestRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_INGEST)),
 ):
     """Declared ahead of `/{entity_id}/edges` and `/{entity_id}/filing-
     events` below: `/edgar-ingest` has no path parameter, so it can never be
@@ -487,7 +488,7 @@ def list_ingest_runs(
     limit: int = 20,
     cik: str | None = None,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     """Newest first. Open to any authenticated user, like every read here.
     `cik` narrows to one filer (planning#236: a linked registrant's page
@@ -510,7 +511,7 @@ def list_ingest_runs(
 def get_ingest_run(
     run_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     run = db.get(EntityIngestRun, run_id)
     if run is None:
@@ -553,7 +554,7 @@ def acquisition_read_requested(
     request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_GENERATE_ACQUISITION_READ)),
 ):
     """Queue an AI read of this filer's stored Business Combinations
     sections. Every refusal happens HERE, before a run row exists or any
@@ -592,7 +593,7 @@ def list_acquisition_read_runs(
     entity_id: uuid.UUID,
     limit: int = 10,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     """Newest first. Open to any authenticated user, like every read here."""
     entity = db.get(OrgEntity, entity_id)
@@ -615,7 +616,7 @@ def list_acquisition_read_runs(
 def get_entity_edges(
     entity_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     entity = db.get(OrgEntity, entity_id)
     if entity is None:
@@ -637,7 +638,7 @@ def get_entity_edges(
 def list_filing_events(
     entity_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     """Open to any authenticated user, matching #212's GET convention (this
     module's own docstring) — reviewing what this system knows about a
@@ -672,7 +673,7 @@ def list_filing_events(
 def list_subsidiary_listings(
     entity_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     """Open to any authenticated user (same GET convention as #212/#213
     slice 1). Rows are grouped by `accession_number` — newest filing
@@ -715,7 +716,7 @@ def list_subsidiary_listings(
 def list_filing_sections(
     entity_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     """Open to any authenticated user. Returns metadata plus the extracted
     `text` for each stored section (currently only `business_
@@ -831,7 +832,7 @@ def _candidate_http_error(exc: candidate_domains.CandidateError) -> HTTPExceptio
 def list_candidate_domains(
     entity_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     if db.get(OrgEntity, entity_id) is None:
         raise HTTPException(status_code=404, detail="Entity not found")
@@ -850,7 +851,7 @@ def add_candidate_domain(
     entity_id: uuid.UUID,
     data: AddCandidateDomainRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_PROPOSE_CANDIDATE)),
 ):
     try:
         candidate = candidate_domains.add_manual(
@@ -875,7 +876,7 @@ def accept_candidate_domain(
     data: AcceptCandidateDomainRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_DECIDE_CANDIDATE)),
 ):
     """Creates the target already inside the destination the company
     inherits (planning#240: an engagement, so it inherits the engagement's
@@ -911,7 +912,7 @@ def reject_candidate_domain(
     request: Request,
     candidate_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_DECIDE_CANDIDATE)),
 ):
     try:
         candidate = candidate_domains.reject(db, candidate_id=candidate_id, user=current_user)
@@ -976,18 +977,18 @@ def set_relationship(
     entity_id: uuid.UUID,
     data: RelationshipRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_SET_MA_TARGET)),
 ):
     """Roles (Jason, 2026-10-01): marking a company ours, or changing one
     that is ours, is ADMIN-only; it is an authorisation (it makes domains
     actively scannable). M&A target is ADMIN + INTEGRATION_ADMIN, the same
     pair that may create an engagement. The "changing one that is ours"
     half is checked by the service under the row lock."""
-    is_admin = current_user.role == UserRole.ADMIN.value
+    may_mark_ours = has_permission(current_user, Permission.ENTITIES_MARK_OURS)
     engagement_fields: dict = {}
     try:
         if data.relationship == "ours":
-            if not is_admin:
+            if not may_mark_ours:
                 raise HTTPException(status_code=403, detail="only an admin can mark a company as ours")
             entity, previous = entity_relationship.set_ours(
                 db, entity_id=entity_id, reference=data.reference or "", user=current_user
@@ -995,11 +996,11 @@ def set_relationship(
         elif data.relationship == "ma_target":
             entity, previous, engagement, created = entity_relationship.set_ma_target(
                 db, entity_id=entity_id, user=current_user, engagement_id=data.engagement_id,
-                new_engagement_name=data.new_engagement_name, may_clear_ours=is_admin,
+                new_engagement_name=data.new_engagement_name, may_clear_ours=may_mark_ours,
             )
             engagement_fields = {"engagement": str(engagement.id), "engagement_created": created}
         elif data.relationship is None:
-            entity, previous = entity_relationship.clear(db, entity_id=entity_id, may_clear_ours=is_admin)
+            entity, previous = entity_relationship.clear(db, entity_id=entity_id, may_clear_ours=may_mark_ours)
         else:
             raise HTTPException(status_code=422, detail="relationship must be 'ours', 'ma_target' or null")
     except entity_relationship.RelationshipError as exc:
@@ -1020,7 +1021,7 @@ def set_relationship(
 def get_destination(
     entity_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     if db.get(OrgEntity, entity_id) is None:
         raise HTTPException(status_code=404, detail="Entity not found")
@@ -1141,7 +1142,7 @@ def _to_candidate(f: registrant_link.RegistrantFacts) -> RegistrantCandidate:
 def get_registrant_link(
     entity_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     try:
         ctx = registrant_link.context(db, entity_id)
@@ -1160,7 +1161,7 @@ def registrant_candidates(
     cik: str | None = None,
     contains: bool = False,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.ENTITIES_SEARCH_REGISTRANTS)),
 ):
     """ADMIN, like the link itself: every call sends requests to SEC (one
     search plus one submissions fetch per candidate). Exactly one of `q`
@@ -1254,7 +1255,7 @@ def onboarding_registrant_search(
     q: str,
     contains: bool = False,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.ENTITIES_SEARCH_REGISTRANTS)),
 ):
     """ADMIN only: every call sends requests to SEC (one search plus one
     submissions fetch per candidate). Results are hints for a person to
@@ -1272,7 +1273,7 @@ def onboarding_seed(
     request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_SEED_ONBOARDING)),
 ):
     """Mark the chosen registrant as ours and queue its ingest (and, when AI
     is configured, the acquisition read). Creates no Target and accepts no
@@ -1310,7 +1311,7 @@ def link_registrant(
     request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_LINK_REGISTRANT)),
 ):
     """A person confirms that this acquired company IS the registrant with
     `cik`. Never automatic. Queues the ingest and, after it, the AI read."""
@@ -1335,7 +1336,7 @@ def unlink_registrant(
     entity_id: uuid.UUID,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_LINK_REGISTRANT)),
 ):
     try:
         entity, summary = registrant_link.unlink(db, entity_id=entity_id, user=current_user)
@@ -1355,7 +1356,7 @@ def unlink_registrant(
 def get_entity(
     entity_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     """One org entity, same fields and access as `list_entities` (planning#228:
     the chat assistant's `get_entity` tool calls this function as the asking user)."""

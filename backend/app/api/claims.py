@@ -24,7 +24,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.asset_canonical import AssetCanonical
 from app.models.claim import CLAIM_TYPES
@@ -37,7 +38,7 @@ router = APIRouter()
 def get_surface(
     asset_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.CLAIMS_READ)),
 ):
     """The estate tri-state (plus `"unknown"`) for one asset.
 
@@ -60,7 +61,7 @@ def get_absence(
     include_ignored: bool = False,
     limit: int = Query(1000, ge=1, le=1000),
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.CLAIMS_READ)),
 ):
     """Assets carrying no `claim_type` claim (optionally scoped to one
     `observer`), the absence primitive's row-returning form.

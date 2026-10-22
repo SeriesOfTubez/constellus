@@ -15,10 +15,11 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.audit import AuditLog
-from app.models.user import User, UserRole
+from app.models.user import User
 
 router = APIRouter()
 
@@ -47,7 +48,7 @@ def list_audit_log(
     until: datetime | None = None,
     limit: int = Query(default=200, le=1000),
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.AUDIT_READ)),
 ):
     """Who did what, filterable by actor, action, resource and period.
 
@@ -80,7 +81,7 @@ def list_audit_log(
 @router.get("/facets")
 def audit_facets(
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.AUDIT_READ)),
 ):
     """The distinct values present, so the UI can build its filters from what
     is actually in the table rather than from a hardcoded list that drifts

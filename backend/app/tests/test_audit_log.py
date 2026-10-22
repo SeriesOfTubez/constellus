@@ -90,7 +90,7 @@ def _api_routes():
 
 def _is_authenticated(dependant, _seen=None) -> bool:
     """True if `get_current_user` is anywhere in the route's dependency tree
-    — directly, or under `require_role`, which depends on it."""
+    — directly, or under `require_permission`, which depends on it."""
     _seen = _seen if _seen is not None else set()
     if id(dependant) in _seen:
         return False
@@ -184,7 +184,7 @@ def test_every_mutating_endpoint_is_authenticated_or_explicitly_opted_out():
     assert not missing, (
         f"{len(missing)} mutating endpoint(s) change state with no authenticated "
         f"principal, so nothing can attribute the action to anyone: {missing}. "
-        "Either guard the endpoint (get_current_user / require_role), which "
+        "Either guard the endpoint (get_current_user / require_permission), which "
         "audits it by construction, or add it to "
         "services/audit.UNAUDITED_ENDPOINTS with a justification."
     )

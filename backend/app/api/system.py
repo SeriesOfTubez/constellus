@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.services.user import is_first_run
 
@@ -19,7 +20,7 @@ def status(db: Session = Depends(get_db)):
 @router.get("/monitoring-status")
 def monitoring_status(
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.SYSTEM_READ)),
 ):
     """Return the last + next default monitoring run timestamps.
 

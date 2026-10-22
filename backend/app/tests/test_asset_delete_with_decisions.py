@@ -198,7 +198,7 @@ def _admin_client() -> TestClient:
     """A minimal app carrying the real `assets` router, matching
     `test_api_rbac.py`'s harness: `dependency_overrides` for `get_db` (a
     real session against the dev DB) and `get_current_user` (an
-    unpersisted ADMIN `User` — `require_role` only reads attributes off
+    unpersisted ADMIN `User` — `require_permission` only reads attributes off
     it, so there is no reason to write a users row for this)."""
     app = FastAPI()
     app.include_router(assets_api.router, prefix="/api/assets")

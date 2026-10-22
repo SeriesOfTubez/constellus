@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.system_log import SystemLog
-from app.models.user import UserRole
+
 from app.services import app_settings as settings_svc
 
 RETENTION_OPTIONS = [1, 3, 7, 15, 30, 60, 90]
@@ -28,7 +29,7 @@ def list_logs(
     since: datetime | None = None,
     limit: int = Query(default=500, le=2000),
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.LOGS_READ)),
 ):
     q = db.query(SystemLog)
     if source:
@@ -59,7 +60,7 @@ def list_logs(
 @router.get("/sources")
 def list_sources(
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.LOGS_READ)),
 ):
     """Distinct sources present in the log table."""
     rows = db.query(SystemLog.source).distinct().order_by(SystemLog.source).all()
@@ -69,7 +70,7 @@ def list_sources(
 @router.delete("/", status_code=204)
 def clear_logs(
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.LOGS_DELETE)),
 ):
     db.query(SystemLog).delete()
     db.commit()
@@ -78,7 +79,7 @@ def clear_logs(
 @router.get("/settings")
 def get_log_settings(
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.LOGS_READ)),
 ):
     return {
         "retention_days": settings_svc.get_int(db, "log_retention_days") or 15,
@@ -94,7 +95,7 @@ class RetentionUpdate(BaseModel):
 def update_log_settings(
     data: RetentionUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.LOGS_CONFIGURE)),
 ):
     if data.retention_days not in RETENTION_OPTIONS:
         raise HTTPException(status_code=422, detail=f"retention_days must be one of {RETENTION_OPTIONS}")

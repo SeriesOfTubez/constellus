@@ -22,11 +22,12 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.asset_canonical import AssetCanonical
 from app.models.asset_hygiene_score import BAND_VALUES, AssetHygieneScore
-from app.models.user import UserRole
+
 from app.services import claims_query, hygiene_scorer
 
 router = APIRouter()
@@ -36,7 +37,7 @@ router = APIRouter()
 def get_hygiene_score(
     asset_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.HYGIENE_READ)),
 ):
     """One asset's hygiene score, or an explanation of why it has none.
 
@@ -80,7 +81,7 @@ def list_hygiene_scores(
     band: str | None = None,
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.HYGIENE_READ)),
 ):
     """Worst-first list of scored assets (`score ASC` — the whole point of
     pre-computing this table is that this is a plain indexed sort, not a
@@ -121,7 +122,7 @@ def list_hygiene_scores(
 @router.post("/recompute")
 def recompute_hygiene_scores(
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.HYGIENE_RECOMPUTE)),
 ):
     """Run `hygiene_scorer.run()` synchronously and return its stats dict.
 

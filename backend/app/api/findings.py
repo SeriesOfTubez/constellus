@@ -8,13 +8,14 @@ from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import Session
 
 from app.api.connectors import REGISTRY
-from app.api.deps import get_current_user, require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.asset_canonical import AssetCanonical
 from app.models.finding import FindingState
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.services import audit, bod_sla, cluster_writeup, finding_writeup, projector, read_scope, scan_executor
 from app.services.asset_chain import chain_target_ids
 from app.services.finding_confidence import confidence_for, strongest
@@ -62,7 +63,7 @@ def list_findings(
     verification: str | None = None,
     finding_type: str | None = None,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.FINDINGS_READ)),
 ):
     """List canonical findings. Returns durable identity rows — one per
     (asset, finding_type, source, fingerprint) — joined to their asset.
@@ -171,7 +172,7 @@ def list_findings(
 def bulk_update_finding_state(
     data: BulkStateUpdate,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.FINDINGS_TRIAGE)),
 ):
     if not data.finding_ids:
         return {"updated": 0}
@@ -211,7 +212,7 @@ _NOT_EXCLUDED_FROM_MAIN = or_(
 @router.get("/security-score")
 def security_score(
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.FINDINGS_READ)),
 ):
     """Org-level Constellus Risk Score for the dashboard gauge.
 
@@ -379,7 +380,7 @@ def _cluster_base_filters(user, state: str | None):
 def list_finding_clusters(
     state: str | None = "open",
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user=Depends(require_permission(Permission.FINDINGS_READ)),
 ):
     """Findings that share one identity key `(finding_type, source,
     fingerprint)` across more than one asset (planning#233 slice 1). The
@@ -444,7 +445,7 @@ def list_cluster_members(
     fingerprint: str,
     state: str | None = "open",
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user=Depends(require_permission(Permission.FINDINGS_READ)),
 ):
     """The findings of ONE cluster key, same state/exclusion/read-scope rules
     as `/clusters`. Deliberately NOT passed through `_rollup_cve_findings`: a
@@ -513,7 +514,7 @@ def get_cluster_ai_writeup(
     source: str,
     fingerprint: str,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user=Depends(require_permission(Permission.FINDINGS_READ)),
 ):
     """The newest succeeded write-up of ONE cluster (if the viewer may read
     every member it described), any queued/running one, the newest failure if
@@ -530,7 +531,7 @@ def request_cluster_ai_writeup(
     background_tasks: BackgroundTasks,
     force: bool = False,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.FINDINGS_GENERATE_WRITEUP)),
 ):
     """Generate a cluster write-up, or return the cached one when the cluster
     is unchanged (no call). Any severity is eligible. 409 when it is not a
@@ -553,7 +554,7 @@ def request_cluster_ai_writeup(
 def get_finding(
     finding_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.FINDINGS_READ)),
 ):
     """Fetch a single canonical finding by ID — drives the full-detail page."""
     finding = db.get(FindingCanonical, finding_id)
@@ -606,7 +607,7 @@ def _writeup_state(db: Session, finding: FindingCanonical) -> dict:
 def get_ai_writeup(
     finding_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.FINDINGS_READ)),
 ):
     """The newest succeeded write-up, any queued/running one, the newest
     failure if it is the latest attempt, and whether the inputs changed
@@ -624,7 +625,7 @@ def request_ai_writeup(
     background_tasks: BackgroundTasks,
     force: bool = False,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.FINDINGS_GENERATE_WRITEUP)),
 ):
     """Generate a write-up, or return the cached one when the inputs are
     unchanged (no call is made). `force` (Regenerate) skips the cache.
@@ -649,7 +650,7 @@ def request_ai_writeup(
 def get_epss_history(
     finding_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.FINDINGS_READ)),
 ):
     """Return 12-week EPSS trend data for the CVE associated with this finding.
 
@@ -674,7 +675,7 @@ def update_finding_state(
     finding_id: uuid.UUID,
     data: StateUpdate,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.FINDINGS_TRIAGE)),
 ):
     finding = db.get(FindingCanonical, finding_id)
     if not finding:
@@ -695,7 +696,7 @@ def verify_finding(
     finding_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.FINDINGS_VERIFY)),
 ):
     finding = db.get(FindingCanonical, finding_id)
     if not finding:

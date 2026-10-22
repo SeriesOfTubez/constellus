@@ -21,10 +21,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.scan_template import ScanTemplate
-from app.models.user import UserRole
+
 from app.services import scheduler
 
 log = logging.getLogger(__name__)
@@ -91,7 +92,7 @@ class PolicyUpdate(BaseModel):
 @router.get("/policies", response_model=list[MonitoringPolicy])
 def list_policies(
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.MONITORING_READ)),
 ):
     """Return the default monitoring template + every cadence tier,
     sorted with the default first then tiers by priority."""
@@ -113,7 +114,7 @@ def list_policies(
 def create_policy(
     data: PolicyCreate,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.MONITORING_CREATE)),
 ):
     existing = (
         db.query(ScanTemplate)
@@ -161,7 +162,7 @@ def update_policy(
     policy_id: uuid.UUID,
     data: PolicyUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.MONITORING_UPDATE)),
 ):
     tmpl = db.get(ScanTemplate, policy_id)
     if not tmpl or not tmpl.dynamic_scope:
@@ -194,7 +195,7 @@ def update_policy(
 def delete_policy(
     policy_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.MONITORING_DELETE)),
 ):
     if policy_id == scheduler.DEFAULT_MONITORING_TEMPLATE_ID:
         raise HTTPException(

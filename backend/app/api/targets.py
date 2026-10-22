@@ -6,13 +6,13 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import get_current_user, require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission, has_permission
 from app.core.database import get_db
 from app.models.engagement import Engagement, EngagementPosture
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.scan_template import ScanTemplate
 from app.models.target import Target, TargetType
-from app.models.user import UserRole
 from app.services import audit, posture, scheduler, target_service as svc
 
 log = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ def list_targets(
     verified: bool | None = None,
     type: str | None = None,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.TARGETS_READ)),
 ):
     from app.services import aggressiveness as aggr
     from app.services import app_settings as app_settings_svc
@@ -130,7 +130,7 @@ def list_targets(
 def get_target(
     target_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.TARGETS_READ)),
 ):
     """Fetch a single target by ID — drives the full-detail page."""
     target = db.get(Target, target_id)
@@ -145,7 +145,7 @@ def add_target(
     data: AddTargetRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.TARGETS_CREATE)),
 ):
     value = svc.canonicalize_value(data.value)
     if not value:
@@ -233,7 +233,7 @@ def _prime_ct_and_launch(target_value: str, run_id, scope: dict) -> None:
 def verify_target(
     target_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.TARGETS_VERIFY)),
 ):
     """Check TXT record for domain targets."""
     target = db.get(Target, target_id)
@@ -258,7 +258,7 @@ def acknowledge_target(
     target_id: uuid.UUID,
     data: AcknowledgeRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.TARGETS_ACKNOWLEDGE)),
 ):
     """Acknowledge ownership of an IP or CIDR target."""
     target = db.get(Target, target_id)
@@ -281,7 +281,7 @@ def bulk_recheck_targets(
     data: BulkTargetRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.TARGETS_RECHECK)),
 ):
     """Queue a full discovery + enrichment + scan run against the selected
     targets. Unlike asset recheck (which uses skip_discovery), a target
@@ -327,7 +327,7 @@ def bulk_set_aggressiveness(
     request: Request,
     data: BulkAggressivenessRequest,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.TARGETS_SET_AGGRESSIVENESS)),
 ):
     """Set or clear the aggressiveness override on a batch of targets.
     Mirrors PATCH /{id} semantics — pass `clear=True` to reset to inherit,
@@ -445,7 +445,7 @@ def _soft_cascade_target_assets(db: Session, target_ids: list[uuid.UUID]) -> int
 def bulk_delete_targets(
     data: BulkTargetRequest,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.TARGETS_DELETE)),
 ):
     """Delete a set of targets and soft-cascade their orphan assets. See
     `delete_target` for the cascade semantics.
@@ -467,7 +467,7 @@ def bulk_delete_targets(
 def delete_target(
     target_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.TARGETS_DELETE)),
 ):
     """Delete a target and soft-cascade the assets that only this target
     referenced. Assets shared with other targets are kept (their link rows
@@ -490,7 +490,7 @@ def patch_target(
     target_id: uuid.UUID,
     data: TargetPatch,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.TARGETS_UPDATE)),
 ):
     """Partial update. Only fields present in the body are modified.
 
@@ -544,7 +544,7 @@ def patch_target(
         # existing (ADMIN, INTEGRATION_ADMIN) pair, same reasoning as the
         # widening rule below (whether a given request touches attribution
         # cannot be expressed at the dependency level).
-        if current_user.role != UserRole.ADMIN.value:
+        if not has_permission(current_user, Permission.TARGETS_SET_ENTITY):
             raise HTTPException(
                 status_code=403,
                 detail="setting a target's entity requires ADMIN",
@@ -589,7 +589,7 @@ def patch_target(
 
         widening = old_restricts and not new_restricts
         if widening:
-            if current_user.role != UserRole.ADMIN.value:
+            if not has_permission(current_user, Permission.TARGETS_WIDEN_ENGAGEMENT):
                 raise HTTPException(
                     status_code=403,
                     detail="widening a target's engagement membership requires ADMIN",

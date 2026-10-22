@@ -26,7 +26,7 @@ own, so `get_current_user` stashes its ID on
 because the request's DB session is already closed by the time this runs
 and a detached ORM object raises on every attribute access. That is the
 same dependency every authenticated route
-already resolves — `require_role` depends on it — so "authenticated" and
+already resolves — `require_permission` depends on it — so "authenticated" and
 "audited" are the same set by construction rather than by discipline.
 
 Requests are recorded whatever their outcome, with the status code in

@@ -15,14 +15,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.alert_event import AlertDelivery, AlertDispatch, AlertEvent
 from app.models.asset_canonical import AssetCanonical
 from app.models.digest import Digest
 from app.models.finding_canonical import FindingCanonical
 from app.models.notification_rule import RULE_MODES, NotificationRule
-from app.models.user import UserRole
+
 from app.services import app_settings, audit, digest as digest_svc
 from app.services.notification_dispatcher import _SEVERITY_RANK
 
@@ -117,7 +118,7 @@ class RuleUpdate(BaseModel):
 @router.get("/rules", response_model=list[RuleResponse])
 def list_rules(
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.NOTIFICATIONS_READ)),
 ):
     return db.query(NotificationRule).order_by(NotificationRule.created_at.desc()).all()
 
@@ -126,7 +127,7 @@ def list_rules(
 def create_rule(
     data: RuleCreate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.NOTIFICATIONS_CREATE)),
 ):
     rule = NotificationRule(
         id=uuid.uuid4(),
@@ -149,7 +150,7 @@ def update_rule(
     rule_id: uuid.UUID,
     data: RuleUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.NOTIFICATIONS_UPDATE)),
 ):
     rule = db.get(NotificationRule, rule_id)
     if not rule:
@@ -178,7 +179,7 @@ def update_rule(
 def delete_rule(
     rule_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.NOTIFICATIONS_DELETE)),
 ):
     rule = db.get(NotificationRule, rule_id)
     if not rule:
@@ -221,7 +222,7 @@ class AlertDispatchOut(BaseModel):
 def list_alerts(
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.NOTIFICATIONS_READ)),
 ):
     """Newest-first alert history: what each rule selected and what became of
     it. Three queries total (dispatches, events, deliveries), no N+1."""
@@ -282,8 +283,6 @@ def list_alerts(
 
 # ── Digests (planning#233 slice 2a) ──────────────────────────────────────────
 
-_ADMIN = (UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)
-
 
 class DigestOut(BaseModel):
     id: uuid.UUID
@@ -312,7 +311,7 @@ class DigestDetailOut(DigestOut):
 def list_digests(
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
-    _=Depends(require_role(*_ADMIN)),
+    _=Depends(require_permission(Permission.NOTIFICATIONS_READ)),
 ):
     return db.query(Digest).order_by(Digest.created_at.desc(), Digest.id.desc()).limit(limit).all()
 
@@ -321,7 +320,7 @@ def list_digests(
 def get_digest(
     digest_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_role(*_ADMIN)),
+    _=Depends(require_permission(Permission.NOTIFICATIONS_READ)),
 ):
     row = db.get(Digest, digest_id)
     if row is None:
@@ -359,7 +358,7 @@ def _digest_settings(db: Session) -> DigestSettings:
 @router.get("/digest-settings", response_model=DigestSettings)
 def get_digest_settings(
     db: Session = Depends(get_db),
-    _=Depends(require_role(*_ADMIN)),
+    _=Depends(require_permission(Permission.NOTIFICATIONS_READ)),
 ):
     return _digest_settings(db)
 
@@ -369,7 +368,7 @@ def put_digest_settings(
     data: DigestSettingsUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_role(*_ADMIN)),
+    _=Depends(require_permission(Permission.NOTIFICATIONS_CONFIGURE)),
 ):
     old = _digest_settings(db)
     if data.digest_hour_utc is not None:

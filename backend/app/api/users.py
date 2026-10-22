@@ -3,9 +3,9 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission, has_permission
 from app.core.database import get_db
-from app.models.user import UserRole
 from app.schemas.user import UserCreate, UserResponse, UserUpdate
 from app.services import audit
 from app.services.user import create_user, get_user, get_user_by_email, list_users, update_user
@@ -18,7 +18,7 @@ def get_users(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.USERS_READ_ANY)),
 ):
     return list_users(db, skip=skip, limit=limit)
 
@@ -27,7 +27,7 @@ def get_users(
 def create(
     data: UserCreate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.USERS_CREATE)),
 ):
     if get_user_by_email(db, data.email):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
@@ -38,10 +38,10 @@ def create(
 def get_one(
     user_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_permission(Permission.USERS_READ_SELF)),
 ):
     # Users can view their own profile; admins can view anyone
-    if str(current_user.id) != str(user_id) and current_user.role != UserRole.ADMIN:
+    if str(current_user.id) != str(user_id) and not has_permission(current_user, Permission.USERS_READ_ANY):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     user = get_user(db, user_id)
     if not user:
@@ -55,7 +55,7 @@ def update(
     user_id: uuid.UUID,
     data: UserUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.USERS_UPDATE)),
 ):
     user = get_user(db, user_id)
     if not user:
