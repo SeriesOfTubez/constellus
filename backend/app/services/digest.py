@@ -368,6 +368,9 @@ def narrative_input(body: dict) -> dict:
         for item in group["items"]:
             item.pop("path", None)
             item.pop("finding_id", None)
+        # planning#233 slice 2b: an embedded cluster write-up is AI prose; the
+        # digest's own narrative stays grounded in deterministic data only.
+        group.pop("writeup", None)
     return data
 
 
@@ -631,7 +634,18 @@ def render(
             header += f" on {g['asset_count']} assets"
         header += f", highest {g['max_severity'].upper()}"
         text.append(header)
-        html.append(f"<h4>{esc(header)}</h4><ul>")
+        html.append(f"<h4>{esc(header)}</h4>")
+        wu = g.get("writeup")
+        if g["kind"] == "cluster" and wu:
+            written = str(wu.get("written_at") or "")[:10]
+            changed = ", inputs changed since" if wu.get("inputs_changed") else ""
+            wu_line = (
+                f"  AI write-up of this issue across {wu.get('asset_count')} assets "
+                f"(written {written}{changed}): {_line(wu.get('summary'))}"
+            )
+            text.append(wu_line)
+            html.append(f"<p><em>{esc(wu_line.strip())}</em></p>")
+        html.append("<ul>")
         for it in g["items"]:
             cve = f" ({it['cve_id']})" if it.get("cve_id") else ""
             flags = _item_flags(it)
@@ -725,6 +739,23 @@ def retry_stale(db: Session, now: datetime) -> None:
                 db.rollback()
 
 
+def _embed_cluster_writeups(db: Session, digest: Digest) -> None:
+    """planning#233 slice 2b: in mode `auto_high_in_digest`, attach existing
+    cluster write-ups to the digest body before it is narrated and sent. Its
+    own fail-soft unit of work: it can never stop the narrative or the send.
+    Imported lazily (cluster_writeup imports this module)."""
+    digest_id = digest.id
+    try:
+        from app.services import cluster_writeup
+
+        if cluster_writeup.mode(db) == "auto_high_in_digest":
+            cluster_writeup.embed_into_digest(db, digest)
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("digest %s: embedding cluster write-ups failed", digest_id)
+
+
 # ── scheduler entrypoint ─────────────────────────────────────────────────────
 
 def run_due(now: datetime | None = None) -> int:
@@ -747,6 +778,7 @@ def run_due(now: datetime | None = None) -> int:
                     continue
                 created += 1
                 if digest.outcome == "pending":
+                    _embed_cluster_writeups(db, digest)
                     narrate(db, digest)
                     send(db, digest)
             except Exception:

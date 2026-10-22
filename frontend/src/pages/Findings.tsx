@@ -21,6 +21,7 @@ import { OverflowCell } from "@/components/ui/overflow-cell"
 import { relativeTime, isStale, daysSince } from "@/lib/time"
 import { displayName } from "@/lib/apex"
 import { Button } from "@/components/ui/button"
+import { ClusterWriteupPanel } from "@/components/ClusterWriteupPanel"
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
@@ -515,6 +516,14 @@ export default function Findings() {
   const [bulkSuppressOpen, setBulkSuppressOpen] = useState(false)
   const { view, setView, group, setGroup } = useListView()
   const [collapsedGroups, setCollapsedGroups] = useState(new Set<string>())
+  // Groups whose AI write-up is open (planning#233 slice 2b). The panel only
+  // mounts, and so only fetches, once opened.
+  const [writeupOpen, setWriteupOpen] = useState(new Set<string>())
+  const toggleWriteup = (key: string) => setWriteupOpen(prev => {
+    const next = new Set(prev)
+    if (next.has(key)) next.delete(key); else next.add(key)
+    return next
+  })
   const toggleGroup = (key: string) =>
     setCollapsedGroups(prev => { const next = new Set(prev); next.has(key) ? next.delete(key) : next.add(key); return next })
 
@@ -980,6 +989,25 @@ export default function Findings() {
   const clusterBadge = (g: Group) =>
     g.cluster ? <SeverityBadge severity={g.cluster.max_severity} /> : null
 
+  const writeupButton = (g: Group) => g.cluster ? (
+    <Button
+      type="button" size="sm" variant="ghost"
+      className="h-6 px-1.5 text-[11px] normal-case tracking-normal"
+      aria-expanded={writeupOpen.has(g.key)}
+      onClick={e => { e.stopPropagation(); toggleWriteup(g.key) }}
+    >
+      <Sparkles className="h-3 w-3" /><span className="ml-1">AI write-up</span>
+    </Button>
+  ) : null
+
+  const writeupRow = (g: Group) => g.cluster && writeupOpen.has(g.key) ? (
+    <TableRow key={`__wu_${g.key}`} className="hover:bg-transparent">
+      <TableCell colSpan={9} className="py-3">
+        <ClusterWriteupPanel cluster={g.cluster} />
+      </TableCell>
+    </TableRow>
+  ) : null
+
   const sectionHeaderRow = (g: Group) => {
     const isCollapsed = collapsedGroups.has(g.key)
     return (
@@ -989,6 +1017,7 @@ export default function Findings() {
             {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
             {g.label} <span className="text-muted-foreground/60">· {g.items.length}</span>
             {clusterBadge(g)}
+            {writeupButton(g)}
           </span>
         </TableCell>
       </TableRow>
@@ -1058,14 +1087,20 @@ export default function Findings() {
           const isCollapsed = collapsedGroups.has(g.key)
           return (
             <section key={g.key} className="space-y-3">
-              <button
-                onClick={() => toggleGroup(g.key)}
-                className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
-              >
-                {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                {g.label} <span className="text-muted-foreground/60">· {g.items.length}</span>
-                {clusterBadge(g)}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => toggleGroup(g.key)}
+                  className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                  {g.label} <span className="text-muted-foreground/60">· {g.items.length}</span>
+                  {clusterBadge(g)}
+                </button>
+                {writeupButton(g)}
+              </div>
+              {g.cluster && writeupOpen.has(g.key) && (
+                <div className="rounded-md border p-3"><ClusterWriteupPanel cluster={g.cluster} /></div>
+              )}
               {!isCollapsed && cardGrid(g.items)}
             </section>
           )
@@ -1075,8 +1110,8 @@ export default function Findings() {
   } else {
     body = tableShell(groups.flatMap(g =>
       collapsedGroups.has(g.key)
-        ? [sectionHeaderRow(g)]
-        : [sectionHeaderRow(g), ...g.items.map(renderFindingRow)],
+        ? [sectionHeaderRow(g), writeupRow(g)]
+        : [sectionHeaderRow(g), writeupRow(g), ...g.items.map(renderFindingRow)],
     ))
   }
 

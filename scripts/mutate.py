@@ -25,7 +25,7 @@ A SURVIVED mutation is either a real test gap or an equivalent mutation
 mutation that kills an UNEXPECTED test is good evidence: it proves that
 test's precondition really fires.
 
-Runs `backend/scripts/test.sh` through Git Bash (full path), which recreates
+Runs `backend/scripts/test.sh` through `bash` on PATH, which recreates
 `constellus_test` each time — do not run two of these at once.
 """
 
@@ -34,11 +34,12 @@ from __future__ import annotations
 import os
 import re
 import runpy
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-GIT_BASH = r"C:\Program Files\Git\usr\bin\bash.exe"
+BASH = shutil.which("bash") or "/bin/bash"
 
 
 def _read(path: Path) -> str:
@@ -54,7 +55,7 @@ def _write(path: Path, text: str) -> None:
 def _run_tests(worktree: Path, tests: list[str]) -> tuple[int, list[str], str]:
     env = {**os.environ, "COMPOSE_PROJECT_NAME": "constellus"}
     r = subprocess.run(
-        [GIT_BASH, "backend/scripts/test.sh", *tests, "-q", "-p", "no:cacheprovider", "-rf"],
+        [BASH, "backend/scripts/test.sh", *tests, "-q", "-p", "no:cacheprovider", "-rf"],
         cwd=worktree, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
     )
     failed = sorted(set(re.findall(r"^FAILED (\S+)", r.stdout, re.M)))

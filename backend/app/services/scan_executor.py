@@ -536,6 +536,16 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
         except Exception:
             log.exception("finding write-up auto-generation failed to start for run %s", scan_run_id)
 
+    # planning#233 slice 2b - AI write-ups for the cross-asset clusters this
+    # run touched, behind ai.cluster_writeups.mode (default on_demand: nothing
+    # automatic) and its own daily cap. Same shape as the write-up above.
+    if touched_finding_ids:
+        try:
+            from app.services import cluster_writeup
+            cluster_writeup.start_auto(touched_finding_ids)
+        except Exception:
+            log.exception("cluster write-up auto-generation failed to start for run %s", scan_run_id)
+
     # planning#231 - AI web-app classification of the web endpoints on this
     # run's assets, behind ai.web_classifications.auto_daily_cap (default 0,
     # off). Same shape as the write-up above: after COMPLETED, own thread and

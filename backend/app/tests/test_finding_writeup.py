@@ -680,7 +680,10 @@ def test_no_scoring_module_reads_writeups():
     and set the auto cap. Anything else they reference is an offender."""
     root = pathlib.Path(__file__).resolve().parents[1]
     allowed = {root / "services" / "finding_writeup.py", root / "api" / "findings.py",
-               root / "models" / "finding_ai_writeup.py", root / "models" / "__init__.py"}
+               root / "models" / "finding_ai_writeup.py", root / "models" / "__init__.py",
+               # planning#233 slice 2b: cluster write-ups reuse this module's shaping and
+               # failure helpers; the scoring check for THAT module is in test_cluster_writeup.py.
+               root / "services" / "cluster_writeup.py"}
     cap_key = r"ai\.finding_writeups\.auto_daily_cap"  # the setting's name, in comments/docs
     # file -> (the uses it may make, the one use it must still make)
     narrow = {

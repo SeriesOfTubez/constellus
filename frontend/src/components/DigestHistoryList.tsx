@@ -60,6 +60,13 @@ export function DigestBodyView({ detail }: { detail: DigestDetail }) {
               {g.finding_count} finding{g.finding_count === 1 ? "" : "s"} · {g.asset_count} asset{g.asset_count === 1 ? "" : "s"}
             </span>
           </div>
+          {g.writeup && g.writeup.summary && (
+            <p className="pl-4 text-xs italic text-muted-foreground whitespace-pre-wrap">
+              AI write-up of this issue across {g.writeup.asset_count} asset{g.writeup.asset_count === 1 ? "" : "s"}
+              {" "}({new Date(g.writeup.written_at).toLocaleDateString()}
+              {g.writeup.inputs_changed && ", inputs changed since"}): {g.writeup.summary}
+            </p>
+          )}
           <div className="space-y-0.5 pl-4">
             {g.items.map(it => (
               <div key={`${it.finding_id}:${it.asset_id}`} className="flex items-center gap-2 min-w-0">

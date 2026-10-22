@@ -15,7 +15,7 @@ from app.models.finding import FindingState
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.user import User, UserRole
-from app.services import audit, bod_sla, finding_writeup, projector, read_scope, scan_executor
+from app.services import audit, bod_sla, cluster_writeup, finding_writeup, projector, read_scope, scan_executor
 from app.services.asset_chain import chain_target_ids
 from app.services.finding_confidence import confidence_for, strongest
 
@@ -467,6 +467,86 @@ def list_cluster_members(
     )
     states = projector.load_states(db, {f.asset_canonical_id for f, _a in rows})
     return [_serialize_finding(f, a, states.get(f.asset_canonical_id)) for f, a in rows]
+
+
+# ── AI write-up of a cluster (planning#233 slice 2b) ─────────────────────────
+
+def _cluster_writeup_state(db: Session, user, key: cluster_writeup.Key) -> dict:
+    """Never generates. A write-up whose frozen members the viewer cannot all
+    read is withheld (`hidden`), not shown with the rest redacted."""
+    rows = cluster_writeup.members(db, key)
+    eligible = len({f.asset_canonical_id for f, _a in rows}) >= 2
+    done = cluster_writeup.latest_succeeded(db, key)
+    newest = cluster_writeup.latest_any(db, key)
+    pending = newest if newest is not None and newest.status in ("queued", "running") else None
+    failure = newest if newest is not None and newest.status == "failed" else None
+    writeup, hidden, inputs_changed = None, False, None
+    if done is not None:
+        if not cluster_writeup.viewer_can_read(db, user, done):
+            hidden = True
+        else:
+            writeup = {
+                **_writeup_out(db, done),
+                "summary_dropped": done.summary_dropped,
+                "finding_count": done.finding_count,
+                "asset_count": done.asset_count,
+                "max_severity": done.max_severity,
+                "auto": done.requested_by_id is None,
+            }
+            inputs_changed = done.input_hash != (cluster_writeup.current_hash(db, key) if eligible else None)
+    return {
+        "eligible": eligible,
+        "ineligible_reason": None if eligible else (
+            "not a cross-asset cluster: needs open findings on more than one asset"),
+        "mode": cluster_writeup.mode(db),
+        "writeup": writeup,
+        "hidden": hidden,
+        "inputs_changed": inputs_changed,
+        "pending": {"id": str(pending.id), "status": pending.status, "created_at": pending.created_at} if pending else None,
+        "last_failure": {"error": failure.error, "finished_at": failure.finished_at} if failure else None,
+    }
+
+
+@router.get("/clusters/ai-writeup")
+def get_cluster_ai_writeup(
+    finding_type: str,
+    source: str,
+    fingerprint: str,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """The newest succeeded write-up of ONE cluster (if the viewer may read
+    every member it described), any queued/running one, the newest failure if
+    it is the latest attempt, and whether the cluster changed since."""
+    return _cluster_writeup_state(db, user, cluster_writeup.Key(finding_type, source, fingerprint))
+
+
+@router.post("/clusters/ai-writeup")
+def request_cluster_ai_writeup(
+    finding_type: str,
+    source: str,
+    fingerprint: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    force: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Generate a cluster write-up, or return the cached one when the cluster
+    is unchanged (no call). Any severity is eligible. 409 when it is not a
+    cross-asset cluster, the AI is not configured, or one is already running."""
+    key = cluster_writeup.Key(finding_type, source, fingerprint)
+    try:
+        row, cached = cluster_writeup.request_writeup(db, key=key, user_id=current_user.id, force=force)
+    except (cluster_writeup.NotEligible, cluster_writeup.NotConfigured, cluster_writeup.AlreadyRunning) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if not cached:
+        audit.record_detail(
+            request, cluster={"finding_type": finding_type, "source": source, "fingerprint": fingerprint},
+            writeup_id=str(row.id), force=force,
+        )
+        background_tasks.add_task(cluster_writeup.run_in_background, row.id)
+    return {"cached": cached, **_cluster_writeup_state(db, current_user, key)}
 
 
 @router.get("/{finding_id}")

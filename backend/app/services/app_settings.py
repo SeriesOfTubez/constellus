@@ -62,6 +62,12 @@ DEFAULTS = {
     "notifications.digest_hour_utc": "7",
     "ai.digests.narrative_daily_cap": "10",
     "notifications.app_base_url": "",
+    # planning#233 slice 2b - AI write-ups for cross-asset finding clusters:
+    # on_demand (default) | auto_high (after a scan) | auto_high_in_digest
+    # (also embedded in a digest's cluster group), and the auto-write-up cap
+    # per UTC day, separate from the per-finding cap.
+    "ai.cluster_writeups.mode": "on_demand",
+    "ai.cluster_writeups.auto_daily_cap": "10",
 }
 
 
