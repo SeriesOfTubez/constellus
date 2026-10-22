@@ -41,11 +41,12 @@ from fastapi.testclient import TestClient
 from app.api import system, targets
 from app.api.deps import get_current_user
 from app.core.database import SessionLocal, get_db
+from app.core.permissions import ROLE_PERMISSIONS
 from app.models.user import User, UserRole
 
 
 def _user(role: UserRole) -> User:
-    """An unpersisted User. `require_role` and `get_current_user` only read
+    """An unpersisted User. `require_permission` and `get_current_user` only read
     attributes, so there is no reason to write a row to the dev DB."""
     return User(
         id=uuid.uuid4(),
@@ -132,18 +133,18 @@ def test_patch_target_matches_its_bulk_siblings():
     import inspect
 
     def _guard_roles(fn):
-        """The roles a route's `require_role(...)` dependency was built with,
-        read off the closure of the factory's inner function."""
+        """The roles allowed by a route's `require_permission(...)`
+        dependency, read off the permission the factory tagged it with."""
         found = []
         for p in inspect.signature(fn).parameters.values():
             dep = getattr(p.default, "dependency", None)
-            if dep is None or dep.__qualname__ != "require_role.<locals>.dependency":
+            perm = getattr(dep, "permission", None)
+            if perm is None:
                 continue
-            cells = dict(zip(dep.__code__.co_freevars, (c.cell_contents for c in dep.__closure__)))
-            found.append(tuple(cells["roles"]))
+            found.append(tuple(sorted(r for r, held in ROLE_PERMISSIONS.items() if perm in held)))
         return found
 
-    pair = (UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)
+    pair = tuple(sorted((UserRole.ADMIN.value, UserRole.INTEGRATION_ADMIN.value)))
     for fn in (
         targets.patch_target,
         targets.bulk_set_aggressiveness,
@@ -152,7 +153,7 @@ def test_patch_target_matches_its_bulk_siblings():
         targets.delete_target,
     ):
         assert _guard_roles(fn) == [pair], (
-            f"{fn.__name__} is not guarded by require_role{pair} — it guards with "
+            f"{fn.__name__} is not guarded by a permission held by exactly {pair} — it guards with "
             f"{_guard_roles(fn)}. Every route that changes scan posture on a target "
             "must admit the same roles (planning#162 item 1)."
         )

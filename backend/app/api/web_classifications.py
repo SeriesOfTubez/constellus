@@ -34,11 +34,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, select, tuple_
 from sqlalchemy.orm import Session, aliased
 
-from app.api.deps import get_current_user, require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.asset_canonical import AssetCanonical
 from app.models.http_redirect_hop import HttpRedirectHop
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.models.web_classification import REASON_CAP, WebClassification, WebEndpointOverride
 from app.services import audit, read_scope, web_classifier
 
@@ -174,7 +175,7 @@ def _visible_asset(db: Session, user: User, asset_id: uuid.UUID) -> AssetCanonic
 def get_web_classifications(
     asset_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission(Permission.WEB_CLASSIFICATIONS_READ)),
 ):
     asset = _visible_asset(db, current_user, asset_id)
     return {"endpoints": _endpoints_state(db, current_user, asset)}
@@ -187,7 +188,7 @@ def request_web_classifications(
     background_tasks: BackgroundTasks,
     force: bool = False,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.WEB_CLASSIFICATIONS_GENERATE)),
 ):
     """Classify the asset's web endpoints, or return the cached ones when the
     input is unchanged. Every refusal happens before a row exists or any
@@ -217,7 +218,7 @@ def set_web_classification_override(
     request: Request,
     port: int = Path(ge=1, le=65535),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.AI_CORRECT)),
 ):
     """Correct the endpoint's classification. The correction wins over the
     AI value until it is removed; 409 when the port is not a recorded web
@@ -245,7 +246,7 @@ def clear_web_classification_override(
     request: Request,
     port: int = Path(ge=1, le=65535),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.AI_CORRECT)),
 ):
     """Remove the correction so the AI value applies again; 404 when there
     is none."""
@@ -267,7 +268,7 @@ def list_web_endpoints(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission(Permission.WEB_CLASSIFICATIONS_READ)),
 ):
     """Every web endpoint on the assets the caller may read (not ignored,
     not `not_ours`), with its effective classification."""

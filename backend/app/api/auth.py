@@ -10,7 +10,8 @@ from app.models.user import UserRole
 from app.schemas.auth import LoginRequest, RefreshRequest, TokenResponse
 from app.schemas.user import UserCreate, UserResponse
 from app.services.user import create_user, get_user, get_user_by_email, is_first_run
-from app.api.deps import get_current_user
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 import uuid
 
 router = APIRouter()
@@ -60,5 +61,5 @@ def refresh(data: RefreshRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/me", response_model=UserResponse)
-def me(current_user=Depends(get_current_user)):
+def me(current_user=Depends(require_permission(Permission.AUTH_READ))):
     return current_user

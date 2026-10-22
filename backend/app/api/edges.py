@@ -19,7 +19,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.asset_canonical import AssetCanonical
 from app.models.asset_edge import EDGE_TYPES, NODE_TYPES, AssetEdge
@@ -65,7 +66,7 @@ def get_edges(
     node_type: str,
     node_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.GRAPH_READ)),
 ):
     """Return all hydrated edges touching this node, grouped by edge_type + direction."""
     if node_type not in NODE_TYPES:

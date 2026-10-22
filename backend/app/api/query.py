@@ -17,7 +17,8 @@ from typing import Any, Literal
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.user import User
 from app.services import query_compiler, query_schema
@@ -26,7 +27,7 @@ router = APIRouter()
 
 
 @router.get("/schema")
-def get_query_schema(_=Depends(get_current_user)) -> dict[str, Any]:
+def get_query_schema(_=Depends(require_permission(Permission.QUERY_READ))) -> dict[str, Any]:
     return query_schema.published_schema()
 
 
@@ -35,7 +36,7 @@ def run_query(
     body: Any = Body(...),
     mode: Literal["rows", "count"] = "rows",
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission(Permission.QUERY_RUN)),
 ) -> dict[str, Any]:
     try:
         q = query_schema.validate(body)

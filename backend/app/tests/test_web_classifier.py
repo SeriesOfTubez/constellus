@@ -944,7 +944,10 @@ def test_no_scoring_or_attribution_module_reads_web_classifications():
     root = pathlib.Path(__file__).resolve().parents[1]
     allowed = {root / "services" / "web_classifier.py", root / "services" / "web_classifier_eval.py",
                root / "api" / "web_classifications.py",
-               root / "models" / "web_classification.py", root / "models" / "__init__.py"}
+               root / "models" / "web_classification.py", root / "models" / "__init__.py",
+               # The permission catalogue NAMES the resource (`web_classifications.read`,
+               # `.generate`) so a route can be guarded; it reads no rows (planning#243).
+               root / "core" / "permissions.py"}
     cap_key = r"ai\.web_classifications\.auto_daily_cap"
     narrow = {
         root / "services" / "scan_executor.py": (

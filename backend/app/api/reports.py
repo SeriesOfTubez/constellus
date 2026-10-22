@@ -9,16 +9,16 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.engagement import Engagement
 from app.models.report import Report
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.services import audit, llm_connector, read_scope, reports
 
 router = APIRouter()
 
-_WRITERS = (UserRole.ADMIN, UserRole.REPORT_ADMIN)
 
 
 class ReportRequest(BaseModel):
@@ -80,7 +80,7 @@ def _visible_report(db: Session, user: User, report_id: uuid.UUID) -> Report:
 def list_reports(
     engagement_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission(Permission.REPORTS_READ)),
 ):
     """Reports for one engagement, newest first (at most 50)."""
     _visible_engagement(db, current_user, engagement_id)
@@ -97,7 +97,7 @@ def create_report(
     request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(*_WRITERS)),
+    current_user: User = Depends(require_permission(Permission.REPORTS_CREATE)),
 ):
     """Queue a report. Every refusal happens before a row exists or a request
     is sent: unknown engagement (404), AI not configured (503), one already
@@ -125,7 +125,7 @@ def create_report(
 def get_report(
     report_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission(Permission.REPORTS_READ)),
 ):
     return _detail(db, _visible_report(db, current_user, report_id))
 
@@ -134,7 +134,7 @@ def get_report(
 def get_report_markdown(
     report_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission(Permission.REPORTS_READ)),
 ):
     r = _visible_report(db, current_user, report_id)
     if r.status != "done":
@@ -153,7 +153,7 @@ def delete_report(
     report_id: uuid.UUID,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(*_WRITERS)),
+    current_user: User = Depends(require_permission(Permission.REPORTS_DELETE)),
 ):
     r = _visible_report(db, current_user, report_id)
     audit.record_detail(request, report_id=str(r.id), engagement_id=str(r.engagement_id))

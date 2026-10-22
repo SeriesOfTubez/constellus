@@ -6,11 +6,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.connectors import REGISTRY
-from app.api.deps import get_current_user, require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.scan_template import ScanTemplate
-from app.models.user import UserRole
+
 from app.services import scan_executor, scheduler
 
 router = APIRouter()
@@ -37,7 +38,7 @@ class ScanTemplateUpdate(BaseModel):
 @router.get("/")
 def list_templates(
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.SCAN_TEMPLATES_READ)),
 ):
     templates = db.query(ScanTemplate).order_by(ScanTemplate.created_at.desc()).all()
     return [_serialize(t) for t in templates]
@@ -47,7 +48,7 @@ def list_templates(
 def create_template(
     data: ScanTemplateCreate,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.SCAN_TEMPLATES_CREATE)),
 ):
     if data.schedule_cron:
         _validate_cron(data.schedule_cron)
@@ -74,7 +75,7 @@ def create_template(
 def get_template(
     template_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.SCAN_TEMPLATES_READ)),
 ):
     tmpl = db.get(ScanTemplate, template_id)
     if not tmpl:
@@ -87,7 +88,7 @@ def update_template(
     template_id: uuid.UUID,
     data: ScanTemplateUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.SCAN_TEMPLATES_UPDATE)),
 ):
     tmpl = db.get(ScanTemplate, template_id)
     if not tmpl:
@@ -119,7 +120,7 @@ def update_template(
 def delete_template(
     template_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.SCAN_TEMPLATES_DELETE)),
 ):
     tmpl = db.get(ScanTemplate, template_id)
     if not tmpl:
@@ -134,7 +135,7 @@ def run_template_now(
     template_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.SCAN_TEMPLATES_RUN)),
 ):
     """Fire a one-shot run from the template, on top of any schedule."""
     tmpl = db.get(ScanTemplate, template_id)
@@ -160,7 +161,7 @@ def run_template_now(
 
 @router.get("/_/jobs")
 def list_scheduled_jobs(
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.SCAN_TEMPLATES_READ_JOBS)),
 ):
     """Debug endpoint — what's actually loaded in the scheduler right now."""
     return scheduler.list_jobs()

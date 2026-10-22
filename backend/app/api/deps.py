@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import decode_token
 from app.core.database import get_db
-from app.models.user import User, UserRole
+from app.core.permissions import Permission, has_permission
+from app.models.user import User
 from app.services.user import get_user
 import uuid
 
@@ -25,7 +26,7 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
 
     # The audit choke point (planning#194). This is the one dependency every
-    # authenticated route resolves — `require_role` depends on it — so
+    # authenticated route resolves — `require_permission` depends on it — so
     # stashing the principal here makes "authenticated" and "audited" the
     # same set by construction. `services/audit.AuditMiddleware` reads it
     # back off the ASGI scope once the response is out; a route that forgets
@@ -41,9 +42,12 @@ def get_current_user(
     return user
 
 
-def require_role(*roles: UserRole):
+def require_permission(permission: Permission):
     def dependency(current_user: User = Depends(get_current_user)) -> User:
-        if current_user.role not in [r.value for r in roles]:
+        if not has_permission(current_user, permission):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
         return current_user
+
+    # Tests read this to learn what a route demands without calling it.
+    dependency.permission = permission
     return dependency

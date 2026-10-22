@@ -5,13 +5,14 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.asset_canonical import AssetCanonical
 from app.models.finding_canonical import FindingCanonical
 from app.models.tag_rule import TagRule
 from app.models.target import Target
-from app.models.user import UserRole
+
 from app.services import tag_service
 
 router = APIRouter()
@@ -46,7 +47,7 @@ class TagRuleUpdate(BaseModel):
 def list_tags(
     entity_type: str | None = None,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.TAGS_READ)),
 ):
     """Return all distinct tags in use, optionally filtered by entity type."""
     tags: set[str] = set()
@@ -71,7 +72,7 @@ def update_target_tags(
     target_id: uuid.UUID,
     data: TagsUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.TAGS_ASSIGN)),
 ):
     target = db.get(Target, target_id)
     if not target:
@@ -86,7 +87,7 @@ def update_asset_tags(
     asset_id: uuid.UUID,
     data: TagsUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.TAGS_ASSIGN)),
 ):
     asset = db.get(AssetCanonical, asset_id)
     if not asset:
@@ -101,7 +102,7 @@ def update_finding_tags(
     finding_id: uuid.UUID,
     data: TagsUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.TAGS_ASSIGN)),
 ):
     finding = db.get(FindingCanonical, finding_id)
     if not finding:
@@ -117,7 +118,7 @@ def update_finding_tags(
 def list_rules(
     entity_type: str | None = None,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.TAGS_READ_RULES)),
 ):
     q = db.query(TagRule)
     if entity_type:
@@ -129,7 +130,7 @@ def list_rules(
 def create_rule(
     data: TagRuleCreate,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.TAGS_MANAGE_RULES)),
 ):
     if data.entity_type not in ENTITY_TYPES:
         raise HTTPException(status_code=422, detail=f"entity_type must be one of {ENTITY_TYPES}")
@@ -153,7 +154,7 @@ def update_rule(
     rule_id: uuid.UUID,
     data: TagRuleUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.TAGS_MANAGE_RULES)),
 ):
     rule = db.get(TagRule, rule_id)
     if not rule:
@@ -174,7 +175,7 @@ def update_rule(
 def delete_rule(
     rule_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.TAGS_MANAGE_RULES)),
 ):
     rule = db.get(TagRule, rule_id)
     if not rule:
@@ -189,7 +190,7 @@ def delete_rule(
 def evaluate_rules(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.TAGS_EVALUATE_RULES)),
 ):
     """Re-run all enabled rules against every entity. Adds tags; never removes manual tags."""
     background_tasks.add_task(_run_reevaluate)

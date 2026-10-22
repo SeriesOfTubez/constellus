@@ -19,11 +19,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.engagement import Engagement, EngagementPosture
 from app.models.target import Target
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.services import audit, entity_relationship
 
 router = APIRouter()
@@ -139,7 +140,7 @@ def _to_response(db: Session, e: Engagement) -> EngagementResponse:
 @router.get("/", response_model=list[EngagementResponse])
 def list_engagements(
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENGAGEMENTS_READ)),
 ):
     engagements = db.query(Engagement).order_by(Engagement.created_at.desc()).all()
     if not engagements:
@@ -188,7 +189,7 @@ def list_engagements(
 def get_engagement(
     engagement_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ENGAGEMENTS_READ)),
 ):
     engagement = db.get(Engagement, engagement_id)
     if not engagement:
@@ -200,7 +201,7 @@ def get_engagement(
 def create_engagement(
     data: CreateEngagementRequest,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.ENGAGEMENTS_CREATE)),
 ):
     """Creates in `pre_close` — the restricting posture, the safe direction
     to default to (matches today's `patch_target` role pair: attaching a
@@ -225,7 +226,7 @@ def patch_engagement(
     engagement_id: uuid.UUID,
     data: EngagementPatch,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.ENGAGEMENTS_UPDATE)),
 ):
     """planning#212 (L3) — the only field this route currently accepts is
     `subject_entity_id`, ADMIN-only (unlike the rest of this module's reads,
@@ -268,7 +269,7 @@ def transition_engagement(
     engagement_id: uuid.UUID,
     data: TransitionRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission(Permission.ENGAGEMENTS_TRANSITION)),
 ):
     """Drives the engagement's posture through `_TRANSITIONS`. See that
     table for the legal moves; everything else is a 409."""
@@ -329,7 +330,7 @@ def transition_engagement(
 def delete_engagement(
     engagement_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN)),
+    _=Depends(require_permission(Permission.ENGAGEMENTS_DELETE)),
 ):
     """409, not the FK's raw 500, when member targets remain — the FK
     (`targets.engagement_id`, ON DELETE RESTRICT — migration 0059) would

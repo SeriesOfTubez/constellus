@@ -23,7 +23,8 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.user import User
 from app.services import chat, llm_connector
@@ -56,27 +57,27 @@ def _ask(user: User, question: str, conversation_id: uuid.UUID | None) -> dict[s
 
 
 @router.post("/conversations", status_code=201)
-def start_conversation(data: QuestionIn, current_user: User = Depends(get_current_user)) -> dict[str, Any]:
+def start_conversation(data: QuestionIn, current_user: User = Depends(require_permission(Permission.CHAT_CREATE))) -> dict[str, Any]:
     return _ask(current_user, data.question, None)
 
 
 @router.post("/conversations/{conversation_id}/messages", status_code=201)
 def continue_conversation(
-    conversation_id: uuid.UUID, data: QuestionIn, current_user: User = Depends(get_current_user),
+    conversation_id: uuid.UUID, data: QuestionIn, current_user: User = Depends(require_permission(Permission.CHAT_ASK)),
 ) -> dict[str, Any]:
     return _ask(current_user, data.question, conversation_id)
 
 
 @router.get("/conversations")
 def list_conversations(
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db), current_user: User = Depends(require_permission(Permission.CHAT_READ)),
 ) -> list[dict[str, Any]]:
     return chat.list_conversations(db, current_user)
 
 
 @router.get("/conversations/{conversation_id}")
 def get_conversation(
-    conversation_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+    conversation_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(require_permission(Permission.CHAT_READ)),
 ) -> dict[str, Any]:
     try:
         return chat.get_conversation(db, current_user, conversation_id)
@@ -86,7 +87,7 @@ def get_conversation(
 
 @router.delete("/conversations/{conversation_id}", status_code=204)
 def delete_conversation(
-    conversation_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+    conversation_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(require_permission(Permission.CHAT_DELETE)),
 ) -> Response:
     try:
         chat.delete_conversation(db, current_user, conversation_id)

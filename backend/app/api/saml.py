@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.auth import create_access_token, create_refresh_token
 from app.core.database import get_db
-from app.models.user import UserRole
+
 from app.schemas.saml import (
     IdpMetadataPreview,
     SamlConfigCreate,
@@ -22,7 +23,7 @@ router = APIRouter()
 @router.get("/config", response_model=SamlConfigResponse)
 def get_config(
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.SAML_READ)),
 ):
     config = saml_svc.get_config(db)
     if not config:
@@ -34,7 +35,7 @@ def get_config(
 def create_config(
     data: SamlConfigCreate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.SAML_CONFIGURE)),
 ):
     if saml_svc.get_config(db):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="SAML config already exists — use PATCH to update")
@@ -48,7 +49,7 @@ def create_config(
 def update_config(
     data: SamlConfigUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.SAML_CONFIGURE)),
 ):
     config = saml_svc.get_config(db)
     if not config:
@@ -62,7 +63,7 @@ def update_config(
 @router.post("/config/refresh-metadata", response_model=SamlConfigResponse)
 def refresh_metadata(
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.SAML_CONFIGURE)),
 ):
     """Re-fetch and cache the IdP metadata XML from the configured URL."""
     config = saml_svc.get_config(db)
@@ -77,7 +78,7 @@ def refresh_metadata(
 @router.get("/config/preview-metadata", response_model=IdpMetadataPreview)
 def preview_metadata(
     metadata_url: str,
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.SAML_READ)),
 ):
     """
     Fetch and parse a metadata URL without saving it.

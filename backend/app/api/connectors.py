@@ -3,7 +3,8 @@ import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.connectors.base import DNSDiscoveryConnector
 from app.connectors.certspotter import CertspotterConnector
 from app.services import aggressiveness as aggr_svc
@@ -22,7 +23,7 @@ from app.connectors.tenable import TenableConnector
 from app.connectors.vulncheck import VulnCheckConnector
 from app.connectors.wiz import WizConnector
 from app.core.database import get_db
-from app.models.user import UserRole
+
 from pydantic import BaseModel
 from app.schemas.connector import ConnectorConfigUpdate, ConnectorConfigResponse, ConnectorSummary
 from app.services import connector_config as svc
@@ -48,7 +49,7 @@ REGISTRY: dict = {
 
 
 @router.get("/", response_model=list[ConnectorSummary])
-def list_connectors(db: Session = Depends(get_db), _=Depends(get_current_user)):
+def list_connectors(db: Session = Depends(get_db), _=Depends(require_permission(Permission.CONNECTORS_READ))):
     result = []
     db_rows = {r.connector_id: r for r in svc.get_all(db)}
     current_tier = aggr_svc.normalize(app_settings_svc.get(db, "aggressiveness"))
@@ -79,7 +80,7 @@ def list_connectors(db: Session = Depends(get_db), _=Depends(get_current_user)):
 
 
 @router.get("/domains")
-def list_available_domains(db: Session = Depends(get_db), _=Depends(get_current_user)):
+def list_available_domains(db: Session = Depends(get_db), _=Depends(require_permission(Permission.CONNECTORS_READ))):
     """
     Returns targets available for scanning.
     In strict mode: verified targets only.
@@ -120,7 +121,7 @@ def list_available_domains(db: Session = Depends(get_db), _=Depends(get_current_
 def get_config(
     connector_id: str,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.CONNECTORS_READ_CONFIG)),
 ):
     connector = _get_connector(connector_id)
     config = svc.get_decrypted_config(db, connector_id)
@@ -137,7 +138,7 @@ def save_config(
     connector_id: str,
     data: ConnectorConfigUpdate,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.CONNECTORS_CONFIGURE)),
 ):
     connector = _get_connector(connector_id)
     was_configured = connector.is_configured()
@@ -169,7 +170,7 @@ def save_config(
 def enable_connector(
     connector_id: str,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.CONNECTORS_TOGGLE)),
 ):
     _get_connector(connector_id)
     svc.set_enabled(db, connector_id, True)
@@ -180,7 +181,7 @@ def enable_connector(
 def disable_connector(
     connector_id: str,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.CONNECTORS_TOGGLE)),
 ):
     _get_connector(connector_id)
     svc.set_enabled(db, connector_id, False)
@@ -191,7 +192,7 @@ def disable_connector(
 def test_connector(
     connector_id: str,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.CONNECTORS_TEST)),
 ):
     connector = _get_connector(connector_id)
     config = svc.get_decrypted_config(db, connector_id) or {}
@@ -207,7 +208,7 @@ class ZonesUpdate(BaseModel):
 def list_connector_zones(
     connector_id: str,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.CONNECTORS_READ_CONFIG)),
 ):
     """Return all zones from a DNS connector with their current exclusion state."""
     connector = _get_connector(connector_id)
@@ -230,7 +231,7 @@ def save_connector_zones(
     connector_id: str,
     data: ZonesUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.CONNECTORS_CONFIGURE)),
 ):
     """Save zone exclusions for a DNS connector."""
     connector = _get_connector(connector_id)
@@ -247,7 +248,7 @@ def sync_connector(
     connector_id: str,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.CONNECTORS_SYNC)),
 ):
     """Manually trigger a full re-sync of all domains from a DNS discovery connector."""
     connector = _get_connector(connector_id)

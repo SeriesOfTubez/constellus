@@ -5,11 +5,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.connectors import REGISTRY
-from app.api.deps import get_current_user, require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.scan_template import ScanTemplate
-from app.models.user import UserRole
+
 from app.schemas.scan import ScanRequest, ScanResponse
 from app.services import scan_executor
 
@@ -25,7 +26,7 @@ def list_scans(
     kind: str | None = None,
     include_rechecks: bool = False,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.SCANS_READ)),
 ):
     """List recent scan runs.
 
@@ -49,7 +50,7 @@ def create_scan(
     data: ScanRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.SCANS_CREATE)),
 ):
     if not data.scope.domains and not data.scope.ip_ranges:
         raise HTTPException(
@@ -100,7 +101,7 @@ def create_scan(
 def get_scan(
     scan_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.SCANS_READ)),
 ):
     run = db.get(ScanRun, scan_id)
     if not run:
@@ -113,7 +114,7 @@ def update_scan(
     scan_id: uuid.UUID,
     data: ScanUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.SCANS_UPDATE)),
 ):
     run = db.get(ScanRun, scan_id)
     if not run:
@@ -128,7 +129,7 @@ def update_scan(
 def delete_scan(
     scan_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.SCANS_DELETE)),
 ):
     run = db.get(ScanRun, scan_id)
     if not run:
@@ -146,7 +147,7 @@ def delete_scan(
 def cancel_scan(
     scan_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.SCANS_CANCEL)),
 ):
     run = db.get(ScanRun, scan_id)
     if not run:

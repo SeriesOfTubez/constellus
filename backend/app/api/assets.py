@@ -7,7 +7,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.connectors import REGISTRY
-from app.api.deps import get_current_user, require_role
+from app.api.deps import require_permission
+from app.core.permissions import Permission
 from app.api.findings import _NOT_EXCLUDED_FROM_MAIN
 from app.core.database import get_db
 from app.models.asset_canonical import AssetCanonical
@@ -15,7 +16,7 @@ from app.models.asset_hygiene_score import AssetHygieneScore
 from app.models.finding_canonical import FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.target_asset_link import TargetAssetLink
-from app.models.user import UserRole
+
 from app.services import claims_query, hygiene_scorer, metadata_bridge, scan_executor, whois_service
 from app.services.asset_chain import chain_target_ids
 
@@ -205,7 +206,7 @@ class BulkAssetDeleteRequest(BaseModel):
 def lookup_whois(
     ip: str,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ASSETS_READ)),
 ):
     """Look up WHOIS / RDAP info for an IP. Cached for 30 days. Returns null fields for private/non-public IPs."""
     try:
@@ -228,7 +229,7 @@ def lookup_whois(
 def lookup_domain_whois(
     domain: str,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ASSETS_READ)),
 ):
     """Look up domain registration info. Cached for 7 days. Returns null fields when WHOIS is unavailable for the TLD."""
     cleaned = domain.lower().strip().rstrip(".")
@@ -241,7 +242,7 @@ def lookup_domain_whois(
 def delete_assets_by_apex(
     data: DeleteByApexRequest,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.ASSETS_DELETE)),
 ):
     """Delete all canonical assets for an apex group, optionally excluding the
     domain from its source connector. Cascades remove target_asset_links and
@@ -294,7 +295,7 @@ def list_assets(
     show_ignored: bool = False,
     show_third_party: bool = False,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ASSETS_READ)),
 ):
     """List canonical assets. Returns durable identity rows — one per
     (asset_type, value) — not observation rows.
@@ -337,7 +338,7 @@ def list_assets(
 def bulk_delete_assets(
     data: BulkAssetDeleteRequest,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.ASSETS_DELETE)),
 ):
     """Delete a set of canonical assets and sweep their CNAME descendants. Same
     cascade semantics as the apex delete — used by the Assets-page bulk action
@@ -368,7 +369,7 @@ def bulk_delete_assets(
 def get_asset(
     asset_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_permission(Permission.ASSETS_READ)),
 ):
     """Fetch a single canonical asset by ID — drives the full-detail page."""
     asset = db.get(AssetCanonical, asset_id)
@@ -390,7 +391,7 @@ def set_asset_ignored(
     asset_id: uuid.UUID,
     data: AssetIgnoreUpdate,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.ASSETS_UPDATE)),
 ):
     asset = db.get(AssetCanonical, asset_id)
     if not asset:
@@ -435,7 +436,7 @@ def set_asset_ignored(
 def delete_asset(
     asset_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    _=Depends(require_permission(Permission.ASSETS_DELETE)),
 ):
     asset = db.get(AssetCanonical, asset_id)
     if not asset:
@@ -449,7 +450,7 @@ def scan_asset(
     asset_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.ASSETS_SCAN)),
 ):
     """Kick off an on-demand scan targeting a single asset."""
     asset = db.get(AssetCanonical, asset_id)
@@ -478,7 +479,7 @@ def bulk_recheck(
     data: BulkRecheckRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(UserRole.ADMIN, UserRole.INTEGRATION_ADMIN)),
+    current_user=Depends(require_permission(Permission.ASSETS_SCAN)),
 ):
     """Queue a single recheck scan covering all selected assets.
 
