@@ -227,12 +227,18 @@ def _clear_ours(entity: OrgEntity) -> None:
     entity.ours_reference = None
 
 
-def set_ours(db: Session, *, entity_id: uuid.UUID, reference: str, user) -> tuple[OrgEntity, str | None]:
-    """Admin-only at the API. Returns (entity, previous relationship)."""
+def _clean_reference(reference: str | None) -> str:
     reference = (reference or "").strip()
     if not reference:
         raise RelationshipInvalid("a reference is required to mark a company as ours")
-    entity = _lock_entity(db, entity_id)
+    return reference
+
+
+def _apply_ours(db: Session, entity: OrgEntity, reference: str, user) -> str | None:
+    """The write behind `set_ours`, on an entity the caller has locked.
+    Flushes; the caller owns the commit (CONTRIBUTING.md, transaction
+    ownership). Returns the previous relationship."""
+    reference = _clean_reference(reference)
     if _engagements_of(db, entity.id):
         raise RelationshipConflict(
             "this company is the subject of an engagement, so it is an M&A target; "
@@ -243,28 +249,38 @@ def set_ours(db: Session, *, entity_id: uuid.UUID, reference: str, user) -> tupl
     entity.ours_authorised_by_id = user.id
     entity.ours_authorised_at = datetime.now(timezone.utc)
     entity.ours_reference = reference
+    db.flush()
+    return previous
+
+
+def set_ours(db: Session, *, entity_id: uuid.UUID, reference: str, user) -> tuple[OrgEntity, str | None]:
+    """Admin-only at the API. Returns (entity, previous relationship)."""
+    reference = _clean_reference(reference)
+    entity = _lock_entity(db, entity_id)
+    previous = _apply_ours(db, entity, reference, user)
     db.commit()
     db.refresh(entity)
     return entity, previous
 
 
-def set_ma_target(
-    db: Session,
-    *,
-    entity_id: uuid.UUID,
-    user,
-    engagement_id: uuid.UUID | None = None,
-    new_engagement_name: str | None = None,
-    may_clear_ours: bool,
-) -> tuple[OrgEntity, str | None, Engagement, bool]:
-    """Pick an existing engagement (no subject yet, or already this one; not
-    abandoned) or create a new `pre_close` one with this entity as subject.
-    Exactly one of the two. Returns (entity, previous relationship,
-    engagement, engagement_created). Moving `ours` → M&A is admin-only at
-    the API (it clears an authorisation)."""
+def _check_one_engagement_choice(engagement_id: uuid.UUID | None, new_engagement_name: str | None) -> None:
     if (engagement_id is None) == (new_engagement_name is None):
         raise RelationshipInvalid("give exactly one of engagement_id or new_engagement_name")
-    entity = _lock_entity(db, entity_id)
+
+
+def _apply_ma_target(
+    db: Session,
+    entity: OrgEntity,
+    user,
+    engagement_id: uuid.UUID | None,
+    new_engagement_name: str | None,
+    may_clear_ours: bool,
+    deal_reference: str | None = None,
+) -> tuple[str | None, Engagement, bool]:
+    """The write behind `set_ma_target`, on an entity the caller has locked.
+    Flushes; the caller owns the commit. Returns (previous relationship,
+    engagement, engagement_created)."""
+    _check_one_engagement_choice(engagement_id, new_engagement_name)
     previous = entity.relationship
     if previous == RELATIONSHIP_OURS and not may_clear_ours:
         raise RelationshipForbidden("only an admin can change a company marked ours")
@@ -293,11 +309,43 @@ def set_ma_target(
             id=uuid.uuid4(), name=name, posture=EngagementPosture.PRE_CLOSE.value,
             subject_entity_id=entity.id, created_by_id=user.id,
         )
+        # Only a NEW engagement takes the reference; an existing one is never
+        # overwritten.
+        ref = (deal_reference or "").strip()
+        if ref:
+            engagement.deal_reference = ref
+            engagement.deal_reference_by_id = user.id
+            engagement.deal_reference_at = datetime.now(timezone.utc)
         db.add(engagement)
         created = True
 
     entity.relationship = RELATIONSHIP_MA_TARGET
     _clear_ours(entity)
+    db.flush()
+    return previous, engagement, created
+
+
+def set_ma_target(
+    db: Session,
+    *,
+    entity_id: uuid.UUID,
+    user,
+    engagement_id: uuid.UUID | None = None,
+    new_engagement_name: str | None = None,
+    may_clear_ours: bool,
+    deal_reference: str | None = None,
+) -> tuple[OrgEntity, str | None, Engagement, bool]:
+    """Pick an existing engagement (no subject yet, or already this one; not
+    abandoned) or create a new `pre_close` one with this entity as subject.
+    Exactly one of the two. Returns (entity, previous relationship,
+    engagement, engagement_created). Moving `ours` → M&A is admin-only at
+    the API (it clears an authorisation)."""
+    _check_one_engagement_choice(engagement_id, new_engagement_name)
+    entity = _lock_entity(db, entity_id)
+    previous, engagement, created = _apply_ma_target(
+        db, entity, user, engagement_id, new_engagement_name, may_clear_ours,
+        deal_reference=deal_reference,
+    )
     db.commit()
     db.refresh(entity)
     db.refresh(engagement)

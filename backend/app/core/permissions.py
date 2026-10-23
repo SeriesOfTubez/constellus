@@ -87,6 +87,9 @@ class Permission(StrEnum):
     ENTITIES_SET_MA_TARGET = "entities.set_ma_target"
     ENTITIES_MARK_OURS = "entities.mark_ours"
 
+    # organizations: a root company and its discovered scope (planning#277)
+    ORGANIZATIONS_CREATE = "organizations.create"
+
     # scans and scan templates
     SCANS_READ = "scans.read"
     SCANS_CREATE = "scans.create"

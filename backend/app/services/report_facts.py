@@ -186,9 +186,9 @@ def _ma_metrics(eid: str, sid: str) -> list[tuple[str, str, dict]]:
         ("relations_proposed", "Proposed relationship records awaiting review",
          rel(_field("relation.family_of", "eq", eid), _field("relation.status", "eq", "proposed"))),
         ("domains_accepted", "Accepted candidate domains of family companies",
-         dom(_field("domain.status", "eq", "accepted"))),
-        ("domains_proposed", "Candidate domains awaiting review",
-         dom(_field("domain.status", "eq", "proposed"))),
+         dom(_field("domain.status", "eq", "claimed"))),
+        ("domains_proposed", "Candidate domains awaiting review (open and past the propose bar; leads are not counted)",
+         dom(_field("domain.status", "eq", "open"), _field("domain.proposable", "eq", True))),
     ]
 
 
@@ -245,7 +245,7 @@ def build_ma_facts(db: Session, engagement: Engagement, user: User, as_of: datet
         "domains": _list(
             db, user, "Accepted candidate domains",
             {"entity": "domain", "where": {"all": [
-                _field("domain.family_of", "eq", eid), _field("domain.status", "eq", "accepted")]},
+                _field("domain.family_of", "eq", eid), _field("domain.status", "eq", "claimed")]},
              "sort": [{"field": "domain.name", "dir": "asc"}]},
             lambda r: {"entity_id": r["domain.entity_id"], "domain": r["domain.name"],
                        "entity_name": r["domain.entity_name"]}),

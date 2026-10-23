@@ -35,13 +35,16 @@ runs on the linked CIK, identified by the entity's ROLE in it:
   `acquired` (its own former names and its own acquisitions), or the
   object of `subsidiary_of` (its EX-21 subsidiaries). Its INCOMING
   `acquired` edge (the deal) is the reverse role and is never touched.
-- candidate domains on the entity with source `edgar_10k_website`. A
-  domain a person added by hand (source `person`) is not the link's.
+- scope candidates whose every signal is a `filer_10k_website` signal
+  anchored to this entity's filings (planning#277). A candidate a person or
+  an admin also vouched for, or another route also reached, is not the
+  link's.
 - its filing events, filing sections and subsidiary listings.
 
 Proposed and SOURCE-confirmed relations (former names auto-confirm) are
-rejected by the unlinking person; proposed candidates likewise. A
-person-confirmed relation or an accepted candidate refuses the unlink:
+rejected by the unlinking person; open candidates likewise. A
+person-confirmed relation or a claimed candidate (one this link's filings
+named) refuses the unlink:
 someone decided on the strength of this registrant, and that decision must
 be undone first. Rows a person already rejected stay as they are. Filing
 rows are deleted so a later AI read cannot re-read the wrong company.
@@ -61,20 +64,20 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.candidate_domain import CandidateDomain
 from app.models.entity_filing_event import EntityFilingEvent
 from app.models.entity_filing_section import EntityFilingSection
 from app.models.entity_ingest_run import INGEST_RUN_ACTIVE, EntityIngestRun
 from app.models.entity_relation import EntityRelation
 from app.models.entity_subsidiary_listing import EntitySubsidiaryListing
 from app.models.org_entity import OrgEntity
+from app.models.scope_candidate import ScopeCandidate, ScopeSignal
 from app.services import acquisition_reader, edgar_ingest, llm_connector, sec_edgar
+from app.services.org_discovery import candidates
 from app.services.entity_names import split_defined_term, strip_legal_suffix
 
 MAX_CANDIDATES = 10
 
 _DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}")
-WEBSITE_SOURCE = "edgar_10k_website"
 
 
 class LinkError(Exception):
@@ -404,6 +407,37 @@ def _produced_relations(db: Session, entity_id: uuid.UUID) -> list[EntityRelatio
     ).scalars().all()
 
 
+def _produced_candidates(db: Session, entity_id: uuid.UUID) -> list[tuple[ScopeCandidate, bool]]:
+    """Candidates this entity's filings named (a `filer_10k_website` signal
+    anchored to it), locked, each with whether EVERY one of its signals is
+    such a signal (so nothing else vouches for it)."""
+    rows = db.execute(
+        select(ScopeCandidate).where(
+            ScopeCandidate.id.in_(
+                select(ScopeSignal.candidate_id).where(
+                    ScopeSignal.signal_type == "filer_10k_website",
+                    ScopeSignal.anchor_kind == "filer_filing",
+                    ScopeSignal.anchor_entity_id == entity_id,
+                )
+            )
+        ).order_by(ScopeCandidate.id).with_for_update()
+    ).scalars().all()
+    out = []
+    for c in rows:
+        others = db.execute(
+            select(ScopeSignal.id).where(
+                ScopeSignal.candidate_id == c.id,
+                ~and_(
+                    ScopeSignal.signal_type == "filer_10k_website",
+                    ScopeSignal.anchor_kind == "filer_filing",
+                    ScopeSignal.anchor_entity_id == entity_id,
+                ),
+            ).limit(1)
+        ).first()
+        out.append((c, others is None))
+    return out
+
+
 def unlink(db: Session, *, entity_id: uuid.UUID, user) -> tuple[OrgEntity, dict]:
     entity = db.execute(select(OrgEntity).where(OrgEntity.id == entity_id).with_for_update()).scalar_one_or_none()
     if entity is None:
@@ -416,17 +450,13 @@ def unlink(db: Session, *, entity_id: uuid.UUID, user) -> tuple[OrgEntity, dict]
             raise LinkConflict("an ingest or AI read for this registrant is queued or running; unlink when it finishes")
 
         relations = _produced_relations(db, entity_id)
-        candidates = db.execute(
-            select(CandidateDomain).where(
-                CandidateDomain.entity_id == entity_id, CandidateDomain.source == WEBSITE_SOURCE
-            ).with_for_update()
-        ).scalars().all()
+        produced = _produced_candidates(db, entity_id)
         person_confirmed = [r for r in relations if r.status == "confirmed" and r.decision_kind == "person"]
-        accepted = [c for c in candidates if c.status == "accepted"]
-        if person_confirmed or accepted:
+        claimed = [c for c, only_this_link in produced if c.status == "claimed"]
+        if person_confirmed or claimed:
             raise LinkConflict(
                 f"a person has already decided on this registrant's output ({len(person_confirmed)} confirmed "
-                f"relation(s), {len(accepted)} accepted domain(s)); undo those decisions first"
+                f"relation(s), {len(claimed)} claimed domain(s)); undo those decisions first"
             )
     except LinkError:
         db.rollback()
@@ -440,9 +470,9 @@ def unlink(db: Session, *, entity_id: uuid.UUID, user) -> tuple[OrgEntity, dict]
         r.status, r.decision_kind, r.decided_by_id, r.decided_at = "rejected", "person", user.id, now
         rejected_relations += 1
     rejected_candidates = 0
-    for c in candidates:
-        if c.status == "proposed":
-            c.status, c.decided_at, c.decided_by_id = "rejected", now, user.id
+    for c, only_this_link in produced:
+        if c.status == "open" and only_this_link:
+            candidates._reject_locked(db, c, user=user, reason="the registrant link that produced it was removed")
             rejected_candidates += 1
 
     deleted = {

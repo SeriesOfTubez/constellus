@@ -101,12 +101,11 @@ def cleanup_cik(db, cik: str | None) -> None:
             ).delete(synchronize_session=False)
             db.commit()
 
-        # planning#216: candidate domains cite this CIK's evidence and
-        # reference the entity (both RESTRICT) — delete them first.
-        from app.models.candidate_domain import CandidateDomain
+        # planning#277: signals cite this CIK's evidence and reference the
+        # entity (both RESTRICT) — delete them first.
+        from app.tests import _scope_candidates
 
-        db.query(CandidateDomain).filter(CandidateDomain.entity_id == entity.id).delete(synchronize_session=False)
-        db.commit()
+        _scope_candidates.purge(db, entity_ids=[entity.id])
 
         sections = db.execute(
             select(EntityFilingSection).where(EntityFilingSection.entity_id == entity.id)

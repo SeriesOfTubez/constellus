@@ -8,7 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 
 # Mirror the CHECK-backed vocabulary in migration 0065 by hand (the same
-# pattern as `candidate_domain.py`).
+# pattern as `scope_candidate.py`).
 INGEST_RUN_STATUSES: frozenset[str] = frozenset({"queued", "running", "succeeded", "failed"})
 INGEST_RUN_ACTIVE: tuple[str, ...] = ("queued", "running")
 # Migration 0066 (planning#218): what the run does. The active-run guard is

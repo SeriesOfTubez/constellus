@@ -54,6 +54,14 @@ class Engagement(Base):
     )
     authorised_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     authorisation_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # M&A deal reference (planning#277 S1a): queryable, and independent of
+    # the posture-tied `authorised_*` above. `deal_reference` and
+    # `deal_reference_at` are set together (`ck_engagements_deal_reference_set`).
+    deal_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deal_reference_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    deal_reference_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     posture_changed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

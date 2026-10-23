@@ -19,9 +19,10 @@ said otherwise; "X sub Y" is `X subsidiary_of Y`, "X acq Y" is `X acquired Y`):
     S acq Q, S dba Z   both PROPOSED                   NOT in the family, in no confirmed list
 
 Engagement N has no subject. Engagement EA has A as its subject (so A has a
-relationship of its own). Domains (candidate_domains):
+relationship of its own). Domains (scope_candidates; the entity is both the
+root and, once claimed, the affiliated company):
 
-    S accepted, A accepted, A proposed(2nd), B proposed, U accepted, R rejected
+    S claimed, A claimed, A open(2nd), B open, A open-but-a-lead, U claimed, R rejected
 """
 
 from __future__ import annotations
@@ -30,10 +31,11 @@ import uuid
 from datetime import date, datetime, timezone
 
 from app.core.database import SessionLocal
-from app.models.candidate_domain import CandidateDomain
+from app.models.scope_candidate import ScopeCandidate, ScopeSignal
 from app.models.engagement import Engagement
 from app.models.user import User, UserRole
 from app.services import entity_graph
+from app.tests import _scope_candidates
 from app.tests._engagement import cleanup_engagement, make_engagement
 from app.tests._entity_graph import (
     cleanup_entity,
@@ -96,21 +98,32 @@ class MaWorld:
             entity_graph.decide(self.db, relation_id=rel.id, status=status, user=self.decider())
         return rel
 
-    def domain(self, entity, status: str = "accepted") -> CandidateDomain:
+    def domain(self, entity, status: str = "claimed", lead: bool = False) -> ScopeCandidate:
         name = f"ma230-{_hex()}.example.com"
-        ev = make_evidence(self.db, content=f"site {_hex()}".encode(), source_url=f"https://example.test/{_hex()}")
-        self.evidence.append(ev.id)
         row_id = uuid.uuid4()
-        values = dict(id=row_id, entity_id=entity.id, domain=name, source="person", evidence_id=ev.id,
-                      quote=f"Our website is {name}.", status=status)
-        if status != "proposed":
+        values = dict(id=row_id, root_entity_id=entity.id, kind="domain", value=name, status=status)
+        if status in ("claimed", "rejected"):
             values["decided_at"] = datetime.now(timezone.utc)
-        if status == "accepted":
+        if status == "claimed":
             values["accepted_into"] = "estate"
-        self.db.execute(CandidateDomain.__table__.insert().values(**values))
+            values["affiliated_entity_id"] = entity.id
+        if status == "rejected":
+            values["rejection_reason"] = "ma230 fixture"
+            values["rejected_strong_types"] = []
+        self.db.execute(ScopeCandidate.__table__.insert().values(**values))
+        if status == "open":
+            # Past the propose bar (a Strong admin_seed) unless it is a lead (one Supporting family).
+            if lead:
+                ev = make_evidence(self.db, content=f"lead {_hex()}".encode(), source_url=f"https://example.test/{_hex()}")
+                self.evidence.append(ev.id)
+                sig = dict(signal_type="research_quote", anchor_kind="person", evidence_id=ev.id, quote="q")
+            else:
+                sig = dict(signal_type="admin_seed", anchor_kind="person")
+            self.db.execute(ScopeSignal.__table__.insert().values(
+                id=uuid.uuid4(), candidate_id=row_id, via_entity_id=entity.id, **sig))
         self.db.commit()
         self.domains.append(row_id)
-        return self.db.get(CandidateDomain, row_id)
+        return self.db.get(ScopeCandidate, row_id)
 
     # ── the standard family ─────────────────────────────────────────────────
     def build_family(self) -> "MaWorld":
@@ -138,8 +151,9 @@ class MaWorld:
         self.EA = self.engagement(self.A)
         self.dom_s = self.domain(self.S)
         self.dom_a = self.domain(self.A)
-        self.dom_a2 = self.domain(self.A, "proposed")
-        self.dom_b = self.domain(self.B, "proposed")
+        self.dom_a2 = self.domain(self.A, "open")
+        self.dom_b = self.domain(self.B, "open")
+        self.dom_lead = self.domain(self.A, "open", lead=True)   # open but only a lead
         self.dom_u = self.domain(self.U)
         self.dom_r = self.domain(self.R, "rejected")
         return self
@@ -147,8 +161,7 @@ class MaWorld:
     def close(self) -> None:
         db = self.db
         db.rollback()
-        db.query(CandidateDomain).filter(CandidateDomain.id.in_(self.domains)).delete(synchronize_session=False)
-        db.commit()
+        _scope_candidates.purge(db, candidate_ids=self.domains)
         for eid in self.engagements:
             cleanup_engagement(db, eid)
         for rid in self.relations:

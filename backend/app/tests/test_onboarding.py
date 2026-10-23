@@ -23,16 +23,17 @@ from app.core.auth import create_access_token
 from app.core.config import settings
 from app.main import app
 from app.models.audit import AuditLog
-from app.models.candidate_domain import CandidateDomain
 from app.models.engagement import Engagement
 from app.models.entity_ingest_run import EntityIngestRun
 from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
+from app.models.scope_candidate import ScopeCandidate
 from app.models.target import Target
 from app.models.user import UserRole
 from app.services import (
-    acquisition_reader, candidate_domains, edgar_ingest, entity_relationship, llm_connector, onboarding,
+    acquisition_reader, edgar_ingest, entity_relationship, llm_connector, onboarding,
 )
+from app.services.org_discovery import generators
 from app.services import registrant_link as rl
 from app.tests.test_registrant_link import (  # noqa: F401  (`sec` is a fixture)
     _World, sec, search_list_html, submissions_json,
@@ -306,43 +307,45 @@ def test_seed_is_admin_only(w, sec, role):
 
 
 def test_nothing_seeded_enters_scope(w, sec, monkeypatch):
-    """The ingest proposes the filer's website as a candidate domain (the
-    real `propose_from_filing`, called from the stubbed ingest: the 10-K
-    document fetch is the ingest suite's concern). Seeding must leave it
-    proposed, add no Target, and an INTEGRATION_ADMIN cannot accept it."""
+    """The ingest records the filer's website as a signal on an open candidate
+    (the real `record_filer_websites`, called from the stubbed ingest: the
+    10-K document fetch is the ingest suite's concern). Seeding must leave it
+    open, add no Target, and an INTEGRATION_ADMIN cannot claim it."""
     cik = w.cik()
     sec.submissions = {cik: submissions_json(cik, name="EXAMPLE HOLDINGS C")}
     observer = w.db.query(Observer).filter(Observer.name == "edgar_10k_website").one()
     proposed: list[bool] = []
 
     def propose(db, entity):
-        ok = candidate_domains.propose_from_filing(
-            db, entity_id=entity.id, domain="fabrikam.com", observer=observer, evidence_id=w.ev().id,
-            quote="Our website is www.fabrikam.com", filing_date=date(2012, 3, 1),
+        recorded, _existing, _unanchored = generators.record_filer_websites(
+            db, filer=entity, observer=observer, evidence_id=w.ev().id,
+            lines=["Our website is www.fabrikam.com"], filing_date=date(2012, 3, 1),
         )
-        proposed.append(ok)
+        db.commit()
+        proposed.append(recorded == 1)
 
     _stub_ingest(monkeypatch, propose=propose)
     targets_before = w.db.query(Target).count()
 
     r = client.post(SEED, json={"cik": cik}, headers=w.headers())
     assert r.status_code == 202, r.text
-    assert proposed == [True]  # the precondition: a candidate really was proposed
+    assert proposed == [True]  # the precondition: a signal really was recorded
 
     w.db.expire_all()
     entity = _entity_by_cik(w, cik)
     assert entity.relationship == "ours"
-    cands = w.db.query(CandidateDomain).filter(CandidateDomain.entity_id == entity.id).all()
-    assert [c.domain for c in cands] == ["fabrikam.com"]
-    assert all(c.status == "proposed" for c in cands)
+    cands = w.db.query(ScopeCandidate).filter(ScopeCandidate.root_entity_id == entity.id).all()
+    assert [c.value for c in cands] == ["fabrikam.com"]
+    assert all(c.status == "open" for c in cands)
     assert w.db.query(Target).count() == targets_before
 
     r = client.post(
-        f"/api/entities/candidate-domains/{cands[0].id}/accept", headers=w.headers(UserRole.INTEGRATION_ADMIN.value)
+        f"/api/organizations/candidates/{cands[0].id}/claim", json={},
+        headers=w.headers(UserRole.INTEGRATION_ADMIN.value),
     )
     assert r.status_code == 403
     w.db.expire_all()
-    assert w.db.get(CandidateDomain, cands[0].id).status == "proposed"
+    assert w.db.get(ScopeCandidate, cands[0].id).status == "open"
     assert w.db.query(Target).count() == targets_before
 
 

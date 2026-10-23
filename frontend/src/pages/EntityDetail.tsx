@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { Link, useParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Check, ChevronLeft, Loader2, Plus, Sparkles, SquareArrowOutUpRight, X } from "lucide-react"
+import { Check, ChevronLeft, Loader2, Sparkles, SquareArrowOutUpRight, X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -11,14 +11,11 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Textarea } from "@/components/ui/textarea"
 import { RegistrantLinkPanel } from "@/components/RegistrantLinkPanel"
 import {
   api,
-  type CandidateDomain,
   type DroppedAcquisition,
   type Engagement,
-  type EntityDestination,
   type EntityEdge,
   type EntityEdgeSource,
   type EntityFilingEvent,
@@ -99,15 +96,6 @@ function diffListings(groups: SubsidiaryListingGroup[]): ListingDiff[] {
       first: false,
     }
   })
-}
-
-// A 10-K is annual, so a domain the filer still cites was cited within about
-// a year. Past 18 months the filer has likely stopped citing it — and a
-// domain nobody cites may have lapsed and been re-registered by a stranger.
-const STALE_CITATION_DAYS = 548
-function citationIsStale(lastCited: string | null): boolean {
-  if (!lastCited) return false
-  return (Date.now() - new Date(lastCited).getTime()) / 86_400_000 > STALE_CITATION_DAYS
 }
 
 // ── page ─────────────────────────────────────────────────────────────────────
@@ -264,18 +252,6 @@ export default function EntityDetail() {
     queryFn: () => api.get<EntityFilingSection[]>(`/entities/${id}/filing-sections`),
     enabled: !!id,
   })
-  const { data: candidates } = useQuery({
-    queryKey: ["entity-candidates", id],
-    queryFn: () => api.get<CandidateDomain[]>(`/entities/${id}/candidate-domains`),
-    enabled: !!id,
-  })
-  // planning#240: where this company's accepted candidate domains go.
-  const { data: destination, isLoading: destinationLoading } = useQuery({
-    queryKey: ["entity-destination", id],
-    queryFn: () => api.get<EntityDestination>(`/entities/${id}/destination`),
-    enabled: !!id,
-  })
-
   // planning#218: the AI read of this filer's stored Business Combinations
   // sections. Polls only while a run is in flight.
   const { data: readRuns } = useQuery({
@@ -296,7 +272,6 @@ export default function EntityDetail() {
   }, [finishedReadId, id, qc])
 
   const subjectOf = (engagements ?? []).filter(e => e.subject_entity_id === id)
-  const engagementName = useMemo(() => new Map((engagements ?? []).map(e => [e.id, e.name])), [engagements])
 
   const groupedEdges = useMemo(() => {
     const m = new Map<string, EntityEdge[]>()
@@ -358,51 +333,9 @@ export default function EntityDetail() {
       setClearOpen(false)
       qc.invalidateQueries({ queryKey: ["entities"] })
       qc.invalidateQueries({ queryKey: ["engagements"] })
-      qc.invalidateQueries({ queryKey: ["entity-destination", id] })
     },
     // Shown verbatim inside whichever dialog triggered it.
     onError: (e: { message?: string }) => setRelationshipError(e?.message ?? "Failed to update relationship"),
-  })
-
-  const [acceptFor, setAcceptFor] = useState<CandidateDomain | null>(null)
-  // planning#240: only meaningful when the destination is `ambiguous` —
-  // "estate" or an engagement id. Never pre-set; the user must choose.
-  const [acceptChoice, setAcceptChoice] = useState("")
-  const [acceptError, setAcceptError] = useState<string | null>(null)
-  const acceptMutation = useMutation({
-    mutationFn: ({ cid, body }: { cid: string; body: { estate?: boolean; engagement_id?: string } }) =>
-      api.post(`/entities/candidate-domains/${cid}/accept`, body),
-    onSuccess: () => {
-      toast.success("Accepted — discovery queued")
-      setAcceptFor(null)
-      qc.invalidateQueries({ queryKey: ["entity-candidates", id] })
-      qc.invalidateQueries({ queryKey: ["entity-destination", id] })
-    },
-    // Shown verbatim in the dialog: a 409 says WHY (unset/abandoned destination,
-    // target already elsewhere).
-    onError: (e: { message?: string }) => setAcceptError(e?.message ?? "Failed to accept"),
-  })
-  const rejectMutation = useMutation({
-    mutationFn: (cid: string) => api.post(`/entities/candidate-domains/${cid}/reject`),
-    onSuccess: () => {
-      toast.success("Candidate rejected")
-      qc.invalidateQueries({ queryKey: ["entity-candidates", id] })
-    },
-    onError: (e: { message?: string }) => toast.error(e?.message ?? "Failed to reject"),
-  })
-
-  const [addOpen, setAddOpen] = useState(false)
-  const [addForm, setAddForm] = useState({ domain: "", source_url: "", excerpt: "", quote: "" })
-  const [addError, setAddError] = useState<string | null>(null)
-  const addMutation = useMutation({
-    mutationFn: () => api.post(`/entities/${id}/candidate-domains`, addForm),
-    onSuccess: () => {
-      toast.success("Candidate added")
-      setAddOpen(false)
-      setAddForm({ domain: "", source_url: "", excerpt: "", quote: "" })
-      qc.invalidateQueries({ queryKey: ["entity-candidates", id] })
-    },
-    onError: (e: { message?: string }) => setAddError(e?.message ?? "Failed to add candidate"),
   })
 
   if (entitiesLoading) {
@@ -424,30 +357,6 @@ export default function EntityDetail() {
   // and not already a subject, since linking one that already has a subject
   // is refused server-side (409).
   const unassignedLiveEngagements = liveEngagements.filter(e => e.subject_entity_id === null)
-
-  // The stop that produced a single-destination answer, for the "Inherited
-  // from …" line. For an engagement, its own subject: another `ma_target`
-  // stop on a different path may hold only abandoned engagements.
-  const relevantStop = !destination
-    ? undefined
-    : destination.status === "ours"
-      ? destination.stops.find(s => s.relationship === "ours")
-      : destination.status === "engagement"
-        ? destination.stops.find(s => s.entity_id === destination.engagements[0]?.subject_entity_id)
-        : undefined
-
-  const acceptDisabled =
-    acceptMutation.isPending || destinationLoading || !destination ||
-    destination.status === "unset" || destination.status === "abandoned" ||
-    (destination.status === "ambiguous" && !acceptChoice)
-
-  const acceptBody = (): { estate?: boolean; engagement_id?: string } => {
-    if (destination?.status === "ambiguous") {
-      if (acceptChoice === "estate") return { estate: true }
-      if (acceptChoice) return { engagement_id: acceptChoice }
-    }
-    return {}
-  }
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-8">
@@ -602,91 +511,6 @@ export default function EntityDetail() {
         ))}
       </Section>
 
-      {/* ── candidate domains ── */}
-      <Section title="Candidate domains" count={candidates?.length}>
-        {isAdmin && (
-          <Button size="sm" variant="outline" onClick={() => { setAddError(null); setAddOpen(true) }}>
-            <Plus className="h-3.5 w-3.5 mr-1" /> Add with evidence
-          </Button>
-        )}
-        {!candidates?.length ? <Empty>No candidate domains. The 10-K website sentence finds the filer's own; add others with evidence.</Empty> : (
-          <div className="rounded-lg border overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead>Domain</TableHead>
-                  <TableHead>Source</TableHead>
-                  <TableHead>Quote</TableHead>
-                  <TableHead>Cited</TableHead>
-                  <TableHead>Status</TableHead>
-                  {isAdmin && <TableHead className="w-40">Decision</TableHead>}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {candidates.map(c => (
-                  <TableRow key={c.id} data-testid="candidate-row">
-                    <TableCell className="font-mono text-sm">{c.domain}</TableCell>
-                    <TableCell className="text-xs">
-                      <div className="flex items-center gap-1.5">
-                        <span>{c.observer_name ?? "manual"}</span>
-                        {c.evidence_origin === "person_supplied" && <Badge variant="outline">Person-supplied</Badge>}
-                        <EvidenceButton id={c.evidence_id} />
-                      </div>
-                    </TableCell>
-                    <TableCell className="max-w-xs truncate text-xs text-muted-foreground" title={c.quote}>{c.quote}</TableCell>
-                    <TableCell className="text-xs whitespace-nowrap">
-                      {c.first_cited_on || c.last_cited_on ? (
-                        <>
-                          <div className="text-muted-foreground">first {c.first_cited_on ?? "—"}</div>
-                          <div className={citationIsStale(c.last_cited_on) ? "text-amber-600 dark:text-amber-400" : ""}>
-                            last {c.last_cited_on ?? "—"}
-                          </div>
-                          {citationIsStale(c.last_cited_on) && (
-                            <div className="text-amber-600 dark:text-amber-400">not cited recently — may have lapsed</div>
-                          )}
-                        </>
-                      ) : <span className="text-muted-foreground">not from a filing</span>}
-                    </TableCell>
-                    <TableCell className="text-xs">
-                      <Badge variant={c.status === "accepted" ? "default" : "outline"}>{c.status}</Badge>
-                      {c.status === "accepted" && (
-                        <div className="text-muted-foreground mt-1">
-                          into {c.engagement_id ? (engagementName.get(c.engagement_id) ?? c.engagement_id) : "your estate"}
-                        </div>
-                      )}
-                      {c.target_id && (
-                        <Link to={`/targets/${c.target_id}`} className="text-muted-foreground hover:text-primary">target</Link>
-                      )}
-                    </TableCell>
-                    {isAdmin && (
-                      <TableCell>
-                        {c.status === "proposed" && (
-                          <div className="flex gap-1">
-                            <Button
-                              size="sm" variant="outline"
-                              onClick={() => { setAcceptError(null); setAcceptChoice(""); setAcceptFor(c) }}
-                            >
-                              Accept
-                            </Button>
-                            <Button
-                              size="sm" variant="outline" title="Reject"
-                              disabled={rejectMutation.isPending}
-                              onClick={() => rejectMutation.mutate(c.id)}
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
-                        )}
-                      </TableCell>
-                    )}
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-      </Section>
-
       {/* ── subsidiary history ── */}
       <Section title="Subsidiary history (EX-21)" count={listings?.length}>
         {!listingDiffs.length ? <Empty>No EX-21 subsidiary listings stored.</Empty> : listingDiffs.map((d, i) => (
@@ -785,76 +609,6 @@ export default function EntityDetail() {
       </Section>
 
       {/* ── dialogs ── */}
-      <Dialog open={!!acceptFor} onOpenChange={open => { if (!open) setAcceptFor(null) }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Accept {acceptFor?.domain}</DialogTitle>
-            <DialogDescription>
-              Adds the domain as a target in the destination below and queues discovery under its rules.
-              Domains inherit from the nearest company above this one in the confirmed family tree that has a relationship to us.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2 text-sm">
-            {destinationLoading ? (
-              <>
-                <Skeleton className="h-5 w-48" />
-                <p className="text-muted-foreground">Resolving destination…</p>
-              </>
-            ) : !destination || destination.status === "unset" ? (
-              <p className="text-muted-foreground">Set this company's relationship to us first (or its parent company's).</p>
-            ) : destination.status === "abandoned" ? (
-              <p className="text-muted-foreground">Its engagement was abandoned; nothing can be accepted into it.</p>
-            ) : destination.status === "ours" ? (
-              <>
-                <p>Joins your estate.</p>
-                {relevantStop && relevantStop.entity_id !== id && (
-                  <p className="text-muted-foreground">Inherited from {relevantStop.legal_name}.</p>
-                )}
-              </>
-            ) : destination.status === "engagement" ? (
-              <>
-                <p>
-                  Joins {destination.engagements[0]?.name} ({destination.engagements[0]?.posture}
-                  {destination.engagements[0]?.posture === "pre_close" ? ", passive only" : ""}).
-                </p>
-                {relevantStop && relevantStop.entity_id !== id && (
-                  <p className="text-muted-foreground">Inherited from {relevantStop.legal_name}.</p>
-                )}
-              </>
-            ) : (
-              <>
-                <p>More than one destination is reachable. Choose one:</p>
-                <div className="space-y-1">
-                  <Label htmlFor="accept-destination">Destination</Label>
-                  <Select value={acceptChoice} onValueChange={setAcceptChoice}>
-                    <SelectTrigger id="accept-destination" aria-label="Destination">
-                      <SelectValue placeholder="Choose a destination" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {destination.estate && <SelectItem value="estate">Your estate</SelectItem>}
-                      {destination.engagements.map(e => (
-                        <SelectItem key={e.id} value={e.id}>{e.name} ({e.posture})</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </>
-            )}
-          </div>
-          {acceptError && <p className="text-sm text-destructive" role="alert">{acceptError}</p>}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setAcceptFor(null)}>Cancel</Button>
-            <Button
-              disabled={acceptDisabled}
-              onClick={() => { setAcceptError(null); acceptFor && acceptMutation.mutate({ cid: acceptFor.id, body: acceptBody() }) }}
-            >
-              {acceptMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
-              Accept
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       {/* ── relationship-to-us dialogs (planning#240) ── */}
       <Dialog open={oursOpen} onOpenChange={open => { if (!open) { setOursOpen(false); setRelationshipError(null) } }}>
         <DialogContent>
@@ -972,41 +726,6 @@ export default function EntityDetail() {
             >
               {relationshipMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
               Clear
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add a candidate domain</DialogTitle>
-            <DialogDescription>
-              A candidate needs evidence: paste the excerpt you read and the URL it came from. The quote must appear in the
-              excerpt and contain the domain. Stored as person-supplied; nothing is fetched.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            {(["domain", "source_url", "quote"] as const).map(k => (
-              <div key={k} className="space-y-1">
-                <Label htmlFor={`add-${k}`}>{k === "source_url" ? "Source URL" : k[0].toUpperCase() + k.slice(1)}</Label>
-                <Input id={`add-${k}`} value={addForm[k]} onChange={e => setAddForm(f => ({ ...f, [k]: e.target.value }))} />
-              </div>
-            ))}
-            <div className="space-y-1">
-              <Label htmlFor="add-excerpt">Excerpt</Label>
-              <Textarea id="add-excerpt" rows={5} value={addForm.excerpt} onChange={e => setAddForm(f => ({ ...f, excerpt: e.target.value }))} />
-            </div>
-          </div>
-          {addError && <p className="text-sm text-destructive" role="alert">{addError}</p>}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button
-              disabled={addMutation.isPending || !addForm.domain || !addForm.source_url || !addForm.excerpt || !addForm.quote}
-              onClick={() => { setAddError(null); addMutation.mutate() }}
-            >
-              {addMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
-              Add
             </Button>
           </DialogFooter>
         </DialogContent>

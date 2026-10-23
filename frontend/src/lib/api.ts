@@ -297,6 +297,9 @@ export type Engagement = {
   authorised_at: string | null
   authorisation_reference: string | null
   authorised_by: string | null
+  deal_reference?: string | null
+  deal_reference_at?: string | null
+  deal_reference_by?: string | null
   created_at: string
   member_targets: { id: string; value: string; type: Target["type"] }[]
   // planning#212 (L3) — the corporate entity this engagement's subject is
@@ -489,25 +492,6 @@ export type EntityFilingSection = {
   end_line: number
   text: string
   evidence_id: string
-}
-
-export type CandidateDomain = {
-  id: string
-  entity_id: string
-  domain: string
-  source: "edgar_10k_website" | "person"
-  observer_name: string | null
-  quote: string
-  evidence_id: string
-  evidence_url: string
-  evidence_origin: "fetched" | "person_supplied"
-  first_cited_on: string | null
-  last_cited_on: string | null
-  status: "proposed" | "accepted" | "rejected"
-  decided_at: string | null
-  engagement_id: string | null
-  target_id: string | null
-  created_at: string
 }
 
 export type Target = {

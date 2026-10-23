@@ -26,7 +26,6 @@ fi
 WT="$(cd "$1" && pwd)"
 PROBE="$2"
 ENTITY="${3:-}"
-export MSYS_NO_PATHCONV=1
 
 DEST=/tmp/live_probe
 cleanup() { docker exec constellus-backend-1 rm -rf "$DEST" || true; }
@@ -48,10 +47,8 @@ fi
 
 cleanup
 docker exec constellus-backend-1 mkdir -p "$DEST"
-# Host-side paths must be Windows paths: MSYS_NO_PATHCONV (needed for the
-# container-side /tmp paths) also stops Git Bash converting these.
-docker cp "$(cygpath -w "$WT/backend/app")" "constellus-backend-1:$DEST/app" >/dev/null
-docker cp "$(cygpath -w "$PROBE")" "constellus-backend-1:$DEST/probe.py" >/dev/null
+docker cp "$WT/backend/app" "constellus-backend-1:$DEST/app" >/dev/null
+docker cp "$PROBE" "constellus-backend-1:$DEST/probe.py" >/dev/null
 
 docker exec -e PYTHONPATH="$DEST" -e DATABASE_URL="$TESTURL" -e PROBE_CIK="$CIK" -w "$DEST" \
     constellus-backend-1 python probe.py 2>&1 \
