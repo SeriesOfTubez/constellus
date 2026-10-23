@@ -927,11 +927,12 @@ def test_ma_metrics_equal_independent_sql_and_exclude_unreviewed_entities(ma):
                 "select count(*) from entity_relations where status = 'proposed' and "
                 "(subject_id = any(cast(:ids as uuid[])) or object_id = any(cast(:ids as uuid[])))", ids=all_fam),
             "domains_accepted": sql(
-                "select count(*) from candidate_domains where status = 'accepted' and "
-                "entity_id = any(cast(:ids as uuid[]))", ids=all_fam),
+                "select count(*) from scope_candidates where status = 'claimed' and "
+                "root_entity_id = any(cast(:ids as uuid[]))", ids=all_fam),
             "domains_proposed": sql(
-                "select count(*) from candidate_domains where status = 'proposed' and "
-                "entity_id = any(cast(:ids as uuid[]))", ids=all_fam),
+                "select count(*) from scope_candidates c where c.status = 'open' and "
+                "c.root_entity_id = any(cast(:ids as uuid[])) and exists ("
+                "select 1 from scope_signals s where s.candidate_id = c.id and s.signal_type = 'admin_seed')", ids=all_fam),
         }
     finally:
         db.close()
@@ -974,7 +975,7 @@ def test_ma_lists_hold_confirmed_and_accepted_records_only(ma):
         "Fabrikam A Ltd", "Fabrikam B Ltd")
     assert acq[0]["event_date"] == "2020-03-01" and acq[1]["event_date"] is None  # dated first
     assert {r["name"] for r in lists["former_names"]["rows"]} == {"Former Name F", "Trading Name D2"}
-    assert [r["domain"] for r in lists["domains"]["rows"]] == sorted([ma.dom_s.domain, ma.dom_a.domain])
+    assert [r["domain"] for r in lists["domains"]["rows"]] == sorted([ma.dom_s.value, ma.dom_a.value])
     assert {r["entity_name"] for r in lists["domains"]["rows"]} == {"Example Holdings S", "Fabrikam A Ltd"}
     assert all(lst["truncated"] is False and lst["label"] and lst["query"]["limit"] == report_facts.LIST_ROWS
                for lst in lists.values())
@@ -982,7 +983,7 @@ def test_ma_lists_hold_confirmed_and_accepted_records_only(ma):
     # metrics test prove it) and not one of them is named anywhere in `lists`.
     blob = json.dumps(lists)
     for unreviewed in ("Proposed P", "Proposed Q Ltd", "Proposed Z Trading", "Rejected R", "Parent U",
-                       ma.dom_a2.domain, ma.dom_b.domain, ma.dom_u.domain, ma.dom_r.domain):
+                       ma.dom_a2.value, ma.dom_b.value, ma.dom_lead.value, ma.dom_u.value, ma.dom_r.value):
         assert unreviewed not in blob, unreviewed
     # Each stored query reproduces its list.
     db = SessionLocal()

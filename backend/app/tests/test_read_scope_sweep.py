@@ -72,7 +72,6 @@ NOT_YET_SCOPED = {
     "/api/entities/relations": "entity",
     "/api/entities/{entity_id}": "entity",
     "/api/entities/{entity_id}/acquisition-read/runs": "entity",
-    "/api/entities/{entity_id}/candidate-domains": "entity",
     "/api/entities/{entity_id}/destination": "entity",
     "/api/entities/{entity_id}/edges": "entity",
     "/api/entities/{entity_id}/filing-events": "entity",
@@ -80,6 +79,10 @@ NOT_YET_SCOPED = {
     "/api/entities/{entity_id}/registrant-candidates": "entity",
     "/api/entities/{entity_id}/registrant-link": "entity",
     "/api/entities/{entity_id}/subsidiary-listings": "entity",
+    # organizations (planning#277): the hooks are called, and grant everything today
+    "/api/organizations/": "entity",
+    "/api/organizations/{org_id}/candidates": "entity",
+    "/api/organizations/candidates/{candidate_id}": "entity",
 }
 
 EXEMPT = {
@@ -104,6 +107,7 @@ EXEMPT = {
     "/api/monitoring/policies": "monitoring configuration",
     "/api/notifications/digest-settings": "notification configuration",
     "/api/notifications/rules": "notification configuration",
+    "/api/organizations/filer-search": "external SEC lookup; reads no stored rows",
     "/api/query/schema": "the static query schema; the rows come from POST /api/query, which applies read_scope",
     "/api/scan-templates/_/jobs": "admin-only scheduler state",
     "/api/settings/": "application settings",

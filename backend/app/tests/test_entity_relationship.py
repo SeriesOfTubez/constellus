@@ -1,7 +1,7 @@
 """A mapped company's relationship to us (planning#240, slice 1).
 
 `app.services.entity_relationship` (the three states, the inheritance walk,
-the AI scope), migration 0068's CHECKs, `candidate_domains.accept` on top of
+the AI scope), migration 0068's CHECKs, `candidates.claim` on top of
 the walk, and the API: `PUT /entities/{id}/relationship`,
 `GET /entities/{id}/destination`, and the engagement routes that keep
 `ma_target` ⇔ subject-of-an-engagement.
@@ -12,7 +12,7 @@ Run with:  scripts/test.ps1 app/tests/test_entity_relationship.py
 """
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,14 +22,13 @@ from app.core.auth import create_access_token
 from app.core.database import SessionLocal
 from app.main import app
 from app.models.audit import AuditLog
-from app.models.candidate_domain import CandidateDomain
 from app.models.engagement import Engagement
-from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
 from app.models.scan import ScanRun
 from app.models.target import Target
 from app.models.user import User, UserRole
-from app.services import candidate_domains as cd
+from app.services.org_discovery import candidates as cd
+from app.tests import _scope_candidates
 from app.services import entity_graph
 from app.services import entity_relationship as er
 from app.services import llm_connector
@@ -115,21 +114,18 @@ class _World:
             self.edge(parent, child, "acquired", confirm=confirm)
         return child
 
-    def candidate(self, entity: OrgEntity) -> CandidateDomain:
-        domain = f"er240-{_hex()}.com"
-        ev = make_evidence(self.db, content=f"site {_hex()}".encode(), source_url=f"https://example.test/{_hex()}")
-        self.evidence.append(ev.id)
-        website = self.db.query(Observer).filter(Observer.name == "edgar_10k_website").one()
-        cd.propose_from_filing(
-            self.db, entity_id=entity.id, domain=domain, observer=website, evidence_id=ev.id,
-            quote=f"Our website is www.{domain}.", filing_date=date(2020, 3, 1),
+    def candidate(self, root: OrgEntity, via: OrgEntity | None = None):
+        """An open candidate under `root`, raised by a Strong signal that runs
+        through `via` (default the root itself)."""
+        candidate, _evidence = _scope_candidates.make_candidate(
+            self.db, root_id=root.id, via_id=(via or root).id, track=self.evidence
         )
-        return self.db.query(CandidateDomain).filter_by(entity_id=entity.id, domain=domain).one()
+        return candidate
 
     def close(self):
         db = self.db
         db.rollback()
-        db.query(CandidateDomain).filter(CandidateDomain.entity_id.in_(self.entities)).delete(synchronize_session=False)
+        _scope_candidates.purge(db, entity_ids=self.entities)
         db.query(Target).filter(Target.entity_id.in_(self.entities)).delete(synchronize_session=False)
         db.query(ScanRun).filter(ScanRun.created_by_id.in_(self.users)).delete(synchronize_session=False)
         db.commit()
@@ -225,9 +221,11 @@ def test_inheritance_never_walks_up_from_parent_to_child(w, via):
     eng = w.engagement("pre_close", subject=division)
     assert er.resolve(w.db, division.id).engagements == [eng]
     assert er.resolve(w.db, parent.id).status == "unset"
-    c = w.candidate(parent)
-    with pytest.raises(cd.CandidateConflict, match="relationship first"):
-        cd.accept(w.db, candidate_id=c.id, engagement_id=eng.id, user=w.user())
+    # The division's organization cannot take a signal that runs through
+    # its PARENT: the parent is not in the division's tree.
+    with pytest.raises(cd.CandidateInvalid, match="tree"):
+        w.candidate(division, via=parent)
+    del eng
 
 
 def test_the_nearest_relationship_wins_on_a_path(w):
@@ -388,54 +386,30 @@ def test_clear_is_refused_while_a_subject(w):
         er.clear(w.db, entity_id=e.id, may_clear_ours=True)
 
 
-# ── 5. accept on top of the walk ────────────────────────────────────────────
+# ── 5. claim on top of the walk ─────────────────────────────────────────────
 
 
-def test_accept_into_our_estate_creates_an_engagementless_target(w):
-    parent = w.ours(w.entity())
-    child = w.child_of(parent, via="acquired")
-    c = w.candidate(child)
-    result = cd.accept(w.db, candidate_id=c.id, user=w.user())
+def test_claim_into_our_estate_creates_an_engagementless_target(w):
+    root = w.ours(w.entity())
+    child = w.child_of(root, via="acquired")
+    c = w.candidate(root, via=child)
+    result = cd.claim(w.db, candidate_id=c.id, user=w.user())
+    # Attributed to the company the signal ran through; destination from the ROOT.
     assert (result.target.engagement_id, result.target.entity_id, result.candidate.engagement_id) == (
         None, child.id, None,
     )
-    # A second candidate for the same domain under the same destination is idempotent.
-    assert result.created is True
+    assert (result.candidate.accepted_into, result.created) == ("estate", True)
 
 
-def test_accept_with_two_destinations_needs_a_choice(w):
-    ours_parent = w.ours(w.entity())
-    target_parent = w.entity()
-    eng = w.engagement("pre_close", subject=target_parent)
-    child = w.child_of(ours_parent)
-    w.edge(child, target_parent, "subsidiary_of")
-    c = w.candidate(child)
-    admin = w.user()
-    with pytest.raises(cd.CandidateConflict, match="choose one"):
-        cd.accept(w.db, candidate_id=c.id, user=admin)
-    with pytest.raises(cd.CandidateInvalid):
-        cd.accept(w.db, candidate_id=c.id, user=admin, estate=True, engagement_id=eng.id)
-    result = cd.accept(w.db, candidate_id=c.id, user=admin, engagement_id=eng.id)
-    assert result.target.engagement_id == eng.id
-
-
-def test_accept_into_the_estate_needs_an_ours_inheritance(w):
-    subject = w.entity()
-    w.engagement("pre_close", subject=subject)
-    c = w.candidate(subject)
-    with pytest.raises(cd.CandidateConflict, match="does not inherit 'ours'"):
-        cd.accept(w.db, candidate_id=c.id, user=w.user(), estate=True)
-
-
-def test_an_estate_target_is_a_conflict_for_an_engagement_accept(w):
+def test_an_estate_target_is_a_conflict_for_an_engagement_claim(w):
     subject = w.entity()
     eng = w.engagement("pre_close", subject=subject)
     c = w.candidate(subject)
-    owned = Target(id=uuid.uuid4(), type="domain", value=c.domain, entity_id=subject.id)
+    owned = Target(id=uuid.uuid4(), type="domain", value=c.value, entity_id=subject.id)
     w.db.add(owned)
     w.db.commit()
     with pytest.raises(cd.CandidateConflict, match="outside this destination"):
-        cd.accept(w.db, candidate_id=c.id, user=w.user())
+        cd.claim(w.db, candidate_id=c.id, user=w.user())
     w.db.refresh(owned)
     assert owned.engagement_id is None
     del eng

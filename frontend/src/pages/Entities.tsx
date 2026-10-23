@@ -31,7 +31,7 @@ function runSummary(run: EntityIngestRun): string {
     `${n("events_inserted")} new 8-K events`,
     `${n("subsidiaries_proposed")} subsidiaries proposed`,
     `${n("sections_stored")} footnote sections`,
-    `${n("website_candidates_proposed")} candidate domains`,
+    `${n("website_signals_recorded")} website signals`,
   ]
   const denied = Array.isArray(r.denied) ? r.denied : []
   if (denied.length) parts.push(`denied by posture: ${denied.join(", ")}`)

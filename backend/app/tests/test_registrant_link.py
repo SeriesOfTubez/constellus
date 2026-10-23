@@ -25,7 +25,8 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.main import app
 from app.models.audit import AuditLog
-from app.models.candidate_domain import CandidateDomain
+from app.models.scope_candidate import ScopeCandidate
+from app.models.target import Target
 from app.models.entity_filing_event import EntityFilingEvent
 from app.models.entity_filing_section import EntityFilingSection
 from app.models.entity_ingest_run import EntityIngestRun
@@ -35,7 +36,11 @@ from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
 from app.models.user import User, UserRole
 from app.services import acquisition_reader, edgar_ingest, entity_graph, llm_connector, sec_edgar
+from app.services import entity_relationship
 from app.services import registrant_link as rl
+from app.services.org_discovery import candidates as cd
+from app.services.org_discovery import generators
+from app.tests import _scope_candidates
 from app.tests._edgar import make_cik
 from app.tests._entity_graph import cleanup_evidence, cleanup_observer, make_evidence, make_observer
 
@@ -226,7 +231,8 @@ class _World:
         others = {r.subject_id for r in rels} | {r.object_id for r in rels}
         all_ids = ids | others
         db.query(EntityRelation).filter(EntityRelation.id.in_([r.id for r in rels])).delete(synchronize_session=False)
-        db.query(CandidateDomain).filter(CandidateDomain.entity_id.in_(all_ids)).delete(synchronize_session=False)
+        _scope_candidates.purge(db, entity_ids=all_ids)
+        db.query(Target).filter(Target.entity_id.in_(all_ids)).delete(synchronize_session=False)
         db.query(EntityFilingSection).filter(EntityFilingSection.entity_id.in_(all_ids)).delete(synchronize_session=False)
         db.query(EntityFilingEvent).filter(EntityFilingEvent.entity_id.in_(all_ids)).delete(synchronize_session=False)
         db.query(EntitySubsidiaryListing).filter(
@@ -562,16 +568,20 @@ def _produce(w, e, acquirer):
         own_parent=w.relation(e, acquirer, "subsidiary_of"),  # E as CHILD: not the link's
     )
     entity_graph.decide(w.db, relation_id=rows.already_rejected.id, status="rejected", user=w.user())
+    # The candidates live under a root: the acquirer is ours, and E is its child.
+    entity_relationship.set_ours(w.db, entity_id=acquirer.id, reference="rl236 ref", user=w.user())
     dom = f"rl236-{_hex()}.com"
     ev = w.ev()
-    from app.services import candidate_domains as cd
-    cd.propose_from_filing(w.db, entity_id=e.id, domain=dom, observer=website, evidence_id=ev.id,
-                           quote=f"Our website is www.{dom}.", filing_date=date(2012, 3, 1))
-    rows.candidate = w.db.query(CandidateDomain).filter_by(entity_id=e.id, domain=dom).one()
-    manual = f"rl236-{_hex()}.com"
-    rows.manual = CandidateDomain(id=uuid.uuid4(), entity_id=e.id, domain=manual, source="person",
-                                  evidence_id=w.ev().id, quote=f"see {manual}")
-    w.db.add(rows.manual)
+    recorded, _existing, _unanchored = generators.record_filer_websites(
+        w.db, filer=e, observer=website, evidence_id=ev.id, lines=[f"Our website is www.{dom}."],
+        filing_date=date(2012, 3, 1),
+    )
+    assert recorded == 1  # the precondition: the link's own signal really exists
+    w.db.commit()
+    rows.candidate = w.db.query(ScopeCandidate).filter_by(root_entity_id=acquirer.id, value=dom).one()
+    # A person also added a domain of their own: not the link's.
+    rows.manual, manual_evidence = _scope_candidates.make_candidate(w.db, root_id=acquirer.id, via_id=e.id)
+    w.evidence.append(manual_evidence.id)
     events_obs = w.db.query(Observer).filter(Observer.name == "edgar_8k_items").one()
     ex21_obs = w.db.query(Observer).filter(Observer.name == "edgar_ex21").one()
     w.db.add(EntityFilingEvent(id=uuid.uuid4(), entity_id=e.id, observer_id=events_obs.id, evidence_id=w.ev().id,
@@ -611,7 +621,7 @@ def test_unlink_undoes_what_the_link_produced_and_nothing_else(w, sec):
     deal = w.db.query(EntityRelation).filter_by(subject_id=acquirer.id, object_id=e.id, relation="acquired").one()
     assert deal.status == "confirmed"
     assert _status(w, rows.candidate) == "rejected"
-    assert _status(w, rows.manual) == "proposed"
+    assert _status(w, rows.manual) == "open"
     assert w.db.query(EntityFilingSection).filter_by(entity_id=e.id).count() == 0
     # Linkable again, to the right registrant this time.
     assert rl.context(w.db, e.id).eligible
@@ -629,16 +639,12 @@ def test_unlink_refuses_once_a_person_confirmed_its_output(w, sec):
     assert w.db.query(EntityFilingSection).filter_by(entity_id=e.id).count() == 1
 
 
-def test_unlink_refuses_once_a_domain_was_accepted(w, sec):
+def test_unlink_refuses_once_a_domain_was_claimed(w, sec):
     acquirer, e = _linked(w, sec)
-    _produce(w, e, acquirer)
-    website = w.db.query(Observer).filter(Observer.name == "edgar_10k_website").one()
-    dom = f"rl236-{_hex()}.com"
-    w.db.add(CandidateDomain(id=uuid.uuid4(), entity_id=e.id, domain=dom, source="edgar_10k_website",
-                             observer_id=website.id, evidence_id=w.ev().id, quote=f"www.{dom}",
-                             status="accepted", accepted_into="estate", decided_at=datetime.now(timezone.utc)))
-    w.db.commit()
-    with pytest.raises(rl.LinkConflict, match="1 accepted"):
+    rows = _produce(w, e, acquirer)
+    claimed = cd.claim(w.db, candidate_id=rows.candidate.id, user=w.user())
+    assert claimed.candidate.status == "claimed"  # the precondition: a claim really happened
+    with pytest.raises(rl.LinkConflict, match="1 claimed"):
         rl.unlink(w.db, entity_id=e.id, user=w.user())
     w.db.expire_all()
     assert w.db.get(OrgEntity, e.id).cik is not None

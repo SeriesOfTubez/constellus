@@ -17,9 +17,9 @@ read) runs on it. Decisions:
   registrant-link flow; otherwise the reason is recorded on the ingest run.
 - **CIK only.** No Wayback / private-company path.
 
-Nothing here enters scope: no Target is created and no candidate domain is
-accepted. Whatever the ingest proposes stays proposed until an ADMIN accepts
-it through the existing candidate-domain route.
+Nothing here enters scope: no Target is created and no candidate is
+claimed. Whatever the ingest records stays an open candidate until a person
+claims it through `POST /api/organizations/candidates/{id}/claim`.
 """
 
 from __future__ import annotations

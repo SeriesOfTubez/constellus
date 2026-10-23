@@ -230,12 +230,22 @@ def test_domain_family_of(db, w):
         rows = _rows(db, {"entity": "domain", "limit": 500, "where": {"all": [fam, _f("domain.status", "eq", status)]}})
         return {r["domain.name"] for r in rows}, rows
 
-    accepted, rows = names("accepted")
-    assert accepted == {w.dom_s.domain, w.dom_a.domain}        # not U's (a parent), not R's
+    claimed, rows = names("claimed")
+    assert claimed == {w.dom_s.value, w.dom_a.value}           # not U's (a parent), not R's
     assert {r["domain.entity_name"] for r in rows} == {"Example Holdings S", "Fabrikam A Ltd"}
-    assert names("proposed")[0] == {w.dom_a2.domain, w.dom_b.domain}
+    open_rows = names("open")[1]
+    assert {r["domain.name"] for r in open_rows} == {w.dom_a2.value, w.dom_b.value, w.dom_lead.value}
+    # `domain.proposable` separates what is awaiting review from a lead.
+    proposable = _rows(db, {"entity": "domain", "limit": 500, "where": {"all": [
+        fam, _f("domain.status", "eq", "open"), _f("domain.proposable", "eq", True)]}})
+    assert {r["domain.name"] for r in proposable} == {w.dom_a2.value, w.dom_b.value}
+    assert {r["domain.name"]: r["domain.proposable"] for r in open_rows}[w.dom_lead.value] is False
+    # An open candidate is attributed to no company yet (the outer join).
+    assert {r["domain.entity_id"] for r in open_rows} == {None}
+    assert {r["domain.entity_name"] for r in open_rows} == {None}
+    assert {r["domain.root_id"] for r in open_rows} == {str(w.A.id), str(w.B.id)}
     assert names("rejected")[0] == set()                       # R is not in the family
-    assert _count(db, {"entity": "domain", "where": _f("domain.source", "eq", "person")}) >= 6
+    assert _count(db, {"entity": "domain", "where": _f("domain.root_id", "eq", str(w.S.id))}) == 1
 
 
 # ── counts equal independent SQL ────────────────────────────────────────────
@@ -250,10 +260,11 @@ def test_counts_equal_independent_sql(db, w):
         _f("relation.family_of", "eq", str(w.E.id)), _f("relation.status", "eq", "confirmed")]}}) == sql(
         "select count(*) from entity_relations where status = 'confirmed' and "
         "(subject_id = any(cast(:ids as uuid[])) or object_id = any(cast(:ids as uuid[])))", ids=ids)
-    for status in ("accepted", "proposed", "rejected"):
+    for status in ("claimed", "open", "rejected"):
         assert _count(db, {"entity": "domain", "where": {"all": [
             _f("domain.family_of", "eq", str(w.E.id)), _f("domain.status", "eq", status)]}}) == sql(
-            "select count(*) from candidate_domains where status = :s and entity_id = any(cast(:ids as uuid[]))",
+            "select count(*) from scope_candidates where kind = 'domain' and status = :s and "
+            "root_entity_id = any(cast(:ids as uuid[]))",
             s=status, ids=ids)
 
 

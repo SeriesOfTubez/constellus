@@ -1,10 +1,10 @@
 """app.services.sec_edgar — the SEC EDGAR HTTP client (planning#213, L4
 slices 1 and 2).
 
-A thin, defensive HTTP client for two SEC EDGAR hosts: `data.sec.gov` (the
-structured submissions JSON, slice 1) and `www.sec.gov` (the HTML filing
+A thin, defensive HTTP client for three SEC EDGAR hosts: `data.sec.gov` (the
+structured submissions JSON, slice 1), `www.sec.gov` (the HTML filing
 index and the filing documents it lists — EX-21 exhibits and primary 10-K
-bodies, slice 2). Widened from `data.sec.gov`-only per planning#213's
+bodies, slice 2) and `efts.sec.gov` (full-text search, planning#277 S1a). Widened from `data.sec.gov`-only per planning#213's
 2026-09-25 decisions comment: a probe of `www.sec.gov` that slice 1 found
 timing out with a real 503 answered normally (~0.3s) a day later — both
 transient shapes are still handled by the same retry loop below, since
@@ -45,7 +45,8 @@ string taken verbatim from a response body:
     `href` from a fetched response into a new URL.**
 
 `_check_allowlisted` re-checks the fully built URL against the allowlist
-before any I/O: `https` scheme and host in `{data.sec.gov, www.sec.gov}`,
+before any I/O: `https` scheme and host in `{data.sec.gov, www.sec.gov,
+efts.sec.gov}`,
 and, for `www.sec.gov` specifically, a path that starts with
 `/Archives/edgar/data/` (the only tree this module ever needs there —
 `www.sec.gov` also serves full-text search, EDGAR's own UI, and other
@@ -54,9 +55,13 @@ planning#236 S1: the company search, `/cgi-bin/browse-edgar` with
 `action=getcompany` and only the parameters `company_search_url` builds
 (`_is_company_search`). Its `company` value is a person-typed name, so it
 is length- and control-character-checked and always `urlencode`d, never
-spliced into the URL. So a future caller that
+spliced into the URL. `efts.sec.gov` (planning#277 S1a) admits ONE surface: the exact path
+`/LATEST/search-index` with only the `q` and `forms` parameters that
+`full_text_search_url` builds (`_is_full_text_search`); `q` is a validated
+domain in double quotes, `urlencode`d. So a future caller that
 forgets the upstream validation still cannot be redirected anywhere else,
-or to another part of `www.sec.gov`, by a crafted or corrupted value.
+or to another part of `www.sec.gov` / `efts.sec.gov`, by a crafted or
+corrupted value.
 
 ## Retry shapes — three real ones, not one
 
@@ -117,7 +122,8 @@ log = logging.getLogger(__name__)
 
 _DATA_HOST = "data.sec.gov"
 _WWW_HOST = "www.sec.gov"
-_ALLOWED_HOSTS = frozenset({_DATA_HOST, _WWW_HOST})
+_EFTS_HOST = "efts.sec.gov"
+_ALLOWED_HOSTS = frozenset({_DATA_HOST, _WWW_HOST, _EFTS_HOST})
 _ALLOWED_PREFIX = f"https://{_DATA_HOST}/"
 # The only tree this module ever fetches on www.sec.gov — see module
 # docstring's "Host allowlist" section.
@@ -136,6 +142,15 @@ _SEARCH_RESULTS_MARKER = 'class="tableFile2"'
 _SEARCH_COMPANY_MARKER = 'class="companyName"'
 _SEARCH_NONE_MARKER = "No matching companies"
 _SEARCH_CIK_TEXT_RE = re.compile(r"^\s*([0-9]{10})(?:\s|$)")
+
+# planning#277 S1a: EDGAR full-text search (a filing-domain lookup).
+_FTS_PATH = "/LATEST/search-index"
+_FTS_PARAMS = frozenset({"q", "forms"})
+_FTS_FORMS = "10-K"
+# Same shape as `app.services.org_discovery.candidates._DOMAIN_RE` and
+# migration 0083's `ck_scope_candidates_domain_shape`, duplicated here so
+# this client stays free of imports from the services above it.
+_FTS_DOMAIN_RE = re.compile(r"^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})$")
 
 _CIK_RE = re.compile(r"^[0-9]{10}$")
 _PAGE_NAME_RE = re.compile(r"^CIK[0-9]{10}-submissions-[0-9]{3}\.json$")
@@ -240,6 +255,11 @@ def _check_allowlisted(url: str) -> None:
             f"URL not allowlisted (www.sec.gov paths must start with "
             f"{_WWW_REQUIRED_PATH_PREFIX!r}, or be the company search): {url!r}"
         )
+    if parts.netloc == _EFTS_HOST and not _is_full_text_search(parts):
+        raise ValueError(
+            f"URL not allowlisted (efts.sec.gov is reachable only for the full-text search "
+            f"{_FTS_PATH!r} with q and forms): {url!r}"
+        )
 
 
 def _is_company_search(parts) -> bool:
@@ -256,6 +276,24 @@ def _is_company_search(parts) -> bool:
     if params.get("action") != ["getcompany"] or len(params.get("company", [])) != 1:
         return False
     return set(params) <= _SEARCH_PARAMS and all(len(v) == 1 for v in params.values())
+
+
+def _is_full_text_search(parts) -> bool:
+    """The only efts.sec.gov surface: exactly `/LATEST/search-index`, `q`
+    and `forms` given once each, `forms` the fixed value, `q` one
+    double-quoted domain, and nothing else."""
+    if parts.path != _FTS_PATH or parts.fragment:
+        return False
+    try:
+        params = parse_qs(parts.query, keep_blank_values=True, strict_parsing=True)
+    except ValueError:
+        return False
+    if set(params) != _FTS_PARAMS or any(len(v) != 1 for v in params.values()):
+        return False
+    if params["forms"] != [_FTS_FORMS]:
+        return False
+    q = params["q"][0]
+    return len(q) >= 3 and q[0] == '"' and q[-1] == '"' and bool(_FTS_DOMAIN_RE.match(q[1:-1]))
 
 
 def _headers() -> dict[str, str]:
@@ -643,3 +681,35 @@ def search_companies(query: str, *, contains: bool = False) -> list[str]:
     and User-Agent as every other fetch here."""
     content, _ct, _at, _url = _fetch(company_search_url(query, contains=contains), validate=_validate_company_search_html)
     return parse_company_search(content)
+
+
+# ── efts.sec.gov — full-text search for a domain (planning#277 S1a) ────────
+
+
+def full_text_search_url(domain: str) -> str:
+    """Builds the EDGAR full-text search URL for 10-K filings containing
+    `domain` as an exact phrase. `domain` must already be in canonical
+    candidate-domain form (lowercase hostname); anything else raises
+    `ValueError` with zero I/O. Built with `urlencode`, never spliced."""
+    if not isinstance(domain, str) or not _FTS_DOMAIN_RE.match(domain):
+        raise ValueError("a full-text search needs a lowercase hostname such as example.com")
+    quoted = '"' + domain + '"'
+    return f"https://{_EFTS_HOST}{_FTS_PATH}?{urlencode([('q', quoted), ('forms', _FTS_FORMS)])}"
+
+
+def _validate_full_text_json(body: bytes) -> bool:
+    """Shape check only: a JSON object whose `hits.hits` is a list."""
+    try:
+        data = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    hits = data.get("hits")
+    return isinstance(hits, dict) and isinstance(hits.get("hits"), list)
+
+
+def search_full_text(domain: str) -> tuple[bytes, str, datetime, str]:
+    """Fetch one full-text search. Same retries, rate limit and User-Agent
+    as every other fetch here. Nothing in the response is ever followed."""
+    return _fetch(full_text_search_url(domain), validate=_validate_full_text_json)

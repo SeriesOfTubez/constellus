@@ -34,11 +34,12 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.asset_canonical import AssetCanonical
 from app.models.asset_state import AssetState
-from app.models.candidate_domain import CandidateDomain
 from app.models.engagement import Engagement
 from app.models.entity_relation import EntityRelation
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
 from app.models.org_entity import OrgEntity
+from app.models.scope_candidate import ScopeCandidate
+from app.services.org_discovery import strength as strength_sql
 from app.models.target import Target
 from app.models.target_asset_link import TargetAssetLink
 from app.models.user import User
@@ -69,8 +70,9 @@ class _Ctx:
     relation: Any = None      # relation root: EntityRelation
     rel_subject: Any = None   # relation root: OrgEntity alias on subject_id
     rel_object: Any = None    # relation root: OrgEntity alias on object_id
-    domain: Any = None        # domain root: CandidateDomain
-    dom_entity: Any = None    # domain root: OrgEntity alias on entity_id
+    domain: Any = None        # domain root: ScopeCandidate (kind = 'domain')
+    dom_strength: Any = None  # domain root: the strength CTE wrapper (outer-joined)
+    dom_entity: Any = None    # domain root: OrgEntity alias on affiliated_entity_id (outer join)
 
 
 def _port_key(*keys: str) -> Callable[[_Ctx], Any]:
@@ -150,10 +152,11 @@ _FIELD_SQL: dict[str, Callable[[_Ctx], Any]] = {
     "relation.subject_name": lambda c: c.rel_subject.legal_name,
     "relation.object_name": lambda c: c.rel_object.legal_name,
     "domain.id": lambda c: c.domain.id,
-    "domain.name": lambda c: c.domain.domain,
+    "domain.name": lambda c: c.domain.value,
     "domain.status": lambda c: c.domain.status,
-    "domain.source": lambda c: c.domain.source,
-    "domain.entity_id": lambda c: c.domain.entity_id,
+    "domain.proposable": lambda c: c.dom_strength.proposable,
+    "domain.root_id": lambda c: c.domain.root_entity_id,
+    "domain.entity_id": lambda c: c.domain.affiliated_entity_id,
     "domain.entity_name": lambda c: c.dom_entity.legal_name,
     "port.number": _port_key("port"),
     "port.protocol": _text(_port_key("protocol")),
@@ -269,7 +272,7 @@ _MEMBERSHIP_COMPILERS: dict[str, Callable[[Predicate, _Ctx], ColumnElement[bool]
     "entity.family_of": _family_member(lambda c: c.entity.id),
     "entity.parent_relation": _parent_relation_member,
     "relation.family_of": _family_member(lambda c: c.relation.subject_id, lambda c: c.relation.object_id),
-    "domain.family_of": _family_member(lambda c: c.domain.entity_id),
+    "domain.family_of": _family_member(lambda c: c.domain.root_entity_id),
 }
 _MEMBERSHIP_FIELDS = frozenset(_MEMBERSHIP_COMPILERS)
 
@@ -387,11 +390,15 @@ def _base(db: Session, q: Query, user: User):
         conds = [read_scope.relation_clause(user, rel),
                  read_scope.entity_clause(user, subj), read_scope.entity_clause(user, obj)]
     elif q.entity == "domain":
-        dom, ent = CandidateDomain, aliased(OrgEntity)
-        ctx = _Ctx(domain=dom, dom_entity=ent)
+        dom, ent = ScopeCandidate, aliased(OrgEntity)
+        st = strength_sql.strength_subquery()
+        ctx = _Ctx(domain=dom, dom_entity=ent, dom_strength=st)
         root_id = dom.id
-        from_ = select().select_from(dom).join(ent, ent.id == dom.entity_id)
-        conds = [read_scope.domain_clause(user, dom), read_scope.entity_clause(user, ent)]
+        # The affiliated company is NULL until a candidate is claimed, hence
+        # the outer join; a domain row is a `kind = 'domain'` candidate.
+        from_ = (select().select_from(dom).outerjoin(ent, ent.id == dom.affiliated_entity_id)
+                 .outerjoin(st.subquery, st.candidate_id == dom.id))
+        conds = [dom.kind == "domain", read_scope.domain_clause(user, dom), read_scope.entity_clause(user, ent)]
     else:
         finding, asset = FindingCanonical, AssetCanonical
         ctx = _Ctx(asset=asset, state=state, finding=finding)

@@ -155,7 +155,8 @@ from app.models.entity_relation import EntityRelation
 from app.models.entity_subsidiary_listing import EntitySubsidiaryListing
 from app.models.observer import Observer
 from app.models.org_entity import OrgEntity
-from app.services import candidate_domains, edgar_html, entity_graph, posture, sec_edgar
+from app.services import edgar_html, entity_graph, posture, sec_edgar
+from app.services.org_discovery import generators
 from app.services.entity_names import self_name_key
 
 log = logging.getLogger(__name__)
@@ -243,9 +244,12 @@ class IngestResult:
     sections_stored: int = 0
     sections_existing: int = 0
     sections_not_found: int = 0
-    # planning#216: candidate domains from the 10-K's own website sentence.
-    website_candidates_proposed: int = 0
-    website_candidates_existing: int = 0
+    # planning#277: `filer_10k_website` signals from the 10-K's own website
+    # sentence. `unanchored`: mentions found for a filer that belongs to no
+    # root organization (nothing is written for them).
+    website_signals_recorded: int = 0
+    website_signals_existing: int = 0
+    website_mentions_unanchored: int = 0
     oversize_skipped: int = 0
     # A document filename (from the index or the `primaryDocument` fallback)
     # that fails `sec_edgar.is_valid_filename` — never requested.
@@ -778,7 +782,7 @@ def _process_primary_document_for_filing(
 
     lines = edgar_html.render_text_lines(doc_content.decode("utf-8", errors="replace"))
     if website_observer is not None:
-        _propose_websites(
+        _record_websites(
             db, entity=entity, observer=website_observer, evidence_id=evidence.id, lines=lines, report=report, result=result
         )
     if footnote_observer is not None:
@@ -787,7 +791,7 @@ def _process_primary_document_for_filing(
         )
 
 
-def _propose_websites(
+def _record_websites(
     db: Session,
     *,
     entity: OrgEntity,
@@ -797,22 +801,19 @@ def _propose_websites(
     report: dict,
     result: IngestResult,
 ) -> None:
-    """planning#216: every domain this 10-K names as the filer's own
-    website becomes (or re-cites) a PROPOSED candidate — never a target."""
-    for domain, quote in edgar_html.find_website_mentions(lines):
-        inserted = candidate_domains.propose_from_filing(
-            db,
-            entity_id=entity.id,
-            domain=domain,
-            observer=observer,
-            evidence_id=evidence_id,
-            quote=quote,
-            filing_date=report["filing_date"],
-        )
-        if inserted:
-            result.website_candidates_proposed += 1
-        else:
-            result.website_candidates_existing += 1
+    """planning#277: every domain this 10-K names as the filer's own website
+    becomes (or re-sights) a `filer_10k_website` SIGNAL on each root
+    organization the filer belongs to; never a target. A filer under no root
+    records nothing and is counted as unanchored. This function owns its
+    session (the ingest), so it commits, as the proposer it replaces did."""
+    recorded, existing, unanchored = generators.record_filer_websites(
+        db, filer=entity, observer=observer, evidence_id=evidence_id, lines=lines,
+        filing_date=report["filing_date"],
+    )
+    db.commit()
+    result.website_signals_recorded += recorded
+    result.website_signals_existing += existing
+    result.website_mentions_unanchored += unanchored
 
 
 def _store_footnote_section(

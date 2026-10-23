@@ -428,8 +428,8 @@ def find_website_mentions(lines: list[str]) -> list[tuple[str, str]]:
     """Returns `(domain, quote)` pairs, one per distinct domain, in first-
     mention order. `domain` is lowercased with a leading `www.` removed;
     `quote` is the sentence it came from and always contains `domain`
-    case-insensitively (migration 0064's `ck_candidate_domains_quote_
-    contains_domain` depends on that). Only the FIRST domain after each
+    case-insensitively (`org_discovery.candidates.record_signal` refuses a
+    quote that does not contain the domain). Only the FIRST domain after each
     anchor is taken — "our website at www.a.com and the SEC's website at
     www.sec.gov" must not yield the second."""
     found: dict[str, str] = {}

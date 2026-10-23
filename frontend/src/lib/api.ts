@@ -491,25 +491,6 @@ export type EntityFilingSection = {
   evidence_id: string
 }
 
-export type CandidateDomain = {
-  id: string
-  entity_id: string
-  domain: string
-  source: "edgar_10k_website" | "person"
-  observer_name: string | null
-  quote: string
-  evidence_id: string
-  evidence_url: string
-  evidence_origin: "fetched" | "person_supplied"
-  first_cited_on: string | null
-  last_cited_on: string | null
-  status: "proposed" | "accepted" | "rejected"
-  decided_at: string | null
-  engagement_id: string | null
-  target_id: string | null
-  created_at: string
-}
-
 export type Target = {
   id: string
   type: "domain" | "ip" | "cidr"

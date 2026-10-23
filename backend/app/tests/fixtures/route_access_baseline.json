@@ -225,12 +225,6 @@
   "report_admin",
   "viewer"
  ],
- "GET /api/entities/{entity_id}/candidate-domains": [
-  "admin",
-  "integration_admin",
-  "report_admin",
-  "viewer"
- ],
  "GET /api/entities/{entity_id}/destination": [
   "admin",
   "integration_admin",
@@ -375,6 +369,27 @@
  "GET /api/notifications/rules": [
   "admin",
   "integration_admin"
+ ],
+ "GET /api/organizations/": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/organizations/candidates/{candidate_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/organizations/filer-search": [
+  "admin"
+ ],
+ "GET /api/organizations/{org_id}/candidates": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
  ],
  "GET /api/query/schema": [
   "admin",
@@ -590,12 +605,6 @@
  "POST /api/entities/": [
   "admin"
  ],
- "POST /api/entities/candidate-domains/{candidate_id}/accept": [
-  "admin"
- ],
- "POST /api/entities/candidate-domains/{candidate_id}/reject": [
-  "admin"
- ],
  "POST /api/entities/edgar-ingest": [
   "admin"
  ],
@@ -606,9 +615,6 @@
   "admin"
  ],
  "POST /api/entities/{entity_id}/acquisition-read": [
-  "admin"
- ],
- "POST /api/entities/{entity_id}/candidate-domains": [
   "admin"
  ],
  "POST /api/entities/{entity_id}/registrant-link": [
@@ -641,6 +647,18 @@
  "POST /api/notifications/rules": [
   "admin",
   "integration_admin"
+ ],
+ "POST /api/organizations/": [
+  "admin"
+ ],
+ "POST /api/organizations/candidates/{candidate_id}/claim": [
+  "admin"
+ ],
+ "POST /api/organizations/candidates/{candidate_id}/reject": [
+  "admin"
+ ],
+ "POST /api/organizations/{org_id}/candidates": [
+  "admin"
  ],
  "POST /api/query": [
   "admin",

@@ -49,7 +49,17 @@ from app.models.entity_relation import (
 from app.models.entity_filing_event import EntityFilingEvent
 from app.models.entity_subsidiary_listing import EntitySubsidiaryListing
 from app.models.entity_filing_section import EntityFilingSection, SECTION_VALUES
-from app.models.candidate_domain import CandidateDomain, CANDIDATE_SOURCES, CANDIDATE_STATUSES
+from app.models.scope_candidate import (
+    ScopeCandidate,
+    ScopeSignal,
+    ScopeCandidateEvent,
+    CANDIDATE_KINDS,
+    CANDIDATE_STATUSES,
+    ACCEPTED_INTO,
+    SIGNAL_TYPES,
+    ANCHOR_KINDS,
+    EVENT_KINDS,
+)
 from app.models.entity_ingest_run import EntityIngestRun, INGEST_RUN_STATUSES
 from app.models.chat import ChatConversation, ChatMessage
 from app.models.report import Report
@@ -123,9 +133,15 @@ __all__ = [
     "EntitySubsidiaryListing",
     "EntityFilingSection",
     "SECTION_VALUES",
-    "CandidateDomain",
-    "CANDIDATE_SOURCES",
+    "ScopeCandidate",
+    "ScopeSignal",
+    "ScopeCandidateEvent",
+    "CANDIDATE_KINDS",
     "CANDIDATE_STATUSES",
+    "ACCEPTED_INTO",
+    "SIGNAL_TYPES",
+    "ANCHOR_KINDS",
+    "EVENT_KINDS",
     "EntityIngestRun",
     "INGEST_RUN_STATUSES",
     "ChatConversation",

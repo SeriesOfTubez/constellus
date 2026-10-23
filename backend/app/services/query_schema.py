@@ -63,7 +63,7 @@ from pydantic import (
 )
 
 from app.models.asset import AssetType
-from app.models.candidate_domain import CANDIDATE_STATUSES
+from app.models.scope_candidate import CANDIDATE_STATUSES
 from app.models.entity_relation import EVENT_DATE_PRECISIONS, RELATION_STATUSES, RELATION_TYPES
 from app.models.finding import FindingState, Severity
 from app.models.org_entity import RELATIONSHIPS
@@ -239,16 +239,23 @@ FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("relation.family_of", "uuid",
               "Engagement id. The subject OR the object is in the corporate family of that "
               "engagement's subject.", sortable=False),
-    # domain — candidate_domains
+    # domain — scope_candidates of kind 'domain'
     FieldSpec("domain.id", "uuid", "Candidate domain id.", sortable=False),
     FieldSpec("domain.name", "string", "The domain name."),
-    FieldSpec("domain.status", "enum", "Review status.", tuple(sorted(CANDIDATE_STATUSES))),
-    FieldSpec("domain.source", "string", "How the candidate was found (edgar_10k_website, person)."),
-    FieldSpec("domain.entity_id", "uuid", "Entity the domain is attributed to.", sortable=False),
-    FieldSpec("domain.entity_name", "string", "Legal name of that entity."),
-    FieldSpec("domain.family_of", "uuid",
-              "Engagement id. The domain's entity is in the corporate family of that engagement's subject.",
+    FieldSpec("domain.status", "enum",
+              "Review status: open (awaiting a decision, or still a lead), claimed (a person put it in scope), "
+              "rejected.", tuple(sorted(CANDIDATE_STATUSES))),
+    FieldSpec("domain.proposable", "boolean",
+              "The candidate clears the propose bar (a Strong signal, or Supporting signals from two "
+              "families). An open candidate that does not is a lead, not awaiting review.", sortable=False),
+    FieldSpec("domain.root_id", "uuid", "The organization (root company) the candidate belongs to.",
               sortable=False),
+    FieldSpec("domain.entity_id", "uuid",
+              "Company the domain is attributed to; empty until the candidate is claimed.", sortable=False),
+    FieldSpec("domain.entity_name", "string", "Legal name of that company; empty until claimed."),
+    FieldSpec("domain.family_of", "uuid",
+              "Engagement id. The domain's organization is in the corporate family of that engagement's "
+              "subject.", sortable=False),
 )
 
 FIELDS_BY_NAME: dict[str, FieldSpec] = {f.name: f for f in FIELDS}
@@ -296,11 +303,11 @@ ENTITIES: dict[str, dict[str, Any]] = {
                    "relation.object_name"),
     },
     "domain": {
-        "description": "One row per candidate domain (a domain evidence says may belong to a company).",
+        "description": "One row per candidate domain (a domain that signals say may belong to an organization).",
         "namespaces": ("domain",),
         "relations": (),
         "include": (),
-        "output": ("domain.id", "domain.name", "domain.status", "domain.source",
+        "output": ("domain.id", "domain.name", "domain.status", "domain.proposable", "domain.root_id",
                    "domain.entity_id", "domain.entity_name"),
     },
 }
