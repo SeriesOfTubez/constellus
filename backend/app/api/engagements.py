@@ -17,12 +17,15 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_permission
-from app.core.permissions import Permission
+from app.core.permissions import ROLE_PERMISSIONS, Permission
 from app.core.database import get_db
 from app.models.engagement import Engagement, EngagementPosture
+from app.models.role_assignment import RoleAssignment
 from app.models.target import Target
 from app.models.user import User
 from app.services import audit, entity_relationship
@@ -351,4 +354,117 @@ def delete_engagement(
     # planning#240: its subject goes back to unset if this was its last.
     entity_relationship.on_subject_changed(db, added=None, removed=subject_id)
     db.commit()
+    return {"deleted": True}
+
+
+# ── assignments (planning#261) ───────────────────────────────────────────────
+#
+# "Member of an engagement" is holding a role assignment on it. These three
+# routes are the only way to give or take one; the GLOBAL assignment is owned
+# by `users.role` (models/role_assignment.py) and is never touched here.
+
+class AssignmentResponse(BaseModel):
+    user_id: uuid.UUID
+    email: str
+    full_name: str | None
+    role: str
+    created_at: datetime
+
+
+class AssignmentBody(BaseModel):
+    role: str
+
+
+def _engagement_or_404(db: Session, engagement_id: uuid.UUID) -> Engagement:
+    engagement = db.get(Engagement, engagement_id)
+    if not engagement:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    return engagement
+
+
+def _engagement_assignment(db: Session, engagement_id: uuid.UUID, user_id: uuid.UUID) -> RoleAssignment | None:
+    return db.query(RoleAssignment).filter(
+        RoleAssignment.engagement_id == engagement_id, RoleAssignment.user_id == user_id
+    ).first()
+
+
+@router.get("/{engagement_id}/assignments", response_model=list[AssignmentResponse])
+def list_assignments(
+    engagement_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.ENGAGEMENTS_READ_ASSIGNMENTS)),
+):
+    _engagement_or_404(db, engagement_id)
+    rows = (
+        db.query(RoleAssignment, User)
+        .join(User, User.id == RoleAssignment.user_id)
+        .filter(RoleAssignment.engagement_id == engagement_id)
+        .order_by(User.email)
+        .all()
+    )
+    return [
+        AssignmentResponse(user_id=u.id, email=u.email, full_name=u.full_name, role=a.role, created_at=a.created_at)
+        for a, u in rows
+    ]
+
+
+@router.put("/{engagement_id}/assignments/{user_id}", response_model=AssignmentResponse)
+def put_assignment(
+    request: Request,
+    engagement_id: uuid.UUID,
+    user_id: uuid.UUID,
+    data: AssignmentBody,
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.ENGAGEMENTS_MANAGE_ASSIGNMENTS)),
+):
+    """Create or change the user's one assignment on this engagement."""
+    if ROLE_PERMISSIONS.get(data.role) is None:
+        raise HTTPException(status_code=422, detail="unknown role")
+    _engagement_or_404(db, engagement_id)
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    existing = _engagement_assignment(db, engagement_id, user_id)
+    was = existing.role if existing else None
+    # Upsert on the partial unique index, so two concurrent PUTs cannot both
+    # insert and turn the loser into a 500.
+    db.execute(
+        pg_insert(RoleAssignment.__table__)
+        .values(user_id=user_id, engagement_id=engagement_id, role=data.role)
+        .on_conflict_do_update(
+            index_elements=["user_id", "engagement_id"],
+            index_where=text("user_id IS NOT NULL AND engagement_id IS NOT NULL"),
+            set_={"role": data.role},
+        )
+    )
+    db.commit()
+    row = _engagement_assignment(db, engagement_id, user_id)
+    audit.record_detail(
+        request, engagement=str(engagement_id), assigned_user=str(user_id),
+        role={"from": was, "to": data.role},
+    )
+    return AssignmentResponse(
+        user_id=user.id, email=user.email, full_name=user.full_name, role=row.role, created_at=row.created_at
+    )
+
+
+@router.delete("/{engagement_id}/assignments/{user_id}", status_code=200)
+def delete_assignment(
+    request: Request,
+    engagement_id: uuid.UUID,
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.ENGAGEMENTS_MANAGE_ASSIGNMENTS)),
+):
+    """Remove the user's assignment on THIS engagement only (the filter names
+    the engagement, so a global assignment cannot match)."""
+    row = _engagement_assignment(db, engagement_id, user_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    was = row.role
+    db.delete(row)
+    db.commit()
+    audit.record_detail(
+        request, engagement=str(engagement_id), assigned_user=str(user_id), role={"from": was, "to": None},
+    )
     return {"deleted": True}

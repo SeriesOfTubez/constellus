@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.connectors import REGISTRY
@@ -15,9 +16,10 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.asset_hygiene_score import AssetHygieneScore
 from app.models.finding_canonical import FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
+from app.models.user import User
 from app.models.target_asset_link import TargetAssetLink
 
-from app.services import claims_query, hygiene_scorer, metadata_bridge, scan_executor, whois_service
+from app.services import claims_query, hygiene_scorer, metadata_bridge, read_scope, scan_executor, whois_service
 from app.services.asset_chain import chain_target_ids
 
 # ── Severity helpers ──────────────────────────────────────────────────────────
@@ -295,7 +297,7 @@ def list_assets(
     show_ignored: bool = False,
     show_third_party: bool = False,
     db: Session = Depends(get_db),
-    _=Depends(require_permission(Permission.ASSETS_READ)),
+    user: User = Depends(require_permission(Permission.ASSETS_READ)),
 ):
     """List canonical assets. Returns durable identity rows — one per
     (asset_type, value) — not observation rows.
@@ -308,7 +310,7 @@ def list_assets(
     operator reads as "our assets" is the self-inflicted noise this capture
     model is meant to avoid. Same shape as `show_ignored`.
     """
-    q = db.query(AssetCanonical)
+    q = db.query(AssetCanonical).filter(read_scope.asset_clause(user, AssetCanonical))
     if asset_type:
         q = q.filter(AssetCanonical.asset_type == asset_type)
     if not show_ignored:
@@ -365,16 +367,27 @@ def bulk_delete_assets(
     return {"deleted": len(data.asset_ids) + swept}
 
 
+def _readable_asset(db: Session, user, asset_id: uuid.UUID) -> AssetCanonical:
+    """The asset if `user` may read it, else 404 exactly as for an unknown id.
+    Write routes use it too (planning#261, Jason 2026-10-22): a caller cannot
+    change, delete or scan a row it cannot read, nor learn that it exists."""
+    asset = db.execute(
+        select(AssetCanonical).where(AssetCanonical.id == asset_id, read_scope.asset_clause(user, AssetCanonical))
+    ).scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return asset
+
+
 @router.get("/{asset_id}")
 def get_asset(
     asset_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_permission(Permission.ASSETS_READ)),
+    user: User = Depends(require_permission(Permission.ASSETS_READ)),
 ):
-    """Fetch a single canonical asset by ID — drives the full-detail page."""
-    asset = db.get(AssetCanonical, asset_id)
-    if not asset:
-        raise HTTPException(status_code=404, detail="Asset not found")
+    """Fetch a single canonical asset by ID — drives the full-detail page.
+    An asset the caller may not read is answered as absent (404)."""
+    asset = _readable_asset(db, user, asset_id)
     risk = _compute_asset_risk(db, [asset])
     bridge_sources = load_bridge_sources(db, [asset.id])
     surface = claims_query.surface_by_asset(db, [asset.id])
@@ -393,9 +406,7 @@ def set_asset_ignored(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(Permission.ASSETS_UPDATE)),
 ):
-    asset = db.get(AssetCanonical, asset_id)
-    if not asset:
-        raise HTTPException(status_code=404, detail="Asset not found")
+    asset = _readable_asset(db, current_user, asset_id)
 
     if data.ignored:
         if data.reason not in IGNORE_REASONS:
@@ -436,11 +447,9 @@ def set_asset_ignored(
 def delete_asset(
     asset_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_permission(Permission.ASSETS_DELETE)),
+    current_user=Depends(require_permission(Permission.ASSETS_DELETE)),
 ):
-    asset = db.get(AssetCanonical, asset_id)
-    if not asset:
-        raise HTTPException(status_code=404, detail="Asset not found")
+    asset = _readable_asset(db, current_user, asset_id)
     db.delete(asset)
     db.commit()
 
@@ -453,9 +462,7 @@ def scan_asset(
     current_user=Depends(require_permission(Permission.ASSETS_SCAN)),
 ):
     """Kick off an on-demand scan targeting a single asset."""
-    asset = db.get(AssetCanonical, asset_id)
-    if not asset:
-        raise HTTPException(status_code=404, detail="Asset not found")
+    asset = _readable_asset(db, current_user, asset_id)
 
     run = ScanRun(
         id=uuid.uuid4(),

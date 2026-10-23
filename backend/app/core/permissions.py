@@ -23,6 +23,9 @@ DB-defined; `ROLE_PERMISSIONS` then becomes a seed rather than the truth.
 Fail closed: a role this table does not know holds nothing.
 """
 
+import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from app.models.user import UserRole
@@ -64,6 +67,11 @@ class Permission(StrEnum):
     ENGAGEMENTS_UPDATE = "engagements.update"
     ENGAGEMENTS_DELETE = "engagements.delete"
     ENGAGEMENTS_TRANSITION = "engagements.transition"
+    # planning#261: read data under a restricting-posture engagement without
+    # an assignment on it (held globally; see `Grants.reads_all_restricted`)
+    ENGAGEMENTS_READ_RESTRICTED = "engagements.read_restricted"
+    ENGAGEMENTS_READ_ASSIGNMENTS = "engagements.read_assignments"
+    ENGAGEMENTS_MANAGE_ASSIGNMENTS = "engagements.manage_assignments"
 
     # entities (the corporate graph)
     ENTITIES_READ = "entities.read"
@@ -207,8 +215,75 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
 }
 
 
+# ── scoped assignments (planning#261) ────────────────────────────────────────
+
+@dataclass(frozen=True)
+class Grants:
+    """What a principal's role assignments add up to. `global_role` is the role
+    of the global assignment (None if there is none); `engagement_roles` maps
+    engagement id -> role for engagement-scoped ones."""
+
+    global_role: str | None
+    engagement_roles: Mapping[uuid.UUID, str] = field(default_factory=dict)
+
+    def _global_holds(self, permission: Permission) -> bool:
+        return self.global_role is not None and permission in ROLE_PERMISSIONS.get(self.global_role, frozenset())
+
+    def allows(self, permission: Permission) -> bool:
+        """The route gate. A global assignment grants its role's permissions.
+        An engagement-scoped one grants only its role's `<resource>.read`
+        permissions here (Jason, 2026-10-22: read visibility only in slice 1;
+        per-row write checks come with planning#243 slice 2). Which rows it
+        then sees is `read_scope`'s business."""
+        if self._global_holds(permission):
+            return True
+        if not permission.value.endswith(".read"):
+            return False
+        return any(permission in ROLE_PERMISSIONS.get(r, frozenset()) for r in self.engagement_roles.values())
+
+    @property
+    def reads_all_restricted(self) -> bool:
+        """A global role holding `engagements.read_restricted` (admin) reads
+        every engagement's data. Any other global role does NOT: it sees the
+        owned estate and day_0/integrated data only (Jason, 2026-10-22)."""
+        return self._global_holds(Permission.ENGAGEMENTS_READ_RESTRICTED)
+
+    def readable_engagements(self, permission: Permission) -> frozenset[uuid.UUID]:
+        """Engagements whose restricted data an engagement assignment opens
+        for `permission`: the assignment's role must hold it."""
+        return frozenset(e for e, r in self.engagement_roles.items()
+                         if permission in ROLE_PERMISSIONS.get(r, frozenset()))
+
+
+_GRANTS_ATTR = "_planning261_grants"
+
+
+def compute_grants(user) -> Grants:
+    global_role, engagement_roles = None, {}
+    for a in getattr(user, "assignments", None) or ():
+        if a.engagement_id is None:
+            global_role = getattr(a.role, "value", a.role)
+        else:
+            engagement_roles[a.engagement_id] = getattr(a.role, "value", a.role)
+    return Grants(global_role=global_role, engagement_roles=engagement_roles)
+
+
+def snapshot_grants(user) -> Grants:
+    """Compute once and pin on the instance (a plain attribute, so a commit
+    that expires the mapped ones does not drop it and a detached user, as the
+    chat tools hold, still answers). `get_current_user` calls this; nothing
+    else should, so a test that edits a user's assignments sees the edit."""
+    grants = compute_grants(user)
+    user.__dict__[_GRANTS_ATTR] = grants
+    return grants
+
+
+def grants_of(user) -> Grants:
+    return user.__dict__.get(_GRANTS_ATTR) or compute_grants(user)
+
+
 def has_permission(user, permission: Permission) -> bool:
-    """True if `user`'s role holds `permission`. An unknown role holds nothing."""
-    # A `UserRole` member and its value are the same dict key (`str` mixin),
-    # so either form looks up; the enum-member test pins that.
-    return permission in ROLE_PERMISSIONS.get(user.role, frozenset())
+    """True if `user`'s role assignments grant `permission` (`Grants.allows`).
+    `users.role` is NOT read: it only feeds the global assignment
+    (models/role_assignment.py). An unknown role holds nothing."""
+    return grants_of(user).allows(permission)

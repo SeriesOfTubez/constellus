@@ -23,6 +23,9 @@
  "DELETE /api/engagements/{engagement_id}": [
   "admin"
  ],
+ "DELETE /api/engagements/{engagement_id}/assignments/{user_id}": [
+  "admin"
+ ],
  "DELETE /api/entities/{entity_id}/registrant-link": [
   "admin"
  ],
@@ -173,6 +176,9 @@
   "integration_admin",
   "report_admin",
   "viewer"
+ ],
+ "GET /api/engagements/{engagement_id}/assignments": [
+  "admin"
  ],
  "GET /api/entities/": [
   "admin",
@@ -702,6 +708,9 @@
  "PUT /api/connectors/{connector_id}/zones": [
   "admin",
   "integration_admin"
+ ],
+ "PUT /api/engagements/{engagement_id}/assignments/{user_id}": [
+  "admin"
  ],
  "PUT /api/entities/{entity_id}/relationship": [
   "admin",

@@ -43,16 +43,17 @@ from app.api.deps import get_current_user
 from app.core.database import SessionLocal, get_db
 from app.core.permissions import ROLE_PERMISSIONS
 from app.models.user import User, UserRole
+from app.tests._users import user_with
 
 
 def _user(role: UserRole) -> User:
     """An unpersisted User. `require_permission` and `get_current_user` only read
     attributes, so there is no reason to write a row to the dev DB."""
-    return User(
+    return user_with(
+        role.value,
         id=uuid.uuid4(),
         email=f"rbac-test-{role.value}@example.invalid",
         full_name=f"RBAC test {role.value}",
-        role=role.value,
         is_active=True,
     )
 

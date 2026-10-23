@@ -46,12 +46,62 @@ import functools
 import ipaddress
 import uuid
 
-from sqlalchemy import or_
+from sqlalchemy import and_, case, cast, exists, false, func, literal, or_
+from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.orm import Session
 
 from app.models.asset_canonical import AssetCanonical
 from app.models.target import Target, TargetType
 from app.models.target_asset_link import TargetAssetLink
+
+
+def asset_falls_under(asset, target):
+    """SQL: does `asset` (an AssetCanonical entity or alias) fall under
+    `target` (a Target entity or alias)? THE definition (planning#261,
+    Jason 2026-10-22): the read rule (`read_scope`) and the LLM-scope resolver
+    (write-up service's scope resolver) both use it, so the two cannot disagree
+    for the same asset. Three legs, OR'd:
+
+    - a `target_asset_links` row (written only by domain discovery);
+    - a domain target the asset's `value` or `parent_value` equals or is a
+      subdomain of (lowercased, trailing dot stripped). `right(...) = '.' || t`
+      rather than LIKE, so `_` and `%` in stored values match literally;
+    - an IP/CIDR target whose network contains the `ip_address` asset's
+      address. Containment only runs when both sides parse as `inet` (CASE,
+      because SQL does not promise AND evaluates left first); an asset value
+      carrying a prefix length is not an address and never matches, as in
+      `ipaddress.ip_address`. Mixed families never contain each other.
+    """
+    def norm(col):
+        return func.lower(func.rtrim(col, "."))
+
+    t = norm(target.value)
+
+    def under(col):
+        n = norm(col)
+        return or_(n == t, func.right(n, func.length(t) + 1) == literal(".").concat(t))
+
+    # correlate_except: nested inside read_scope's EXISTS over targets, this
+    # block would otherwise auto-correlate only one level up and pull
+    # `assets_canonical` into its own FROM, i.e. "linked to ANY asset".
+    linked = exists().where(
+        TargetAssetLink.target_id == target.id,
+        TargetAssetLink.asset_canonical_id == asset.id,
+    ).correlate_except(TargetAssetLink)
+    domain = and_(target.type == TargetType.DOMAIN.value, or_(under(asset.value), under(asset.parent_value)))
+    contained = case(
+        (
+            and_(
+                func.pg_input_is_valid(asset.value, "inet"),
+                func.strpos(asset.value, "/") == 0,
+                func.pg_input_is_valid(target.value, "inet"),
+            ),
+            cast(asset.value, INET).op("<<=")(cast(target.value, INET)),
+        ),
+        else_=false(),
+    )
+    ip = and_(target.type != TargetType.DOMAIN.value, asset.asset_type == "ip_address", contained)
+    return or_(linked, domain, ip)
 
 
 def target_scoped_asset_ids(db: Session, scope: dict) -> set[uuid.UUID]:

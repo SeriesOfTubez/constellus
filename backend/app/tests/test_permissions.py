@@ -25,7 +25,6 @@ import pkgutil
 import re
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -44,6 +43,7 @@ from app.models.target import Target, TargetType
 from app.models.user import User, UserRole
 from app.tests import _docaddr
 from app.tests._route_access import iter_app_routes, walk
+from app.tests._users import user_with
 from app.tests._engagement import cleanup_engagement, make_engagement
 from app.tests._entity_graph import cleanup_entity, make_entity
 from app.tests.test_edgar_ingest_api import _cleanup_user, _make_user
@@ -69,6 +69,9 @@ PUBLIC_ROUTES = {
     "POST /api/auth/saml/acs",    # the IdP posts the assertion here
     "POST /api/auth/setup",       # creates the first admin; refuses once one exists
 }
+
+# Held by read_scope through `Grants`, not by an API `has_permission` call.
+SERVICE_SIDE = {Permission.ENGAGEMENTS_READ_RESTRICTED}
 
 # Decisions taken inside a handler on request content (not by the route's
 # dependency). Each must appear in `app/api/` as `has_permission(..., X)`.
@@ -171,7 +174,7 @@ def test_require_role_is_gone_and_no_handler_compares_a_role():
 # ═════════════════════════ 3. catalogue hygiene ══════════════════════════════
 
 def test_every_permission_is_used_and_every_value_is_well_formed():
-    used = {p for _, r in _module_routes() for p in _permissions_in(r)} | IN_BODY
+    used = {p for _, r in _module_routes() for p in _permissions_in(r)} | IN_BODY | SERVICE_SIDE
     assert used == set(Permission), f"unused: {sorted(set(Permission) - used)}"
     for p in Permission:
         assert re.fullmatch(r"[a-z_]+\.[a-z_]+", p.value), p.value
@@ -183,8 +186,14 @@ def test_in_body_permissions_are_really_checked_in_the_api_code():
         assert re.search(rf"has_permission\([^)]*Permission\.{p.name}\b", source), p
 
 
+def test_service_side_permissions_are_really_checked_in_the_grants():
+    source = (API_DIR.parent / "core" / "permissions.py").read_text()
+    for p in SERVICE_SIDE:
+        assert f"Permission.{p.name}" in source, p
+
+
 def test_in_body_permissions_are_admin_only():
-    for p in IN_BODY:
+    for p in IN_BODY | SERVICE_SIDE:
         holders = sorted(r for r, held in ROLE_PERMISSIONS.items() if p in held)
         assert holders == [ADMIN], (p, holders)
 
@@ -207,23 +216,23 @@ def test_viewer_holds_every_read_the_baseline_let_it_do():
 
 def test_an_unknown_role_holds_nothing():
     for role in ("nobody", "", None, "ADMIN", "Admin"):
-        ghost = SimpleNamespace(role=role)
+        ghost = user_with(role)
         assert not any(has_permission(ghost, p) for p in Permission), role
 
 
 def test_has_permission_accepts_the_enum_member_as_well_as_its_value():
-    assert has_permission(SimpleNamespace(role=UserRole.ADMIN), Permission.USERS_CREATE)
-    assert has_permission(SimpleNamespace(role="admin"), Permission.USERS_CREATE)
-    assert not has_permission(SimpleNamespace(role=UserRole.VIEWER), Permission.USERS_CREATE)
+    assert has_permission(user_with(UserRole.ADMIN), Permission.USERS_CREATE)
+    assert has_permission(user_with("admin"), Permission.USERS_CREATE)
+    assert not has_permission(user_with(UserRole.VIEWER), Permission.USERS_CREATE)
 
 
 def test_require_permission_tags_and_enforces():
     dep = require_permission(Permission.USERS_CREATE)
     assert dep.permission is Permission.USERS_CREATE
-    admin = SimpleNamespace(role=ADMIN)
+    admin = user_with(ADMIN)
     assert dep(current_user=admin) is admin
     with pytest.raises(HTTPException) as exc:
-        dep(current_user=SimpleNamespace(role=VIEWER))
+        dep(current_user=user_with(VIEWER))
     assert exc.value.status_code == 403 and exc.value.detail == "Insufficient permissions"
 
 

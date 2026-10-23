@@ -98,6 +98,7 @@ from app.models.user import User, UserRole
 from app.services import probe_authorisation as pa
 from app.tests import _decision_log
 from app.tests._docaddr import alloc as _alloc_ip
+from app.tests._users import user_with
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -211,11 +212,11 @@ def _admin_client() -> TestClient:
             db.close()
 
     app.dependency_overrides[get_db] = _db
-    admin = User(
+    admin = user_with(
+        UserRole.ADMIN.value,
         id=uuid.uuid4(),
         email=f"pa195-admin-{uuid.uuid4().hex[:8]}@example.invalid",
         full_name="pa195 admin",
-        role=UserRole.ADMIN.value,
         is_active=True,
     )
     app.dependency_overrides[get_current_user] = lambda: admin

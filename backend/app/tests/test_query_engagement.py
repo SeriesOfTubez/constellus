@@ -24,11 +24,14 @@ from app.services import query_compiler, query_schema
 from app.services.query_schema import QueryError, validate
 from app.tests._docaddr import alloc
 from app.tests._engagement import make_engagement
+from app.tests._users import user_with
 
 
 def _user() -> User:
-    return User(id=uuid.uuid4(), email="qe-viewer@example.invalid", full_name="qe",
-                role=UserRole.VIEWER.value, is_active=True)
+    """An ADMIN: the fixture engagements are pre_close and this file tests membership,
+    not read scope (planning#261; see test_read_scope.py)."""
+    return user_with(UserRole.ADMIN.value, id=uuid.uuid4(), email="qe-viewer@example.invalid", full_name="qe",
+                     is_active=True)
 
 
 @pytest.fixture(scope="module")
