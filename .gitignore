@@ -50,3 +50,8 @@ frontend/node_modules/
 
 # Design mockups/inspo — local reference only, not part of the repo
 /design/
+
+# Worktree symlinks (scripts/wt-new.sh): a trailing-slash pattern matches only
+# directories, so a symlink named .venv / node_modules needs its own entry.
+/backend/.venv
+/frontend/node_modules
