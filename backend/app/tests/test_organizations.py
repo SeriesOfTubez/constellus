@@ -150,6 +150,9 @@ def test_an_ma_organization_creates_a_pre_close_engagement_and_a_viewer_assignme
     # planning#277 S1a spec asked for the authorisation fields here; migration 0059's
     # ck_engagements_authorisation_matches_posture forbids them on a pre_close engagement.
     assert (eng.authorised_by_id, eng.authorised_at, eng.authorisation_reference) == (None, None, None)
+    # ...but the reference is queryable on its own columns.
+    assert (eng.deal_reference, eng.deal_reference_by_id) == (kw["reference"], creator.id)
+    assert eng.deal_reference_at is not None
 
     assert (result.assignment.user_id, result.assignment.role, result.assignment.engagement_id) == (
         creator.id, "viewer", eng.id,
@@ -157,6 +160,15 @@ def test_an_ma_organization_creates_a_pre_close_engagement_and_a_viewer_assignme
     assert w.db.query(RoleAssignment).filter_by(user_id=creator.id, engagement_id=eng.id).count() == 1
     assert (result.target.engagement_id, result.target.entity_id, result.candidate.accepted_into,
             result.candidate.engagement_id) == (eng.id, e.id, "engagement", eng.id)
+
+
+def test_an_ours_organization_creates_no_engagement_so_no_deal_reference(w):
+    kw = _kw(w, reference="DEAL-0001")
+    result = organizations.add_organization(w.db, **kw)
+    _track(w, result)
+    assert result.entity.ours_reference == "DEAL-0001"  # the path was reached: the reference landed on the entity
+    assert result.engagement is None
+    assert w.db.query(Engagement).filter(Engagement.subject_entity_id == result.entity.id).count() == 0
 
 
 def test_an_admin_adding_an_ma_organization_gets_no_assignment(w):
@@ -389,6 +401,7 @@ def test_post_organizations_ma_target_with_a_cik_schedules_the_ingest(w, monkeyp
     out = r.json()
     w.entities.append(uuid.UUID(out["organization_id"]))
     assert out["engagement"]["posture"] == "pre_close" and out["ingest"] == "queued"
+    assert out["engagement"]["deal_reference"] == body["reference"].strip()
     assert len(scheduled) == 1
     run_id, entity_id, scheduled_cik, user_id, followup = scheduled[0]
     assert (str(run_id), str(entity_id), scheduled_cik, user_id) == (
@@ -477,6 +490,8 @@ def test_list_organizations_summarises_roots_and_counts(w):
     assert (d["relationship"], d["engagement"]["id"], d["engagement"]["posture"]) == ("ma_target", str(eng.id), "pre_close")
     s = by_id[str(seeded.entity.id)]
     assert s["seed_domain"] == seeded.candidate.value and s["claimed"] == 1 and s["engagement"]["name"] == seeded.engagement.name
+    assert seeded.engagement.deal_reference and s["engagement"]["deal_reference"] == seeded.engagement.deal_reference
+    assert d["engagement"]["deal_reference"] is None       # created without one
 
 
 def test_candidates_default_to_open_and_proposable_sorted_by_strength(w):

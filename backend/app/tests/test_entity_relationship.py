@@ -498,3 +498,78 @@ def test_an_integrated_engagement_is_never_flipped_to_ours(w):
     w.db.refresh(subject)
     assert subject.relationship == "ma_target"
     assert er.resolve(w.db, subject.id).engagements[0].id == eng.id
+
+
+# ── planning#277 S1a: engagements.deal_reference ────────────────────────────
+
+
+def test_relationship_route_stores_the_reference_on_a_new_engagement_only(w):
+    admin = w.headers(UserRole.ADMIN.value)
+    e = w.entity()
+    r = _put(e.id, admin, relationship="ma_target", new_engagement_name=f"er277-{_hex()}", reference="DEAL-0001")
+    assert r.status_code == 200
+    eng = w.db.query(Engagement).filter(Engagement.subject_entity_id == e.id).one()
+    assert eng.deal_reference == "DEAL-0001"
+    assert eng.deal_reference_by_id is not None and eng.deal_reference_at is not None
+    assert eng.authorised_at is None  # untouched: the CHECK ties these to posture
+
+    # An existing engagement is linked, never overwritten.
+    other = w.entity()
+    existing = w.engagement()
+    r = _put(other.id, admin, relationship="ma_target", engagement_id=str(existing.id), reference="DEAL-0002")
+    assert r.status_code == 200
+    w.db.refresh(existing)
+    assert existing.subject_entity_id == other.id  # the path was reached
+    assert (existing.deal_reference, existing.deal_reference_by_id, existing.deal_reference_at) == (None, None, None)
+
+    # With a pre-set value on the existing engagement, it stays.
+    third = w.entity()
+    kept = w.engagement()
+    kept.deal_reference, kept.deal_reference_at = "DEAL-ORIGINAL", datetime.now(timezone.utc)
+    w.db.commit()
+    r = _put(third.id, admin, relationship="ma_target", engagement_id=str(kept.id), reference="DEAL-0003")
+    assert r.status_code == 200
+    w.db.refresh(kept)
+    assert kept.subject_entity_id == third.id and kept.deal_reference == "DEAL-ORIGINAL"
+
+
+def test_post_engagements_with_and_without_deal_reference(w):
+    admin = w.headers(UserRole.ADMIN.value)
+    r = client.post("/api/engagements/", json={"name": f"er277-{_hex()}", "deal_reference": "  DEAL-0001 "}, headers=admin)
+    assert r.status_code == 201
+    w.engagements.append(uuid.UUID(r.json()["id"]))
+    body = r.json()
+    assert body["deal_reference"] == "DEAL-0001" and body["deal_reference_at"] is not None
+    assert body["deal_reference_by"] is not None and body["deal_reference_by"].endswith("@example.invalid")
+
+    got = client.get(f"/api/engagements/{body['id']}", headers=admin).json()
+    assert (got["deal_reference"], got["deal_reference_at"], got["deal_reference_by"]) == (
+        body["deal_reference"], body["deal_reference_at"], body["deal_reference_by"],
+    )
+    listed = [x for x in client.get("/api/engagements/", headers=admin).json() if x["id"] == body["id"]]
+    assert len(listed) == 1 and listed[0]["deal_reference"] == "DEAL-0001"
+    assert listed[0]["deal_reference_by"] == body["deal_reference_by"]
+
+    for extra in ({}, {"deal_reference": None}, {"deal_reference": "   "}):
+        r = client.post("/api/engagements/", json={"name": f"er277-{_hex()}", **extra}, headers=admin)
+        assert r.status_code == 201
+        w.engagements.append(uuid.UUID(r.json()["id"]))
+        assert (r.json()["deal_reference"], r.json()["deal_reference_at"], r.json()["deal_reference_by"]) == (None, None, None)
+
+
+@pytest.mark.parametrize("ref,at", [("DEAL-0001", None), (None, "now"), ("   ", "now"), ("", "now")])
+def test_deal_reference_check_refuses_inconsistent_rows(w, ref, at):
+    eng = w.engagement()
+    eng.deal_reference = ref
+    eng.deal_reference_at = datetime.now(timezone.utc) if at == "now" else None
+    with pytest.raises(IntegrityError):
+        w.db.commit()
+    w.db.rollback()
+
+
+def test_deal_reference_check_admits_set_together_and_unset(w):
+    eng = w.engagement()
+    eng.deal_reference, eng.deal_reference_at = "DEAL-0001", datetime.now(timezone.utc)
+    w.db.commit()
+    eng.deal_reference, eng.deal_reference_at = None, None
+    w.db.commit()

@@ -824,6 +824,7 @@ def set_relationship(
             entity, previous, engagement, created = entity_relationship.set_ma_target(
                 db, entity_id=entity_id, user=current_user, engagement_id=data.engagement_id,
                 new_engagement_name=data.new_engagement_name, may_clear_ours=may_mark_ours,
+                deal_reference=data.reference,
             )
             engagement_fields = {"engagement": str(engagement.id), "engagement_created": created}
         elif data.relationship is None:

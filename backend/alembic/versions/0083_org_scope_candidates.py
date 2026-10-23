@@ -248,6 +248,23 @@ FOR EACH ROW EXECUTE FUNCTION candidate_domains_guard();
 
 
 def upgrade() -> None:
+    # The M&A deal reference, queryable on the engagement. Separate from
+    # `authorised_*` (0059's CHECK ties those to day_0/integrated, where they
+    # mean "cleared to scan actively"). `deal_reference_by_id` is outside the
+    # CHECK: its FK is ON DELETE SET NULL.
+    op.add_column("engagements", sa.Column("deal_reference", sa.Text(), nullable=True))
+    op.add_column(
+        "engagements",
+        sa.Column("deal_reference_by_id", UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+    )
+    op.add_column("engagements", sa.Column("deal_reference_at", sa.DateTime(timezone=True), nullable=True))
+    op.create_check_constraint(
+        "ck_engagements_deal_reference_set",
+        "engagements",
+        "(deal_reference IS NULL) = (deal_reference_at IS NULL)"
+        " AND (deal_reference IS NULL OR btrim(deal_reference) <> '')",
+    )
+
     # The old table, its guard trigger and function. Nothing else references
     # it (0065 and 0075 only mention it in prose).
     op.execute("DROP TRIGGER IF EXISTS trg_candidate_domains_guard ON candidate_domains")
@@ -363,6 +380,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_constraint("ck_engagements_deal_reference_set", "engagements", type_="check")
+    op.drop_column("engagements", "deal_reference_at")
+    op.drop_column("engagements", "deal_reference_by_id")
+    op.drop_column("engagements", "deal_reference")
     op.execute("DROP TRIGGER IF EXISTS trg_scope_candidate_events_append_only ON scope_candidate_events")
     op.execute("DROP FUNCTION IF EXISTS scope_candidate_events_append_only()")
     op.drop_index("ix_scope_candidate_events_candidate", table_name="scope_candidate_events")

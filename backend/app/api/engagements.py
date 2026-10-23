@@ -88,6 +88,9 @@ class EngagementResponse(BaseModel):
     authorised_at: str | None
     authorisation_reference: str | None
     authorised_by: str | None
+    deal_reference: str | None = None
+    deal_reference_at: str | None = None
+    deal_reference_by: str | None = None
     created_at: str
     member_targets: list[MemberTarget]
     # planning#212 (L3) — the corporate entity this engagement's subject is
@@ -97,6 +100,7 @@ class EngagementResponse(BaseModel):
 
 class CreateEngagementRequest(BaseModel):
     name: str
+    deal_reference: str | None = None
 
 
 class TransitionRequest(BaseModel):
@@ -134,6 +138,9 @@ def _to_response(db: Session, e: Engagement) -> EngagementResponse:
         authorised_at=e.authorised_at.isoformat() if e.authorised_at else None,
         authorisation_reference=e.authorisation_reference,
         authorised_by=_authorised_by_email(db, e.authorised_by_id),
+        deal_reference=e.deal_reference,
+        deal_reference_at=e.deal_reference_at.isoformat() if e.deal_reference_at else None,
+        deal_reference_by=_authorised_by_email(db, e.deal_reference_by_id),
         created_at=e.created_at.isoformat(),
         member_targets=_member_targets(db, e.id),
         subject_entity_id=e.subject_entity_id,
@@ -164,6 +171,7 @@ def list_engagements(
         targets_by_engagement.setdefault(eid, []).append(MemberTarget(id=tid, value=value, type=ttype))
 
     authoriser_ids = {e.authorised_by_id for e in engagements if e.authorised_by_id is not None}
+    authoriser_ids |= {e.deal_reference_by_id for e in engagements if e.deal_reference_by_id is not None}
     email_by_id: dict[uuid.UUID, str] = {}
     if authoriser_ids:
         email_by_id = {
@@ -180,6 +188,9 @@ def list_engagements(
             authorised_at=e.authorised_at.isoformat() if e.authorised_at else None,
             authorisation_reference=e.authorisation_reference,
             authorised_by=email_by_id.get(e.authorised_by_id) if e.authorised_by_id else None,
+            deal_reference=e.deal_reference,
+            deal_reference_at=e.deal_reference_at.isoformat() if e.deal_reference_at else None,
+            deal_reference_by=email_by_id.get(e.deal_reference_by_id) if e.deal_reference_by_id else None,
             created_at=e.created_at.isoformat(),
             member_targets=targets_by_engagement.get(e.id, []),
             subject_entity_id=e.subject_entity_id,
@@ -204,7 +215,7 @@ def get_engagement(
 def create_engagement(
     data: CreateEngagementRequest,
     db: Session = Depends(get_db),
-    _=Depends(require_permission(Permission.ENGAGEMENTS_CREATE)),
+    current_user=Depends(require_permission(Permission.ENGAGEMENTS_CREATE)),
 ):
     """Creates in `pre_close` — the restricting posture, the safe direction
     to default to (matches today's `patch_target` role pair: attaching a
@@ -217,6 +228,11 @@ def create_engagement(
         raise HTTPException(status_code=409, detail="an engagement with this name already exists")
 
     engagement = Engagement(id=uuid.uuid4(), name=name, posture=EngagementPosture.PRE_CLOSE.value)
+    ref = (data.deal_reference or "").strip()
+    if ref:
+        engagement.deal_reference = ref
+        engagement.deal_reference_by_id = current_user.id
+        engagement.deal_reference_at = datetime.now(timezone.utc)
     db.add(engagement)
     db.commit()
     db.refresh(engagement)

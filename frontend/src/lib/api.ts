@@ -297,6 +297,9 @@ export type Engagement = {
   authorised_at: string | null
   authorisation_reference: string | null
   authorised_by: string | null
+  deal_reference?: string | null
+  deal_reference_at?: string | null
+  deal_reference_by?: string | null
   created_at: string
   member_targets: { id: string; value: string; type: Target["type"] }[]
   // planning#212 (L3) — the corporate entity this engagement's subject is

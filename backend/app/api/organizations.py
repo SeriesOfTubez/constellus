@@ -51,6 +51,7 @@ class EngagementRef(BaseModel):
     id: uuid.UUID
     name: str
     posture: str
+    deal_reference: str | None = None
 
 
 class OrganizationSummary(BaseModel):
@@ -422,7 +423,7 @@ def add_organization(
     return AddOrganizationResponse(
         organization_id=entity.id,
         relationship=data.relationship,
-        engagement=EngagementRef(id=engagement.id, name=engagement.name, posture=engagement.posture) if engagement else None,
+        engagement=EngagementRef(id=engagement.id, name=engagement.name, posture=engagement.posture, deal_reference=engagement.deal_reference) if engagement else None,
         candidate_id=result.candidate.id,
         target_id=result.target.id,
         assignment_role=result.assignment.role if result.assignment else None,
@@ -492,7 +493,7 @@ def list_organizations(
         e = engagements.get(r.id) if r.relationship == "ma_target" else None
         out.append(OrganizationSummary(
             id=r.id, name=r.legal_name, relationship=r.relationship, seed_domain=seeds.get(r.id),
-            engagement=EngagementRef(id=e.id, name=e.name, posture=e.posture) if e else None,
+            engagement=EngagementRef(id=e.id, name=e.name, posture=e.posture, deal_reference=e.deal_reference) if e else None,
             claimed=c.claimed if c else 0, proposed=c.proposed if c else 0,
             leads=c.leads if c else 0, rejected=c.rejected if c else 0,
         ))

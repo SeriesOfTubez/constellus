@@ -159,7 +159,8 @@ def _write(
         entity_relationship._apply_ours(db, entity, reference, user)
     else:
         _prev, engagement, engagement_created = entity_relationship._apply_ma_target(
-            db, entity, user, None, engagement_name, may_mark_ours
+            db, entity, user, None, engagement_name, may_mark_ours,
+            deal_reference=reference,
         )
 
     # ── 5. the seed domain: signal, then claim ─────────────────────────────
