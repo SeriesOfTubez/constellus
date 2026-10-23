@@ -34,13 +34,14 @@ from app.models.finding_canonical import FindingCanonical
 from app.models.user import User, UserRole
 from app.services import query_compiler, query_schema, read_scope
 from app.services.query_schema import QueryError, validate
+from app.tests._users import user_with
 
 
 # ── fixture ─────────────────────────────────────────────────────────────────
 
 def _user(role: UserRole = UserRole.VIEWER) -> User:
-    return User(id=uuid.uuid4(), email=f"ql-{role.value}@example.invalid",
-                full_name="ql", role=role.value, is_active=True)
+    return user_with(role.value, id=uuid.uuid4(), email=f"ql-{role.value}@example.invalid",
+                     full_name="ql", is_active=True)
 
 
 @pytest.fixture(scope="module")

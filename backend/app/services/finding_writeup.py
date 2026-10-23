@@ -52,7 +52,9 @@ no links, no images).
 
 `resolve_scope` gathers every target the asset falls under: linked rows
 (`target_asset_links`), domain targets its value or parent is under, and
-IP/CIDR targets containing it. One shared engagement (or none, for every
+IP/CIDR targets containing it, rendered in SQL by
+`target_scope.asset_falls_under` (planning#261: the predicate the read rule
+uses too). One shared engagement (or none, for every
 target) → that target's id, so the connector applies that engagement's
 posture. Targets that span engagements → `force_strict`. No target at all
 → unscoped (the deployment policy).
@@ -79,7 +81,6 @@ row and the same `generate` as an on-demand one; only the requester differs.
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import json
 import logging
 import re
@@ -101,10 +102,10 @@ from app.models.engagement import Engagement
 from app.models.finding_ai_writeup import WRITEUP_ACTIVE, FindingAiWriteup
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
 from app.models.llm_call import LlmCall
-from app.models.target import Target, TargetType
-from app.models.target_asset_link import TargetAssetLink
+from app.models.target import Target
 from app.services import app_settings, llm_connector, projector
 from app.services.llm_grounding import check_path_grounding
+from app.services.target_scope import asset_falls_under
 
 log = logging.getLogger(__name__)
 
@@ -179,49 +180,20 @@ class Scope:
     force_strict: bool
 
 
-def _asset_ip(asset: AssetCanonical):
-    if asset.asset_type != "ip_address":
-        return None
-    try:
-        return ipaddress.ip_address(asset.value)
-    except ValueError:
-        return None
-
-
-def _falls_under(target: Target, linked: set, names: set[str], ip) -> bool:
-    if target.id in linked:
-        return True
-    value = (target.value or "").lower().rstrip(".")
-    if target.type == TargetType.DOMAIN.value:
-        return any(n == value or n.endswith("." + value) for n in names)
-    if ip is None:
-        return False
-    try:
-        network = ipaddress.ip_network(target.value, strict=False)
-    except ValueError:
-        return False
-    return ip.version == network.version and ip in network
-
-
 def _targets_for_assets(db: Session, assets: list[AssetCanonical]) -> dict[uuid.UUID, list[Target]]:
-    """asset id -> every target the asset falls under: linked rows, plus
-    domain targets its name is under and CIDR/IP targets its address is in.
-    Two queries however many assets."""
+    """asset id -> every target the asset falls under. One query, rendered by
+    `target_scope.asset_falls_under`: the same predicate `read_scope` uses, so
+    the write-up policy and visibility never disagree (planning#261)."""
     if not assets:
         return {}
-    linked: dict[uuid.UUID, set] = {}
-    for asset_id, target_id in db.execute(
-        select(TargetAssetLink.asset_canonical_id, TargetAssetLink.target_id)
-        .where(TargetAssetLink.asset_canonical_id.in_([a.id for a in assets]))
-    ):
-        linked.setdefault(asset_id, set()).add(target_id)
-    targets = list(db.execute(select(Target)).scalars())
-    out: dict[uuid.UUID, list[Target]] = {}
-    for asset in assets:
-        names = {v.lower().rstrip(".") for v in (asset.value, asset.parent_value) if v}
-        ip = _asset_ip(asset)
-        mine = linked.get(asset.id, set())
-        out[asset.id] = [t for t in targets if _falls_under(t, mine, names, ip)]
+    out: dict[uuid.UUID, list[Target]] = {a.id: [] for a in assets}
+    for asset_id, target in db.execute(
+        select(AssetCanonical.id, Target)
+        .join(Target, asset_falls_under(AssetCanonical, Target))
+        .where(AssetCanonical.id.in_(list(out)))
+        .order_by(AssetCanonical.id, Target.id)
+    ).all():
+        out[asset_id].append(target)
     return out
 
 

@@ -64,14 +64,14 @@ def _visible_engagement(db: Session, user: User, engagement_id: uuid.UUID) -> En
     """404 for an unknown engagement AND for one the read scope hides, so the
     second is not confirmed to exist."""
     engagement = db.get(Engagement, engagement_id)
-    if engagement is None or not read_scope.engagement_visible(user, engagement_id):
+    if engagement is None or not read_scope.engagement_visible(db, user, engagement_id):
         raise HTTPException(status_code=404, detail="Engagement not found")
     return engagement
 
 
 def _visible_report(db: Session, user: User, report_id: uuid.UUID) -> Report:
     r = db.get(Report, report_id)
-    if r is None or not read_scope.engagement_visible(user, r.engagement_id):
+    if r is None or not read_scope.engagement_visible(db, user, r.engagement_id):
         raise HTTPException(status_code=404, detail="Report not found")
     return r
 

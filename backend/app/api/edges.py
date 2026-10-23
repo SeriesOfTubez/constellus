@@ -16,7 +16,7 @@ import uuid
 from typing import Iterable
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_permission
@@ -26,7 +26,8 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.asset_edge import EDGE_TYPES, NODE_TYPES, AssetEdge
 from app.models.finding_canonical import FindingCanonical
 from app.models.target import Target
-from app.services import metadata_bridge
+from app.models.user import User
+from app.services import metadata_bridge, read_scope
 
 router = APIRouter()
 
@@ -66,11 +67,18 @@ def get_edges(
     node_type: str,
     node_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_permission(Permission.GRAPH_READ)),
+    user: User = Depends(require_permission(Permission.GRAPH_READ)),
 ):
-    """Return all hydrated edges touching this node, grouped by edge_type + direction."""
+    """Return all hydrated edges touching this node, grouped by edge_type + direction.
+
+    Read scope (planning#261): a root node the caller may not read answers
+    exactly as an unknown id does (an empty graph, 200), and an edge whose OTHER endpoint they may not read
+    is dropped, so the graph never confirms that a hidden node exists.
+    `whois_org` nodes are not hydrated at all (and so never rendered) today."""
     if node_type not in NODE_TYPES:
         raise HTTPException(status_code=400, detail=f"Unknown node_type: {node_type}")
+    if not _root_readable(db, user, node_type, node_id):
+        return {"groups": []}
 
     rows: list[AssetEdge] = (
         db.query(AssetEdge)
@@ -104,7 +112,7 @@ def get_edges(
         for other_type, other_id, _meta in items:
             ids_by_type.setdefault(other_type, set()).add(other_id)
 
-    hydrated = _hydrate(db, ids_by_type)
+    hydrated = _hydrate(db, ids_by_type, user)
 
     groups: list[dict] = []
     for (edge_type, direction), items in buckets.items():
@@ -130,7 +138,7 @@ def get_edges(
     # Derived: shares_ip_with — DNS records that resolve to the same IPs as the
     # queried node. Computed via 2-hop join, not stored as edges (materializing
     # would blow up the table: N records sharing an IP → N*(N-1) edges).
-    derived = _shares_ip_with(db, node_type, node_id)
+    derived = _shares_ip_with(db, user, node_type, node_id)
     if derived:
         groups.append(derived)
 
@@ -138,8 +146,28 @@ def get_edges(
     return {"groups": groups}
 
 
+def _root_readable(db: Session, user: User, node_type: str, node_id: uuid.UUID) -> bool:
+    """False only for an asset/finding/target `user` may not read. Other node
+    types, and ids that do not exist, pass: an unknown id already renders as an
+    empty graph, and the caller renders a hidden root the same way."""
+    if node_type == "asset_canonical":
+        hidden = select(AssetCanonical.id).where(
+            AssetCanonical.id == node_id, ~read_scope.asset_clause(user, AssetCanonical))
+    elif node_type == "finding_canonical":
+        hidden = (select(FindingCanonical.id)
+                  .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
+                  .where(FindingCanonical.id == node_id,
+                         ~read_scope.finding_clause(user, FindingCanonical, AssetCanonical)))
+    elif node_type == "target":
+        hidden = select(Target.id).where(Target.id == node_id, ~read_scope.target_clause(user, Target))
+    else:
+        return True
+    return db.execute(hidden).first() is None
+
+
 def _shares_ip_with(
     db: Session,
+    user: User,
     node_type: str,
     node_id: uuid.UUID,
 ) -> dict | None:
@@ -179,6 +207,7 @@ def _shares_ip_with(
         .filter(
             AssetCanonical.id.in_(ip_ids),
             AssetCanonical.asset_type == "ip_address",
+            read_scope.asset_clause(user, AssetCanonical),
         )
         .all()
     )
@@ -195,6 +224,7 @@ def _shares_ip_with(
             AssetEdge.edge_type == "resolves_to",
             AssetEdge.source_id != node_id,
             AssetCanonical.asset_type == "dns_record",
+            read_scope.asset_clause(user, AssetCanonical),
         )
         .all()
     )
@@ -223,7 +253,7 @@ def _shares_ip_with(
     all_via_ips = {ip for ips in ips_by_sibling.values() for ip in ips}
     ip_value_rows = (
         db.query(AssetCanonical.id, AssetCanonical.value)
-        .filter(AssetCanonical.id.in_(all_via_ips))
+        .filter(AssetCanonical.id.in_(all_via_ips), read_scope.asset_clause(user, AssetCanonical))
         .all()
     )
     ip_value_by_id = {r[0]: r[1] for r in ip_value_rows}
@@ -248,13 +278,16 @@ def _shares_ip_with(
 def _hydrate(
     db: Session,
     ids_by_type: dict[str, set[uuid.UUID]],
+    user: User,
 ) -> dict[tuple[str, uuid.UUID], dict]:
-    """Load nodes by (type, ids) and return a flat lookup."""
+    """Load nodes by (type, ids) and return a flat lookup. Nodes `user` may not
+    read are left out, which makes the caller drop the edges leading to them."""
     out: dict[tuple[str, uuid.UUID], dict] = {}
 
     asset_ids = ids_by_type.get("asset_canonical")
     if asset_ids:
-        rows = db.query(AssetCanonical).filter(AssetCanonical.id.in_(asset_ids)).all()
+        rows = (db.query(AssetCanonical)
+                .filter(AssetCanonical.id.in_(asset_ids), read_scope.asset_clause(user, AssetCanonical)).all())
         summaries = _asset_summaries(db, rows)
         for r in rows:
             out[("asset_canonical", r.id)] = {
@@ -268,7 +301,10 @@ def _hydrate(
 
     finding_ids = ids_by_type.get("finding_canonical")
     if finding_ids:
-        rows = db.query(FindingCanonical).filter(FindingCanonical.id.in_(finding_ids)).all()
+        rows = (db.query(FindingCanonical)
+                .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
+                .filter(FindingCanonical.id.in_(finding_ids),
+                        read_scope.finding_clause(user, FindingCanonical, AssetCanonical)).all())
         for r in rows:
             out[("finding_canonical", r.id)] = {
                 "node_id": str(r.id),
@@ -283,7 +319,8 @@ def _hydrate(
 
     target_ids = ids_by_type.get("target")
     if target_ids:
-        rows = db.query(Target).filter(Target.id.in_(target_ids)).all()
+        rows = (db.query(Target)
+                .filter(Target.id.in_(target_ids), read_scope.target_clause(user, Target)).all())
         for r in rows:
             out[("target", r.id)] = {
                 "node_id": str(r.id),

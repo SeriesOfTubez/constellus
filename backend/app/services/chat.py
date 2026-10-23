@@ -233,9 +233,9 @@ def _handlers() -> dict[str, Callable[[Session, dict[str, Any], User], ToolOutco
         "run_query": _tool_run_query,
         "describe_schema": _tool_describe_schema,
         "get_asset": _api_get("get_asset", "asset_id",
-                              lambda i, db, u: assets_api.get_asset(asset_id=i, db=db, _=u)),
+                              lambda i, db, u: assets_api.get_asset(asset_id=i, db=db, user=u)),
         "get_finding": _api_get("get_finding", "finding_id",
-                                lambda i, db, u: findings_api.get_finding(finding_id=i, db=db, _=u)),
+                                lambda i, db, u: findings_api.get_finding(finding_id=i, db=db, user=u)),
         "get_entity": _api_get("get_entity", "entity_id",
                                lambda i, db, u: entities_api.get_entity(entity_id=i, db=db, _=u)),
     }

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import Session
 
@@ -63,7 +63,7 @@ def list_findings(
     verification: str | None = None,
     finding_type: str | None = None,
     db: Session = Depends(get_db),
-    _=Depends(require_permission(Permission.FINDINGS_READ)),
+    user: User = Depends(require_permission(Permission.FINDINGS_READ)),
 ):
     """List canonical findings. Returns durable identity rows — one per
     (asset, finding_type, source, fingerprint) — joined to their asset.
@@ -92,6 +92,7 @@ def list_findings(
     q = (
         db.query(FindingCanonical, AssetCanonical)
         .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
+        .filter(read_scope.finding_clause(user, FindingCanonical, AssetCanonical))
     )
     if severity:
         q = q.filter(FindingCanonical.severity == severity)
@@ -212,7 +213,7 @@ _NOT_EXCLUDED_FROM_MAIN = or_(
 @router.get("/security-score")
 def security_score(
     db: Session = Depends(get_db),
-    _=Depends(require_permission(Permission.FINDINGS_READ)),
+    user: User = Depends(require_permission(Permission.FINDINGS_READ)),
 ):
     """Org-level Constellus Risk Score for the dashboard gauge.
 
@@ -226,11 +227,15 @@ def security_score(
                 worst_band_new, worst_band_resolved, breakdown[] }
     """
     day_ago = datetime.now(timezone.utc) - timedelta(days=1)
+    # Every aggregate below counts only findings the caller may read
+    # (planning#261): the score of a deal under restriction is not leaked by
+    # the org-level number.
+    readable = read_scope.finding_clause(user, FindingCanonical, AssetCanonical)
 
     top = (
         db.query(FindingCanonical, AssetCanonical)
         .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
-        .filter(FindingCanonical.state.in_(_OPEN_STATES), _NOT_EXCLUDED_FROM_MAIN)
+        .filter(FindingCanonical.state.in_(_OPEN_STATES), _NOT_EXCLUDED_FROM_MAIN, readable)
         .order_by(
             FindingCanonical.risk_score.desc().nullslast(),
             FindingCanonical.last_seen_at.desc(),
@@ -256,10 +261,12 @@ def security_score(
     # Open findings currently in the worst band.
     worst_band_count = (
         db.query(FindingCanonical)
+        .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
         .filter(
             FindingCanonical.state.in_(_OPEN_STATES),
             FindingCanonical.risk_band == band,
             _NOT_EXCLUDED_FROM_MAIN,
+            readable,
         )
         .count()
     )
@@ -270,6 +277,7 @@ def security_score(
     # day-over-day); a score-snapshot history will refine this later.
     worst_band_count_prev = (
         db.query(FindingCanonical)
+        .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
         .filter(
             FindingCanonical.risk_band == band,
             FindingCanonical.first_seen_at <= day_ago,
@@ -278,6 +286,7 @@ def security_score(
                 FindingCanonical.resolved_at > day_ago,
             ),
             _NOT_EXCLUDED_FROM_MAIN,
+            readable,
         )
         .count()
     )
@@ -286,20 +295,24 @@ def security_score(
     # `↑ n new · ↓ n resolved` tooltip split.
     worst_band_new = (
         db.query(FindingCanonical)
+        .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
         .filter(
             FindingCanonical.state.in_(_OPEN_STATES),
             FindingCanonical.risk_band == band,
             FindingCanonical.first_seen_at > day_ago,
             _NOT_EXCLUDED_FROM_MAIN,
+            readable,
         )
         .count()
     )
     worst_band_resolved = (
         db.query(FindingCanonical)
+        .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
         .filter(
             FindingCanonical.risk_band == band,
             FindingCanonical.resolved_at > day_ago,
             _NOT_EXCLUDED_FROM_MAIN,
+            readable,
         )
         .count()
     )
@@ -312,6 +325,7 @@ def security_score(
             FindingCanonical.state.in_(_OPEN_STATES),
             FindingCanonical.risk_band == band,
             _NOT_EXCLUDED_FROM_MAIN,
+            readable,
         )
         .order_by(
             FindingCanonical.risk_score.desc().nullslast(),
@@ -472,10 +486,15 @@ def list_cluster_members(
 
 # ── AI write-up of a cluster (planning#233 slice 2b) ─────────────────────────
 
+def _reads_every_member(db: Session, user, key: cluster_writeup.Key) -> bool:
+    system = {f.id for f, _a in cluster_writeup.members(db, key)}
+    return system == {f.id for f, _a in cluster_writeup.members(db, key, user=user)}
+
+
 def _cluster_writeup_state(db: Session, user, key: cluster_writeup.Key) -> dict:
     """Never generates. A write-up whose frozen members the viewer cannot all
     read is withheld (`hidden`), not shown with the rest redacted."""
-    rows = cluster_writeup.members(db, key)
+    rows = cluster_writeup.members(db, key, user=user)
     eligible = len({f.asset_canonical_id for f, _a in rows}) >= 2
     done = cluster_writeup.latest_succeeded(db, key)
     newest = cluster_writeup.latest_any(db, key)
@@ -494,7 +513,11 @@ def _cluster_writeup_state(db: Session, user, key: cluster_writeup.Key) -> dict:
                 "max_severity": done.max_severity,
                 "auto": done.requested_by_id is None,
             }
-            inputs_changed = done.input_hash != (cluster_writeup.current_hash(db, key) if eligible else None)
+            # The hash covers every system member; compare it only for a viewer
+            # who can read them all, or "changed" would say something about
+            # findings they cannot see.
+            if _reads_every_member(db, user, key):
+                inputs_changed = done.input_hash != (cluster_writeup.current_hash(db, key) if eligible else None)
     return {
         "eligible": eligible,
         "ineligible_reason": None if eligible else (
@@ -537,6 +560,10 @@ def request_cluster_ai_writeup(
     is unchanged (no call). Any severity is eligible. 409 when it is not a
     cross-asset cluster, the AI is not configured, or one is already running."""
     key = cluster_writeup.Key(finding_type, source, fingerprint)
+    if not _reads_every_member(db, current_user, key):
+        # The write-up describes every member; one the requester cannot read
+        # must not shape or reveal it. Deliberately says nothing of why.
+        raise HTTPException(status_code=409, detail="cluster write-up unavailable")
     try:
         row, cached = cluster_writeup.request_writeup(db, key=key, user_id=current_user.id, force=force)
     except (cluster_writeup.NotEligible, cluster_writeup.NotConfigured, cluster_writeup.AlreadyRunning) as exc:
@@ -550,16 +577,28 @@ def request_cluster_ai_writeup(
     return {"cached": cached, **_cluster_writeup_state(db, current_user, key)}
 
 
+def _readable_finding(db: Session, user: User, finding_id: uuid.UUID) -> FindingCanonical:
+    """The finding if `user` may read it, else 404 exactly as for an unknown id.
+    The single-id write routes use it too (planning#261): a caller cannot
+    triage, verify or request a write-up on a finding it cannot read."""
+    finding = db.execute(
+        select(FindingCanonical)
+        .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
+        .where(FindingCanonical.id == finding_id, read_scope.finding_clause(user, FindingCanonical, AssetCanonical))
+    ).scalar_one_or_none()
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    return finding
+
+
 @router.get("/{finding_id}")
 def get_finding(
     finding_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_permission(Permission.FINDINGS_READ)),
+    user: User = Depends(require_permission(Permission.FINDINGS_READ)),
 ):
     """Fetch a single canonical finding by ID — drives the full-detail page."""
-    finding = db.get(FindingCanonical, finding_id)
-    if not finding:
-        raise HTTPException(status_code=404, detail="Finding not found")
+    finding = _readable_finding(db, user, finding_id)
     asset = db.get(AssetCanonical, finding.asset_canonical_id)
     return _serialize_finding(finding, asset, _finding_asset_state(db, finding))
 
@@ -607,14 +646,12 @@ def _writeup_state(db: Session, finding: FindingCanonical) -> dict:
 def get_ai_writeup(
     finding_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_permission(Permission.FINDINGS_READ)),
+    user: User = Depends(require_permission(Permission.FINDINGS_READ)),
 ):
     """The newest succeeded write-up, any queued/running one, the newest
     failure if it is the latest attempt, and whether the inputs changed
     since the write-up was made. Never generates anything."""
-    finding = db.get(FindingCanonical, finding_id)
-    if not finding:
-        raise HTTPException(status_code=404, detail="Finding not found")
+    finding = _readable_finding(db, user, finding_id)
     return _writeup_state(db, finding)
 
 
@@ -632,9 +669,7 @@ def request_ai_writeup(
     Every refusal happens here, before a row exists or any request is sent:
     unknown finding (404), not Critical/High, connector or AI models not
     configured, or a write-up already queued/running (409)."""
-    finding = db.get(FindingCanonical, finding_id)
-    if not finding:
-        raise HTTPException(status_code=404, detail="Finding not found")
+    finding = _readable_finding(db, current_user, finding_id)
     try:
         row, cached = finding_writeup.request_writeup(db, finding=finding, user_id=current_user.id, force=force)
     except (finding_writeup.NotEligible, finding_writeup.NotConfigured, finding_writeup.AlreadyRunning) as exc:
@@ -650,7 +685,7 @@ def request_ai_writeup(
 def get_epss_history(
     finding_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _=Depends(require_permission(Permission.FINDINGS_READ)),
+    user: User = Depends(require_permission(Permission.FINDINGS_READ)),
 ):
     """Return 12-week EPSS trend data for the CVE associated with this finding.
 
@@ -661,9 +696,7 @@ def get_epss_history(
     """
     from app.services import epss_history_service
 
-    finding = db.get(FindingCanonical, finding_id)
-    if not finding:
-        raise HTTPException(status_code=404, detail="Finding not found")
+    finding = _readable_finding(db, user, finding_id)
     if not finding.cve_id:
         raise HTTPException(status_code=404, detail="Finding has no CVE")
 
@@ -677,9 +710,7 @@ def update_finding_state(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(Permission.FINDINGS_TRIAGE)),
 ):
-    finding = db.get(FindingCanonical, finding_id)
-    if not finding:
-        raise HTTPException(status_code=404, detail="Finding not found")
+    finding = _readable_finding(db, current_user, finding_id)
 
     if data.state == FindingState.SUPPRESSED and not data.suppressed_until:
         raise HTTPException(status_code=422, detail="suppressed_until is required when suppressing")
@@ -698,9 +729,7 @@ def verify_finding(
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(Permission.FINDINGS_VERIFY)),
 ):
-    finding = db.get(FindingCanonical, finding_id)
-    if not finding:
-        raise HTTPException(status_code=404, detail="Finding not found")
+    finding = _readable_finding(db, current_user, finding_id)
 
     asset = db.get(AssetCanonical, finding.asset_canonical_id)
     if not asset:

@@ -27,6 +27,7 @@ from app.models.finding_canonical import FindingCanonical
 from app.models.notification_rule import NotificationRule
 from app.models.user import User, UserRole
 from app.services import notification_dispatcher, read_scope, score_history
+from app.tests._users import user_with
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -385,9 +386,9 @@ def _client(role: UserRole) -> TestClient:
         finally:
             s.close()
 
-    user = User(
-        id=uuid.uuid4(), email=f"alerts-test-{role.value}@example.invalid",
-        full_name="t", role=role.value, is_active=True,
+    user = user_with(
+        role.value, id=uuid.uuid4(), email=f"alerts-test-{role.value}@example.invalid",
+        full_name="t", is_active=True,
     )
     app.dependency_overrides[get_db] = _db
     app.dependency_overrides[get_current_user] = lambda: user

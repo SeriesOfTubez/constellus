@@ -29,12 +29,14 @@ from app.models.llm_call import LlmCall
 from app.models.report import Report
 from app.models.target import Target
 from app.models.target_asset_link import TargetAssetLink
+from app.models.role_assignment import RoleAssignment
 from app.models.user import User, UserRole
 from app.services import query_compiler, read_scope, report_facts, reports
 from app.services.query_schema import validate
 from app.tests.test_edgar_ingest_api import _cleanup_user, _make_user
 from app.tests.test_finding_writeup import NARRATE_PRIMARY, _World, llm, permissive  # noqa: F401  (fixtures)
 from app.tests.test_llm_connector import _ok_response
+from app.tests._users import user_with
 
 client = TestClient(app)
 
@@ -42,8 +44,11 @@ OPEN = ("open", "acknowledged")
 
 
 def _viewer() -> User:
-    return User(id=uuid.uuid4(), email="rpt-viewer@example.invalid", full_name="rpt",
-                role=UserRole.VIEWER.value, is_active=True)
+    """Named for history: an ADMIN, because these tests are about the facts and
+    queries, whose engagements are pre_close, which a plain viewer does not read
+    (planning#261). The scope rule itself is tested in test_read_scope*.py."""
+    return user_with(UserRole.ADMIN.value, id=uuid.uuid4(), email="rpt-viewer@example.invalid", full_name="rpt",
+                     is_active=True)
 
 
 # ── fixtures ────────────────────────────────────────────────────────────────
@@ -430,6 +435,20 @@ def writer():
     _cleanup_user(uid)
 
 
+def _open(uid, role, *engagement_ids) -> None:
+    """Give `uid` an assignment on each engagement. The fixture engagements are
+    pre_close, and (planning#261) a global report_admin/viewer does not read
+    restricted data without one. The rows die with the user and the engagement
+    (ON DELETE CASCADE)."""
+    db = SessionLocal()
+    try:
+        for eid in engagement_ids:
+            db.add(RoleAssignment(user_id=uid, role=role, engagement_id=eid))
+        db.commit()
+    finally:
+        db.close()
+
+
 def _post(headers, engagement_id):
     return client.post("/api/reports", json={"engagement_id": str(engagement_id)}, headers=headers)
 
@@ -537,8 +556,11 @@ def test_forced_strict_only_when_a_top_finding_asset_spans_engagements(world, ll
 
 
 def test_llm_failure_marks_failed_but_keeps_the_facts(world, llm, writer):
-    headers, _ = writer
+    headers, _wid = writer
     s = build_scenario(world, datetime.now(timezone.utc))
+    # F too: a5 is also in F and the strictest engagement wins (planning#261),
+    # so without F the facts would honestly count one finding fewer.
+    _open(_wid, "report_admin", s.E, s.F)
     t = llm(lambda request: _ok_response(model=NARRATE_PRIMARY, content="not json"))
     r = _post(headers, s.E)
     assert r.status_code == 202
@@ -551,8 +573,9 @@ def test_llm_failure_marks_failed_but_keeps_the_facts(world, llm, writer):
 
 
 def test_zero_surviving_statements_is_still_done(world, llm, writer):
-    headers, _ = writer
+    headers, _wid = writer
     s = build_scenario(world, datetime.now(timezone.utc))
+    _open(_wid, "report_admin", s.E)
     llm(_scripted(lambda facts: [{"section": "posture", "text": "Made up 77.",
                                   "sources": [{"path": "metrics.findings_open.count", "value": "4"}]}]))
     row = _row(_post(headers, s.E).json()["id"])
@@ -565,7 +588,7 @@ def test_zero_surviving_statements_is_still_done(world, llm, writer):
 @pytest.fixture
 def viewer():
     headers, uid = _make_user(UserRole.VIEWER.value)
-    yield headers
+    yield headers, uid
     _cleanup_user(uid)
 
 
@@ -591,6 +614,8 @@ def _insert(engagement_id, *, status="done", created_at=None, facts=None, payloa
 
 def test_viewer_cannot_create_or_delete_and_no_call_is_made(world, llm, viewer):
     e = world.engagement("pre_close")
+    viewer, vid = viewer
+    _open(vid, "viewer", e)
     rid = _insert(e)
     t = llm(_scripted(_good_statements))
     assert client.post("/api/reports", json={"engagement_id": str(e)}, headers=viewer).status_code == 403
@@ -603,7 +628,8 @@ def test_viewer_cannot_create_or_delete_and_no_call_is_made(world, llm, viewer):
 def test_report_admin_and_admin_can_create_and_delete(world, llm, writer, admin):
     s = build_scenario(world, datetime.now(timezone.utc))
     llm(_scripted(_good_statements))
-    ra_headers, _ = writer
+    ra_headers, _wid = writer
+    _open(_wid, "report_admin", s.E)
     first = _post(ra_headers, s.E)
     assert first.status_code == 202
     second = _post(admin, s.E)
@@ -614,8 +640,9 @@ def test_report_admin_and_admin_can_create_and_delete(world, llm, writer, admin)
 
 
 def test_409_when_one_is_running_and_no_call_is_made(world, llm, writer):
-    headers, _ = writer
+    headers, _wid = writer
     e = world.engagement("pre_close")
+    _open(_wid, "report_admin", e)
     _insert(e, status="running")
     t = llm(_scripted(_good_statements))
     r = _post(headers, e)
@@ -624,8 +651,9 @@ def test_409_when_one_is_running_and_no_call_is_made(world, llm, writer):
 
 
 def test_429_at_the_daily_cap(world, llm, writer, monkeypatch):
-    headers, _ = writer
+    headers, _wid = writer
     s = build_scenario(world, datetime.now(timezone.utc))
+    _open(_wid, "report_admin", s.E)
     t = llm(_scripted(_good_statements))
     db = SessionLocal()
     try:
@@ -651,8 +679,9 @@ def test_404_for_an_unknown_engagement(llm, writer):
 
 
 def test_503_when_the_connector_is_not_configured(world, writer):
-    headers, _ = writer
+    headers, _wid = writer
     e = world.engagement("pre_close")
+    _open(_wid, "report_admin", e)
     from app.tests.test_llm_connector import _configure_openrouter, _restore_openrouter
     db = SessionLocal()
     try:
@@ -666,11 +695,14 @@ def test_503_when_the_connector_is_not_configured(world, writer):
 
 
 def test_markdown_endpoint_is_an_attachment_named_by_id_only(world, writer):
-    headers, _ = writer
+    headers, _wid = writer
     s = build_scenario(world, datetime.now(timezone.utc))
+    _open(_wid, "report_admin", s.E)
     facts = _facts(s)
     done = _insert(s.E, facts=facts, payload={"statements": []})
-    queued = _insert(world.engagement("pre_close"), status="queued")
+    queued_e = world.engagement("pre_close")
+    _open(_wid, "report_admin", queued_e)
+    queued = _insert(queued_e, status="queued")
     r = client.get(f"/api/reports/{done}/markdown", headers=headers)
     assert r.status_code == 200
     assert r.headers["content-type"] == "text/markdown; charset=utf-8"
@@ -772,14 +804,15 @@ def test_purge_deletes_only_rows_older_than_retention(world):
 # ── 8. the read_scope hook ──────────────────────────────────────────────────
 
 def test_endpoints_call_engagement_visible(world, writer, monkeypatch):
-    headers, _ = writer
+    headers, _wid = writer
     e = world.engagement("pre_close")
+    _open(_wid, "report_admin", e)
     rid = _insert(e, facts={"as_of": "x", "metrics": {}, "top_findings": []}, payload={"statements": []})
     urls = [f"/api/reports?engagement_id={e}", f"/api/reports/{rid}", f"/api/reports/{rid}/markdown"]
     for u in urls:                                    # reached: all three answer while visible
         assert client.get(u, headers=headers).status_code == 200, u
     seen = []
-    monkeypatch.setattr(read_scope, "engagement_visible", lambda user, eid: seen.append(eid) or False)
+    monkeypatch.setattr(read_scope, "engagement_visible", lambda db, user, eid: seen.append(eid) or False)
     for u in urls:
         assert client.get(u, headers=headers).status_code == 404, u
     assert client.delete(f"/api/reports/{rid}", headers=headers).status_code == 404
@@ -787,7 +820,8 @@ def test_endpoints_call_engagement_visible(world, writer, monkeypatch):
 
 
 def test_engagement_visible_grants_everything_today():
-    assert read_scope.engagement_visible(_viewer(), uuid.uuid4()) is True
+    with SessionLocal() as db:
+        assert read_scope.engagement_visible(db, _viewer(), uuid.uuid4()) is True
 
 
 # ── recorded live answer ────────────────────────────────────────────────────
@@ -1064,7 +1098,8 @@ def _post_ma(headers, engagement_id):
 
 
 def test_generate_ma_brief_end_to_end_with_the_transport_spied(ma, llm, writer, permissive):
-    headers, _ = writer
+    headers, _wid = writer
+    _open(_wid, "report_admin", ma.E.id)
     t = llm(_scripted(_ma_statements))
     r = _post_ma(headers, ma.E.id)
     assert r.status_code == 202, r.text
@@ -1099,7 +1134,8 @@ def test_generate_ma_brief_end_to_end_with_the_transport_spied(ma, llm, writer, 
 
 
 def test_an_ma_answer_with_an_exec_section_fails_the_row_and_keeps_the_facts(ma, llm, writer, permissive):
-    headers, _ = writer
+    headers, _wid = writer
+    _open(_wid, "report_admin", ma.E.id)
     # a fixed answer: the retry ladder's later requests carry no <data> block for `_scripted` to read
     t = llm(lambda request: _ok_response(model=NARRATE_PRIMARY, content=json.dumps({"statements": [
         {"section": "posture", "text": "Fine.",
@@ -1113,7 +1149,8 @@ def test_an_ma_answer_with_an_exec_section_fails_the_row_and_keeps_the_facts(ma,
 # ── API ─────────────────────────────────────────────────────────────────────
 
 def test_ma_brief_without_a_subject_is_422_and_makes_no_call(ma, llm, writer, permissive):
-    headers, _ = writer
+    headers, _wid = writer
+    _open(_wid, "report_admin", ma.E.id, ma.N.id)
     t = llm(_scripted(_ma_statements))
     r = _post_ma(headers, ma.N.id)
     assert r.status_code == 422
@@ -1129,7 +1166,8 @@ def test_ma_brief_without_a_subject_is_422_and_makes_no_call(ma, llm, writer, pe
 
 
 def test_exec_summary_is_unchanged_for_an_engagement_with_a_subject(ma, llm, writer, permissive):
-    headers, _ = writer
+    headers, _wid = writer
+    _open(_wid, "report_admin", ma.E.id)
     t = llm(_scripted(lambda facts: [{"section": "posture", "text": "No findings are recorded.",
                                       "sources": [{"path": "metrics.findings_open.count", "value": "0"}]}]))
     r = _post(headers, ma.E.id)                              # no kind: the default

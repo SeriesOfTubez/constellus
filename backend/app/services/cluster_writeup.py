@@ -178,10 +178,12 @@ def _not_excluded():
             | FindingCanonical.verification.notin_(EXCLUDED_VERIFICATIONS))
 
 
-def members(db: Session, key: Key) -> list[tuple[FindingCanonical, AssetCanonical]]:
+def members(db: Session, key: Key, *, user=None) -> list[tuple[FindingCanonical, AssetCanonical]]:
     """The SYSTEM view of the cluster: open, not-excluded findings of the key,
-    with no read scope (display is gated per viewer, see `viewer_can_read`)."""
-    return list(db.execute(
+    with no read scope (display is gated per viewer, see `viewer_can_read`).
+    With `user`, the VIEWER's view: only members `read_scope` lets them read.
+    System callers (hashing, generation) never pass it."""
+    q = (
         select(FindingCanonical, AssetCanonical)
         .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
         .where(
@@ -191,7 +193,11 @@ def members(db: Session, key: Key) -> list[tuple[FindingCanonical, AssetCanonica
             FindingCanonical.state == "open",
             _not_excluded(),
         )
-        .order_by(_rank_expr().desc(), FindingCanonical.risk_score.desc().nulls_last(), FindingCanonical.id)
+    )
+    if user is not None:
+        q = q.where(read_scope.finding_clause(user, FindingCanonical, AssetCanonical))
+    return list(db.execute(
+        q.order_by(_rank_expr().desc(), FindingCanonical.risk_score.desc().nulls_last(), FindingCanonical.id)
         .limit(MEMBER_CAP)
     ).all())
 

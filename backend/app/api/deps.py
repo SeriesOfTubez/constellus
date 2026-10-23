@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import decode_token
 from app.core.database import get_db
-from app.core.permissions import Permission, has_permission
+from app.core.permissions import Permission, has_permission, snapshot_grants
 from app.models.user import User
 from app.services.user import get_user
 import uuid
@@ -39,6 +39,9 @@ def get_current_user(
     # survives; the read endpoint joins back to `users` for the name.
     request.state.audit_actor_id = user.id
 
+    # planning#261: pin the role assignments now, while the session is fresh;
+    # `has_permission` and `read_scope` read this snapshot for the request.
+    snapshot_grants(user)
     return user
 
 

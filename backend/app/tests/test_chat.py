@@ -377,9 +377,9 @@ def test_get_tools_call_the_api_handlers_as_the_asking_user(model, world, people
     seen = []
     real = assets_api.get_asset
 
-    def spy(asset_id, db, _):
-        seen.append(_.id)
-        return real(asset_id=asset_id, db=db, _=_)
+    def spy(asset_id, db, user):
+        seen.append(user.id)
+        return real(asset_id=asset_id, db=db, user=user)
 
     monkeypatch.setattr(assets_api, "get_asset", spy)
     s = model(_tool_calls(("get_asset", {"asset_id": str(ids["n1"])})), _answer("Done."))

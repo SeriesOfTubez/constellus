@@ -33,6 +33,7 @@ from app.models.claim import AssetClaim, ClaimHistory
 from app.services.asset_writer import write_assets
 from app.services.discovery.dns_resolve import _emit_assets
 from app.services.scan_executor import _extract_scan_targets
+from app.tests._users import user_with
 
 
 def _cleanup(values: list[str]) -> None:
@@ -260,13 +261,13 @@ def test_captured_node_is_hidden_from_the_default_asset_list():
         )
         write_assets(db, uuid.uuid4(), assets)
 
-        default_values = {a["value"] for a in list_assets(db=db, _=None)}
+        default_values = {a["value"] for a in list_assets(db=db, user=user_with("admin"))}
         assert owned in default_values, "the owned record must still be listed"
         assert vendor not in default_values, (
             "captured third-party node leaked into the default asset list"
         )
 
-        shown_values = {a["value"] for a in list_assets(show_third_party=True, db=db, _=None)}
+        shown_values = {a["value"] for a in list_assets(show_third_party=True, db=db, user=user_with("admin"))}
         assert vendor in shown_values, (
             "show_third_party=True must surface the captured node, not hide it forever"
         )

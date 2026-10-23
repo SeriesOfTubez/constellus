@@ -20,11 +20,12 @@ from app.models.user import User, UserRole
 from app.services import chat, entity_relationship, query_compiler, query_schema, read_scope
 from app.services.query_schema import QueryError, validate
 from app.tests._ma_world import MaWorld
+from app.tests._users import user_with
 
 
 def _user() -> User:
-    return User(id=uuid.uuid4(), email="qent-viewer@example.invalid", full_name="qent",
-                role=UserRole.VIEWER.value, is_active=True)
+    return user_with(UserRole.VIEWER.value, id=uuid.uuid4(), email="qent-viewer@example.invalid", full_name="qent",
+                     is_active=True)
 
 
 @pytest.fixture(scope="module")
