@@ -499,7 +499,8 @@ def test_candidates_default_to_open_and_proposable_sorted_by_strength(w):
     h = w.headers(role=UserRole.VIEWER.value)
     r = client.get(f"/api/organizations/{root.id}/candidates", headers=h)
     assert r.status_code == 200
-    rows = r.json()
+    rows = r.json()["items"]
+    assert r.json()["total"] == 2
     assert [x["value"] for x in rows] == ["a-strong.example.com", "b-supporting.example.com"]  # no lead, no decided
     strong, supp = rows
     assert (strong["strength"], strong["proposable"], strong["status"]) == ("strong", True, "open")
@@ -520,7 +521,7 @@ def test_candidate_filters(w):
     def values(qs):
         r = client.get(f"{base}?{qs}", headers=h)
         assert r.status_code == 200, r.text
-        return [x["value"] for x in r.json()]
+        return [x["value"] for x in r.json()["items"]]
 
     assert values("include_leads=true") == ["a-strong.example.com", "b-supporting.example.com", "c-lead.example.com"]
     assert values("status=claimed") == ["d-claimed.example.com"]
@@ -543,7 +544,7 @@ def test_candidate_filters(w):
 
 def test_a_stored_affiliate_is_not_flagged_as_a_default(w):
     root, _child, ids = _org_with_candidates(w)
-    rows = client.get(f"/api/organizations/{root.id}/candidates?status=claimed", headers=w.headers()).json()
+    rows = client.get(f"/api/organizations/{root.id}/candidates?status=claimed", headers=w.headers()).json()["items"]
     assert (rows[0]["affiliated"]["id"], rows[0]["affiliated_is_default"]) == (str(root.id), False)
     assert rows[0]["target_id"] is not None
 
@@ -707,7 +708,7 @@ def test_every_organization_read_calls_both_read_scope_hooks_and_a_filtered_row_
     assert client.post(f"/api/organizations/candidates/{ids['strong']}/claim", json={}, headers=admin_h).status_code == 404
     assert client.post(f"/api/organizations/candidates/{ids['strong']}/reject", json={"reason": "x"},
                        headers=admin_h).status_code == 404
-    assert client.get(f"/api/organizations/{root.id}/candidates?status=all", headers=h).json() == []
+    assert client.get(f"/api/organizations/{root.id}/candidates?status=all", headers=h).json() == {"items": [], "total": 0}
     monkeypatch.setattr(read_scope, "domain_clause", domain_clause)
     monkeypatch.setattr(read_scope, "entity_clause", lambda user, entity: false())
     assert client.get(f"/api/organizations/{root.id}/candidates", headers=h).status_code == 404

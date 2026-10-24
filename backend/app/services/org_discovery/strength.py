@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import case, distinct, false, func, literal_column, select
+from sqlalchemy import and_, case, distinct, false, func, literal_column, select
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.scope_candidate import ScopeSignal
@@ -143,3 +143,15 @@ def default_affiliate_expr(candidate_id_col: Any) -> ColumnElement[Any]:
         .limit(1)
         .scalar_subquery()
     )
+
+
+def is_to_review(status_col: Any, st: StrengthSQL) -> ColumnElement[bool]:
+    """An open candidate that clears the propose bar."""
+    return and_(status_col == "open", st.proposable)
+
+
+def is_lead(status_col: Any, st: StrengthSQL) -> ColumnElement[bool]:
+    """An open candidate below the propose bar that has at least one signal.
+    The ONE definition: the organization list, the summary and the
+    `leads_only` candidate filter all call it, so their counts agree."""
+    return and_(status_col == "open", ~st.proposable, st.signal_count >= 1)

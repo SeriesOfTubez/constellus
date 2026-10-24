@@ -62,7 +62,7 @@ def test_candidate_list_timing_with_2000_candidates_and_6000_signals():
                     r = client.get(url, headers=headers)
                     runs.append((time.perf_counter() - t0) * 1000)
                     assert r.status_code == 200
-                rows = r.json()
+                rows = r.json()["items"]
                 if expected is not None:
                     assert len(rows) == expected
                 else:

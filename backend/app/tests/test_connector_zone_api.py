@@ -197,7 +197,7 @@ def test_candidate_detail_names_the_deciding_connector(env, followups):
     rows = client.get(f"{ORGS}/{org.id}/candidates", headers=env.admin, params={"status": "claimed"})
     assert rows.status_code == 200, rows.text
     body = rows.json()
-    items = body if isinstance(body, list) else body.get("items", body)
+    items = body["items"]
     mine = [x for x in items if x["id"] == str(c.id)]
     assert mine and mine[0]["decided_by_connector_instance_id"] == str(inst.id)
     assert "decided_by_connector_name" not in mine[0]
