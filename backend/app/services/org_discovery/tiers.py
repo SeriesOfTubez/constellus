@@ -37,7 +37,7 @@ SIGNALS: dict[str, SignalSpec] = {
         STRONG, "filings", True, "A confirmed filer's own 10-K names it as its website."
     ),
     "connector_zone": SignalSpec(
-        STRONG, "connector", False, "A Cloudflare zone in an account we hold (S1b)."
+        STRONG, "connector", True, "An active zone in a connector account we hold (credentialed proof of control)."
     ),
     "registrant_email_claimed": SignalSpec(
         STRONG, "registration", False, "Registrant email on a claimed domain (deferred: domain RDAP follow-up)."

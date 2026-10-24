@@ -225,7 +225,7 @@ def test_every_signal_type_the_verifiers_can_emit_is_built():
 
 
 def test_the_literal_scan_would_catch_an_unbuilt_type():
-    tree = ast.parse("record_signal(db, signal_type='connector_zone')")
+    tree = ast.parse("record_signal(db, signal_type='registrant_email_claimed')")
     call = tree.body[0].value
     kw = {k.arg: k.value.value for k in call.keywords}
     assert not SIGNALS[kw["signal_type"]].built  # i.e. the assertion above would fail for this call

@@ -29,11 +29,23 @@ from app.tests._org_world import World, hexid
 _MIGRATION = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0083_org_scope_candidates.py"
 
 
-def _migration():
-    spec = importlib.util.spec_from_file_location("migration_0083", _MIGRATION)
+_MIGRATION_0086 = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0086_connector_zone_anchor.py"
+
+
+def _load(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _migration():
+    return _load(_MIGRATION, "migration_0083")
+
+
+def _migration_0086():
+    # 0086 widens ANCHOR_KINDS and adds CLASH_REASONS; the rest stays in 0083.
+    return _load(_MIGRATION_0086, "migration_0086")
 
 
 @pytest.fixture
@@ -113,7 +125,7 @@ def test_model_vocabularies_equal_the_migrations_check_lists():
     assert model.CANDIDATE_STATUSES == set(m.CANDIDATE_STATUSES)
     assert model.ACCEPTED_INTO == set(m.ACCEPTED_INTO)
     assert model.SIGNAL_TYPES == set(m.SIGNAL_TYPES)
-    assert model.ANCHOR_KINDS == set(m.ANCHOR_KINDS)
+    assert model.ANCHOR_KINDS == set(_migration_0086().ANCHOR_KINDS)
     assert model.EVENT_KINDS == set(m.EVENT_KINDS)
 
 
@@ -138,9 +150,18 @@ def test_the_live_check_constraints_carry_the_same_lists(w):
 
     m = _migration()
     assert listed("ck_scope_signals_signal_type") == set(m.SIGNAL_TYPES)
-    assert listed("ck_scope_signals_anchor_kind") == set(m.ANCHOR_KINDS)
+    assert listed("ck_scope_signals_anchor_kind") == set(_migration_0086().ANCHOR_KINDS)
+    assert listed("ck_connector_zone_clashes_reason") == set(_migration_0086().CLASH_REASONS)
     assert listed("ck_scope_candidate_events_event") == set(m.EVENT_KINDS)
     assert listed("ck_scope_candidates_status") == set(m.CANDIDATE_STATUSES)
+
+
+def test_clash_reasons_model_equals_the_migration():
+    from app.models.connector_zone_clash import CLASH_REASONS
+
+    reasons = _migration_0086().CLASH_REASONS
+    assert CLASH_REASONS == set(reasons)
+    assert len(reasons) == len(set(reasons))
 
 
 def test_the_database_supports_nulls_not_distinct(w):

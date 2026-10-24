@@ -494,10 +494,10 @@ def test_instance_matches_scope_truth_table(env):
     assert m(w_deal, str(eng.id)) is False
 
 
-# ── zone clash on sync: skip and log (planning#284 comment 6386279550) ───────
+# ── zone clash on sync: recorded for a person (planning#284 comment 6386279550, #277 S1b) ──
 
 
-def test_zone_clash_skips_the_zone_but_not_the_rest_of_the_sync(env, monkeypatch):
+def test_zone_clash_is_recorded_and_does_not_stop_the_rest_of_the_sync(env, monkeypatch):
     from app.api.connectors import _auto_discover_all_domains
 
     ours = env.ours()
@@ -525,6 +525,10 @@ def test_zone_clash_skips_the_zone_but_not_the_rest_of_the_sync(env, monkeypatch
     t = env.db.get(Target, t_estate.id)
     assert (t.verified, t.connector_instance_id, t.engagement_id) == (False, None, None)
     assert env.db.query(Target).filter(Target.value == z_free).one().engagement_id == eng.id
+    from app.models.connector_zone_clash import ConnectorZoneClash
+
+    (row,) = env.db.query(ConnectorZoneClash).filter(ConnectorZoneClash.instance_id == deal_inst.id).all()
+    assert (row.zone, row.reason, row.conflicting_target_id) == (z_estate, "target_in_other_scope", t_estate.id)
 
     # ours-bound instance vs a deal target: same skip
     discovered.clear()
@@ -532,6 +536,8 @@ def test_zone_clash_skips_the_zone_but_not_the_rest_of_the_sync(env, monkeypatch
     _auto_discover_all_domains(ours_inst.id)
     env.db.expire_all()
     assert discovered == [z_same]  # same scope (estate) adopted as before
+    (row,) = env.db.query(ConnectorZoneClash).filter(ConnectorZoneClash.instance_id == ours_inst.id).all()
+    assert (row.zone, row.reason, row.conflicting_target_id) == (z_deal, "target_in_other_scope", t_deal.id)
     t = env.db.get(Target, t_deal.id)
     assert (t.verified, t.connector_instance_id, t.engagement_id) == (False, None, eng.id)
     t = env.db.get(Target, t_same.id)

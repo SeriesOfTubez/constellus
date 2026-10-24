@@ -40,6 +40,7 @@ SCOPED = {
     "/api/connectors/instances/{instance_id}": "connector_instance_clause, 404",
     "/api/connectors/instances/{instance_id}/config": "connector_instance_clause, 404",
     "/api/connectors/instances/{instance_id}/zones": "connector_instance_clause, 404",
+    "/api/connectors/instances/{instance_id}/zone-clashes": "connector_instance_clause, 404",
     "/api/reports": "engagement_visible",
     "/api/reports/{report_id}": "engagement_visible",
     "/api/reports/{report_id}/markdown": "engagement_visible",

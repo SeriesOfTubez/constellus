@@ -21,7 +21,7 @@ SIGNAL_TYPES: frozenset[str] = frozenset({
     "dmarc_exact_vendor", "registrant_org_match", "research_quote",
     "reverse_ip_dedicated", "dmarc_exact_generic", "name_similarity", "ai_mention",
 })
-ANCHOR_KINDS: frozenset[str] = frozenset({"claimed_candidate", "filer_filing", "person"})
+ANCHOR_KINDS: frozenset[str] = frozenset({"claimed_candidate", "filer_filing", "person", "connector_instance"})
 EVENT_KINDS: frozenset[str] = frozenset({"claimed", "rejected", "unlocked"})
 
 
@@ -59,6 +59,10 @@ class ScopeCandidate(Base):
     decided_by_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # A claim made by a connector instance rather than a person (migration 0086).
+    decided_by_connector_instance_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("connector_instances.id", ondelete="RESTRICT"), nullable=True
+    )
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     rejected_strong_types: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     accepted_into: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -79,7 +83,8 @@ class ScopeSignal(Base):
     __tablename__ = "scope_signals"
     __table_args__ = (
         UniqueConstraint(
-            "candidate_id", "signal_type", "anchor_kind", "anchor_candidate_id", "anchor_entity_id", "evidence_id",
+            "candidate_id", "signal_type", "anchor_kind", "anchor_candidate_id", "anchor_entity_id",
+            "anchor_connector_instance_id", "evidence_id",
             name="uq_scope_signals_route", postgresql_nulls_not_distinct=True,
         ),
     )
@@ -95,6 +100,9 @@ class ScopeSignal(Base):
     )
     anchor_entity_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("org_entities.id", ondelete="RESTRICT"), nullable=True
+    )
+    anchor_connector_instance_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("connector_instances.id", ondelete="RESTRICT"), nullable=True
     )
     anchor_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -130,6 +138,9 @@ class ScopeCandidateEvent(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    connector_instance_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("connector_instances.id", ondelete="RESTRICT"), nullable=True
+    )
     signal_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("scope_signals.id", ondelete="RESTRICT"), nullable=True
     )

@@ -18,7 +18,7 @@ from sqlalchemy import or_, select, text
 from app.models.scope_candidate import ScopeCandidate, ScopeCandidateEvent, ScopeSignal
 
 
-def purge(db, *, entity_ids=(), candidate_ids=()) -> set[uuid.UUID]:
+def purge(db, *, entity_ids=(), candidate_ids=(), connector_instance_ids=()) -> set[uuid.UUID]:
     """Delete every candidate under or affiliated with `entity_ids` (plus
     `candidate_ids`), their signals and events, and any signal elsewhere that
     cites those entities or candidates. Returns the evidence ids those
@@ -26,7 +26,17 @@ def purge(db, *, entity_ids=(), candidate_ids=()) -> set[uuid.UUID]:
     roll back first: a caller mid-cleanup has uncommitted deletes of its own
     (the commit at the end publishes them)."""
     entity_ids, candidate_ids = list(entity_ids), list(candidate_ids)
+    instance_ids = list(connector_instance_ids)
     cids = set(candidate_ids)
+    if instance_ids:
+        # Candidates a connector instance decided or signalled (planning#277 S1b):
+        # the instance cannot be deleted while these reference it (RESTRICT).
+        cids |= set(db.execute(
+            select(ScopeCandidate.id).where(ScopeCandidate.decided_by_connector_instance_id.in_(instance_ids))
+        ).scalars())
+        cids |= set(db.execute(
+            select(ScopeSignal.candidate_id).where(ScopeSignal.anchor_connector_instance_id.in_(instance_ids))
+        ).scalars())
     if entity_ids:
         cids |= set(db.execute(
             select(ScopeCandidate.id).where(
@@ -35,6 +45,8 @@ def purge(db, *, entity_ids=(), candidate_ids=()) -> set[uuid.UUID]:
         ).scalars())
     sig = ScopeSignal
     conds = [sig.candidate_id.in_(cids), sig.anchor_candidate_id.in_(cids)]
+    if instance_ids:
+        conds.append(sig.anchor_connector_instance_id.in_(instance_ids))
     if entity_ids:
         conds += [sig.via_entity_id.in_(entity_ids), sig.anchor_entity_id.in_(entity_ids)]
     signals = db.execute(select(sig.id, sig.evidence_id, sig.candidate_id).where(or_(*conds))).all()
@@ -45,7 +57,10 @@ def purge(db, *, entity_ids=(), candidate_ids=()) -> set[uuid.UUID]:
     ev = ScopeCandidateEvent
     db.execute(text("ALTER TABLE scope_candidate_events DISABLE TRIGGER trg_scope_candidate_events_append_only"))
     try:
-        db.query(ev).filter(or_(ev.candidate_id.in_(cids), ev.signal_id.in_(sids))).delete(synchronize_session=False)
+        conds_ev = [ev.candidate_id.in_(cids), ev.signal_id.in_(sids)]
+        if instance_ids:
+            conds_ev.append(ev.connector_instance_id.in_(instance_ids))
+        db.query(ev).filter(or_(*conds_ev)).delete(synchronize_session=False)
     finally:
         db.execute(text("ALTER TABLE scope_candidate_events ENABLE TRIGGER trg_scope_candidate_events_append_only"))
     db.query(sig).filter(sig.id.in_(sids)).delete(synchronize_session=False)

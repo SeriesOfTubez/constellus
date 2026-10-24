@@ -3,11 +3,12 @@ import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.api.deps import require_permission
-from app.core.permissions import Permission
+from app.core.permissions import Permission, has_permission
 from app.connectors.base import DNSDiscoveryConnector
 from app.connectors.certspotter import CertspotterConnector
 from app.services import aggressiveness as aggr_svc
@@ -39,9 +40,12 @@ from app.schemas.connector import (
     ConnectorInstanceSummary,
     ConnectorInstanceUpdate,
     ConnectorTypeSummary,
+    ZoneClashResponse,
 )
 from app.models.connector_instance import ConnectorInstance
+from app.models.connector_zone_clash import ConnectorZoneClash
 from app.models.org_entity import OrgEntity
+from app.models.scope_candidate import ScopeCandidate
 from app.models.target import Target
 from app.services import connector_instances as svc
 from app.services import read_scope
@@ -121,6 +125,17 @@ def _refuse_invisible_binding(db: Session, user, bound_entity_id: uuid.UUID | No
         raise _service_error(svc.BindingNotAllowed("not_visible"))
 
 
+def _require_binding_decision(user) -> None:
+    """Zones auto-claim under the bound organization, so setting or changing the
+    binding is an attribution decision: 403 before any write unless `user` may
+    decide candidates (in addition to connectors.configure)."""
+    if not has_permission(user, Permission.ENTITIES_DECIDE_CANDIDATE):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Binding a connector to an organization requires the {Permission.ENTITIES_DECIDE_CANDIDATE.value} permission",
+        )
+
+
 def _service_error(exc: svc.ConnectorInstanceError) -> HTTPException:
     if isinstance(exc, svc.UnknownType):
         return HTTPException(status_code=404, detail="Connector not found")
@@ -147,6 +162,9 @@ def _summary(db: Session, inst: ConnectorInstance) -> ConnectorInstanceSummary:
         bound_entity_id=inst.bound_entity_id,
         bound_entity_name=bound.legal_name if bound is not None else None,
         binding_ok=True if inst.bound_entity_id is None else svc.binding_allowed(db, inst.bound_entity_id)[0],
+        open_zone_clashes=db.query(ConnectorZoneClash)
+        .filter(ConnectorZoneClash.instance_id == inst.id, ConnectorZoneClash.resolved_at.is_(None))
+        .count(),
         created_at=inst.created_at,
         updated_at=inst.updated_at,
     )
@@ -213,11 +231,14 @@ def list_connectors(
 def create_instance(
     connector_type: str,
     data: ConnectorInstanceCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(Permission.CONNECTORS_CONFIGURE)),
 ):
-    _get_connector(connector_type)
+    connector = _get_connector(connector_type)
     _refuse_invisible_binding(db, current_user, data.bound_entity_id)
+    if data.bound_entity_id is not None:
+        _require_binding_decision(current_user)
     try:
         instance = svc.create(
             db, type=connector_type, name=data.name, bound_entity_id=data.bound_entity_id,
@@ -230,6 +251,8 @@ def create_instance(
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Connector instance conflicts with an existing one")
+    if _should_sync(db, connector, instance):
+        background_tasks.add_task(_auto_discover_all_domains, instance.id)
     return _summary(db, instance)
 
 
@@ -378,19 +401,68 @@ def get_instance(
     return _summary(db, _load_instance(db, current_user, instance_id))
 
 
+@router.get("/instances/{instance_id}/zone-clashes", response_model=list[ZoneClashResponse])
+def list_zone_clashes(
+    instance_id: uuid.UUID,
+    include_resolved: bool = False,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission(Permission.CONNECTORS_READ)),
+):
+    """Zones this instance lists that could not be verified or claimed, open
+    first. An instance the caller cannot read is a 404."""
+    instance = _load_instance(db, current_user, instance_id)
+    q = db.query(ConnectorZoneClash).filter(ConnectorZoneClash.instance_id == instance.id)
+    if not include_resolved:
+        q = q.filter(ConnectorZoneClash.resolved_at.is_(None))
+    rows = q.order_by(ConnectorZoneClash.resolved_at.asc().nullsfirst(), ConnectorZoneClash.zone).all()
+
+    # The conflicting rows are visible only under their own read scope (the
+    # candidate detail endpoint's predicate; the targets API's `target_clause`).
+    cand_ids = {r.conflicting_candidate_id for r in rows if r.conflicting_candidate_id}
+    target_ids = {r.conflicting_target_id for r in rows if r.conflicting_target_id}
+    root = aliased(OrgEntity)
+    visible_cands = set(db.execute(
+        select(ScopeCandidate.id).join(root, root.id == ScopeCandidate.root_entity_id).where(
+            ScopeCandidate.id.in_(cand_ids),
+            read_scope.entity_clause(current_user, root), read_scope.domain_clause(current_user, ScopeCandidate),
+        )
+    ).scalars()) if cand_ids else set()
+    visible_targets = set(db.execute(
+        select(Target.id).where(Target.id.in_(target_ids), read_scope.target_clause(current_user, Target))
+    ).scalars()) if target_ids else set()
+
+    out = []
+    for r in rows:
+        hidden = (r.conflicting_candidate_id is not None and r.conflicting_candidate_id not in visible_cands) or (
+            r.conflicting_target_id is not None and r.conflicting_target_id not in visible_targets
+        )
+        out.append(ZoneClashResponse(
+            id=r.id, zone=r.zone, reason="conflict_not_visible" if hidden else r.reason,
+            conflicting_candidate_id=None if hidden else r.conflicting_candidate_id,
+            conflicting_target_id=None if hidden else r.conflicting_target_id,
+            first_seen_at=r.first_seen_at, last_seen_at=r.last_seen_at, resolved_at=r.resolved_at,
+        ))
+    return out
+
+
 @router.patch("/instances/{instance_id}", response_model=ConnectorInstanceSummary)
 def update_instance(
     instance_id: uuid.UUID,
     data: ConnectorInstanceUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission(Permission.CONNECTORS_CONFIGURE)),
 ):
     instance = _load_instance(db, current_user, instance_id)
+    bound_before = instance.bound_entity_id
+    if "bound_entity_id" in data.model_fields_set:
+        _refuse_invisible_binding(db, current_user, data.bound_entity_id)
+        if data.bound_entity_id != bound_before:
+            _require_binding_decision(current_user)
     try:
         if "name" in data.model_fields_set:
             svc.rename(db, instance, data.name or "")
         if "bound_entity_id" in data.model_fields_set:
-            _refuse_invisible_binding(db, current_user, data.bound_entity_id)
             svc.rebind(db, instance, data.bound_entity_id)
         db.commit()
     except svc.ConnectorInstanceError as exc:
@@ -399,6 +471,9 @@ def update_instance(
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Connector instance conflicts with an existing one")
+    # A rename alone does not sync; a changed binding does (the zones now belong to another organization).
+    if instance.bound_entity_id != bound_before and _should_sync(db, _get_connector(instance.type), instance):
+        background_tasks.add_task(_auto_discover_all_domains, instance.id)
     return _summary(db, instance)
 
 
@@ -576,20 +651,35 @@ def _referencing_targets(db: Session, instance_id: uuid.UUID) -> JSONResponse | 
 # ── background sync ───────────────────────────────────────────────────────────
 
 
-def _auto_discover_all_domains(instance_id: uuid.UUID) -> None:
-    """Background task: pull domains from the connector instance, add them as verified targets,
-    and immediately write their DNS records as assets via a lightweight sync scan run.
+def _should_sync(db: Session, connector, instance: ConnectorInstance) -> bool:
+    """Should saving this instance queue a zone sync? Only a configured, enabled,
+    bound DNS-discovery instance whose binding is allowed."""
+    if not isinstance(connector, DNSDiscoveryConnector) or not instance.enabled:
+        return False
+    if instance.bound_entity_id is None or not svc.binding_allowed(db, instance.bound_entity_id)[0]:
+        return False
+    return bool(connector.is_configured(svc.decrypted_config(instance)))
 
-    Each domain is its own unit of work: a failure rolls back that domain only."""
+
+def _auto_discover_all_domains(instance_id: uuid.UUID) -> None:
+    """Background task: pull the zones from the connector instance and act on each through
+    `connector_zones.process_zone` (verify the target, claim the candidate under the instance's
+    organization, or record a clash for a person), then write the DNS records of the acted-on
+    zones as assets via a lightweight sync scan run.
+
+    Each zone is its own unit of work: a failure rolls back that zone only."""
+    from collections import Counter
     from datetime import datetime, timezone
 
     from app.core.database import SessionLocal
     from app.models.scan import ScanKind, ScanRun, ScanStatus
     from app.services.asset_writer import write_assets
-    from app.services.target_service import ensure_connector_verified
+    from app.services.org_discovery import connector_zones, runner
 
     db = SessionLocal()
     run = None
+    claimed_ids: list[uuid.UUID] = []
+    open_ids: list[uuid.UUID] = []
     try:
         instance = svc.get(db, instance_id)
         if instance is None or not instance.enabled:
@@ -597,7 +687,10 @@ def _auto_discover_all_domains(instance_id: uuid.UUID) -> None:
         connector = REGISTRY.get(instance.type)
         if not isinstance(connector, DNSDiscoveryConnector):
             return
-        if instance.bound_entity_id is not None and not svc.binding_allowed(db, instance.bound_entity_id)[0]:
+        if instance.bound_entity_id is None:
+            log.warning("Connector sync skipped for instance %s: not bound to an organization", instance_id)
+            return
+        if not svc.binding_allowed(db, instance.bound_entity_id)[0]:
             log.warning("Connector sync refused for instance %s: binding no longer allowed", instance_id)
             return
         connector_type = instance.type
@@ -622,31 +715,52 @@ def _auto_discover_all_domains(instance_id: uuid.UUID) -> None:
         db.commit()
 
         asset_count = 0
-        skipped_clash = 0
+        actions: Counter[str] = Counter()
+        refused = False
         for domain in domains:
+            # Posture is re-checked per zone: a long sync must not keep claiming
+            # after the instance was disabled or its binding refused.
+            db.refresh(instance)
+            if not instance.enabled or instance.bound_entity_id is None or not svc.binding_allowed(
+                db, instance.bound_entity_id
+            )[0]:
+                log.warning("Connector sync for instance %s stopped: disabled or binding no longer allowed", instance_id)
+                refused = True
+                break
             try:
-                target = ensure_connector_verified(db, domain, instance)
-                if target is None:
-                    # Zone clash (planning#284 comment 6386279550): the zone is already
-                    # a target of a different scope. Skip and log for now; may change;
-                    # person-facing flag with the connector_zone slice.
-                    skipped_clash += 1
-                    continue
-                result = connector.discover(domain, config)
-                if result.assets:
-                    write_assets(db, run.id, result.assets, target_ids=[target.id])
-                    asset_count += len(result.assets)
+                outcome = connector_zones.process_zone(db, instance=instance, zone=domain)
+                if outcome.target is not None and outcome.action in (
+                    connector_zones.CLAIMED, connector_zones.ALREADY_CLAIMED
+                ):
+                    result = connector.discover(domain, config)
+                    if result.assets:
+                        write_assets(db, run.id, result.assets, target_ids=[outcome.target.id])
+                        asset_count += len(result.assets)
+                db.commit()
+                actions[outcome.action] += 1
+                if outcome.claimed and outcome.candidate_id is not None:
+                    claimed_ids.append(outcome.candidate_id)
+                elif outcome.left_open and outcome.candidate_id is not None:
+                    open_ids.append(outcome.candidate_id)
+            except Exception:
+                db.rollback()
+                actions["failed"] += 1
+                log.exception("Connector sync failed for domain %r (instance %s)", domain, instance_id)
+
+        if not refused:
+            try:
+                connector_zones.resolve_unlisted(db, instance=instance, listed=set(domains))
                 db.commit()
             except Exception:
                 db.rollback()
-                log.exception("Connector sync failed for domain %s (instance %s)", domain, instance_id)
+                log.exception("Could not resolve stale zone clashes for instance %s", instance_id)
 
         run.status = ScanStatus.COMPLETED
         run.completed_at = datetime.now(timezone.utc)
         db.commit()
         log.info(
-            "Connector sync complete: %s — %d domains, %d assets, %d skipped (zone belongs to another scope)",
-            connector_type, len(domains), asset_count, skipped_clash,
+            "Connector sync complete: %s — %d zones, %d assets, actions: %s",
+            connector_type, len(domains), asset_count, dict(actions),
         )
     except Exception:
         db.rollback()
@@ -660,3 +774,16 @@ def _auto_discover_all_domains(instance_id: uuid.UUID) -> None:
                 log.exception("Could not mark connector sync run %s failed", run.id)
     finally:
         db.close()
+
+    # Org-discovery follow-ups open their own sessions, so only after ours is
+    # closed; a failure here must never fail the sync.
+    for cid in claimed_ids:
+        try:
+            runner.verify_after_claim(cid)
+        except Exception:
+            log.exception("org-discovery verify_after_claim failed for candidate %s", cid)
+    if open_ids:
+        try:
+            runner.verify_new_candidates(open_ids)
+        except Exception:
+            log.exception("org-discovery verify_new_candidates failed for candidates %s", open_ids)

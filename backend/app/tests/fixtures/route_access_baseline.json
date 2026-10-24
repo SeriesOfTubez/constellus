@@ -169,6 +169,12 @@
   "admin",
   "integration_admin"
  ],
+ "GET /api/connectors/instances/{instance_id}/zone-clashes": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
  "GET /api/connectors/instances/{instance_id}/zones": [
   "admin",
   "integration_admin"
