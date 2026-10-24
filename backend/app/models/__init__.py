@@ -1,6 +1,7 @@
 from app.models.user import User, UserRole
 from app.models.role_assignment import RoleAssignment
 from app.models.connector_instance import ConnectorEnvSeed, ConnectorInstance
+from app.models.connector_zone_clash import ConnectorZoneClash
 from app.models.scan import ScanRun, ScanStatus
 from app.models.asset import AssetType
 from app.models.finding import FindingSource, FindingState, Severity
@@ -67,7 +68,7 @@ from app.models.http_redirect_hop import HttpRedirectHop
 
 __all__ = [
     "User", "UserRole", "RoleAssignment",
-    "ConnectorInstance", "ConnectorEnvSeed",
+    "ConnectorInstance", "ConnectorEnvSeed", "ConnectorZoneClash",
     "ScanRun", "ScanStatus",
     "AssetType",
     "FindingSource", "FindingState", "Severity",

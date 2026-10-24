@@ -54,7 +54,24 @@ class Env:
         db.rollback()
         ids = [i for (i,) in db.query(ConnectorInstance.id).filter(ConnectorInstance.type.in_(_TOUCHED)).all()]
         if ids:
+            # Candidates the instances decided or signalled reference them (RESTRICT).
+            from app.tests import _scope_candidates
+            from app.tests._entity_graph import cleanup_evidence
+
+            evidence = _scope_candidates.purge(db, connector_instance_ids=ids)
             db.query(Target).filter(Target.connector_instance_id.in_(ids)).delete(synchronize_session=False)
+            db.commit()
+            # A zone whose unit of work failed after store_evidence committed
+            # leaves evidence no signal cites; it is found by its source URL.
+            from app.models.evidence import EvidenceFetch
+
+            for iid in ids:
+                prefix = f"https://org-discovery.invalid/generate/connector_zone/{iid}/"
+                evidence |= {
+                    fid for (fid,) in db.query(EvidenceFetch.id).filter(EvidenceFetch.source_url.startswith(prefix))
+                }
+            for fid in evidence:
+                cleanup_evidence(db, fid)
         db.query(ConnectorEnvSeed).filter(ConnectorEnvSeed.type.in_(_TOUCHED)).delete(synchronize_session=False)
         db.query(ConnectorInstance).filter(ConnectorInstance.type.in_(_TOUCHED)).delete(synchronize_session=False)
         db.commit()

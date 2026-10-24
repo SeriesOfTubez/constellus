@@ -62,6 +62,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.models.connector_instance import ConnectorInstance
 from app.models.engagement import Engagement, EngagementPosture
 from app.models.org_entity import RELATIONSHIP_MA_TARGET, RELATIONSHIP_OURS, OrgEntity
 from app.models.scope_candidate import (
@@ -183,6 +184,7 @@ def record_signal(
     anchor_candidate_id: uuid.UUID | None = None,
     anchor_entity_id: uuid.UUID | None = None,
     anchor_user_id: uuid.UUID | None = None,
+    anchor_connector_instance_id: uuid.UUID | None = None,
     via_entity_id: uuid.UUID,
     evidence_id: uuid.UUID | None = None,
     quote: str | None = None,
@@ -208,6 +210,11 @@ def record_signal(
     value = normalise_domain(value)
     if anchor_kind not in ANCHOR_KINDS:
         raise CandidateInvalid(f"unknown anchor kind {anchor_kind!r}")
+
+    if (signal_type == "connector_zone") != (anchor_kind == "connector_instance"):
+        raise CandidateInvalid("connector_zone signals, and only they, use the connector_instance anchor")
+    if anchor_kind != "connector_instance" and anchor_connector_instance_id is not None:
+        raise CandidateInvalid("a connector instance id is only for a connector_instance anchor")
 
     if (evidence_id is None) != (quote is None):
         raise CandidateInvalid("evidence and quote are given together or not at all")
@@ -238,6 +245,13 @@ def record_signal(
         anchor = db.get(ScopeCandidate, anchor_candidate_id)
         if anchor is None or anchor.status != "claimed" or anchor.root_entity_id != root_entity_id:
             raise CandidateInvalid("the anchoring candidate must be claimed, under the same organization")
+
+    elif anchor_kind == "connector_instance":
+        if anchor_connector_instance_id is None:
+            raise CandidateInvalid("a connector_instance anchor needs the connector instance")
+        instance = db.get(ConnectorInstance, anchor_connector_instance_id)
+        if instance is None or instance.bound_entity_id != root_entity_id:
+            raise CandidateInvalid("the anchoring connector instance must be bound to the organization")
 
     candidate = db.execute(
         select(ScopeCandidate)
@@ -280,6 +294,7 @@ def record_signal(
             anchor_kind=anchor_kind,
             anchor_candidate_id=anchor_candidate_id,
             anchor_entity_id=anchor_entity_id,
+            anchor_connector_instance_id=anchor_connector_instance_id,
             anchor_user_id=anchor_user_id,
             via_entity_id=via_entity_id,
             evidence_id=evidence_id,
@@ -454,7 +469,11 @@ def _attach_or_create_target(
     db: Session, *, value: str, destination_id: uuid.UUID | None, entity_id: uuid.UUID, user, now: datetime,
     elsewhere_message: str, other_entity_message: str,
 ) -> tuple[Target, bool]:
-    existing = db.execute(select(Target).where(Target.value == value)).scalar_one_or_none()
+    # FOR UPDATE: the check below and the write must not interleave with another
+    # claim attributing the same target (held until the caller's commit).
+    existing = db.execute(
+        select(Target).where(Target.value == value).with_for_update().execution_options(populate_existing=True)
+    ).scalar_one_or_none()
     if existing is not None:
         if existing.engagement_id != destination_id:
             raise CandidateConflict(elsewhere_message)
@@ -480,16 +499,63 @@ def _attach_or_create_target(
 
 def _write_claim(
     db: Session, candidate: ScopeCandidate, *, affiliated_id: uuid.UUID, destination_id: uuid.UUID | None,
-    target: Target, user, now: datetime,
+    target: Target, user, now: datetime, connector_instance: ConnectorInstance | None = None,
 ) -> None:
+    """The decider is a person (`user`) or, for `claim_by_connector`, a
+    connector instance (`user` None): exactly one of the two."""
     candidate.status = "claimed"
     candidate.affiliated_entity_id = affiliated_id
     candidate.decided_at = now
-    candidate.decided_by_id = user.id
+    candidate.decided_by_id = user.id if user is not None else None
+    candidate.decided_by_connector_instance_id = connector_instance.id if connector_instance is not None else None
     candidate.accepted_into = "engagement" if destination_id is not None else "estate"
     candidate.engagement_id = destination_id
     candidate.target_id = target.id
-    db.add(ScopeCandidateEvent(id=uuid.uuid4(), candidate_id=candidate.id, event="claimed", user_id=user.id))
+    db.add(ScopeCandidateEvent(
+        id=uuid.uuid4(), candidate_id=candidate.id, event="claimed",
+        user_id=user.id if user is not None else None,
+        connector_instance_id=connector_instance.id if connector_instance is not None else None,
+    ))
+
+
+def claim_by_connector(
+    db: Session, *, candidate: ScopeCandidate, instance: ConnectorInstance, target: Target
+) -> None:
+    """A connector instance's active zone claims its own candidate under the
+    instance's bound organization (planning#277 S1b): a person created the
+    connector, so a person passively decided. Skips the proposable gate (a
+    `connector_zone` signal is Strong; that is checked, not assumed). Flushes
+    only; the caller owns the commit. Fails closed on any mismatch."""
+    locked = db.execute(
+        select(ScopeCandidate).where(ScopeCandidate.id == candidate.id).with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if locked is None:
+        raise CandidateNotFound("candidate not found")
+    if locked.status != "open":
+        raise CandidateConflict(f"candidate is already {locked.status}")
+    if instance.bound_entity_id is None or locked.root_entity_id != instance.bound_entity_id:
+        raise CandidateConflict("the candidate belongs to a different organization than the connector instance")
+    from app.services.connector_instances import SCOPE_ESTATE, instance_scope_key
+
+    destination_id = target.engagement_id
+    target_scope = SCOPE_ESTATE if destination_id is None else str(destination_id)
+    if instance_scope_key(db, instance) != target_scope:
+        raise CandidateConflict("the target is outside the connector instance's scope")
+    has_signal = db.execute(
+        select(ScopeSignal.id).where(
+            ScopeSignal.candidate_id == locked.id,
+            ScopeSignal.signal_type == "connector_zone",
+            ScopeSignal.anchor_connector_instance_id == instance.id,
+        ).limit(1)
+    ).first()
+    if has_signal is None:
+        raise RuntimeError("the candidate has no connector_zone signal from this connector instance")
+    _write_claim(
+        db, locked, affiliated_id=instance.bound_entity_id, destination_id=destination_id,
+        target=target, user=None, now=_now(), connector_instance=instance,
+    )
+    db.flush()
 
 
 def claim(

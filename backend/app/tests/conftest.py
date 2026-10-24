@@ -62,6 +62,20 @@ _GUARDED_MODULES = [
 
 
 @pytest.fixture(autouse=True)
+def _no_connector_autosync(request, monkeypatch):
+    """planning#277 S1b: creating or rebinding a configured connector instance
+    queues a zone sync, which under `TestClient` runs inline and would call the
+    provider's real API from every test that creates an instance. It is off
+    unless the test module sets `REAL_CONNECTOR_AUTOSYNC = True` (and then
+    patches the provider transport itself)."""
+    if getattr(request.module, "REAL_CONNECTOR_AUTOSYNC", False):
+        return
+    from app.api import connectors
+
+    monkeypatch.setattr(connectors, "_should_sync", lambda db, connector, instance: False)
+
+
+@pytest.fixture(autouse=True)
 def _offline_org_verifier_facts(monkeypatch):
     """planning#277 S1b: claiming / adding through the API schedules the
     verifier run, and under `TestClient` a background task runs inline. Left

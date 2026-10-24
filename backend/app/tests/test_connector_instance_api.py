@@ -24,6 +24,7 @@ from app.connectors.base import DiscoveredAsset, PhaseResult
 from app.connectors.cloudflare import CloudflareConnector
 from app.main import app
 from app.models.connector_instance import ConnectorInstance
+from app.models.connector_zone_clash import ConnectorZoneClash
 from app.models.role_assignment import RoleAssignment
 from app.models.scan import ScanRun
 from app.models.scope_candidate import ScopeCandidate
@@ -136,21 +137,21 @@ def test_create_rules(env):
     r = client.post(f"{BASE}/cloudflare/instances", headers=env.iadmin, json=body())
     assert r.status_code == 422 and r.json()["detail"]["code"] == "binding_required"
     # ... a deal that has not closed is refused
-    r = client.post(f"{BASE}/cloudflare/instances", headers=env.iadmin, json=body(bound_entity_id=str(deal.id)))
+    r = client.post(f"{BASE}/cloudflare/instances", headers=env.admin, json=body(bound_entity_id=str(deal.id)))
     assert r.status_code == 422 and r.json()["detail"]["code"] == "binding_not_allowed"
     # reached: the same request succeeds once the deal closes
     env.set_posture(eng, "day_0")
-    r = client.post(f"{BASE}/cloudflare/instances", headers=env.iadmin, json=body(bound_entity_id=str(deal.id)))
+    r = client.post(f"{BASE}/cloudflare/instances", headers=env.admin, json=body(bound_entity_id=str(deal.id)))
     assert r.status_code == 201 and r.json()["bound_entity_id"] == str(deal.id) and r.json()["binding_ok"] is True
     assert "config" not in r.json() and TOKEN not in r.text
 
     # ours is fine; a duplicate name is not
-    first = client.post(f"{BASE}/cloudflare/instances", headers=env.iadmin, json=body(bound_entity_id=str(ours.id), name="dup"))
+    first = client.post(f"{BASE}/cloudflare/instances", headers=env.admin, json=body(bound_entity_id=str(ours.id), name="dup"))
     assert first.status_code == 201
-    r = client.post(f"{BASE}/cloudflare/instances", headers=env.iadmin, json=body(bound_entity_id=str(ours.id), name="dup"))
+    r = client.post(f"{BASE}/cloudflare/instances", headers=env.admin, json=body(bound_entity_id=str(ours.id), name="dup"))
     assert r.status_code == 409
     # a global type refuses a binding; an unknown type is 404
-    r = client.post(f"{BASE}/naabu/instances", headers=env.iadmin, json=body(bound_entity_id=str(ours.id)))
+    r = client.post(f"{BASE}/naabu/instances", headers=env.admin, json=body(bound_entity_id=str(ours.id)))
     assert r.status_code == 422 and r.json()["detail"]["code"] == "binding_forbidden"
     assert client.post(f"{BASE}/nope/instances", headers=env.iadmin, json=body()).status_code == 404
 
@@ -163,17 +164,45 @@ def test_create_rules(env):
 def test_patch_rename_and_rebind(env):
     ours, deal_org = env.ours(), None
     deal_org, eng = env.deal("pre_close")
-    inst = env.instance(env.iadmin, org=ours)
+    inst = env.instance(env.admin, org=ours)
     url = f"{BASE}/instances/{inst['id']}"
     r = client.patch(url, headers=env.iadmin, json={"name": "renamed"})
     assert r.status_code == 200 and r.json()["name"] == "renamed" and r.json()["bound_entity_id"] == str(ours.id)
-    r = client.patch(url, headers=env.iadmin, json={"bound_entity_id": str(deal_org.id)})
+    r = client.patch(url, headers=env.admin, json={"bound_entity_id": str(deal_org.id)})
     assert r.status_code == 422
-    r = client.patch(url, headers=env.iadmin, json={"bound_entity_id": None})
+    r = client.patch(url, headers=env.admin, json={"bound_entity_id": None})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "binding_required"
     env.set_posture(eng, "integrated")
-    r = client.patch(url, headers=env.iadmin, json={"bound_entity_id": str(deal_org.id)})
+    r = client.patch(url, headers=env.admin, json={"bound_entity_id": str(deal_org.id)})
     assert r.status_code == 200 and r.json()["bound_entity_name"] == deal_org.legal_name
+
+
+def test_binding_is_an_attribution_decision(env):
+    ours, other = env.ours(), env.ours()
+    body = {"name": f"conn284-{hexid()}", "bound_entity_id": str(ours.id), "config": {}}
+    before = env.db.query(ConnectorInstance).count()
+    r = client.post(f"{BASE}/cloudflare/instances", headers=env.iadmin, json=body)
+    assert r.status_code == 403 and "entities.decide_candidate" in r.json()["detail"], r.text
+    env.db.expire_all()
+    assert env.db.query(ConnectorInstance).count() == before  # nothing created
+    assert client.post(f"{BASE}/cloudflare/instances", headers=env.admin, json=body).status_code == 201  # reached
+
+    inst = env.instance(env.admin, org=ours)
+    url = f"{BASE}/instances/{inst['id']}"
+    r = client.patch(url, headers=env.iadmin, json={"name": "renamed-by-iadmin"})
+    assert r.status_code == 200 and r.json()["bound_entity_id"] == str(ours.id)
+    r = client.patch(url, headers=env.iadmin, json={"bound_entity_id": str(other.id)})
+    assert r.status_code == 403 and "entities.decide_candidate" in r.json()["detail"], r.text
+    assert client.get(url, headers=env.admin).json()["bound_entity_id"] == str(ours.id)  # unchanged
+    # the same binding restated is not a change
+    r = client.patch(url, headers=env.iadmin, json={"name": "again", "bound_entity_id": str(ours.id)})
+    assert r.status_code == 200 and r.json()["name"] == "again"
+    # reached: admin may rebind
+    r = client.patch(url, headers=env.admin, json={"bound_entity_id": str(other.id)})
+    assert r.status_code == 200 and r.json()["bound_entity_id"] == str(other.id)
+    # an unbound (global) instance needs no attribution permission
+    assert client.post(f"{BASE}/naabu/instances", headers=env.iadmin,
+                       json={"name": f"conn284-{hexid()}", "bound_entity_id": None, "config": {}}).status_code == 201
 
 
 # ── read scope ──────────────────────────────────────────────────────────────
@@ -277,7 +306,7 @@ def test_sync_refused_when_binding_regressed_or_disabled(env, monkeypatch):
 
 
 def test_delete_refused_while_targets_reference_it(env):
-    inst = env.instance(env.iadmin, org=env.ours())
+    inst = env.instance(env.admin, org=env.ours())
     t = env.target(f"ref-{hexid()}.example.com", verified=True, connector_instance_id=uuid.UUID(inst["id"]))
     url = f"{BASE}/instances/{inst['id']}"
     r = client.delete(url, headers=env.iadmin)
@@ -294,7 +323,7 @@ def test_delete_refused_while_targets_reference_it(env):
 def test_delete_catches_the_database_refusal_too(env, monkeypatch):
     from app.api import connectors as api
 
-    inst = env.instance(env.iadmin, org=env.ours())
+    inst = env.instance(env.admin, org=env.ours())
     t = env.target(f"race-{hexid()}.example.com", verified=True, connector_instance_id=uuid.UUID(inst["id"]))
     real = api._referencing_targets
     calls = []
@@ -314,7 +343,7 @@ def test_delete_catches_the_database_refusal_too(env, monkeypatch):
 
 
 def test_config_masking_and_merge(env):
-    inst = env.instance(env.iadmin, org=env.ours())
+    inst = env.instance(env.admin, org=env.ours())
     url = f"{BASE}/instances/{inst['id']}/config"
     r = client.get(url, headers=env.iadmin)
     assert r.status_code == 200 and r.json()["config"] == {"api_token": "**configured**"} and TOKEN not in r.text
@@ -336,7 +365,7 @@ def test_config_masking_and_merge(env):
 
 def test_test_and_zones_use_the_instance_config(env, monkeypatch):
     calls = spy_cloudflare(monkeypatch, ["z1.example.com", "z2.example.com"])
-    inst = env.instance(env.iadmin, org=env.ours())
+    inst = env.instance(env.admin, org=env.ours())
     url = f"{BASE}/instances/{inst['id']}"
     assert client.put(f"{url}/zones", headers=env.iadmin, json={"excluded_zones": ["z2.example.com"]}).status_code == 200
     r = client.get(f"{url}/zones", headers=env.iadmin)
@@ -418,7 +447,7 @@ def test_binding_suggestion_uses_stored_token_and_a_fixed_url(env, monkeypatch):
     org = env.ours()
     value = f"s-{hexid()}.example.com"
     env.claim(org, value)
-    inst = env.instance(env.iadmin, org=org)
+    inst = env.instance(env.admin, org=org)
     calls = spy_cloudflare(monkeypatch, [value])
 
     r = _suggest(env, instance_id=inst["id"], config={"api_token": "**configured**", "base_url": "http://127.0.0.1:1"})
@@ -489,9 +518,16 @@ def test_sync_stamps_targets_with_the_instance_and_the_deal(env, monkeypatch):
     # an existing target of the SAME scope is adopted by the instance, never re-pointed
     assert got[d_same].engagement_id == eng.id and str(got[d_same].connector_instance_id) == deal_inst["id"]
     assert got[d_same].verified is True
-    # a target of another scope (another deal, or the estate) is left untouched (zone clash: skipped)
+    # a target of another scope (another deal, or the estate) is left untouched and
+    # surfaces as a clash row for a person (planning#277 S1b), not a silent skip
     for v, eid in ((d_existing, other_eng.id), (d_plain, None)):
         assert got[v].engagement_id == eid and got[v].connector_instance_id is None and got[v].verified is False
+    env.db.expire_all()
+    rows = env.db.query(ConnectorZoneClash).filter(ConnectorZoneClash.instance_id == uuid.UUID(deal_inst["id"])).all()
+    assert {(r.zone, r.reason, r.conflicting_target_id) for r in rows} == {
+        (d_existing, "target_in_other_scope", got[d_existing].id),
+        (d_plain, "target_in_other_scope", got[d_plain].id),
+    }
 
 
 def test_sync_one_failing_domain_does_not_stop_the_next(env, monkeypatch):

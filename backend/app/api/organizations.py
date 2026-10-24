@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session, aliased
 from app.api.deps import require_permission
 from app.core.database import get_db
 from app.core.permissions import Permission, has_permission
+from app.models.connector_instance import ConnectorInstance
 from app.models.engagement import Engagement, EngagementPosture
 from app.models.org_entity import OrgEntity
 from app.models.scope_candidate import ScopeCandidate, ScopeCandidateEvent, ScopeSignal
@@ -141,6 +142,7 @@ class CandidateRow(BaseModel):
     first_seen_at: str | None
     previously_rejected: PreviouslyRejected | None
     target_id: uuid.UUID | None
+    decided_by_connector_instance_id: uuid.UUID | None = None
 
 
 class AnchorDetail(BaseModel):
@@ -172,6 +174,7 @@ class EventDetail(BaseModel):
     user_id: uuid.UUID | None
     reason: str | None
     signal_id: uuid.UUID | None
+    connector_instance_id: uuid.UUID | None = None
 
 
 class CandidateDetail(CandidateRow):
@@ -181,6 +184,10 @@ class CandidateDetail(CandidateRow):
     decided_at: str | None
     accepted_into: str | None
     engagement_id: uuid.UUID | None
+    decided_by_id: uuid.UUID | None = None
+    # The instance's CURRENT name (never stored); None when the caller cannot
+    # read that instance, or it no longer exists. The id above is still returned.
+    decided_by_connector_name: str | None = None
 
 
 class AddCandidateRequest(BaseModel):
@@ -308,6 +315,7 @@ def _rows(db: Session, result_rows) -> list[CandidateRow]:
             first_seen_at=first_seen[c.id].isoformat() if c.id in first_seen else None,
             previously_rejected=previous.get(c.id),
             target_id=c.target_id,
+            decided_by_connector_instance_id=c.decided_by_connector_instance_id,
         ))
     return out
 
@@ -576,15 +584,26 @@ def get_candidate(
         select(ScopeCandidateEvent).where(ScopeCandidateEvent.candidate_id == candidate_id)
         .order_by(ScopeCandidateEvent.at, ScopeCandidateEvent.id)
     ).scalars().all()
+    connector_name = None
+    if candidate.decided_by_connector_instance_id is not None:
+        connector_name = db.execute(
+            select(ConnectorInstance.name).where(
+                ConnectorInstance.id == candidate.decided_by_connector_instance_id,
+                read_scope.connector_instance_clause(current_user, ConnectorInstance),
+            )
+        ).scalar_one_or_none()
     return CandidateDetail(
         **row.model_dump(),
         signal_details=details,
-        events=[EventDetail(event=e.event, at=e.at.isoformat(), user_id=e.user_id, reason=e.reason, signal_id=e.signal_id)
+        events=[EventDetail(event=e.event, at=e.at.isoformat(), user_id=e.user_id, reason=e.reason, signal_id=e.signal_id,
+                            connector_instance_id=e.connector_instance_id)
                 for e in events],
         rejection_reason=candidate.rejection_reason,
         decided_at=candidate.decided_at.isoformat() if candidate.decided_at else None,
         accepted_into=candidate.accepted_into,
         engagement_id=candidate.engagement_id,
+        decided_by_id=candidate.decided_by_id,
+        decided_by_connector_name=connector_name,
     )
 
 

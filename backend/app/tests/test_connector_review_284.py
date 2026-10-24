@@ -175,7 +175,7 @@ def test_binding_routes_hide_a_closed_deal_organization(env, monkeypatch):
     r = client.post(f"{BASE}/cloudflare/instances", headers=env.iadmin, json=body)
     assert r.status_code == 422 and r.json()["detail"] == {"code": "binding_not_allowed", "reason": "not_visible"}
     # rebind of a visible instance to the hidden org is refused the same way
-    mine = env.instance(env.iadmin, org=ours)
+    mine = env.instance(env.admin, org=ours)
     r = client.patch(f"{BASE}/instances/{mine['id']}", headers=env.iadmin, json={"bound_entity_id": str(deal.id)})
     assert r.status_code == 422 and r.json()["detail"]["reason"] == "not_visible"
     # reached: admin may create the same binding

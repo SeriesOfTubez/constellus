@@ -61,8 +61,28 @@ class ConnectorInstanceSummary(BaseModel):
     # False when the bound organization no longer satisfies the binding rule
     # (e.g. its deal reverted to pre_close); such an instance cannot sync.
     binding_ok: bool
+    # Unresolved zone clashes (planning#277 S1b): zones this instance lists that
+    # could not be verified/claimed. Rows: GET /instances/{id}/zone-clashes.
+    open_zone_clashes: int = 0
     created_at: datetime
     updated_at: datetime
+
+
+class ZoneClashResponse(BaseModel):
+    """One connector zone that could not be acted on. The conflicting ids are
+    returned only when the caller can read the referenced row under that row's
+    own read scope. Otherwise `reason` is the response-only value
+    `conflict_not_visible` (never stored) and both ids are null: the reason
+    itself would tell the caller that a deal they cannot see holds the domain."""
+
+    id: uuid.UUID
+    zone: str
+    reason: str
+    conflicting_candidate_id: uuid.UUID | None
+    conflicting_target_id: uuid.UUID | None
+    first_seen_at: datetime
+    last_seen_at: datetime
+    resolved_at: datetime | None
 
 
 class ConnectorTypeSummary(BaseModel):

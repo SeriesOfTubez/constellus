@@ -141,7 +141,8 @@ def _fresh_candidate(w, root):
 
 
 def _raw_signal(w, cid, via, signal_type):
-    """A signal of a type with no generator, inserted directly to exercise the SQL."""
+    """A signal of a type with no generator, inserted directly to exercise the SQL.
+    (Not `connector_zone`: since 0086 it needs a connector_instance anchor.)"""
     ev = w.evidence_row()
     return _insert_signal(w.db, cid, via.id, signal_type=signal_type, evidence_id=ev.id, quote="a quote")
 
@@ -149,9 +150,9 @@ def _raw_signal(w, cid, via, signal_type):
 def test_strong_alone_is_proposable(w):
     root = w.ours()
     cid = _fresh_candidate(w, root)
-    _raw_signal(w, cid, root, "connector_zone")
+    _raw_signal(w, cid, root, "registrant_email_claimed")
     assert _strength(w.db, cid)[:3] == ("strong", True, 1)
-    assert _strength(w.db, cid)[3] == ["connector_zone"]
+    assert _strength(w.db, cid)[3] == ["registrant_email_claimed"]
 
 
 def test_two_supporting_signals_of_the_same_family_are_only_a_lead(w):
@@ -190,12 +191,12 @@ def test_a_candidate_with_no_signals_reads_as_context(w):
 def test_strong_beats_everything_and_strong_types_are_distinct(w):
     root = w.ours()
     cid = _fresh_candidate(w, root)
-    _raw_signal(w, cid, root, "connector_zone")
-    _raw_signal(w, cid, root, "connector_zone")
+    _raw_signal(w, cid, root, "registrant_email_claimed")
+    _raw_signal(w, cid, root, "registrant_email_claimed")
     _raw_signal(w, cid, root, "mx_into_claimed")
     _raw_signal(w, cid, root, "name_similarity")
     strength, proposable, count, strong = _strength(w.db, cid)
-    assert (strength, proposable, count, strong) == ("strong", True, 4, ["connector_zone"])
+    assert (strength, proposable, count, strong) == ("strong", True, 4, ["registrant_email_claimed"])
 
 
 def test_the_default_affiliate_is_the_via_entity_of_the_best_signal(w):
@@ -204,7 +205,7 @@ def test_the_default_affiliate_is_the_via_entity_of_the_best_signal(w):
     cid = _fresh_candidate(w, root)
     _raw_signal(w, cid, a, "name_similarity")   # Context
     _raw_signal(w, cid, b, "mx_into_claimed")   # Supporting
-    _raw_signal(w, cid, c, "connector_zone")    # Strong: wins
+    _raw_signal(w, cid, c, "registrant_email_claimed")    # Strong: wins
     expr = strength_sql.default_affiliate_expr(cid)
     assert w.db.execute(select(expr)).scalar_one() == c.id
 

@@ -116,9 +116,9 @@ def ensure_connector_verified(db: Session, value: str, instance: ConnectorInstan
 
     Returns None, touching nothing, when a target for the value exists in a
     DIFFERENT scope than the instance's (estate = NULL engagement id; a
-    deal-bound instance = its deal's engagement id). Skip and log for now; may
-    change; person-facing flag with the connector_zone slice (planning#284
-    comment 6386279550)."""
+    deal-bound instance = its deal's engagement id). The caller
+    decides what to do about it: `org_discovery.connector_zones.process_zone`
+    records a person-facing clash row (planning#277 S1b)."""
     value = canonicalize_value(value)
     existing = db.query(Target).filter(Target.value == value).first()
     if existing:
