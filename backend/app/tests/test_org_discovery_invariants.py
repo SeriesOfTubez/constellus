@@ -219,7 +219,10 @@ def test_every_signal_type_the_verifiers_can_emit_is_built():
                 f"verifiers.py:{node.lineno}: Match(signal_type=...) must be a literal"
             )
             emitted.add(value.value)
-    assert emitted == {"shared_vanity_ns", "mx_into_claimed", "spf_sender_shared", "registrant_org_match"}
+    assert emitted == {
+        "shared_vanity_ns", "mx_into_claimed", "spf_sender_shared", "registrant_org_match",
+        "dmarc_report_to_claimed", "dmarc_exact_vendor", "dmarc_exact_generic",
+    }
     for signal_type in emitted:
         assert SIGNALS[signal_type].built, signal_type
 

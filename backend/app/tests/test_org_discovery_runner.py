@@ -219,6 +219,35 @@ def test_the_result_is_committed_not_just_flushed(w, monkeypatch):
         fresh.close()
 
 
+def test_an_authorised_dmarc_report_address_commits_a_dmarc_signal(w, monkeypatch):
+    root = w.ours()
+    anchor = _claimed(w, root)
+    c = w.candidate(root, value=_dom("c"))
+    addr = f"dmarc@{anchor.value}"
+
+    def collect(db, domain):
+        mine = domain == c.value
+        return DomainFacts(
+            domain=domain, ns=(), mx=(), spf_senders=(), spf_includes=(), registrant_org=None,
+            registrant_org_folded=None, lookup_errors=(),
+            dmarc_record_name=f"_dmarc.{domain}" if mine else None,
+            dmarc_rua=(addr,) if mine else (), dmarc_report_auth=((anchor.value, "authorised"),) if mine else (),
+        )
+
+    monkeypatch.setattr(runner, "_collect", collect)
+    runner.verify_new_candidates([c.id])
+    fresh = SessionLocal()
+    try:
+        rows = fresh.execute(
+            select(ScopeSignal).where(
+                ScopeSignal.candidate_id == c.id, ScopeSignal.signal_type == "dmarc_report_to_claimed"
+            )
+        ).scalars().all()
+        assert [(s.anchor_candidate_id, s.matched_values) for s in rows] == [(anchor.id, [addr])]
+    finally:
+        fresh.close()
+
+
 # ── triggers: routes ────────────────────────────────────────────────────────
 
 

@@ -125,6 +125,47 @@ def is_bulk_spf_include(domain: str) -> bool:
     return bool(d) and _under(d, SPF_BULK_PROVIDER_INCLUDES)
 
 
+# ── DMARC reporting vendors ─────────────────────────────────────────────────
+
+# Host suffix of a DMARC-reporting vendor -> the local parts that vendor
+# SHARES across customers ("*" = every mailbox there is shared). Any other
+# local part at a vendor host is a per-customer mailbox, so two domains
+# sending reports to the same one are very likely configured by one
+# customer account (dmarc_exact_vendor, Supporting). A shared mailbox, or
+# any address at a non-vendor host, is only Context (dmarc_exact_generic).
+# Entries are UNVERIFIED drafts pending Jason's approval in the PR
+# (#277 comment 6388684373); promote to a setting with #285.
+DMARC_VENDOR_REPORT_HOSTS: dict[str, frozenset[str]] = {
+    "dmarcian.com": frozenset(),  # dmarcian
+    "ondmarc.com": frozenset(),  # Red Sift
+    "easydmarc.us": frozenset(),  # EasyDMARC
+    "easydmarc.eu": frozenset(),  # EasyDMARC
+    "easydmarc.com": frozenset(),  # EasyDMARC
+    "powerdmarc.com": frozenset(),  # PowerDMARC
+    "dmarc-reports.cloudflare.net": frozenset(),  # Cloudflare DMARC Management
+    "dmarc.postmarkapp.com": frozenset(),  # Postmark
+    "dmarcanalyzer.com": frozenset(),  # Mimecast DMARC Analyzer
+    "uriports.com": frozenset(),  # URIports (per-customer HOST, so no shared local parts)
+    "vali.email": frozenset({"*"}),  # Valimail
+    "emaildefense.proofpoint.com": frozenset({"*"}),  # Proofpoint
+}
+
+
+def dmarc_vendor_address_kind(address: str) -> str | None:
+    """"per_customer" | "shared" for an address at a vendor host, None when the
+    host is no vendor's. `address` is a normalised `local@host`."""
+    if not isinstance(address, str) or address.count("@") != 1:
+        return None
+    local, host = address.split("@")
+    host = _norm_host(host)
+    if not local or not host:
+        return None
+    for suffix, shared in DMARC_VENDOR_REPORT_HOSTS.items():
+        if _under(host, (suffix,)):
+            return "shared" if ("*" in shared or local in shared) else "per_customer"
+    return None
+
+
 # ── registrant organizations ────────────────────────────────────────────────
 
 # Lower-case SUBSTRINGS (not regexes) that mark a redacted or privacy-proxy

@@ -81,7 +81,8 @@ def _offline_org_verifier_facts(monkeypatch):
     verifier run, and under `TestClient` a background task runs inline. Left
     alone it would do real DNS and WHOIS lookups from every such test, so the
     runner's one network seam answers "nothing known" unless a test installs
-    its own (test_org_discovery_runner.py does)."""
+    its own (test_org_discovery_runner.py does). DMARC and its s7.1
+    authorisation lookups are covered by the same stub."""
     from app.services.org_discovery import runner
     from app.services.org_discovery.domain_facts import DomainFacts
 
@@ -89,7 +90,8 @@ def _offline_org_verifier_facts(monkeypatch):
         runner, "_collect",
         lambda db, domain: DomainFacts(
             domain=domain, ns=(), mx=(), spf_senders=(), spf_includes=(), registrant_org=None,
-            registrant_org_folded=None, lookup_errors=(),
+            registrant_org_folded=None, lookup_errors=(), dmarc_record_name=None, dmarc_rua=(), dmarc_ruf=(),
+            dmarc_report_auth=(),
         ),
     )
 
