@@ -236,6 +236,25 @@ def classify_ip(db: Session, ip: str) -> HostingClass:
     return result
 
 
+def reverse_ip_claim(db: Session, ip: str) -> dict | None:
+    """The cached `reverse_ip` claim value for `ip`'s ip_address asset, or
+    None. Read-only: never fetches, never spends budget, never writes.
+    Staleness is the caller's business (`reverse_ip_domains` refreshes)."""
+    asset = _get_ip_asset(db, ip)
+    if asset is None:
+        return None
+    claim = get_current_claim(db, asset.id, _OBSERVER_NAME, _REVERSE_IP_CLAIM_TYPE)
+    if claim is None or not isinstance(claim.claim_value, dict):
+        return None
+    return dict(claim.claim_value)
+
+
+def is_active_record(last_seen: str | None, now: datetime) -> bool:
+    """Public alias of `_is_active`: was a pDNS record seen within the
+    active window."""
+    return _is_active(last_seen, now)
+
+
 def reverse_ip_domains(db: Session, ip: str) -> list[str]:
     """Domains observed resolving to `ip` (mnemonic passive DNS, planning#180).
 

@@ -224,6 +224,9 @@ class IngestResult:
     events_existing: int = 0
     malformed_skipped: int = 0
     denied: list[str] = field(default_factory=list)
+    # planning#277 S1b: candidates the filer-website generator CREATED, for the
+    # caller to verify (not part of the stored run counts; see `_run_edgar_ingest`).
+    created_candidate_ids: list[uuid.UUID] = field(default_factory=list)
 
     # ── slice 2 (planning#213, 2026-09-25) ──────────────────────────────────
     annual_reports_seen: int = 0
@@ -806,11 +809,13 @@ def _record_websites(
     organization the filer belongs to; never a target. A filer under no root
     records nothing and is counted as unanchored. This function owns its
     session (the ingest), so it commits, as the proposer it replaces did."""
+    created: list[uuid.UUID] = []
     recorded, existing, unanchored = generators.record_filer_websites(
         db, filer=entity, observer=observer, evidence_id=evidence_id, lines=lines,
-        filing_date=report["filing_date"],
+        filing_date=report["filing_date"], created_candidate_ids=created,
     )
     db.commit()
+    result.created_candidate_ids.extend(created)  # only once the rows are durable
     result.website_signals_recorded += recorded
     result.website_signals_existing += existing
     result.website_mentions_unanchored += unanchored

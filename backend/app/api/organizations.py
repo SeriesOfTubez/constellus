@@ -34,7 +34,7 @@ from app.models.org_entity import OrgEntity
 from app.models.scope_candidate import ScopeCandidate, ScopeCandidateEvent, ScopeSignal
 from app.models.user import User
 from app.services import audit, edgar_ingest, entity_relationship, organizations, read_scope, sec_edgar
-from app.services.org_discovery import candidates, filer_search
+from app.services.org_discovery import candidates, filer_search, runner
 from app.services.org_discovery import strength as strength_sql
 from app.services.org_discovery.tiers import SIGNALS
 
@@ -161,6 +161,7 @@ class SignalDetail(BaseModel):
     via_entity: AffiliateRef
     quote: str | None
     evidence_id: uuid.UUID | None
+    matched_values: list[str] | None = None
     first_seen_at: str
     last_seen_at: str
 
@@ -414,6 +415,9 @@ def add_organization(
         from app.api.targets import _launch_initial_discovery
 
         _launch_initial_discovery(db, result.target, current_user.id, background_tasks)
+    # After the add's commit: check the seed against anything else claimed in
+    # the new root, and (part C) generate from it.
+    background_tasks.add_task(runner.verify_after_claim, result.candidate.id)
     if run is not None:
         from app.api.entities import _run_ingest_then_read
         from app.services import onboarding
@@ -563,7 +567,7 @@ def get_candidate(
                 user_id=s.anchor_user_id,
             ),
             via_entity=AffiliateRef(id=s.via_entity_id, name=names.get(s.via_entity_id)),
-            quote=s.quote, evidence_id=s.evidence_id,
+            quote=s.quote, evidence_id=s.evidence_id, matched_values=s.matched_values,
             first_seen_at=s.first_seen_at.isoformat(), last_seen_at=s.last_seen_at.isoformat(),
         )
         for s in signals
@@ -589,12 +593,14 @@ def add_candidate(
     request: Request,
     org_id: uuid.UUID,
     data: AddCandidateRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission(Permission.ENTITIES_PROPOSE_CANDIDATE)),
 ):
     """A person adds a domain WITH its evidence (a Strong `person_evidence`
     signal); nothing here looks a domain up from a name."""
     _require_visible_root(db, current_user, org_id)
+    created: list[uuid.UUID] = []
     try:
         candidate = candidates.add_by_person(
             db,
@@ -605,6 +611,7 @@ def add_candidate(
             excerpt=data.excerpt,
             quote=data.quote,
             user=current_user,
+            new_candidate_ids=created,
         )
     except candidates.CandidateError as exc:
         raise _http_error(exc)
@@ -612,6 +619,8 @@ def add_candidate(
         request, candidate=str(candidate.id), organization=str(org_id), value=candidate.value,
         signal="person_evidence",
     )
+    if created:  # add_by_person has committed
+        background_tasks.add_task(runner.verify_new_candidates, created)
     return _one_row(db, current_user, candidate.id)[0]
 
 
@@ -651,6 +660,7 @@ def claim_candidate(
         from app.api.targets import _launch_initial_discovery
 
         _launch_initial_discovery(db, result.target, current_user.id, background_tasks)
+    background_tasks.add_task(runner.verify_after_claim, c.id)
     return _one_row(db, current_user, candidate_id)[0]
 
 
