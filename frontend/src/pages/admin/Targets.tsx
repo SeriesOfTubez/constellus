@@ -121,7 +121,7 @@ function IndeterminateCheckbox({
 }
 
 function sourceLabel(t: Target): string {
-  if (t.connector_id) return `Connector: ${t.connector_id}`
+  if (t.connector_instance_id) return `Connector: ${t.connector_instance_name} (${t.connector_type})`
   return "Manual"
 }
 

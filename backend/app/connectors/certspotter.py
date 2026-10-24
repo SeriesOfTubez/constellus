@@ -26,7 +26,6 @@ from app.connectors.base import (
     PhaseResult,
     TestResult,
 )
-from app.core.secrets import get_secret
 
 log = logging.getLogger(__name__)
 
@@ -50,12 +49,12 @@ class CertspotterConnector(BaseConnector):
             },
         }
 
-    def is_configured(self) -> bool:
+    def is_configured(self, config: dict[str, Any]) -> bool:
         # No required configuration — Certspotter accepts anonymous calls.
         return True
 
     def _test(self, config: dict[str, Any]) -> TestResult:
-        token = get_secret("CERTSPOTTER_API_TOKEN")
+        token = config.get("api_key")
         headers = {"Accept": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"

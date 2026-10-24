@@ -167,7 +167,7 @@ from app.core.database import SessionLocal
 from app.models.engagement import Engagement
 from app.models.llm_call import LlmCall
 from app.models.target import Target
-from app.services import app_settings, connector_config, posture
+from app.services import app_settings, connector_instances, posture
 from app.services.llm_grounding import check_grounding
 
 log = logging.getLogger(__name__)
@@ -484,14 +484,14 @@ class StructuredResult(Generic[T]):
 
 def _get_api_key(db: Session) -> str | None:
     """The one R5-compliant key lookup: the decrypted `api_key` from the
-    `openrouter` connector row IFF that row exists and is enabled, else
+    `openrouter` connector instance IFF it exists and is enabled, else
     `None`. Never reads `.env`/`os.environ`/`get_secret` (R5). Shared by
     `is_configured`, `_precall` and `refresh_allowed_models` so all three
     agree on what "configured" means."""
-    row = connector_config.get_one(db, _CONNECTOR_ID)
-    if row is None or not row.enabled:
+    config = connector_instances.enabled_config(db, _CONNECTOR_ID)
+    if config is None:
         return None
-    return connector_config.get_decrypted_config(db, _CONNECTOR_ID).get("api_key") or None
+    return config.get("api_key") or None
 
 
 @dataclass(frozen=True)

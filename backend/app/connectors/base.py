@@ -97,7 +97,8 @@ class BaseConnector(ABC):
 
     def test(self, config: dict[str, Any] | None = None) -> TestResult:
         """Validate credentials and connectivity. Called by the UI Test button.
-        Config is passed for connectors that don't use the env-var override layer."""
+        `config` is the decrypted config of the connector instance under test;
+        credentials are read from it and nowhere else."""
         return self._test(config or {})
 
     def _test(self, config: dict[str, Any]) -> TestResult:
@@ -109,8 +110,9 @@ class BaseConnector(ABC):
         ...
 
     @abstractmethod
-    def is_configured(self) -> bool:
-        """Return True if all required credentials are present."""
+    def is_configured(self, config: dict[str, Any]) -> bool:
+        """Return True if all required credentials are present in `config`
+        (the decrypted config of one connector instance)."""
         ...
 
 

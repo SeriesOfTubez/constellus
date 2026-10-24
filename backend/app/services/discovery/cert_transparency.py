@@ -28,9 +28,9 @@ from typing import Callable
 
 import httpx
 
+from app.services import connector_instances
 from app.connectors.base import DiscoveredAsset, PhaseResult
 from app.core.database import SessionLocal
-from app.core.secrets import get_secret
 from app.models.asset import AssetType
 from app.models.ct_query_cache import CTQueryCache
 
@@ -150,7 +150,7 @@ def _fetch_issuances(domain: str, *, allow_network: bool) -> list[dict] | None:
 
 def _live_fetch_and_cache(db, domain: str) -> list[dict] | None:
     """Hit the Certspotter API for `domain`, write result to cache, return it."""
-    token = get_secret("CERTSPOTTER_API_TOKEN")
+    token = (connector_instances.enabled_config(db, "certspotter") or {}).get("api_key")
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"

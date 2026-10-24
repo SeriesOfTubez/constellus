@@ -48,7 +48,7 @@ from app.core.database import SessionLocal
 from app.models.asset import AssetType
 from app.models.scan import ScanRun, ScanStatus
 from app.services import app_settings as settings_svc
-from app.services import connector_config
+from app.tests import connector_helpers as ch
 from app.services import scan_executor
 from app.tests import _decision_log
 
@@ -315,9 +315,7 @@ def _run_pipeline_with_stub(chunk_scope: dict, tier: str = "standard"):
     probe_authorisation_mode setting)."""
     db = SessionLocal()
     stub = _CaptureConnector()
-    naabu_row = connector_config.get_one(db, "naabu")
-    had_naabu_row = naabu_row is not None
-    original_enabled = naabu_row.enabled if naabu_row else None
+    naabu_snap = ch.snapshot(db, "naabu")
     original_mode = settings_svc.get(db, "probe_authorisation_mode")
     # Bound to a name rather than generated inline at the call below: the
     # gate stamps this on every decision row `_run_pipeline` writes, and an
@@ -327,15 +325,14 @@ def _run_pipeline_with_stub(chunk_scope: dict, tier: str = "standard"):
     # rather than as obvious residue (planning#189).
     scan_run_id = uuid.uuid4()
     try:
-        connector_config.set_enabled(db, "naabu", True)
+        ch.force_enabled(db, "naabu")
         _set_probe_mode(db, "log_only")
         scan_executor._run_pipeline(
             db, scan_run_id, chunk_scope, {}, "disabled", tier,
             False, {"naabu": stub}, [], frozenset(),
         )
     finally:
-        if had_naabu_row:
-            connector_config.set_enabled(db, "naabu", original_enabled)
+        ch.restore(db, "naabu", naabu_snap)
         _set_probe_mode(db, original_mode)
         db.close()
         _decision_log.cleanup_for_run(scan_run_id)
@@ -398,14 +395,12 @@ def test_guard_does_not_fire_for_a_successfully_swept_cidr():
     real result."""
     cidr = "203.0.113.0/28"
     db = SessionLocal()
-    naabu_row = connector_config.get_one(db, "naabu")
-    had_naabu_row = naabu_row is not None
-    original_enabled = naabu_row.enabled if naabu_row else None
+    naabu_snap = ch.snapshot(db, "naabu")
     original_mode = settings_svc.get(db, "probe_authorisation_mode")
     original_is_public_network = scan_executor.is_public_network
     run = None
     try:
-        connector_config.set_enabled(db, "naabu", True)
+        ch.force_enabled(db, "naabu")
         _set_probe_mode(db, "log_only")
         # The guard re-derives eligibility independently of naabu.py — it
         # reads scan_executor.is_public_network, stubbed here the same way
@@ -427,8 +422,7 @@ def test_guard_does_not_fire_for_a_successfully_swept_cidr():
         )
     finally:
         scan_executor.is_public_network = original_is_public_network
-        if had_naabu_row:
-            connector_config.set_enabled(db, "naabu", original_enabled)
+        ch.restore(db, "naabu", naabu_snap)
         _set_probe_mode(db, original_mode)
         if run is not None:
             _cleanup_run(db, run.id)
@@ -441,13 +435,11 @@ def test_guard_fires_for_a_non_public_cidr():
     never attempted."""
     cidr = "192.0.2.0/24"
     db = SessionLocal()
-    naabu_row = connector_config.get_one(db, "naabu")
-    had_naabu_row = naabu_row is not None
-    original_enabled = naabu_row.enabled if naabu_row else None
+    naabu_snap = ch.snapshot(db, "naabu")
     original_mode = settings_svc.get(db, "probe_authorisation_mode")
     run = None
     try:
-        connector_config.set_enabled(db, "naabu", True)
+        ch.force_enabled(db, "naabu")
         _set_probe_mode(db, "log_only")
 
         class _NoOpConnector:
@@ -464,8 +456,7 @@ def test_guard_fires_for_a_non_public_cidr():
         assert messages, f"guard did not fire for a non-public CIDR: {run.partial_failures!r}"
         assert "not a public" in messages[0]
     finally:
-        if had_naabu_row:
-            connector_config.set_enabled(db, "naabu", original_enabled)
+        ch.restore(db, "naabu", naabu_snap)
         _set_probe_mode(db, original_mode)
         if run is not None:
             _cleanup_run(db, run.id)
@@ -477,16 +468,12 @@ def test_guard_fires_for_an_oversized_cidr():
     never attempted, with a distinct reason from the non-public case."""
     cidr = "203.0.113.0/24"  # 256 addresses
     db = SessionLocal()
-    naabu_row = connector_config.get_one(db, "naabu")
-    had_naabu_row = naabu_row is not None
-    original_enabled = naabu_row.enabled if naabu_row else None
+    naabu_snap = ch.snapshot(db, "naabu")
     original_mode = settings_svc.get(db, "probe_authorisation_mode")
     original_is_public_network = scan_executor.is_public_network
-    original_naabu_config = connector_config.get_decrypted_config(db, "naabu")
     run = None
     try:
-        connector_config.set_enabled(db, "naabu", True)
-        connector_config.upsert_config(db, "naabu", {**original_naabu_config, "max_sweep_addresses": 4})
+        ch.force_enabled(db, "naabu", config={"max_sweep_addresses": 4})
         _set_probe_mode(db, "log_only")
         scan_executor.is_public_network = lambda v: v == cidr
 
@@ -505,9 +492,7 @@ def test_guard_fires_for_an_oversized_cidr():
         assert "exceeds" in messages[0]
     finally:
         scan_executor.is_public_network = original_is_public_network
-        connector_config.upsert_config(db, "naabu", original_naabu_config)
-        if had_naabu_row:
-            connector_config.set_enabled(db, "naabu", original_enabled)
+        ch.restore(db, "naabu", naabu_snap)
         _set_probe_mode(db, original_mode)
         if run is not None:
             _cleanup_run(db, run.id)

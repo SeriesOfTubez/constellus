@@ -416,16 +416,17 @@ def _enabled_notification_connectors(db: Session):
     this module and the connectors API surface."""
     from app.api.connectors import REGISTRY
     from app.connectors.base import NotificationConnector
-    from app.services import connector_config as svc
+    from app.services import connector_instances as svc
 
-    enabled_ids = {r.connector_id for r in svc.get_all(db) if r.enabled}
+    enabled_ids = svc.enabled_types(db)
     out = []
     for cid, connector in REGISTRY.items():
         if cid not in enabled_ids or not isinstance(connector, NotificationConnector):
             continue
-        if not connector.is_configured():
+        instances = svc.list_of_type(db, cid, enabled_only=True)
+        config = svc.decrypted_config(instances[0]) if instances else {}
+        if not connector.is_configured(config):
             continue
-        config = svc.get_decrypted_config(db, cid) or {}
         out.append((cid, connector, config))
     return out
 

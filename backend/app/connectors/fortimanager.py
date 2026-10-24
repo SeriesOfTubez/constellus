@@ -6,7 +6,6 @@ from app.connectors.base import (
     PhaseResult,
     TestResult,
 )
-from app.core.secrets import get_secret
 
 
 class FortiManagerConnector(EnrichmentConnector):
@@ -34,17 +33,17 @@ class FortiManagerConnector(EnrichmentConnector):
             },
         }
 
-    def is_configured(self) -> bool:
+    def is_configured(self, config: dict[str, Any]) -> bool:
         return bool(
-            get_secret("FORTIMANAGER_CONNECTOR_URL")
-            and get_secret("FORTIMANAGER_CONNECTOR_API_KEY")
+            config.get("connector_url")
+            and config.get("api_key")
         )
 
     def _test(self, config: dict) -> TestResult:
         import httpx
 
-        url = get_secret("FORTIMANAGER_CONNECTOR_URL")
-        api_key = get_secret("FORTIMANAGER_CONNECTOR_API_KEY")
+        url = config.get("connector_url")
+        api_key = config.get("api_key")
 
         if not url or not api_key:
             return TestResult(success=False, message="FortiManager connector not configured")
@@ -76,8 +75,8 @@ class FortiManagerConnector(EnrichmentConnector):
         """
         from app.connectors.http import connector_get, connector_post  # noqa: F401
 
-        url = get_secret("FORTIMANAGER_CONNECTOR_URL")
-        api_key = get_secret("FORTIMANAGER_CONNECTOR_API_KEY")
+        url = config.get("connector_url")
+        api_key = config.get("api_key")
         if not url or not api_key:
             return PhaseResult()
 

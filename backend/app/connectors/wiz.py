@@ -93,7 +93,6 @@ from app.connectors.base import (
 )
 from app.connectors.http import connector_post
 from app.core.netaddr import is_public_ip as _is_public_ip
-from app.core.secrets import get_secret
 from app.models.asset import AssetType
 
 log = logging.getLogger(__name__)
@@ -191,12 +190,12 @@ class WizConnector(EnrichmentConnector):
             },
         }
 
-    def is_configured(self) -> bool:
-        return bool(get_secret("WIZ_CLIENT_ID") and get_secret("WIZ_CLIENT_SECRET"))
+    def is_configured(self, config: dict[str, Any]) -> bool:
+        return bool(config.get("client_id") and config.get("client_secret"))
 
     def _test(self, config: dict) -> TestResult:
-        client_id = get_secret("WIZ_CLIENT_ID")
-        client_secret = get_secret("WIZ_CLIENT_SECRET")
+        client_id = config.get("client_id")
+        client_secret = config.get("client_secret")
 
         if not client_id or not client_secret:
             return TestResult(success=False, message="Wiz credentials not configured")
@@ -225,9 +224,9 @@ class WizConnector(EnrichmentConnector):
     # ── enrichment ─────────────────────────────────────────────────────────
 
     def enrich(self, assets: list[DiscoveredAsset], config: dict[str, Any]) -> PhaseResult:
-        client_id = get_secret("WIZ_CLIENT_ID")
-        client_secret = get_secret("WIZ_CLIENT_SECRET")
-        api_endpoint = get_secret("WIZ_API_ENDPOINT")
+        client_id = config.get("client_id")
+        client_secret = config.get("client_secret")
+        api_endpoint = config.get("api_endpoint")
         if not client_id or not client_secret or not api_endpoint:
             return PhaseResult()
 

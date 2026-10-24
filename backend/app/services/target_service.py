@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 import dns.resolver
 from sqlalchemy.orm import Session
 
+from app.models.connector_instance import ConnectorInstance
 from app.models.tag_rule import TagRule
 from app.models.target import Target, TargetType, VerificationMethod
 from app.services import target_scope
@@ -105,31 +106,70 @@ def whois_lookup(db: Session, ip: str) -> dict:
 
 # ── Write helpers ──────────────────────────────────────────────────────────────
 
-def ensure_connector_verified(db: Session, value: str, connector_id: str) -> Target:
-    """Mark a domain as verified via connector. Idempotent."""
+def ensure_connector_verified(db: Session, value: str, instance: ConnectorInstance) -> Target | None:
+    """Mark a domain as verified via a connector instance. Idempotent.
+
+    Flushes; the caller owns the commit. A NEW target created by a deal-bound
+    instance carries that deal's engagement id (so the deal's read scope and
+    posture govern it from the first row); an EXISTING target's
+    `engagement_id` is never re-pointed.
+
+    Returns None, touching nothing, when a target for the value exists in a
+    DIFFERENT scope than the instance's (estate = NULL engagement id; a
+    deal-bound instance = its deal's engagement id). Skip and log for now; may
+    change; person-facing flag with the connector_zone slice (planning#284
+    comment 6386279550)."""
+    value = canonicalize_value(value)
     existing = db.query(Target).filter(Target.value == value).first()
     if existing:
+        from app.services.connector_instances import SCOPE_ESTATE, instance_scope_key
+
+        own = instance_scope_key(db, instance)
+        existing_scope = SCOPE_ESTATE if existing.engagement_id is None else str(existing.engagement_id)
+        if own != existing_scope:
+            log.warning(
+                "Connector zone clash: target %s is in a different scope than connector instance %s; skipped",
+                existing.id, instance.id,
+            )
+            return None
         if not existing.verified:
             existing.verified = True
             existing.verification_method = VerificationMethod.CONNECTOR
-            existing.connector_id = connector_id
+            existing.connector_instance_id = instance.id
             existing.verified_at = datetime.now(timezone.utc)
-            db.commit()
+            db.flush()
         return existing
 
+    engagement = None
+    if instance.bound_entity_id is not None:
+        from app.models.org_entity import RELATIONSHIP_OURS, OrgEntity
+        from app.services.connector_instances import deal_engagement
+
+        entity = db.get(OrgEntity, instance.bound_entity_id)
+        if entity is None or entity.relationship != RELATIONSHIP_OURS:
+            engagement = deal_engagement(db, instance.bound_entity_id)
+            if engagement is None:
+                # Fail closed: never mint an unstamped target for a deal-bound
+                # instance (zero or several engagements, or an unknown entity).
+                raise ValueError(
+                    f"connector instance {instance.id} is bound to an organization with no single "
+                    "deal engagement; refusing to create an unstamped target"
+                )
     target = Target(
         id=uuid.uuid4(),
         type=TargetType.DOMAIN,
         value=value,
         verified=True,
         verification_method=VerificationMethod.CONNECTOR,
-        connector_id=connector_id,
+        connector_instance_id=instance.id,
+        engagement_id=engagement.id if engagement is not None else None,
+        source_type="dns_connector",
+        auto_managed=True,
         verified_at=datetime.now(timezone.utc),
     )
     db.add(target)
-    db.commit()
-    db.refresh(target)
-    log.info("Target %s auto-verified via connector %s", value, connector_id)
+    db.flush()
+    log.info("Target %s auto-verified via connector instance %s", value, instance.id)
     return target
 
 

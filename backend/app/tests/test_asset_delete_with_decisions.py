@@ -494,7 +494,7 @@ def test_delete_by_apex_batch_survives_a_gated_asset():
     a different question from whether its body works.
 
     `exclude_from_connector=False` deliberately: the connector-exclusion
-    half of this handler writes to `connector_config`, which is shared
+    half of this handler writes to `connector_instances`, which is shared
     state this test has no business touching.
     """
     suffix = uuid.uuid4().hex[:10]
@@ -521,7 +521,7 @@ def test_delete_by_apex_batch_survives_a_gated_asset():
                 exclude_from_connector=False,
             ),
             db=db,
-            _=None,
+            user=None,
         )
         assert result["deleted"] >= 2, f"both assets must be counted as deleted: {result!r}"
 

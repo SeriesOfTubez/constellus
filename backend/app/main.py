@@ -39,9 +39,16 @@ async def lifespan(app: FastAPI):
 
     db = next(get_db())
     try:
-        from app.services.connector_config import load_overrides_from_db
+        from app.services import connector_instances
         from app.api.connectors import REGISTRY
-        load_overrides_from_db(db, REGISTRY)
+        try:
+            # One-time, per type: environment values seed connector instances
+            # (planning#284). Startup must not crash on a seed failure.
+            connector_instances.seed_from_env(db, REGISTRY)
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception("Connector env seeding failed; continuing startup")
     finally:
         db.close()
 

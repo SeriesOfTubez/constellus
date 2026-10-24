@@ -59,8 +59,15 @@ class _Stub:
         }}})
 
 
-def _install(monkey_stub, secrets=None, public_ips=False):
-    """Swap the HTTP seam and the secrets lookup. Returns a restore callable.
+_CONFIG = {
+    "client_id": "id", "client_secret": "secret",
+    "api_endpoint": "https://api.example.invalid/graphql",
+}
+
+
+def _install(monkey_stub, public_ips=False):
+    """Swap the HTTP seam. Credentials are not patched: they are passed as the
+    instance `config` argument (`_CONFIG`). Returns a restore callable.
 
     Raw attribute assignment matches this suite's convention; conftest.py's
     autouse fixture does not guard app.connectors.wiz, so this restores
@@ -77,17 +84,11 @@ def _install(monkey_stub, secrets=None, public_ips=False):
     address-hygiene rule (CLAUDE.md: no real address in a tracked file).
     """
     original_post = wiz.connector_post
-    original_secret = wiz.get_secret
     original_sleep = wiz.time.sleep
     original_is_public = wiz._is_public_ip
     original_cache = dict(wiz._token_cache)
 
-    values = secrets if secrets is not None else {
-        "WIZ_CLIENT_ID": "id", "WIZ_CLIENT_SECRET": "secret",
-        "WIZ_API_ENDPOINT": "https://api.example.invalid/graphql",
-    }
     wiz.connector_post = monkey_stub
-    wiz.get_secret = lambda key: values.get(key)
     wiz.time.sleep = lambda _seconds: None
     if public_ips:
         wiz._is_public_ip = lambda value: value.startswith(("192.0.2.", "198.51.100.", "203.0.113."))
@@ -95,7 +96,6 @@ def _install(monkey_stub, secrets=None, public_ips=False):
 
     def restore():
         wiz.connector_post = original_post
-        wiz.get_secret = original_secret
         wiz.time.sleep = original_sleep
         wiz._is_public_ip = original_is_public
         wiz._token_cache.clear()
@@ -342,7 +342,7 @@ def test_token_is_fetched_once_and_reused_across_addresses():
     restore = _install(stub, public_ips=True)
     try:
         assets = [DiscoveredAsset(asset_type=AssetType.IP_ADDRESS, value=ip) for ip in addrs]
-        wiz.WizConnector().enrich(assets, {})
+        wiz.WizConnector().enrich(assets, _CONFIG)
         assert stub.token_calls == 1
     finally:
         restore()
@@ -397,7 +397,7 @@ def test_enrich_emits_one_asset_per_confirmed_ip_attributed_to_wiz():
             DiscoveredAsset(asset_type=AssetType.IP_ADDRESS, value="192.0.2.10"),
             DiscoveredAsset(asset_type=AssetType.IP_ADDRESS, value="192.0.2.11"),
         ]
-        result = wiz.WizConnector().enrich(assets, {})
+        result = wiz.WizConnector().enrich(assets, _CONFIG)
         assert len(result.assets) == 1
         emitted = result.assets[0]
         assert emitted.value == "192.0.2.10"
@@ -419,7 +419,7 @@ def test_enrich_skips_private_and_non_ip_assets_without_a_network_call():
             DiscoveredAsset(asset_type=AssetType.IP_ADDRESS, value="169.254.1.1"),
             DiscoveredAsset(asset_type=AssetType.DNS_RECORD, value="example.com"),
         ]
-        result = wiz.WizConnector().enrich(assets, {})
+        result = wiz.WizConnector().enrich(assets, _CONFIG)
         assert result.assets == []
         assert stub.calls == []  # not even a token exchange
     finally:
@@ -431,7 +431,7 @@ def test_enrich_deduplicates_repeated_addresses():
     restore = _install(stub, public_ips=True)
     try:
         assets = [DiscoveredAsset(asset_type=AssetType.IP_ADDRESS, value="192.0.2.10") for _ in range(4)]
-        result = wiz.WizConnector().enrich(assets, {})
+        result = wiz.WizConnector().enrich(assets, _CONFIG)
         assert len(result.assets) == 1
         assert len([c for c in stub.calls if c["url"] != wiz._TOKEN_URL]) == 1
     finally:
@@ -454,7 +454,7 @@ def test_one_failing_address_does_not_abandon_the_batch():
             DiscoveredAsset(asset_type=AssetType.IP_ADDRESS, value=ip)
             for ip in ("192.0.2.10", "192.0.2.11", "192.0.2.12")
         ]
-        result = wiz.WizConnector().enrich(assets, {})
+        result = wiz.WizConnector().enrich(assets, _CONFIG)
         assert sorted(a.value for a in result.assets) == ["192.0.2.10", "192.0.2.12"]
     finally:
         restore()
@@ -462,11 +462,16 @@ def test_one_failing_address_does_not_abandon_the_batch():
 
 def test_enrich_is_inert_without_credentials():
     stub = _Stub()
-    restore = _install(stub, secrets={"WIZ_CLIENT_ID": "id", "WIZ_CLIENT_SECRET": "secret"})  # no endpoint
+    restore = _install(stub, public_ips=True)
     try:
         assets = [DiscoveredAsset(asset_type=AssetType.IP_ADDRESS, value="192.0.2.10")]
-        assert wiz.WizConnector().enrich(assets, {}).assets == []
+        no_endpoint = {k: v for k, v in _CONFIG.items() if k != "api_endpoint"}  # no endpoint
+        assert wiz.WizConnector().enrich(assets, no_endpoint).assets == []
         assert stub.calls == []
+        # Same call with the endpoint present reaches the transport, so the
+        # inert result above is the missing endpoint's doing.
+        wiz.WizConnector().enrich(assets, _CONFIG)
+        assert stub.calls
     finally:
         restore()
 
@@ -478,7 +483,7 @@ def test_enrich_survives_a_token_failure_without_raising_into_the_scan():
     restore = _install(post, public_ips=True)
     try:
         assets = [DiscoveredAsset(asset_type=AssetType.IP_ADDRESS, value="192.0.2.10")]
-        assert wiz.WizConnector().enrich(assets, {}).assets == []
+        assert wiz.WizConnector().enrich(assets, _CONFIG).assets == []
     finally:
         restore()
 

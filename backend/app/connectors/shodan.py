@@ -40,7 +40,6 @@ from app.connectors.base import (
 )
 from app.connectors.http import connector_get
 from app.core.netaddr import is_public_ip as _is_public_ip
-from app.core.secrets import get_secret
 from app.models.asset import AssetType
 
 log = logging.getLogger(__name__)
@@ -346,11 +345,11 @@ class ShodanConnector(EnrichmentConnector):
             },
         }
 
-    def is_configured(self) -> bool:
-        return bool(get_secret("SHODAN_API_KEY"))
+    def is_configured(self, config: dict[str, Any]) -> bool:
+        return bool(config.get("api_key"))
 
     def _test(self, config: dict) -> TestResult:
-        api_key = get_secret("SHODAN_API_KEY")
+        api_key = config.get("api_key")
         if not api_key:
             return TestResult(success=False, message="API key not configured")
         try:
@@ -393,7 +392,7 @@ class ShodanConnector(EnrichmentConnector):
         """
         if not _truthy(config.get("import_assets")):
             return PhaseResult()
-        api_key = get_secret("SHODAN_API_KEY")
+        api_key = config.get("api_key")
         if not api_key:
             return PhaseResult()
 
@@ -495,7 +494,7 @@ class ShodanConnector(EnrichmentConnector):
         return PhaseResult(assets=assets)
 
     def enrich(self, assets: list[DiscoveredAsset], config: dict[str, Any]) -> PhaseResult:
-        api_key = get_secret("SHODAN_API_KEY")
+        api_key = config.get("api_key")
         if not api_key:
             return PhaseResult()
 

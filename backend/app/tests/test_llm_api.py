@@ -22,7 +22,8 @@ from app.main import app
 from app.models.app_settings import AppSetting
 from app.models.audit import AuditLog
 from app.models.user import User
-from app.services import app_settings, connector_config as connector_config_svc
+from app.services import app_settings, connector_instances as connector_instances_svc
+from app.tests import connector_helpers as ch
 from app.services import llm_connector as llmc
 
 client = TestClient(app)
@@ -76,24 +77,24 @@ def _restore_setting(db, key, snapshot):
 
 
 def _configure_openrouter(db, *, api_key=_TEST_API_KEY, enabled=True):
-    existing = connector_config_svc.get_one(db, "openrouter")
+    existing = connector_instances_svc.single(db, "openrouter")
     snapshot = _NO_ROW if existing is None else {
         "enabled": existing.enabled, "config_encrypted": existing.config_encrypted,
     }
-    connector_config_svc.upsert_config(db, "openrouter", {"api_key": api_key} if api_key else {})
-    connector_config_svc.set_enabled(db, "openrouter", enabled)
+    ch.set_config(db, "openrouter", {"api_key": api_key} if api_key else {})
+    ch.set_enabled(db, "openrouter", enabled)
     return snapshot
 
 
 def _restore_openrouter(snapshot):
-    from app.models.connector_config import ConnectorConfig
+    from app.models.connector_instance import ConnectorInstance
     db = SessionLocal()
     try:
         if snapshot is _NO_ROW:
-            db.query(ConnectorConfig).filter(ConnectorConfig.connector_id == "openrouter").delete()
+            db.query(ConnectorInstance).filter(ConnectorInstance.type == "openrouter").delete()
             db.commit()
         else:
-            row = connector_config_svc.get_one(db, "openrouter")
+            row = connector_instances_svc.single(db, "openrouter")
             if row is not None:
                 row.enabled = snapshot["enabled"]
                 row.config_encrypted = snapshot["config_encrypted"]

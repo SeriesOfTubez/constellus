@@ -11,7 +11,6 @@ from app.connectors.base import (
     is_provider_managed_mx,
 )
 from app.connectors.http import connector_get
-from app.core.secrets import get_secret
 from app.models.asset import AssetType
 
 _BASE = "https://api.cloudflare.com/client/v4"
@@ -31,12 +30,12 @@ class CloudflareConnector(DNSDiscoveryConnector):
             },
         }
 
-    def is_configured(self) -> bool:
-        return bool(get_secret("CLOUDFLARE_API_TOKEN"))
+    def is_configured(self, config: dict[str, Any]) -> bool:
+        return bool(config.get("api_token"))
 
     def _test(self, config: dict) -> TestResult:
         # Direct httpx — fast failure preferred for UI test button
-        token = get_secret("CLOUDFLARE_API_TOKEN")
+        token = config.get("api_token")
         if not token:
             return TestResult(success=False, message="API token not configured")
         try:
@@ -57,7 +56,7 @@ class CloudflareConnector(DNSDiscoveryConnector):
             return TestResult(success=False, message=str(e))
 
     def list_domains(self, config: dict[str, Any]) -> list[str]:
-        token = get_secret("CLOUDFLARE_API_TOKEN")
+        token = config.get("api_token")
         if not token:
             return []
         headers = {"Authorization": f"Bearer {token}"}
@@ -86,7 +85,7 @@ class CloudflareConnector(DNSDiscoveryConnector):
             return []
 
     def discover(self, domain: str, config: dict[str, Any]) -> PhaseResult:
-        token = get_secret("CLOUDFLARE_API_TOKEN")
+        token = config.get("api_token")
         if not token:
             return PhaseResult()
 

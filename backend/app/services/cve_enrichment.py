@@ -21,8 +21,8 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
+from app.services import connector_instances
 from app.connectors.http import connector_get
-from app.core.secrets import get_secret
 from app.models.finding_canonical import FindingCanonical
 
 log = logging.getLogger(__name__)
@@ -93,7 +93,7 @@ def enrich_scan_findings(
     # req/min), so the NVD fallback is pure overhead — skip it. Keep it only as
     # the last-resort CVSS source when no VulnCheck key is present.
     nvd: dict[str, dict] = {}
-    if not get_secret("VULNCHECK_API_KEY"):
+    if not (connector_instances.enabled_config(db, "vulncheck") or {}).get("api_key"):
         nvd_needed = [cid for cid in cve_ids if _needs_nvd(findings, cid)][:_NVD_MAX_PER_SCAN]
         for cid in nvd_needed:
             result = _fetch_nvd_cvss(cid)

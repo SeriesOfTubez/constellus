@@ -21,7 +21,8 @@ import pytest
 from app.core.database import SessionLocal
 from app.models.app_settings import AppSetting
 from app.models.llm_call import LlmCall
-from app.services import app_settings, connector_config as connector_config_svc
+from app.services import app_settings, connector_instances as connector_instances_svc
+from app.tests import connector_helpers as ch
 from app.services import llm_connector as llmc
 from app.tests.llm_fixtures import TEST_ROLE_BINDINGS
 
@@ -56,22 +57,22 @@ class _Unbound:
 def _configure_openrouter(db):
     # Connector fully configured, so a refusal below is provably the
     # bindings' doing, not the connector's.
-    existing = connector_config_svc.get_one(db, "openrouter")
+    existing = connector_instances_svc.single(db, "openrouter")
     snapshot = None if existing is None else (existing.enabled, existing.config_encrypted)
-    connector_config_svc.upsert_config(db, "openrouter", {"api_key": _TEST_API_KEY})
-    connector_config_svc.set_enabled(db, "openrouter", True)
+    ch.set_config(db, "openrouter", {"api_key": _TEST_API_KEY})
+    ch.set_enabled(db, "openrouter", True)
     assert llmc.is_configured(db)
     return snapshot
 
 
 def _restore_openrouter(snapshot):
-    from app.models.connector_config import ConnectorConfig
+    from app.models.connector_instance import ConnectorInstance
     db = SessionLocal()
     try:
         if snapshot is None:
-            db.query(ConnectorConfig).filter(ConnectorConfig.connector_id == "openrouter").delete()
+            db.query(ConnectorInstance).filter(ConnectorInstance.type == "openrouter").delete()
         else:
-            row = connector_config_svc.get_one(db, "openrouter")
+            row = connector_instances_svc.single(db, "openrouter")
             row.enabled, row.config_encrypted = snapshot
         db.commit()
     finally:

@@ -96,9 +96,6 @@ _EGRESS: dict[str, tuple[str, str, str | None]] = {
     "redirect_follow.py": (
         "TARGET", "follows an attacker-supplied Location; every hop through authorise_probes (planning#268)", "self",
     ),
-    "domain_verification.py": (
-        "ESTABLISHES_AUTH", "reads _constellus-verify TXT — this IS the authorisation step", None,
-    ),
     "target_service.py": (
         "ESTABLISHES_AUTH", "same TXT verification path", None,
     ),

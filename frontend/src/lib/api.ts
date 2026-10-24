@@ -35,7 +35,7 @@ async function send(path: string, init: RequestInit = {}): Promise<Response> {
     const message = typeof detail === "string"
       ? detail
       : detail && typeof detail === "object" && typeof detail.message === "string" ? detail.message : "Request failed"
-    throw new ApiError(res.status, message, detail)
+    throw new ApiError(res.status, message, detail, body)
   }
 
   return res
@@ -65,7 +65,9 @@ async function tryRefresh(refreshToken: string): Promise<string | null> {
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string, public detail?: unknown) {
+  // `body` is the whole error response: a few routes carry fields beside
+  // `detail` (a refused connector delete lists its `target_ids`).
+  constructor(public status: number, message: string, public detail?: unknown, public body?: unknown) {
     super(message)
   }
 }
@@ -102,17 +104,53 @@ export type TokenResponse = {
   token_type: string
 }
 
-export type ConnectorSummary = {
+export type ConnectorInstanceSummary = {
+  id: string
+  type: string
+  name: string
+  enabled: boolean
+  configured: boolean
+  bound_entity_id: string | null
+  bound_entity_name: string | null
+  // False when the bound organization no longer satisfies the binding rule
+  // (its deal's engagement re-opened): syncing is paused.
+  binding_ok: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type ConnectorTypeSummary = {
   id: string
   name: string
   description: string
   phase: string
-  enabled: boolean
-  configured: boolean
   config_schema: Record<string, { label: string; type: string; help?: string; default?: unknown; options?: string[] }>
   core: boolean
   disabled_at_current_tier: boolean
   current_tier: string | null
+  account_scoped: boolean
+  multi_instance: boolean
+  supports_zones: boolean
+  instances: ConnectorInstanceSummary[]
+}
+
+export type BindingCandidate = {
+  entity_id: string
+  name: string
+  matches: number
+}
+
+export type BindingSuggestion = {
+  suggested_entity_id: string | null
+  candidates: BindingCandidate[]
+  zone_count: number | null
+}
+
+export type BindableOrganization = {
+  id: string
+  name: string
+  relationship: string
+  posture: string | null
 }
 
 export type ScanScope = {
@@ -140,12 +178,6 @@ export type ScanRun = {
   // probe_class-derived only — scope/posture denials aren't counted (see
   // the backend migration 0057 docstring). Render only when > 0.
   port_scan_unauthorised_count: number
-}
-
-export type AvailableDomain = {
-  domain: string
-  connector_id: string
-  connector_name: string
 }
 
 export type WhoisInfo = {
@@ -500,7 +532,9 @@ export type Target = {
   value: string
   verified: boolean
   verification_method: string | null
-  connector_id: string | null
+  connector_instance_id: string | null
+  connector_instance_name: string | null
+  connector_type: string | null
   token: string
   whois_org: string | null
   whois_asn: string | null

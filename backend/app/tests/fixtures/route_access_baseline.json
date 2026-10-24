@@ -20,6 +20,10 @@
   "report_admin",
   "viewer"
  ],
+ "DELETE /api/connectors/instances/{instance_id}": [
+  "admin",
+  "integration_admin"
+ ],
  "DELETE /api/engagements/{engagement_id}": [
   "admin"
  ],
@@ -145,17 +149,27 @@
   "report_admin",
   "viewer"
  ],
+ "GET /api/connectors/bindable-organizations": [
+  "admin",
+  "integration_admin"
+ ],
  "GET /api/connectors/domains": [
   "admin",
   "integration_admin",
   "report_admin",
   "viewer"
  ],
- "GET /api/connectors/{connector_id}/config": [
+ "GET /api/connectors/instances/{instance_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/connectors/instances/{instance_id}/config": [
   "admin",
   "integration_admin"
  ],
- "GET /api/connectors/{connector_id}/zones": [
+ "GET /api/connectors/instances/{instance_id}/zones": [
   "admin",
   "integration_admin"
  ],
@@ -498,6 +512,10 @@
   "admin",
   "integration_admin"
  ],
+ "PATCH /api/connectors/instances/{instance_id}": [
+  "admin",
+  "integration_admin"
+ ],
  "PATCH /api/engagements/{engagement_id}": [
   "admin"
  ],
@@ -579,19 +597,27 @@
   "report_admin",
   "viewer"
  ],
- "POST /api/connectors/{connector_id}/disable": [
+ "POST /api/connectors/instances/{instance_id}/disable": [
   "admin",
   "integration_admin"
  ],
- "POST /api/connectors/{connector_id}/enable": [
+ "POST /api/connectors/instances/{instance_id}/enable": [
   "admin",
   "integration_admin"
  ],
- "POST /api/connectors/{connector_id}/sync": [
+ "POST /api/connectors/instances/{instance_id}/sync": [
   "admin",
   "integration_admin"
  ],
- "POST /api/connectors/{connector_id}/test": [
+ "POST /api/connectors/instances/{instance_id}/test": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/connectors/{connector_type}/binding-suggestion": [
+  "admin",
+  "integration_admin"
+ ],
+ "POST /api/connectors/{connector_type}/instances": [
   "admin",
   "integration_admin"
  ],
@@ -719,11 +745,11 @@
  "PUT /api/assets/{asset_id}/web-endpoints/{port}/classification": [
   "admin"
  ],
- "PUT /api/connectors/{connector_id}/config": [
+ "PUT /api/connectors/instances/{instance_id}/config": [
   "admin",
   "integration_admin"
  ],
- "PUT /api/connectors/{connector_id}/zones": [
+ "PUT /api/connectors/instances/{instance_id}/zones": [
   "admin",
   "integration_admin"
  ],

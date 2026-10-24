@@ -69,11 +69,6 @@ def main(argv: list[str] | None = None) -> int:
 
     db = SessionLocal()
     try:
-        # Prime the secrets override layer from DB connector config (startup parity).
-        from app.api.connectors import REGISTRY
-        from app.services.connector_config import load_overrides_from_db
-        load_overrides_from_db(db, REGISTRY)
-
         q = db.query(FindingCanonical.id)
         if not args.include_noncve:
             q = q.filter(FindingCanonical.cve_id.isnot(None))

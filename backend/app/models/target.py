@@ -33,7 +33,13 @@ class Target(Base):
     value: Mapped[str] = mapped_column(String(253), nullable=False, index=True)
     verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     verification_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    connector_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # planning#284 (migration 0085): the connector instance that produced this
+    # target. RESTRICT: deleting an instance must not silently orphan the
+    # targets it manages.
+    connector_instance_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("connector_instances.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    connector_instance: Mapped["ConnectorInstance | None"] = relationship("ConnectorInstance", lazy="select")  # noqa: F821
     token: Mapped[str] = mapped_column(String(64), nullable=False, default=lambda: secrets.token_hex(32))
     whois_org: Mapped[str | None] = mapped_column(String(255), nullable=True)
     whois_asn: Mapped[str | None] = mapped_column(String(50), nullable=True)
