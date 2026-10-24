@@ -23,8 +23,8 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
+from app.services import connector_instances
 from app.core.database import SessionLocal
-from app.core.secrets import get_secret
 from app.models.ct_query_cache import CTQueryCache
 from app.models.target import Target
 
@@ -84,7 +84,7 @@ def tick() -> None:
 def _calls_per_tick(db: Session) -> int:
     """How many calls this tick is allowed to make, given the current API
     plan and the configured tick interval."""
-    has_token = bool(get_secret("CERTSPOTTER_API_TOKEN"))
+    has_token = bool((connector_instances.enabled_config(db, "certspotter") or {}).get("api_key"))
     rate_per_hour = _RATE_PER_HOUR_AUTH if has_token else _RATE_PER_HOUR_UNAUTH
     ticks_per_hour = 3600 / TICK_INTERVAL_SECONDS
     return max(1, int((rate_per_hour * _HEADROOM_FACTOR) / ticks_per_hour))

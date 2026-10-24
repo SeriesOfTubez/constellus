@@ -6,7 +6,6 @@ from app.connectors.base import (
     PhaseResult,
     TestResult,
 )
-from app.core.secrets import get_secret
 
 
 class TenableConnector(EnrichmentConnector):
@@ -28,14 +27,14 @@ class TenableConnector(EnrichmentConnector):
             },
         }
 
-    def is_configured(self) -> bool:
-        return bool(get_secret("TENABLE_API_KEY") and get_secret("TENABLE_API_SECRET"))
+    def is_configured(self, config: dict[str, Any]) -> bool:
+        return bool(config.get("api_key") and config.get("api_secret"))
 
     def _test(self, config: dict) -> TestResult:
         import httpx
 
-        api_key = get_secret("TENABLE_API_KEY")
-        api_secret = get_secret("TENABLE_API_SECRET")
+        api_key = config.get("api_key")
+        api_secret = config.get("api_secret")
 
         if not api_key or not api_secret:
             return TestResult(success=False, message="Tenable credentials not configured")
@@ -67,8 +66,8 @@ class TenableConnector(EnrichmentConnector):
         """
         from app.connectors.http import connector_get, connector_post  # noqa: F401
 
-        api_key = get_secret("TENABLE_API_KEY")
-        api_secret = get_secret("TENABLE_API_SECRET")
+        api_key = config.get("api_key")
+        api_secret = config.get("api_secret")
         if not api_key or not api_secret:
             return PhaseResult()
 

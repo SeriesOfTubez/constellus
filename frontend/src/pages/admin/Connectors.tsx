@@ -1,22 +1,34 @@
 import { useState, useEffect } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Plug, FlaskConical, Save, Loader2, Search, Globe, RefreshCw, Zap, Bot } from "lucide-react"
+import {
+  Plug, FlaskConical, Save, Loader2, Search, Globe, RefreshCw, Zap, Bot, Plus, Trash2, TriangleAlert, Building2, Wand2,
+} from "lucide-react"
 import { Link } from "react-router-dom"
 import { AdminBreadcrumb } from "@/components/AdminBreadcrumb"
 import { ConnectorConfigFields, fillConfigValues } from "@/components/ConnectorConfigFields"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { api, type ConnectorSummary, type ZoneEntry } from "@/lib/api"
+import {
+  api, type ApiError, type BindableOrganization, type BindingSuggestion, type ConnectorInstanceSummary,
+  type ConnectorTypeSummary, type ZoneEntry,
+} from "@/lib/api"
 import { CORE_IMPACT_COPY } from "@/lib/connector-copy"
+import {
+  PHASE_ORDER, bindingErrorMessage, bindingWarning, canSync, deleteConflictMessage, groupByPhase, hasZones,
+  suggestionCopy,
+} from "@/lib/connectors"
 
 const PHASE_META: Record<string, { label: string; description: string }> = {
   discovery:    { label: "Discovery",    description: "DNS and zone data sources" },
@@ -26,113 +38,247 @@ const PHASE_META: Record<string, { label: string; description: string }> = {
   inference:    { label: "Inference",    description: "LLM providers — role-routed, data-policy enforced" },
 }
 
-const PHASE_ORDER = ["discovery", "enrichment", "scanning", "notification", "inference"]
+const invalidate = (qc: ReturnType<typeof useQueryClient>) => qc.invalidateQueries({ queryKey: ["connectors"] })
 
-function ConnectorCard({ connector, onConfigure }: { connector: ConnectorSummary; onConfigure: (c: ConnectorSummary) => void }) {
+/** The per-instance actions every row and card shares. */
+function useInstanceActions(type: ConnectorTypeSummary, instance: ConnectorInstanceSummary) {
   const qc = useQueryClient()
+  const label = type.account_scoped ? `${type.name} (${instance.name})` : type.name
+  const base = `/connectors/instances/${instance.id}`
 
-  const toggleMutation = useMutation({
-    mutationFn: (enabled: boolean) =>
-      api.post(`/connectors/${connector.id}/${enabled ? "enable" : "disable"}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["connectors"] }),
-    onError: () => toast.error("Failed to update connector"),
+  const toggle = useMutation({
+    mutationFn: (enabled: boolean) => api.post(`${base}/${enabled ? "enable" : "disable"}`),
+    onSuccess: () => invalidate(qc),
+    onError: (e: ApiError) => toast.error(`Failed to update ${label}: ${bindingErrorMessage(e)}`),
   })
-
-  const testMutation = useMutation({
-    mutationFn: () => api.post<{ success: boolean; message: string }>(`/connectors/${connector.id}/test`),
-    onSuccess: (r) => {
-      if (r.success) toast.success(`${connector.name}: ${r.message}`)
-      else toast.error(`${connector.name}: ${r.message}`)
-    },
+  const test = useMutation({
+    mutationFn: () => api.post<{ success: boolean; message: string }>(`${base}/test`),
+    onSuccess: (r) => (r.success ? toast.success(`${label}: ${r.message}`) : toast.error(`${label}: ${r.message}`)),
     onError: () => toast.error("Test failed"),
   })
-
-  const syncMutation = useMutation({
-    mutationFn: () => api.post(`/connectors/${connector.id}/sync`),
-    onSuccess: () => toast.success(`${connector.name}: sync queued`),
-    onError: () => toast.error("Failed to queue sync"),
+  const sync = useMutation({
+    mutationFn: () => api.post(`${base}/sync`),
+    onSuccess: () => toast.success(`${label}: sync queued`),
+    onError: (e: ApiError) => toast.error(`Failed to queue sync: ${bindingErrorMessage(e)}`),
   })
+  return { toggle, test, sync, label }
+}
 
+function ConfiguredBadges({ type, instance }: { type: ConnectorTypeSummary; instance: ConnectorInstanceSummary }) {
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1 min-w-0">
-            <CardTitle className="text-base">{connector.name}</CardTitle>
-            <CardDescription className="text-xs leading-relaxed">{connector.description}</CardDescription>
-          </div>
-          <Switch
-            checked={connector.enabled}
-            onCheckedChange={(v) => toggleMutation.mutate(v)}
-            disabled={toggleMutation.isPending}
-          />
-        </div>
-      </CardHeader>
+    <>
+      <Badge variant={instance.configured ? "success" : "outline"}>
+        {instance.configured ? "Configured" : "Not configured"}
+      </Badge>
+      {instance.enabled && !instance.configured && <Badge variant="warning">Needs config</Badge>}
+      {instance.enabled && type.disabled_at_current_tier && (
+        <Badge
+          variant="outline"
+          title={`This connector is gated off at the ${type.current_tier} aggressiveness tier. Raise the global tier in Admin → Settings, or override it on a specific target, to activate.`}
+        >
+          Inactive at {type.current_tier} tier
+        </Badge>
+      )}
+    </>
+  )
+}
+
+function InstanceButtons({
+  type, instance, onConfigure, onDelete,
+}: {
+  type: ConnectorTypeSummary
+  instance: ConnectorInstanceSummary
+  onConfigure: (type: ConnectorTypeSummary, instance: ConnectorInstanceSummary) => void
+  onDelete?: (type: ConnectorTypeSummary, instance: ConnectorInstanceSummary) => void
+}) {
+  const { test, sync } = useInstanceActions(type, instance)
+  return (
+    <div className="flex gap-2 flex-wrap justify-end">
+      <Button variant="outline" size="sm" onClick={() => test.mutate()} disabled={test.isPending || !instance.configured}>
+        {test.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <FlaskConical className="h-3 w-3" />}
+        Test
+      </Button>
+      {hasZones(type) && (
+        <Button variant="outline" size="sm" onClick={() => sync.mutate()} disabled={sync.isPending || !canSync(type, instance)}>
+          {sync.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+          Sync
+        </Button>
+      )}
+      {type.id === "openrouter" && (
+        <Button variant="outline" size="sm" asChild>
+          <Link to="/admin/ai-models"><Bot className="h-3 w-3" />AI models</Link>
+        </Button>
+      )}
+      <Button variant="outline" size="sm" onClick={() => onConfigure(type, instance)}>
+        <Plug className="h-3 w-3" />
+        Configure
+      </Button>
+      {onDelete && (
+        <Button variant="outline" size="sm" onClick={() => onDelete(type, instance)} aria-label={`Delete ${instance.name}`}>
+          <Trash2 className="h-3 w-3" />
+        </Button>
+      )}
+    </div>
+  )
+}
+
+function CoreBadge({ type }: { type: ConnectorTypeSummary }) {
+  if (!type.core) return null
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge variant="outline" className="border-primary/40 text-primary gap-1">
+          <Zap className="h-3 w-3" />
+          Core capability
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        {CORE_IMPACT_COPY[type.id]?.long ?? "Core to result quality — configuring it is strongly recommended."}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** Global type with an instance: the original single-switch card. */
+function GlobalCardBody({
+  type, instance, onConfigure,
+}: {
+  type: ConnectorTypeSummary
+  instance: ConnectorInstanceSummary
+  onConfigure: (type: ConnectorTypeSummary, instance: ConnectorInstanceSummary) => void
+}) {
+  const { toggle } = useInstanceActions(type, instance)
+  return (
+    <>
+      <div className="absolute right-6 top-6">
+        <Switch checked={instance.enabled} onCheckedChange={(v) => toggle.mutate(v)} disabled={toggle.isPending} />
+      </div>
       <CardContent className="pt-0">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 flex-wrap">
-            {connector.core && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Badge variant="outline" className="border-primary/40 text-primary gap-1">
-                    <Zap className="h-3 w-3" />
-                    Core capability
-                  </Badge>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-xs">
-                  {CORE_IMPACT_COPY[connector.id]?.long ?? "Core to result quality — configuring it is strongly recommended."}
-                </TooltipContent>
-              </Tooltip>
-            )}
-            <Badge variant={connector.configured ? "success" : "outline"}>
-              {connector.configured ? "Configured" : "Not configured"}
-            </Badge>
-            {connector.enabled && !connector.configured && (
-              <Badge variant="warning">Needs config</Badge>
-            )}
-            {connector.enabled && connector.disabled_at_current_tier && (
-              <Badge
-                variant="outline"
-                title={`This connector is gated off at the ${connector.current_tier} aggressiveness tier. Raise the global tier in Admin → Settings, or override it on a specific target, to activate.`}
-              >
-                Inactive at {connector.current_tier} tier
-              </Badge>
-            )}
+            <CoreBadge type={type} />
+            <ConfiguredBadges type={type} instance={instance} />
           </div>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm"
-              onClick={() => testMutation.mutate()}
-              disabled={testMutation.isPending || !connector.configured}>
-              {testMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <FlaskConical className="h-3 w-3" />}
-              Test
-            </Button>
-            {connector.phase === "discovery" && connector.configured && connector.enabled && (
-              <Button variant="outline" size="sm"
-                onClick={() => syncMutation.mutate()}
-                disabled={syncMutation.isPending}>
-                {syncMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                Sync
-              </Button>
-            )}
-            {connector.id === "openrouter" && (
-              <Button variant="outline" size="sm" asChild>
-                <Link to="/admin/ai-models"><Bot className="h-3 w-3" />AI models</Link>
-              </Button>
-            )}
-            <Button variant="outline" size="sm" onClick={() => onConfigure(connector)}>
-              <Plug className="h-3 w-3" />
-              Configure
-            </Button>
-          </div>
+          <InstanceButtons type={type} instance={instance} onConfigure={onConfigure} />
         </div>
       </CardContent>
+    </>
+  )
+}
+
+function SetUpBody({
+  type, onConfigure,
+}: {
+  type: ConnectorTypeSummary
+  onConfigure: (type: ConnectorTypeSummary, instance: ConnectorInstanceSummary) => void
+}) {
+  const qc = useQueryClient()
+  const create = useMutation({
+    mutationFn: () =>
+      api.post<ConnectorInstanceSummary>(`/connectors/${type.id}/instances`, {
+        name: type.name, bound_entity_id: null, config: {},
+      }),
+    onSuccess: async (inst) => {
+      await invalidate(qc)
+      onConfigure(type, inst)
+    },
+    onError: (e: ApiError) => toast.error(`Could not set up ${type.name}: ${bindingErrorMessage(e)}`),
+  })
+  return (
+    <CardContent className="pt-0">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <CoreBadge type={type} />
+          <Badge variant="outline">Not set up</Badge>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => create.mutate()} disabled={create.isPending}>
+          {create.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plug className="h-3 w-3" />}
+          Set up
+        </Button>
+      </div>
+    </CardContent>
+  )
+}
+
+function AccountRow({
+  type, instance, onConfigure, onDelete,
+}: {
+  type: ConnectorTypeSummary
+  instance: ConnectorInstanceSummary
+  onConfigure: (type: ConnectorTypeSummary, instance: ConnectorInstanceSummary) => void
+  onDelete: (type: ConnectorTypeSummary, instance: ConnectorInstanceSummary) => void
+}) {
+  const { toggle } = useInstanceActions(type, instance)
+  const warning = bindingWarning(instance)
+  return (
+    <li className="rounded-md border p-3 space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <p className="text-sm font-medium truncate">{instance.name}</p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant="outline" className="gap-1">
+              <Building2 className="h-3 w-3" />
+              {instance.bound_entity_name ?? "No organization"}
+            </Badge>
+            <ConfiguredBadges type={type} instance={instance} />
+          </div>
+        </div>
+        <Switch checked={instance.enabled} onCheckedChange={(v) => toggle.mutate(v)} disabled={toggle.isPending} />
+      </div>
+      {warning && (
+        <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+          <TriangleAlert className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          {warning}
+        </p>
+      )}
+      <InstanceButtons type={type} instance={instance} onConfigure={onConfigure} onDelete={onDelete} />
+    </li>
+  )
+}
+
+export function ConnectorTypeCard({
+  type, onConfigure, onAdd, onDelete,
+}: {
+  type: ConnectorTypeSummary
+  onConfigure: (type: ConnectorTypeSummary, instance: ConnectorInstanceSummary) => void
+  onAdd: (type: ConnectorTypeSummary) => void
+  onDelete: (type: ConnectorTypeSummary, instance: ConnectorInstanceSummary) => void
+}) {
+  const globalInstance = type.account_scoped ? undefined : type.instances[0]
+  return (
+    <Card className="relative">
+      <CardHeader className="pb-3">
+        <div className="space-y-1 min-w-0 pr-14">
+          <CardTitle className="text-base">{type.name}</CardTitle>
+          <CardDescription className="text-xs leading-relaxed">{type.description}</CardDescription>
+        </div>
+      </CardHeader>
+      {type.account_scoped ? (
+        <CardContent className="pt-0 space-y-3">
+          {type.instances.length > 0 && (
+            <ul className="space-y-2">
+              {type.instances.map((i) => (
+                <AccountRow key={i.id} type={type} instance={i} onConfigure={onConfigure} onDelete={onDelete} />
+              ))}
+            </ul>
+          )}
+          <Button variant="outline" size="sm" onClick={() => onAdd(type)}>
+            <Plus className="h-3 w-3" />
+            {type.instances.length > 0 ? "Add another" : "Add"}
+          </Button>
+        </CardContent>
+      ) : globalInstance ? (
+        <GlobalCardBody type={type} instance={globalInstance} onConfigure={onConfigure} />
+      ) : (
+        <SetUpBody type={type} onConfigure={onConfigure} />
+      )}
     </Card>
   )
 }
 
 const ZONES_PAGE_SIZE = 25
 
-function ZonesTab({ connectorId }: { connectorId: string }) {
+function ZonesTab({ instanceId }: { instanceId: string }) {
   const qc = useQueryClient()
   const [search, setSearch] = useState("")
   const [page, setPage] = useState(1)
@@ -140,8 +286,8 @@ function ZonesTab({ connectorId }: { connectorId: string }) {
   const [dirty, setDirty] = useState(false)
 
   const { data: zones, isLoading } = useQuery<ZoneEntry[]>({
-    queryKey: ["connector-zones", connectorId],
-    queryFn: () => api.get(`/connectors/${connectorId}/zones`),
+    queryKey: ["connector-zones", instanceId],
+    queryFn: () => api.get(`/connectors/instances/${instanceId}/zones`),
   })
 
   // Initialise local state from server data once
@@ -150,19 +296,19 @@ function ZonesTab({ connectorId }: { connectorId: string }) {
   }, [zones, localZones])
 
   const syncMutation = useMutation({
-    mutationFn: () => api.post(`/connectors/${connectorId}/sync`),
-    onError: () => toast.error("Zones saved but sync failed to queue"),
+    mutationFn: () => api.post(`/connectors/instances/${instanceId}/sync`),
+    onError: (e) => toast.error(`Zones saved but sync failed to queue: ${bindingErrorMessage(e)}`),
   })
 
   const saveMutation = useMutation({
     mutationFn: () => {
       const excluded = (localZones ?? []).filter(z => z.excluded).map(z => z.name)
-      return api.put(`/connectors/${connectorId}/zones`, { excluded_zones: excluded })
+      return api.put(`/connectors/instances/${instanceId}/zones`, { excluded_zones: excluded })
     },
     onSuccess: () => {
       toast.success("Zone selections saved — sync queued")
       setDirty(false)
-      qc.invalidateQueries({ queryKey: ["connector-zones", connectorId] })
+      qc.invalidateQueries({ queryKey: ["connector-zones", instanceId] })
       qc.invalidateQueries({ queryKey: ["available-domains"] })
       syncMutation.mutate()
     },
@@ -258,50 +404,235 @@ function ZonesTab({ connectorId }: { connectorId: string }) {
   )
 }
 
-function ConfigSheet({ connector, open, onClose }: { connector: ConnectorSummary | null; open: boolean; onClose: () => void }) {
+
+/** The organization picker plus "Find matching organization" (zone-capable types). */
+function OrganizationField({
+  type, value, onChange, getConfig, instanceId, currentOrg,
+}: {
+  type: ConnectorTypeSummary
+  value: string
+  onChange: (id: string) => void
+  getConfig: () => Record<string, string | boolean>
+  instanceId?: string
+  currentOrg?: { id: string; name: string } | null
+}) {
+  const { data: orgs } = useQuery({
+    queryKey: ["bindable-organizations"],
+    queryFn: () => api.get<BindableOrganization[]>("/connectors/bindable-organizations"),
+  })
+  const [suggestion, setSuggestion] = useState<BindingSuggestion | null>(null)
+
+  const suggest = useMutation({
+    mutationFn: () =>
+      api.post<BindingSuggestion>(`/connectors/${type.id}/binding-suggestion`, {
+        config: getConfig(), ...(instanceId ? { instance_id: instanceId } : {}),
+      }),
+    onSuccess: (s) => {
+      setSuggestion(s)
+      if (s.suggested_entity_id) onChange(s.suggested_entity_id)
+    },
+    onError: () => toast.error("Could not list zones from the provider — check the credentials with Test"),
+  })
+
+  const options = [...(orgs ?? [])]
+  // An instance whose binding stopped being allowed is still bound to it: keep it selectable.
+  if (currentOrg && !options.some((o) => o.id === currentOrg.id)) {
+    options.unshift({ id: currentOrg.id, name: currentOrg.name, relationship: "", posture: null })
+  }
+
+  return (
+    <div className="space-y-2">
+      <Label>Organization</Label>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger><SelectValue placeholder="Pick the organization this account belongs to" /></SelectTrigger>
+        <SelectContent>
+          {options.map((o) => <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>)}
+        </SelectContent>
+      </Select>
+      {options.length === 0 && orgs && (
+        <p className="text-xs text-muted-foreground">
+          No organization can be bound yet: mark yours as "ours", or bring a deal to day 0.
+        </p>
+      )}
+      {hasZones(type) && (
+        <>
+          <Button type="button" variant="outline" size="sm" onClick={() => suggest.mutate()} disabled={suggest.isPending}>
+            {suggest.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wand2 className="h-3 w-3" />}
+            Find matching organization
+          </Button>
+          {suggestion && <p className="text-xs text-muted-foreground">{suggestionCopy(suggestion)}</p>}
+        </>
+      )}
+    </div>
+  )
+}
+
+function AddInstanceSheet({ type, onClose }: { type: ConnectorTypeSummary | null; onClose: () => void }) {
+  const qc = useQueryClient()
+  const [name, setName] = useState("")
+  const [org, setOrg] = useState("")
+  const [values, setValues] = useState<Record<string, string | boolean>>({})
+  const [error, setError] = useState<string | null>(null)
+  const typeId = type?.id
+
+  useEffect(() => {
+    if (type) {
+      setName("")
+      setOrg("")
+      setError(null)
+      setValues(fillConfigValues(type.config_schema, {}))
+    }
+    // reset only when a different type is opened
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typeId])
+
+  const create = useMutation({
+    mutationFn: () =>
+      api.post<ConnectorInstanceSummary>(`/connectors/${type!.id}/instances`, {
+        name: name.trim(), bound_entity_id: org || null, config: values,
+      }),
+    onSuccess: () => {
+      toast.success("Instance added")
+      invalidate(qc)
+      onClose()
+    },
+    onError: (e: ApiError) => setError(bindingErrorMessage(e)),
+  })
+
+  if (!type) return null
+  return (
+    <Sheet open onOpenChange={(o) => !o && onClose()}>
+      <SheetContent className="sm:max-w-lg overflow-y-auto">
+        <SheetHeader>
+          <SheetTitle>Add {type.name} instance</SheetTitle>
+          <SheetDescription>One instance per account. Each is bound to the organization that owns it.</SheetDescription>
+        </SheetHeader>
+        <div className="py-6 space-y-5">
+          <div className="space-y-1.5">
+            <Label htmlFor="instance-name">Name</Label>
+            <Input id="instance-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Example Holdings A" />
+          </div>
+          <ConnectorConfigFields
+            schema={type.config_schema}
+            values={values}
+            onChange={(key, v) => setValues((s) => ({ ...s, [key]: v }))}
+          />
+          <OrganizationField type={type} value={org} onChange={setOrg} getConfig={() => values} />
+          {error && <p className="text-sm text-destructive">{error}</p>}
+        </div>
+        <SheetFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={() => { setError(null); create.mutate() }} disabled={create.isPending || !name.trim()}>
+            {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            Add
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+function ConfigSheet({
+  type, instance, onClose,
+}: {
+  type: ConnectorTypeSummary | null
+  instance: ConnectorInstanceSummary | null
+  onClose: () => void
+}) {
   const qc = useQueryClient()
   const [values, setValues] = useState<Record<string, string | boolean>>({})
   const [loaded, setLoaded] = useState(false)
-  const isDiscovery = connector?.phase === "discovery"
+  const [name, setName] = useState("")
+  const [org, setOrg] = useState("")
+  const [error, setError] = useState<string | null>(null)
+  const instanceId = instance?.id
 
-  useQuery({
-    queryKey: ["connector-config", connector?.id],
-    queryFn: async () => {
-      if (!connector) return null
-      const data = await api.get<{ config: Record<string, unknown> }>(`/connectors/${connector.id}/config`)
-      setValues(fillConfigValues(connector.config_schema, data.config))
-      setLoaded(true)
-      return data
-    },
-    enabled: open && !!connector,
+  const { data } = useQuery({
+    queryKey: ["connector-config", instanceId],
+    queryFn: () => api.get<{ config: Record<string, unknown> }>(`/connectors/instances/${instanceId}/config`),
+    enabled: !!instanceId,
+    gcTime: 0,
   })
 
-  const saveMutation = useMutation({
-    mutationFn: () => api.put(`/connectors/${connector!.id}/config`, { config: values }),
+  useEffect(() => {
+    setLoaded(false)
+    setError(null)
+    setName(instance?.name ?? "")
+    setOrg(instance?.bound_entity_id ?? "")
+    // reset only when a different instance is opened
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instanceId])
+
+  useEffect(() => {
+    if (type && data) {
+      setValues(fillConfigValues(type.config_schema, data.config))
+      setLoaded(true)
+    }
+  }, [type, data])
+
+  const save = useMutation({
+    mutationFn: async () => {
+      if (!type || !instance) return
+      if (type.account_scoped) {
+        const patch: Record<string, unknown> = {}
+        if (name.trim() !== instance.name) patch.name = name.trim()
+        if (org && org !== instance.bound_entity_id) patch.bound_entity_id = org
+        if (Object.keys(patch).length > 0) await api.patch(`/connectors/instances/${instance.id}`, patch)
+      }
+      await api.put(`/connectors/instances/${instance.id}/config`, { config: values })
+    },
     onSuccess: () => {
       toast.success("Configuration saved")
-      qc.invalidateQueries({ queryKey: ["connectors"] })
+      invalidate(qc)
+      qc.invalidateQueries({ queryKey: ["connector-zones", instanceId] })
       onClose()
     },
-    onError: () => toast.error("Failed to save configuration"),
+    onError: (e: ApiError) => {
+      setError(bindingErrorMessage(e))
+      invalidate(qc)
+    },
   })
 
-  if (!connector) return null
+  if (!type || !instance) return null
 
   const credentialsContent = (
     <>
-      <div className="py-6">
+      <div className="py-6 space-y-5">
+        {type.account_scoped && (
+          <>
+            <div className="space-y-1.5">
+              <Label htmlFor="instance-name">Name</Label>
+              <Input id="instance-name" value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <OrganizationField
+              type={type}
+              value={org}
+              onChange={setOrg}
+              getConfig={() => values}
+              instanceId={instance.id}
+              currentOrg={instance.bound_entity_id ? { id: instance.bound_entity_id, name: instance.bound_entity_name ?? "Bound organization" } : null}
+            />
+            {bindingWarning(instance) && (
+              <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                <TriangleAlert className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                {bindingWarning(instance)}
+              </p>
+            )}
+            <Separator />
+          </>
+        )}
         <ConnectorConfigFields
-          schema={connector.config_schema}
+          schema={type.config_schema}
           values={values}
-          onChange={(key, v) => setValues(s => ({ ...s, [key]: v }))}
+          onChange={(key, v) => setValues((s) => ({ ...s, [key]: v }))}
           loaded={loaded}
         />
+        {error && <p className="text-sm text-destructive">{error}</p>}
       </div>
       <SheetFooter>
         <Button variant="outline" onClick={onClose}>Cancel</Button>
-        <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
-          {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+        <Button onClick={() => { setError(null); save.mutate() }} disabled={save.isPending || (type.account_scoped && !name.trim())}>
+          {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
           Save
         </Button>
       </SheetFooter>
@@ -309,14 +640,14 @@ function ConfigSheet({ connector, open, onClose }: { connector: ConnectorSummary
   )
 
   return (
-    <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
+    <Sheet open onOpenChange={(o) => !o && onClose()}>
       <SheetContent className="sm:max-w-lg overflow-y-auto">
         <SheetHeader>
-          <SheetTitle>{connector.name}</SheetTitle>
-          <SheetDescription>{connector.description}</SheetDescription>
+          <SheetTitle>{type.account_scoped ? `${type.name}: ${instance.name}` : type.name}</SheetTitle>
+          <SheetDescription>{type.description}</SheetDescription>
         </SheetHeader>
 
-        {isDiscovery && connector.configured ? (
+        {hasZones(type) && instance.configured ? (
           <Tabs defaultValue="credentials" className="mt-4">
             <TabsList className="w-full">
               <TabsTrigger value="credentials" className="flex-1">Credentials</TabsTrigger>
@@ -325,7 +656,7 @@ function ConfigSheet({ connector, open, onClose }: { connector: ConnectorSummary
               </TabsTrigger>
             </TabsList>
             <TabsContent value="credentials">{credentialsContent}</TabsContent>
-            <TabsContent value="zones"><ZonesTab connectorId={connector.id} /></TabsContent>
+            <TabsContent value="zones"><ZonesTab instanceId={instance.id} /></TabsContent>
           </Tabs>
         ) : credentialsContent}
       </SheetContent>
@@ -333,18 +664,73 @@ function ConfigSheet({ connector, open, onClose }: { connector: ConnectorSummary
   )
 }
 
+function DeleteDialog({
+  target, onClose,
+}: {
+  target: { type: ConnectorTypeSummary; instance: ConnectorInstanceSummary } | null
+  onClose: () => void
+}) {
+  const qc = useQueryClient()
+  const [conflict, setConflict] = useState<string | null>(null)
+  const targetId = target?.instance.id
+
+  useEffect(() => setConflict(null), [targetId])
+
+  const del = useMutation({
+    mutationFn: () => api.delete(`/connectors/instances/${targetId}`),
+    onSuccess: () => {
+      toast.success("Instance deleted")
+      invalidate(qc)
+      onClose()
+    },
+    onError: (e: ApiError) => {
+      const msg = deleteConflictMessage(e)
+      if (msg) setConflict(msg)
+      else toast.error(`Could not delete: ${bindingErrorMessage(e)}`)
+    },
+  })
+
+  return (
+    <Dialog open={!!target} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete {target?.instance.name}?</DialogTitle>
+          <DialogDescription>
+            This removes the instance and its stored credentials. An instance that targets use cannot be
+            deleted; disable it instead.
+          </DialogDescription>
+        </DialogHeader>
+        {conflict && <p className="text-sm text-destructive">{conflict}</p>}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button variant="destructive" onClick={() => del.mutate()} disabled={del.isPending}>
+            {del.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+            Delete
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export default function Connectors() {
-  const [configuring, setConfiguring] = useState<ConnectorSummary | null>(null)
+  const [configuring, setConfiguring] = useState<{ typeId: string; instanceId: string } | null>(null)
+  const [adding, setAdding] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<{ typeId: string; instanceId: string } | null>(null)
 
   const { data: connectors, isLoading } = useQuery({
     queryKey: ["connectors"],
-    queryFn: () => api.get<ConnectorSummary[]>("/connectors/"),
+    queryFn: () => api.get<ConnectorTypeSummary[]>("/connectors/"),
   })
 
-  const grouped = PHASE_ORDER.reduce<Record<string, ConnectorSummary[]>>((acc, phase) => {
-    acc[phase] = (connectors ?? []).filter(c => c.phase === phase)
-    return acc
-  }, {})
+  const grouped = groupByPhase(connectors ?? [])
+  const find = (ref: { typeId: string; instanceId: string } | null) => {
+    const type = connectors?.find((t) => t.id === ref?.typeId) ?? null
+    const instance = type?.instances.find((i) => i.id === ref?.instanceId) ?? null
+    return type && instance ? { type, instance } : null
+  }
+  const configuringNow = find(configuring)
+  const deletingNow = find(deleting)
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-8">
@@ -369,16 +755,24 @@ export default function Connectors() {
               </h2>
               <p className="text-xs text-muted-foreground">{PHASE_META[phase]?.description}</p>
             </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              {grouped[phase].map(c => (
-                <ConnectorCard key={c.id} connector={c} onConfigure={setConfiguring} />
+            <div className="grid gap-4 sm:grid-cols-2 items-start">
+              {grouped[phase].map(t => (
+                <ConnectorTypeCard
+                  key={t.id}
+                  type={t}
+                  onConfigure={(ty, inst) => setConfiguring({ typeId: ty.id, instanceId: inst.id })}
+                  onAdd={(ty) => setAdding(ty.id)}
+                  onDelete={(ty, inst) => setDeleting({ typeId: ty.id, instanceId: inst.id })}
+                />
               ))}
             </div>
           </div>
         ))
       )}
 
-      <ConfigSheet connector={configuring} open={!!configuring} onClose={() => setConfiguring(null)} />
+      <ConfigSheet type={configuringNow?.type ?? null} instance={configuringNow?.instance ?? null} onClose={() => setConfiguring(null)} />
+      <AddInstanceSheet type={connectors?.find((t) => t.id === adding) ?? null} onClose={() => setAdding(null)} />
+      <DeleteDialog target={deletingNow} onClose={() => setDeleting(null)} />
     </div>
   )
 }

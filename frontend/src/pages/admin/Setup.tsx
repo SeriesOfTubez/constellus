@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { useNavigate } from "react-router-dom"
+import { Link, useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { CheckCircle2, ChevronRight, Loader2, SkipForward, Zap } from "lucide-react"
@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
-import { api, ApiError, type ConnectorSummary, type User, type TokenResponse } from "@/lib/api"
+import { api, ApiError, type ConnectorInstanceSummary, type ConnectorTypeSummary, type User, type TokenResponse } from "@/lib/api"
 import { CORE_IMPACT_COPY } from "@/lib/connector-copy"
 import { useAuthStore } from "@/lib/auth"
 import { cn } from "@/lib/utils"
@@ -40,7 +40,7 @@ function ConnectorSetupCard({
   onSave,
   onSkip,
 }: {
-  connector: ConnectorSummary
+  connector: ConnectorTypeSummary
   values: Record<string, string | boolean>
   onChange: (key: string, value: string | boolean) => void
   status: SetupCardStatus
@@ -49,6 +49,20 @@ function ConnectorSetupCard({
   onSkip: () => void
 }) {
   const copy = CORE_IMPACT_COPY[connector.id]
+
+  if (connector.account_scoped) {
+    // Account types belong to an organization, which does not exist yet at first run.
+    return (
+      <div className="rounded-lg border p-4 space-y-1">
+        <p className="font-medium text-sm">{connector.name}</p>
+        <p className="text-xs text-muted-foreground">{connector.description}</p>
+        <p className="text-xs text-muted-foreground">
+          Needs an organization to bind to. Add it from{" "}
+          <Link to="/admin/connectors" className="underline underline-offset-2">Admin → Connectors</Link>.
+        </p>
+      </div>
+    )
+  }
 
   return (
     <div className="rounded-lg border p-4 space-y-3">
@@ -97,20 +111,27 @@ function ConnectSourcesStep({ onContinue }: { onContinue: () => void }) {
 
   const { data: connectors, isLoading } = useQuery({
     queryKey: ["connectors"],
-    queryFn: () => api.get<ConnectorSummary[]>("/connectors/"),
+    queryFn: () => api.get<ConnectorTypeSummary[]>("/connectors/"),
   })
 
-  function valuesFor(connector: ConnectorSummary) {
+  function valuesFor(connector: ConnectorTypeSummary) {
     return values[connector.id] ?? fillConfigValues(connector.config_schema, {})
   }
 
-  function setField(connector: ConnectorSummary, key: string, value: string | boolean) {
+  function setField(connector: ConnectorTypeSummary, key: string, value: string | boolean) {
     setValues((v) => ({ ...v, [connector.id]: { ...valuesFor(connector), [key]: value } }))
   }
 
   const saveMutation = useMutation({
-    mutationFn: (connector: ConnectorSummary) =>
-      api.put(`/connectors/${connector.id}/config`, { config: valuesFor(connector) }),
+    mutationFn: async (connector: ConnectorTypeSummary) => {
+      // A global connector has at most one instance; create it on first save.
+      const instance =
+        connector.instances[0] ??
+        (await api.post<ConnectorInstanceSummary>(`/connectors/${connector.id}/instances`, {
+          name: connector.name, bound_entity_id: null, config: {},
+        }))
+      return api.put(`/connectors/instances/${instance.id}/config`, { config: valuesFor(connector) })
+    },
     onMutate: (connector) => setSavingId(connector.id),
     onSuccess: (_data, connector) => {
       toast.success(`${connector.name} connected`)
@@ -137,11 +158,11 @@ function ConnectSourcesStep({ onContinue }: { onContinue: () => void }) {
 
   const setupConnectors = SETUP_CONNECTOR_IDS
     .map((id) => connectors.find((c) => c.id === id))
-    .filter((c): c is ConnectorSummary => !!c)
+    .filter((c): c is ConnectorTypeSummary => !!c)
   const core = setupConnectors.filter((c) => c.core)
   const optional = setupConnectors.filter((c) => !c.core)
 
-  function renderCard(connector: ConnectorSummary) {
+  function renderCard(connector: ConnectorTypeSummary) {
     return (
       <ConnectorSetupCard
         key={connector.id}

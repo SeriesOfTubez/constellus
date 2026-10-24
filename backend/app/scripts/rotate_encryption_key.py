@@ -7,7 +7,7 @@ credentials (Shodan/Tenable/Wiz/FortiManager/etc. API keys) was derived as
 domain-separates them via `sha256(f"{secret_key}:connector-encryption")`.
 That's a different key, so every config encrypted under the old derivation
 needs to be decrypted under the old scheme and re-encrypted under the new
-one, or it silently "loses" its config (get_decrypted_config swallows
+one, or it silently "loses" its config (decrypted_config swallows
 decrypt failures and returns {}).
 
 Idempotent — a row that already decrypts under the new key is left alone.
@@ -26,8 +26,8 @@ import logging
 from cryptography.fernet import InvalidToken
 
 from app.core.database import SessionLocal
-from app.models.connector_config import ConnectorConfig
-from app.services.connector_config import _fernet
+from app.models.connector_instance import ConnectorInstance
+from app.services.connector_instances import _fernet
 
 log = logging.getLogger("rotate_encryption_key")
 
@@ -44,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
 
     db = SessionLocal()
     try:
-        rows = db.query(ConnectorConfig).filter(ConnectorConfig.config_encrypted.isnot(None)).all()
+        rows = db.query(ConnectorInstance).filter(ConnectorInstance.config_encrypted.isnot(None)).all()
         migrated = already_current = failed = 0
 
         for row in rows:
@@ -60,13 +60,13 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 plaintext = old_fernet.decrypt(token)
             except InvalidToken:
-                log.error("Could not decrypt config for connector %r under the old OR new key — "
-                          "left untouched, will need manual reconfiguration.", row.connector_id)
+                log.error("Could not decrypt config for connector instance %s (type %r) under the old OR new key — "
+                          "left untouched, will need manual reconfiguration.", row.id, row.type)
                 failed += 1
                 continue
 
             if args.dry_run:
-                log.info("[dry-run] would migrate connector %r", row.connector_id)
+                log.info("[dry-run] would migrate connector instance %s (type %r)", row.id, row.type)
             else:
                 row.config_encrypted = new_fernet.encrypt(plaintext).decode()
             migrated += 1

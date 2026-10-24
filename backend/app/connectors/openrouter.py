@@ -8,23 +8,14 @@ an `EnrichmentConnector`; see that module's docstring for why). Declaring
 this as a bare `BaseConnector` keeps it out of every phase-shaped connector
 loop (discovery/enrich/scan) the same way VulnCheck's own comment explains.
 
-## Why `env_key_map` exists here even though R5 forbids reading it back
+## Where the key comes from (R5)
 
-`app.services.connector_config.load_overrides_from_db` (called at startup)
-and `api/connectors.py`'s save-config path both use `env_key_map` to push a
-saved secret into `app.core.secrets`'s in-process override layer — that
-plumbing is generic and this connector needs it to make the Test button and
-`is_configured()` line up with what `llm_connector.py` will later read
-straight out of `connector_configs` for the real call. But `is_configured()`
-below does NOT call `get_secret("OPENROUTER_API_KEY")` (which would also
-return true for a bare `.env` value) — it calls
-`app.core.secrets.has_db_override`, which is only ever true once a value
-has actually been saved through the DB-config path. A key sitting in
-`.env` must not count as "configured" here, because R5 requires
-`llm_connector.py` to read the API key from `connector_configs` only, never
-from `os.environ`/`get_secret`/`.env` — so this connector's own
-"configured" badge would otherwise lie about what the real call path can
-see.
+The API key comes ONLY from the connector instance's stored (encrypted)
+config: `is_configured(config)` reads `config["api_key"]` and nothing else,
+and `llm_connector.py` reads the same instance. A key sitting in `.env` must
+not count as "configured" here, so `env_key_map` is kept for the field list
+but one-time environment seeding (`connector_instances.seed_from_env`)
+skips this connector entirely.
 """
 
 import logging
@@ -33,7 +24,6 @@ from typing import Any
 import httpx
 
 from app.connectors.base import BaseConnector, ConnectorPhase, TestResult
-from app.core.secrets import has_db_override
 
 log = logging.getLogger(__name__)
 
@@ -55,16 +45,13 @@ class OpenRouterConnector(BaseConnector):
             },
         }
 
-    def is_configured(self) -> bool:
-        # See the module docstring's "Why env_key_map exists here even
-        # though R5 forbids reading it back" — `has_db_override`, not
-        # `get_secret`, is the whole point.
-        return has_db_override("OPENROUTER_API_KEY")
+    def is_configured(self, config: dict[str, Any]) -> bool:
+        # R5: the instance config only; see the module docstring.
+        return bool((config or {}).get("api_key"))
 
     def _test(self, config: dict[str, Any]) -> TestResult:
-        # From the decrypted connector_configs row the Test endpoint passes
-        # in - NOT `get_secret`, which falls back to `.env` and would let
-        # this button validate a key the real call path never uses (R5).
+        # From the decrypted instance config the Test endpoint passes in
+        # (R5: never the environment).
         api_key = (config or {}).get("api_key")
         if not api_key:
             return TestResult(success=False, message="OpenRouter API key not configured")

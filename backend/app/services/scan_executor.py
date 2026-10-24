@@ -26,6 +26,7 @@ import ipaddress
 import logging
 import time
 import uuid
+from typing import Any
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -126,10 +127,16 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     # the executor only ever runs a chunk against a single tier.
     scope_by_tier = _partition_scope_by_tier(db, domains, ip_ranges, global_tier)
 
-    chunks: list[tuple[str, dict]] = []
+    # Then by scope key (estate / a deal's engagement id / unknown), before
+    # size-chunking, so every chunk is scope-homogeneous: an account connector
+    # instance runs only on targets of its own scope (planning#284).
+    chunks: list[tuple[str, str, dict]] = []
     for sub_tier, sub_scope in scope_by_tier.items():
-        for sub_chunk in _chunk_scope(sub_scope["domains"], sub_scope["ip_ranges"], batch_size):
-            chunks.append((sub_tier, sub_chunk))
+        for sub_key, keyed_scope in _partition_scope_by_scope_key(
+            db, sub_scope["domains"], sub_scope["ip_ranges"]
+        ).items():
+            for sub_chunk in _chunk_scope(keyed_scope["domains"], keyed_scope["ip_ranges"], batch_size):
+                chunks.append((sub_tier, sub_key, sub_chunk))
 
     if not chunks:
         log.info("Run %s has empty scope, marking complete", scan_run_id)
@@ -139,7 +146,7 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
         return
 
     # run.aggressiveness audit: single tier when all chunks agree, else "mixed".
-    tiers_present = sorted({t for t, _ in chunks})
+    tiers_present = sorted({t for t, _, _ in chunks})
     run.aggressiveness = tiers_present[0] if len(tiers_present) == 1 else "mixed"
     db.commit()
 
@@ -164,7 +171,7 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     # `_run_pipeline`, stamped onto the run once the chunk loop finishes.
     port_scan_unauthorised_ids: set[uuid.UUID] = set()
 
-    for chunk_idx, (chunk_tier, chunk_scope) in enumerate(chunks):
+    for chunk_idx, (chunk_tier, chunk_scope_key, chunk_scope) in enumerate(chunks):
         # Cancellation check between chunks
         db.refresh(run)
         if run.status == ScanStatus.CANCELLED:
@@ -181,6 +188,7 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
                 touched_finding_ids=touched_finding_ids,
                 degraded=degraded,
                 port_scan_unauthorised_ids=port_scan_unauthorised_ids,
+                scope_key=chunk_scope_key,
             )
         except Exception as exc:
             log.exception("Chunk %d/%d failed for run %s", chunk_idx + 1, len(chunks), scan_run_id)
@@ -447,13 +455,16 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     # was NOT actually attempted this run: non-public, over the size cap, or
     # naabu disabled (at every tier the value appeared in) or unavailable.
     from app.connectors.naabu import MAX_SWEEP_ADDRESSES
-    from app.services.connector_config import get_all as get_all_configs
+    from app.services import connector_instances
 
-    naabu_config = _get_connector_config(db, "naabu")
+    # Config of the (single) naabu instance regardless of its enabled flag --
+    # exactly what the pre-instance lookup returned; the disabled case is
+    # reported separately below via naabu_connector_enabled.
+    _naabu_inst = connector_instances.single(db, "naabu")
+    naabu_config = connector_instances.decrypted_config(_naabu_inst) if _naabu_inst is not None else {}
     max_sweep = int(naabu_config.get("max_sweep_addresses") or MAX_SWEEP_ADDRESSES)
-    naabu_connector_enabled = "naabu" in {
-        r.connector_id for r in get_all_configs(db) if r.enabled
-    }
+    naabu_instance = connector_instances.single(db, "naabu")
+    naabu_connector_enabled = naabu_instance is not None and naabu_instance.enabled
     # A worker outage/timeout this run is already recorded generically by
     # the Phase 1.5 loop in _run_pipeline (`degraded`, planning#160) as
     # "naabu: scan incomplete ...". Reuse that signal here rather than
@@ -799,6 +810,66 @@ def _partition_scope_by_tier(
     return out
 
 
+def _partition_scope_by_scope_key(
+    db: Session, domains: list[str], ip_ranges: list[str]
+) -> dict[str, dict]:
+    """Group scope values by the scope their Target belongs to: the target's
+    `engagement_id` (as a string) when set, "estate" for a target with no
+    engagement, "unknown" when no target matches. Resolved the way
+    `_partition_scope_by_tier` resolves a tier: the (canonicalised) value's
+    own target, else (a child recheck) the target its asset parent chain or
+    apex rolls up to. Still unresolved means "unknown", which fails closed
+    for account connector instances (planning#284).
+
+    Returns `{scope_key: {"domains": [...], "ip_ranges": [...]}}`; empty
+    sub-scopes are omitted."""
+    if not domains and not ip_ranges:
+        return {}
+
+    from app.models.target import Target
+    from app.services.connector_instances import SCOPE_ESTATE, SCOPE_UNKNOWN
+    from app.services.target_service import canonicalize_value
+
+    canon = {v: canonicalize_value(v) for v in list(domains) + list(ip_ranges)}
+    rows = db.query(Target.value, Target.engagement_id).filter(Target.value.in_(set(canon.values()))).all()
+    def _key(engagement_id) -> str:
+        return SCOPE_ESTATE if engagement_id is None else str(engagement_id)
+
+    key_by_value = {value: _key(engagement_id) for value, engagement_id in rows}
+
+    # A child recheck (IP/subdomain that is not a target itself) inherits the
+    # scope of the target it rolls up to: the same walk as the tier partition.
+    unmatched = [c for c in set(canon.values()) if c not in key_by_value]
+    if unmatched:
+        from app.models.asset_canonical import AssetCanonical
+        for value in unmatched:
+            cur, root, seen = value, value, {value}
+            for _ in range(8):  # CNAME-chain depth cap
+                row = db.query(AssetCanonical.parent_value).filter(AssetCanonical.value == cur).first()
+                parent = row[0] if row else None
+                if not parent or parent in seen:
+                    break
+                seen.add(parent)
+                root = cur = parent
+            for candidate in (root, apex_domain(root)):
+                if candidate in key_by_value:
+                    key_by_value[value] = key_by_value[candidate]
+                    break
+                trow = db.query(Target.engagement_id).filter(Target.value == candidate).first()
+                if trow is not None:
+                    key_by_value[value] = _key(trow[0])
+                    break
+
+    out: dict[str, dict] = {}
+    for v in domains:
+        bucket = out.setdefault(key_by_value.get(canon[v], SCOPE_UNKNOWN), {"domains": [], "ip_ranges": []})
+        bucket["domains"].append(v)
+    for v in ip_ranges:
+        bucket = out.setdefault(key_by_value.get(canon[v], SCOPE_UNKNOWN), {"domains": [], "ip_ranges": []})
+        bucket["ip_ranges"].append(v)
+    return out
+
+
 def _chunk_scope(domains: list[str], ip_ranges: list[str], batch_size: int | None):
     """Yield {domains, ip_ranges} dicts where each chunk has at most `batch_size`
     total entries. `batch_size=None` (or 0) yields a single chunk containing
@@ -834,8 +905,13 @@ def _run_pipeline(
     touched_finding_ids: set[uuid.UUID] | None = None,
     degraded: list[str] | None = None,
     port_scan_unauthorised_ids: set[uuid.UUID] | None = None,
+    scope_key: str = "unknown",
 ) -> None:
-    """Run Phase 1/2/3 against one chunk's scope."""
+    """Run Phase 1/2/3 against one chunk's scope.
+
+    `scope_key` ("estate", a deal's engagement id, or "unknown") says which
+    scope the chunk's targets belong to; account connector instances run only
+    when it matches theirs. The default fails closed (no account instance)."""
     domains: list[str] = chunk_scope.get("domains", [])
     ip_ranges: list[str] = chunk_scope.get("ip_ranges", [])
     all_assets: list[DiscoveredAsset] = []
@@ -876,8 +952,26 @@ def _run_pipeline(
         )
 
     from app.models.target import Target
-    from app.services.connector_config import get_all as get_all_configs
-    enabled_ids = {r.connector_id for r in get_all_configs(db) if r.enabled}
+    from app.services import connector_instances
+    runnable_by_type: dict[str, list[tuple[Any, dict]]] = {}
+    for _cid in registry:
+        _runnable, _skipped = connector_instances.runnable_instances(db, _cid)
+        if connector_instances.is_account_type(_cid):
+            # Not a degraded condition: an account of another scope is simply
+            # not this chunk's account.
+            _in_scope = []
+            for _inst, _cfg in _runnable:
+                if connector_instances.instance_matches_scope(db, _inst, scope_key):
+                    _in_scope.append((_inst, _cfg))
+                else:
+                    log.debug("Connector instance %s not in scope %s; skipped for this chunk", _inst.id, scope_key)
+            _runnable = _in_scope
+        runnable_by_type[_cid] = _runnable
+        for _inst, _reason in _skipped:
+            if degraded is not None:
+                degraded.append(
+                    f"{_cid} instance {_inst.id}: skipped, binding no longer allowed ({_reason})"
+                )
 
     for domain in (domains if not skip_discovery else []):
         phase_assets: list[DiscoveredAsset] = []
@@ -997,44 +1091,51 @@ def _run_pipeline(
 
         # Connector-based discovery (Cloudflare, Route53, etc.)
         for cid, connector in registry.items():
-            if cid not in enabled_ids or not isinstance(connector, DNSDiscoveryConnector):
+            if not isinstance(connector, DNSDiscoveryConnector):
                 continue
-            try:
-                config = _get_connector_config(db, cid)
-                result = connector.discover(domain, config)
-                phase_assets.extend(result.assets)
-                if result.findings:
-                    finding_ids = write_findings(db, scan_run_id, result.findings, new_canonical_ids_out=new_finding_ids)
-                    if touched_finding_ids is not None:
-                        touched_finding_ids.update(finding_ids)
-                if result.assets:
-                    connectors_used.append(cid)
-            except Exception:
-                # A failed flush/commit leaves the session in a failed-transaction
-                # state; without a rollback here one connector's failure (e.g. a
-                # DB error from hostile banner bytes) fails every later phase of
-                # the run. Each writer commits its own work, so this discards
-                # only the failing connector's uncommitted state.
-                db.rollback()
-                log.exception("Discovery connector %s failed on domain %s", cid, domain)
+            for instance, config in runnable_by_type.get(cid, []):
+                try:
+                    result = connector.discover(domain, config)
+                    phase_assets.extend(result.assets)
+                    if result.findings:
+                        finding_ids = write_findings(db, scan_run_id, result.findings, new_canonical_ids_out=new_finding_ids)
+                        if touched_finding_ids is not None:
+                            touched_finding_ids.update(finding_ids)
+                    if result.assets:
+                        connectors_used.append(cid)
+                except Exception:
+                    # A failed flush/commit leaves the session in a failed-transaction
+                    # state; without a rollback here one connector's failure (e.g. a
+                    # DB error from hostile banner bytes) fails every later phase of
+                    # the run. Each writer commits its own work, so this discards
+                    # only the failing connector's uncommitted state.
+                    db.rollback()
+                    log.exception(
+                        "Discovery connector %s (instance %s) failed on domain %s", cid, instance.id, domain
+                    )
 
         # Index-based passive discovery — enrichment connectors that expose an
         # `index_lookup(domain, config)` method (currently Shodan /dns/domain).
         for cid, connector in registry.items():
-            if cid not in enabled_ids or isinstance(connector, DNSDiscoveryConnector):
+            if isinstance(connector, DNSDiscoveryConnector):
                 continue
             index_lookup = getattr(connector, "index_lookup", None)
             if index_lookup is None:
                 continue
-            try:
-                config = _get_connector_config(db, cid)
-                config = {**config, "_owned_domains": owned_domains}
-                result = index_lookup(domain, config)
-                phase_assets.extend(result.assets)
-                if result.assets:
-                    connectors_used.append(cid)
-            except Exception:
-                log.exception("Index lookup via %s failed on domain %s", cid, domain)
+            for instance, base_config in runnable_by_type.get(cid, []):
+                try:
+                    config = {**base_config, "_owned_domains": owned_domains}
+                    result = index_lookup(domain, config)
+                    phase_assets.extend(result.assets)
+                    if result.assets:
+                        connectors_used.append(cid)
+                except Exception:
+                    # Same reasoning as the discovery loop above: a lookup that
+                    # died mid-flush must not poison the session for later writes.
+                    db.rollback()
+                    log.exception(
+                        "Index lookup via %s (instance %s) failed on domain %s", cid, instance.id, domain
+                    )
 
         phase_assets = _dedupe_assets(phase_assets)
         if phase_assets:
@@ -1112,129 +1213,129 @@ def _run_pipeline(
             key=lambda pair: getattr(pair[1], "port_scan_order", 100),
         )
         for cid, connector in port_scan_connectors:
-            if cid not in enabled_ids:
-                continue
             port_scan = getattr(connector, "port_scan", None)
             if port_scan is None:
                 continue
-            try:
-                gate = probe_authorisation.authorise_probes(
-                    db, connector_id=cid, connector=connector, assets=all_assets,
-                    scope=chunk_scope, scan_run_id=scan_run_id,
-                )
-                if port_scan_unauthorised_ids is not None:
-                    port_scan_unauthorised_ids.update(gate.port_scan_unauthorised_ids)
-                if not gate.permitted:
-                    log.info("Probe gate: no assets authorised for %s", cid)
-                    continue
-                config = _get_connector_config(db, cid)
-                config = {
-                    **config,
-                    "_aggressiveness": aggressiveness.profile(tier),
-                    "_tier": tier,
-                    # planning#161 — the CIDR-sweep seam. Every port_scan
-                    # connector gets the chunk's declared ranges through
-                    # config rather than a signature change (this hook is
-                    # duck-typed across naabu/banner_grab/httpx/tlsx); only
-                    # naabu currently reads `_ip_ranges` (app/connectors/
-                    # naabu.py), everything else ignores the key.
-                    "_ip_ranges": list(ip_ranges),
-                    # planning#175 — the addresses inside those ranges that
-                    # are ALREADY persisted assets. A sweep physically scans
-                    # every address in the range, but a host that only ever
-                    # entered via a sweep is never in `all_assets` (it is
-                    # rebuilt each run from this run's discovery output, and
-                    # nothing loads persisted assets back in), so naabu has
-                    # no way to know it covered one. Without this, the moment
-                    # such a host's LAST port closes it emits no patch at
-                    # all, nothing advances its cutoff, and the dead port is
-                    # frozen in the projection forever.
-                    #
-                    # Named addresses only, never the whole range: the
-                    # zero-port fill builds DiscoveredAssets, so licensing a
-                    # whole /24 would mint a row for each of its 254
-                    # addresses. Every value here is a persisted asset, so
-                    # the fill updates a row rather than creating one.
-                    #
-                    # Not routed through the probe gate, and deliberately so:
-                    # this sends no packet and probes nothing. The sweep of
-                    # the range was itself authorised above, and an address
-                    # inside a swept range is covered by that authorisation —
-                    # all that is recorded here is that the coverage
-                    # happened. naabu re-filters against the ranges it
-                    # ACTUALLY swept, so a range it skipped still licenses
-                    # nothing (planning#160 D2).
-                    "_known_ips_in_ranges": list(known_ips_in_ranges),
-                }
-                result = port_scan(gate.permitted, config)
-                # planning#160 — record incompleteness before the assets
-                # check so a failed pass that yields no patches at all is
-                # still recorded, not read as a clean "found nothing".
-                if degraded is not None and not result.complete:
-                    degraded.append(
-                        f"{cid}: scan incomplete (worker unavailable or timed out) — "
-                        "existing results preserved, absence not inferred"
+            for _instance, _inst_config in runnable_by_type.get(cid, []):
+                try:
+                    gate = probe_authorisation.authorise_probes(
+                        db, connector_id=cid, connector=connector, assets=all_assets,
+                        scope=chunk_scope, scan_run_id=scan_run_id,
                     )
-                if result.assets:
-                    asset_ids = write_assets(db, scan_run_id, result.assets)
-                    if touched_asset_ids is not None:
-                        touched_asset_ids.update(asset_ids)
-                    all_assets.extend(result.assets)
-                    connectors_used.append(cid)
-                    if cid == "httpx_probe":
-                        # planning#268 -- follow the redirects httpx just
-                        # recorded, every hop through the probe gate. A
-                        # fail-soft unit of work of its own: the helpers
-                        # flush, this block commits or rolls back.
-                        try:
-                            chunk_target_ids = [
-                                t_id for (t_id,) in db.query(Target.id).filter(Target.value.in_(domains)).all()
-                            ]
-                            redirect_stats = redirect_follow.follow_redirects(
-                                db, connector=connector, patches=result.assets, scope=chunk_scope,
-                                scan_run_id=scan_run_id, owned_domains=owned_domains,
-                                target_ids=chunk_target_ids,
-                                timeout=float(aggressiveness.httpx_profile(tier).get("timeout", 5.0)),
-                            )
-                            db.commit()
-                            log.info("Redirect follow: %s", redirect_stats)
-                        except Exception:
-                            db.rollback()
-                            log.exception("Redirect follow failed")
-                            if degraded is not None:
-                                degraded.append(
-                                    "redirect_follow: failed - redirect chains from this run were not recorded"
+                    if port_scan_unauthorised_ids is not None:
+                        port_scan_unauthorised_ids.update(gate.port_scan_unauthorised_ids)
+                    if not gate.permitted:
+                        log.info("Probe gate: no assets authorised for %s", cid)
+                        continue
+                    config = _inst_config
+                    config = {
+                        **config,
+                        "_aggressiveness": aggressiveness.profile(tier),
+                        "_tier": tier,
+                        # planning#161 — the CIDR-sweep seam. Every port_scan
+                        # connector gets the chunk's declared ranges through
+                        # config rather than a signature change (this hook is
+                        # duck-typed across naabu/banner_grab/httpx/tlsx); only
+                        # naabu currently reads `_ip_ranges` (app/connectors/
+                        # naabu.py), everything else ignores the key.
+                        "_ip_ranges": list(ip_ranges),
+                        # planning#175 — the addresses inside those ranges that
+                        # are ALREADY persisted assets. A sweep physically scans
+                        # every address in the range, but a host that only ever
+                        # entered via a sweep is never in `all_assets` (it is
+                        # rebuilt each run from this run's discovery output, and
+                        # nothing loads persisted assets back in), so naabu has
+                        # no way to know it covered one. Without this, the moment
+                        # such a host's LAST port closes it emits no patch at
+                        # all, nothing advances its cutoff, and the dead port is
+                        # frozen in the projection forever.
+                        #
+                        # Named addresses only, never the whole range: the
+                        # zero-port fill builds DiscoveredAssets, so licensing a
+                        # whole /24 would mint a row for each of its 254
+                        # addresses. Every value here is a persisted asset, so
+                        # the fill updates a row rather than creating one.
+                        #
+                        # Not routed through the probe gate, and deliberately so:
+                        # this sends no packet and probes nothing. The sweep of
+                        # the range was itself authorised above, and an address
+                        # inside a swept range is covered by that authorisation —
+                        # all that is recorded here is that the coverage
+                        # happened. naabu re-filters against the ranges it
+                        # ACTUALLY swept, so a range it skipped still licenses
+                        # nothing (planning#160 D2).
+                        "_known_ips_in_ranges": list(known_ips_in_ranges),
+                    }
+                    result = port_scan(gate.permitted, config)
+                    # planning#160 — record incompleteness before the assets
+                    # check so a failed pass that yields no patches at all is
+                    # still recorded, not read as a clean "found nothing".
+                    if degraded is not None and not result.complete:
+                        degraded.append(
+                            f"{cid}: scan incomplete (worker unavailable or timed out) — "
+                            "existing results preserved, absence not inferred"
+                        )
+                    if result.assets:
+                        asset_ids = write_assets(db, scan_run_id, result.assets)
+                        if touched_asset_ids is not None:
+                            touched_asset_ids.update(asset_ids)
+                        all_assets.extend(result.assets)
+                        connectors_used.append(cid)
+                        if cid == "httpx_probe":
+                            # planning#268 -- follow the redirects httpx just
+                            # recorded, every hop through the probe gate. A
+                            # fail-soft unit of work of its own: the helpers
+                            # flush, this block commits or rolls back.
+                            try:
+                                chunk_target_ids = [
+                                    t_id for (t_id,) in db.query(Target.id).filter(Target.value.in_(domains)).all()
+                                ]
+                                redirect_stats = redirect_follow.follow_redirects(
+                                    db, connector=connector, patches=result.assets, scope=chunk_scope,
+                                    scan_run_id=scan_run_id, owned_domains=owned_domains,
+                                    target_ids=chunk_target_ids,
+                                    timeout=float(aggressiveness.httpx_profile(tier).get("timeout", 5.0)),
                                 )
-                if result.findings:
-                    finding_ids = write_findings(db, scan_run_id, result.findings, new_canonical_ids_out=new_finding_ids)
-                    if touched_finding_ids is not None:
-                        touched_finding_ids.update(finding_ids)
-            except Exception:
-                db.rollback()
-                log.exception("Port-scan connector %s failed", cid)
+                                db.commit()
+                                log.info("Redirect follow: %s", redirect_stats)
+                            except Exception:
+                                db.rollback()
+                                log.exception("Redirect follow failed")
+                                if degraded is not None:
+                                    degraded.append(
+                                        "redirect_follow: failed - redirect chains from this run were not recorded"
+                                    )
+                    if result.findings:
+                        finding_ids = write_findings(db, scan_run_id, result.findings, new_canonical_ids_out=new_finding_ids)
+                        if touched_finding_ids is not None:
+                            touched_finding_ids.update(finding_ids)
+                except Exception:
+                    db.rollback()
+                    log.exception("Port-scan connector %s (instance %s) failed", cid, _instance.id)
 
     # ── Phase 2: Enrichment ───────────────────────────────────────────────────
     if all_assets:
         for cid, connector in registry.items():
-            if cid not in enabled_ids or not isinstance(connector, EnrichmentConnector):
+            if not isinstance(connector, EnrichmentConnector):
                 continue
-            try:
-                config = _get_connector_config(db, cid)
-                result = connector.enrich(all_assets, config)
-                if result.assets:
-                    asset_ids = write_assets(db, scan_run_id, result.assets)
-                    if touched_asset_ids is not None:
-                        touched_asset_ids.update(asset_ids)
-                    all_assets.extend(result.assets)
-                if result.findings:
-                    finding_ids = write_findings(db, scan_run_id, result.findings, new_canonical_ids_out=new_finding_ids)
-                    if touched_finding_ids is not None:
-                        touched_finding_ids.update(finding_ids)
-                if result.assets or result.findings:
-                    connectors_used.append(cid)
-            except Exception:
-                db.rollback()
-                log.exception("Enrichment connector %s failed", cid)
+            for _instance, _inst_config in runnable_by_type.get(cid, []):
+                try:
+                    config = _inst_config
+                    result = connector.enrich(all_assets, config)
+                    if result.assets:
+                        asset_ids = write_assets(db, scan_run_id, result.assets)
+                        if touched_asset_ids is not None:
+                            touched_asset_ids.update(asset_ids)
+                        all_assets.extend(result.assets)
+                    if result.findings:
+                        finding_ids = write_findings(db, scan_run_id, result.findings, new_canonical_ids_out=new_finding_ids)
+                        if touched_finding_ids is not None:
+                            touched_finding_ids.update(finding_ids)
+                    if result.assets or result.findings:
+                        connectors_used.append(cid)
+                except Exception:
+                    db.rollback()
+                    log.exception("Enrichment connector %s (instance %s) failed", cid, _instance.id)
 
     # ── Phase 3: Scanning ─────────────────────────────────────────────────────
     # planning#148 step 2 — Phase 3 now routes through the same choke point as
@@ -1268,45 +1369,46 @@ def _run_pipeline(
         nuclei_tags = nuclei_tag_filter.compute_tag_union(all_assets)
 
         for cid, connector in registry.items():
-            if cid not in enabled_ids or not isinstance(connector, ScanningConnector):
+            if not isinstance(connector, ScanningConnector):
                 continue
-            try:
-                gate = probe_authorisation.authorise_probes(
-                    db, connector_id=cid, connector=connector, assets=all_assets,
-                    scope=chunk_scope, scan_run_id=scan_run_id,
-                )
-                if port_scan_unauthorised_ids is not None:
-                    port_scan_unauthorised_ids.update(gate.port_scan_unauthorised_ids)
-                targets = _extract_scan_targets(gate.permitted)
-                if not targets:
-                    log.info("Probe gate: no scan targets authorised for %s", cid)
-                    continue
-                config = _get_connector_config(db, cid)
-                # Inject the resolved tier profile so the connector picks up
-                # rate_limit / concurrency / exclude_tags without having to
-                # know about app_settings. Reserved key — connectors must
-                # treat it as read-only.
-                config = {**config, "_aggressiveness": aggressiveness.profile(tier)}
-                # Scan-wide detected-tech tag union for nuclei's -tags
-                # filter. Reserved key — only NucleiConnector consumes it;
-                # other ScanningConnectors ignore unknown config keys.
-                config["_nuclei_include_tags"] = nuclei_tags
-                result = connector.scan(targets, config)
-                # planning#160 — same treatment as Phase 1.5: an incomplete
-                # vulnerability scan must not read as a clean one.
-                if degraded is not None and not result.complete:
-                    degraded.append(
-                        f"{cid}: scan incomplete (worker unavailable or timed out) — "
-                        "existing results preserved, absence not inferred"
+            for _instance, _inst_config in runnable_by_type.get(cid, []):
+                try:
+                    gate = probe_authorisation.authorise_probes(
+                        db, connector_id=cid, connector=connector, assets=all_assets,
+                        scope=chunk_scope, scan_run_id=scan_run_id,
                     )
-                if result.findings:
-                    finding_ids = write_findings(db, scan_run_id, result.findings, new_canonical_ids_out=new_finding_ids)
-                    if touched_finding_ids is not None:
-                        touched_finding_ids.update(finding_ids)
-                    connectors_used.append(cid)
-            except Exception:
-                db.rollback()
-                log.exception("Scanning connector %s failed", cid)
+                    if port_scan_unauthorised_ids is not None:
+                        port_scan_unauthorised_ids.update(gate.port_scan_unauthorised_ids)
+                    targets = _extract_scan_targets(gate.permitted)
+                    if not targets:
+                        log.info("Probe gate: no scan targets authorised for %s", cid)
+                        continue
+                    config = _inst_config
+                    # Inject the resolved tier profile so the connector picks up
+                    # rate_limit / concurrency / exclude_tags without having to
+                    # know about app_settings. Reserved key — connectors must
+                    # treat it as read-only.
+                    config = {**config, "_aggressiveness": aggressiveness.profile(tier)}
+                    # Scan-wide detected-tech tag union for nuclei's -tags
+                    # filter. Reserved key — only NucleiConnector consumes it;
+                    # other ScanningConnectors ignore unknown config keys.
+                    config["_nuclei_include_tags"] = nuclei_tags
+                    result = connector.scan(targets, config)
+                    # planning#160 — same treatment as Phase 1.5: an incomplete
+                    # vulnerability scan must not read as a clean one.
+                    if degraded is not None and not result.complete:
+                        degraded.append(
+                            f"{cid}: scan incomplete (worker unavailable or timed out) — "
+                            "existing results preserved, absence not inferred"
+                        )
+                    if result.findings:
+                        finding_ids = write_findings(db, scan_run_id, result.findings, new_canonical_ids_out=new_finding_ids)
+                        if touched_finding_ids is not None:
+                            touched_finding_ids.update(finding_ids)
+                        connectors_used.append(cid)
+                except Exception:
+                    db.rollback()
+                    log.exception("Scanning connector %s (instance %s) failed", cid, _instance.id)
 
 
 def _logical_finding_count(db: Session, finding_ids: set) -> int:
@@ -1742,11 +1844,6 @@ def _persisted_port_hints(db: Session, ip_values: set[str]) -> dict[str, dict]:
             by_ip.setdefault(id_to_value[asset_id], {})["shodan_ports"] = sorted(set(port_numbers))
 
     return by_ip
-
-
-def _get_connector_config(db: Session, connector_id: str) -> dict:
-    from app.services.connector_config import get_decrypted_config
-    return get_decrypted_config(db, connector_id) or {}
 
 
 def _append_partial_failure(db: Session, run: ScanRun, message: str) -> None:

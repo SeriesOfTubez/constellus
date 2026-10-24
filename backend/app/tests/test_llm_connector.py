@@ -4,7 +4,7 @@ OpenRouter connector, its ledger, and its data policy.
 This is the load-bearing test file for R1 (no silent fallback to a non-
 compliant endpoint), R3 (pre-close posture forces strict regardless of the
 deployment policy), R4 (the ledger never stores prompt/response content),
-R5 (the API key comes from `connector_configs` only) and R6 (`target_id`/
+R5 (the API key comes from `connector instance` only) and R6 (`target_id`/
 `source_text` have no default). Every test spies on the TRANSPORT
 (`httpx.MockTransport`, via `_ScriptedTransport` below) and asserts on the
 actual REQUEST BODIES it received, never on a wrapper — R7.
@@ -16,7 +16,7 @@ labelled `llm140-<test>-<uuid suffix>`) and deleted by hand in a `finally`
 block. Ledger rows are deleted BEFORE targets, by `task` label (unique per
 test) rather than by the `ledger_ids` a call returns — a raised exception
 never returns `ledger_ids` at all, and several tests deliberately expect
-one. The `openrouter` `connector_configs` row is snapshotted and restored
+one. The `openrouter` `connector instance` row is snapshotted and restored
 rather than deleted, per this suite's convention for singleton rows a real
 deployment might already have configured.
 
@@ -41,12 +41,13 @@ from app.core import secrets as secrets_mod
 from app.core.config import Settings, settings
 from app.core.database import SessionLocal
 from app.models.app_settings import AppSetting
-from app.models.connector_config import ConnectorConfig
+from app.models.connector_instance import ConnectorInstance
 from app.models.engagement import Engagement
 from app.models.llm_call import LlmCall
 from app.models.target import Target
 from app.services import app_settings
-from app.services import connector_config as connector_config_svc
+from app.services import connector_instances as connector_instances_svc
+from app.tests import connector_helpers as ch
 from app.services import llm_connector as llmc
 from app.services.llm_grounding import Grounded
 from app.tests._engagement import cleanup_engagement, make_engagement
@@ -147,15 +148,15 @@ def _make_target(
 
 
 def _configure_openrouter(db, *, api_key: str | None = _TEST_API_KEY, enabled: bool = True):
-    """Snapshot the existing `openrouter` connector_configs row (or record
+    """Snapshot the existing `openrouter` connector instance row (or record
     that none existed) and (re)configure it for the test. Returns the
     snapshot for `_restore_openrouter`."""
-    existing = connector_config_svc.get_one(db, "openrouter")
+    existing = connector_instances_svc.single(db, "openrouter")
     snapshot = _NO_ROW if existing is None else {
         "enabled": existing.enabled, "config_encrypted": existing.config_encrypted,
     }
-    connector_config_svc.upsert_config(db, "openrouter", {"api_key": api_key} if api_key else {})
-    connector_config_svc.set_enabled(db, "openrouter", enabled)
+    ch.set_config(db, "openrouter", {"api_key": api_key} if api_key else {})
+    ch.set_enabled(db, "openrouter", enabled)
     return snapshot
 
 
@@ -163,10 +164,10 @@ def _restore_openrouter(snapshot) -> None:
     db = SessionLocal()
     try:
         if snapshot is _NO_ROW:
-            db.query(ConnectorConfig).filter(ConnectorConfig.connector_id == "openrouter").delete()
+            db.query(ConnectorInstance).filter(ConnectorInstance.type == "openrouter").delete()
             db.commit()
         else:
-            row = connector_config_svc.get_one(db, "openrouter")
+            row = connector_instances_svc.single(db, "openrouter")
             if row is not None:
                 row.enabled = snapshot["enabled"]
                 row.config_encrypted = snapshot["config_encrypted"]
@@ -827,7 +828,7 @@ def test_budget_gate_just_under_proceeds_just_over_refuses():
 
 def test_not_configured_various_reasons_zero_requests():
     db = SessionLocal()
-    existing = connector_config_svc.get_one(db, "openrouter")
+    existing = connector_instances_svc.single(db, "openrouter")
     outer_snapshot = _NO_ROW if existing is None else {
         "enabled": existing.enabled, "config_encrypted": existing.config_encrypted,
     }
@@ -839,14 +840,14 @@ def test_not_configured_various_reasons_zero_requests():
             task = f"llm140-t13-{scenario}-{suffix}"
             db = SessionLocal()
             try:
-                db.query(ConnectorConfig).filter(ConnectorConfig.connector_id == "openrouter").delete()
+                db.query(ConnectorInstance).filter(ConnectorInstance.type == "openrouter").delete()
                 db.commit()
                 if scenario == "disabled":
-                    connector_config_svc.upsert_config(db, "openrouter", {"api_key": _TEST_API_KEY})
-                    connector_config_svc.set_enabled(db, "openrouter", False)
+                    ch.set_config(db, "openrouter", {"api_key": _TEST_API_KEY})
+                    ch.set_enabled(db, "openrouter", False)
                 elif scenario == "empty_key":
-                    connector_config_svc.upsert_config(db, "openrouter", {"api_key": ""})
-                    connector_config_svc.set_enabled(db, "openrouter", True)
+                    ch.set_config(db, "openrouter", {"api_key": ""})
+                    ch.set_enabled(db, "openrouter", True)
                 # "missing": row stays deleted.
 
                 scripted = _ScriptedTransport([])
@@ -1044,11 +1045,14 @@ def test_invalid_llm_data_policy_env_value_rejected():
 # ── 20. is_configured() ignores a bare env var ──────────────────────────────
 
 def test_is_configured_false_when_only_env_var_set():
+    # Old "DB override beats env" intent, restated for instances: the
+    # connector is configured by the instance config it is handed; a bare
+    # env var is never consulted.
     connector = OpenRouterConnector()
-    secrets_mod.set_db_override("OPENROUTER_API_KEY", None)
     os.environ["OPENROUTER_API_KEY"] = "env-only-value-not-real"
     try:
-        assert connector.is_configured() is False
+        assert connector.is_configured({}) is False
+        assert connector.is_configured({"api_key": "instance-value-not-real"}) is True
     finally:
         del os.environ["OPENROUTER_API_KEY"]
 

@@ -73,6 +73,15 @@ PUBLIC_ROUTES = {
 # Held by read_scope through `Grants`, not by an API `has_permission` call.
 SERVICE_SIDE = {Permission.ENGAGEMENTS_READ_RESTRICTED}
 
+# Left in the catalogue on purpose when the stale `domains` router was deleted
+# (planning#284 slice A): removing a permission touches the role and route
+# baselines, which is a separate change. No route uses them; a follow-up should
+# delete them and this set together.
+ORPHANED_DOMAINS = {
+    Permission.DOMAINS_READ, Permission.DOMAINS_CREATE,
+    Permission.DOMAINS_VERIFY, Permission.DOMAINS_DELETE,
+}
+
 # Decisions taken inside a handler on request content (not by the route's
 # dependency). Each must appear in `app/api/` as `has_permission(..., X)`.
 IN_BODY = {
@@ -81,17 +90,6 @@ IN_BODY = {
     Permission.USERS_READ_ANY,
     Permission.ENTITIES_MARK_OURS,
 }
-
-# `domains.py` defines a router that `main.py` does not mount, so the mounted
-# inventory cannot see it. Its expected access is pinned here (same baseline
-# rule: it must match the former `require_role` guards).
-UNMOUNTED_ACCESS = {
-    "list_domains": list(ALL_ROLES),
-    "add_domain": sorted([ADMIN, INTEGRATION_ADMIN]),
-    "verify_domain": sorted([ADMIN, INTEGRATION_ADMIN]),
-    "delete_domain": sorted([ADMIN, INTEGRATION_ADMIN]),
-}
-
 
 def _permissions_in(route) -> list[Permission]:
     return [n.call.permission for n in walk(route.dependant) if hasattr(n.call, "permission")]
@@ -132,14 +130,15 @@ def test_every_route_admits_exactly_the_roles_the_baseline_recorded():
     assert not diffs, "route access changed:\n" + "\n".join(diffs)
 
 
-def test_the_unmounted_domains_router_keeps_its_access():
-    seen = {}
+def test_no_router_is_defined_but_unmounted():
+    # The stale `domains` router (never mounted; its table dropped in 0006) was
+    # deleted in planning#284, so the mounted inventory sees every router. A
+    # new unmounted router would escape the parity baseline; refuse it.
     mounted = {r.endpoint for _, _, r in iter_app_routes()}
-    for module, route in _module_routes():
-        if route.endpoint not in mounted:
-            assert module == "domains", f"{module}.{route.name} is defined but not mounted"
-            seen[route.name] = route_roles(route)
-    assert seen == UNMOUNTED_ACCESS
+    routes = list(_module_routes())
+    assert routes, "no routers found: the discovery itself is broken"
+    unmounted = [f"{module}.{route.name}" for module, route in routes if route.endpoint not in mounted]
+    assert unmounted == []
 
 
 # ═════════════════════════ 2. sweep ══════════════════════════════════════════
@@ -174,7 +173,7 @@ def test_require_role_is_gone_and_no_handler_compares_a_role():
 # ═════════════════════════ 3. catalogue hygiene ══════════════════════════════
 
 def test_every_permission_is_used_and_every_value_is_well_formed():
-    used = {p for _, r in _module_routes() for p in _permissions_in(r)} | IN_BODY | SERVICE_SIDE
+    used = {p for _, r in _module_routes() for p in _permissions_in(r)} | IN_BODY | SERVICE_SIDE | ORPHANED_DOMAINS
     assert used == set(Permission), f"unused: {sorted(set(Permission) - used)}"
     for p in Permission:
         assert re.fullmatch(r"[a-z_]+\.[a-z_]+", p.value), p.value

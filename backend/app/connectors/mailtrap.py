@@ -34,10 +34,9 @@ class MailtrapConnector(NotificationConnector):
             "from_name":  {"label": "From name",    "type": "string", "help": "Sender display name", "default": "Constellus"},
         }
 
-    def is_configured(self) -> bool:
-        from app.core.secrets import get_secret
+    def is_configured(self, config: dict[str, Any]) -> bool:
         # Token alone isn't enough — inbox_id is required to actually send
-        return bool(get_secret("MAILTRAP_API_TOKEN") and get_secret("MAILTRAP_INBOX_ID"))
+        return bool(config.get("api_token") and config.get("inbox_id"))
 
     def _test(self, config: dict[str, Any]) -> TestResult:
         from_email = config.get("from_email") or "noreply@constellus.local"

@@ -46,7 +46,7 @@ settings = Settings()
 
 def require_configured_secret_key() -> None:
     """Refuse to start on the well-known placeholder secret_key outside debug
-    mode. secret_key signs every JWT and (see connector_config.py) is the
+    mode. secret_key signs every JWT and (see connector_instances.py) is the
     root of the key material that encrypts every stored connector
     credential — shipping the placeholder in a reachable deployment lets
     anyone forge an admin session and decrypt stored API keys."""

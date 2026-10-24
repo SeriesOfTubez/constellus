@@ -77,7 +77,7 @@ from app.core.database import SessionLocal
 from app.models.asset import AssetType
 from app.models.asset_canonical import AssetCanonical
 from app.services import app_settings as settings_svc
-from app.services import connector_config
+from app.tests import connector_helpers as ch
 from app.services import scan_executor
 from app.tests import _decision_log
 from app.tests._docaddr import alloc_cidr
@@ -311,21 +311,18 @@ def _run_pipeline_with_stub(chunk_scope: dict):
     (planning#189)."""
     db = SessionLocal()
     stub = _CaptureConnector()
-    naabu_row = connector_config.get_one(db, "naabu")
-    had_naabu_row = naabu_row is not None
-    original_enabled = naabu_row.enabled if naabu_row else None
+    naabu_snap = ch.snapshot(db, "naabu")
     original_mode = settings_svc.get(db, "probe_authorisation_mode")
     scan_run_id = uuid.uuid4()
     try:
-        connector_config.set_enabled(db, "naabu", True)
+        ch.force_enabled(db, "naabu")
         _set_probe_mode(db, "log_only")
         scan_executor._run_pipeline(
             db, scan_run_id, chunk_scope, {}, "disabled", "standard",
             False, {"naabu": stub}, [], frozenset(),
         )
     finally:
-        if had_naabu_row:
-            connector_config.set_enabled(db, "naabu", original_enabled)
+        ch.restore(db, "naabu", naabu_snap)
         _set_probe_mode(db, original_mode)
         db.close()
         _decision_log.cleanup_for_run(scan_run_id)

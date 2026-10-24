@@ -53,7 +53,7 @@ function TypeBadge({ type }: { type: Target["type"] }) {
 }
 
 function sourceLabel(target: Target): string {
-  if (target.connector_id) return target.connector_id
+  if (target.connector_instance_id) return `Connector: ${target.connector_instance_name} (${target.connector_type})`
   if (target.verification_method === "txt_record") return "Manual (TXT-verified)"
   if (target.verification_method === "manual_acknowledgement") return "Manual (acknowledged)"
   return "Manual"

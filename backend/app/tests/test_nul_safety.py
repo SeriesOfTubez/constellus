@@ -30,7 +30,7 @@ from app.models.asset_state import AssetState
 from app.models.claim import AssetClaim
 from app.models.scan_template import ScanTemplate
 from app.services import app_settings as settings_svc
-from app.services import connector_config
+from app.tests import connector_helpers as ch
 from app.services import scan_executor
 from app.tests import _decision_log
 from app.tests._docaddr import alloc
@@ -125,14 +125,11 @@ def _run(registry_factory):
     db = SessionLocal()
     scan_run_id = uuid.uuid4()
     registry = registry_factory(db, ip)
-    prior = {}
-    for cid in registry:
-        row = connector_config.get_one(db, cid)
-        prior[cid] = row.enabled if row else None
+    prior = {cid: ch.snapshot(db, cid) for cid in registry}
     original_mode = settings_svc.get(db, "probe_authorisation_mode")
     try:
         for cid in registry:
-            connector_config.set_enabled(db, cid, True)
+            ch.force_enabled(db, cid)
         settings_svc.set_value(db, "probe_authorisation_mode", "log_only")
         scan_executor._run_pipeline(
             db, scan_run_id, {"domains": [], "ip_ranges": [cidr]}, {},
@@ -142,9 +139,8 @@ def _run(registry_factory):
         return registry, ip, _read_ip(ip)
     finally:
         db.rollback()
-        for cid, was in prior.items():
-            if was is not None:
-                connector_config.set_enabled(db, cid, was)
+        for cid, snap in prior.items():
+            ch.restore(db, cid, snap)
         _restore_mode(db, original_mode)
         db.close()
         _decision_log.cleanup_for_run(scan_run_id)

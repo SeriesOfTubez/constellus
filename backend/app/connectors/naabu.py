@@ -165,7 +165,7 @@ class NaabuConnector(ScanningConnector):
             },
         }
 
-    def is_configured(self) -> bool:
+    def is_configured(self, config: dict[str, Any]) -> bool:
         # Connector is config-free; the scanner-worker token is what
         # actually authenticates the request. Without a token nothing
         # can reach the worker so the connector is "unconfigured".

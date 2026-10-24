@@ -67,7 +67,7 @@ from app.models.asset_state import AssetState
 from app.models.authorisation_decision import AuthorisationDecision
 from app.models.scan import ScanRun, ScanStatus
 from app.services import app_settings as settings_svc
-from app.services import connector_config
+from app.tests import connector_helpers as ch
 from app.services import probe_authorisation as pa
 from app.services import scan_executor
 from app.tests import _decision_log
@@ -288,9 +288,7 @@ def test_run_stamps_port_scan_unauthorised_count_from_a_real_pipeline_run():
     db = SessionLocal()
     scan_run_id = uuid.uuid4()
     asset_id: uuid.UUID | None = None
-    naabu_row = connector_config.get_one(db, "naabu")
-    had_naabu_row = naabu_row is not None
-    original_enabled = naabu_row.enabled if naabu_row else None
+    naabu_snap = ch.snapshot(db, "naabu")
     original_probe_mode = settings_svc.get(db, _PROBE_MODE_KEY)
     try:
         asset = AssetCanonical(asset_type="ip_address", value=ip)
@@ -307,7 +305,7 @@ def test_run_stamps_port_scan_unauthorised_count_from_a_real_pipeline_run():
         ))
         db.commit()
 
-        connector_config.set_enabled(db, "naabu", True)
+        ch.force_enabled(db, "naabu")
         _set_probe_mode(db, "log_only")
 
         stub = _CapturingNaabuStub()
@@ -324,8 +322,7 @@ def test_run_stamps_port_scan_unauthorised_count_from_a_real_pipeline_run():
             f"got {run.port_scan_unauthorised_count}"
         )
     finally:
-        if had_naabu_row:
-            connector_config.set_enabled(db, "naabu", original_enabled)
+        ch.restore(db, "naabu", naabu_snap)
         _set_probe_mode(db, original_probe_mode)
         # Decision rows first, keyed by scan_run_id (real run id, minted
         # above) — same ordering test_swept_host_port_retirement.py uses,

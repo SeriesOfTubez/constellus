@@ -19,7 +19,7 @@
 ## What is filled and what is not
 
 Filled: `asset_clause`, `finding_clause`, `target_clause`,
-`engagement_visible`. Still granting everything until the entity slice after
+`connector_instance_clause`, `engagement_visible`. Still granting everything until the entity slice after
 planning#277: `entity_clause`, `relation_clause`, `domain_clause`. The read
 routes not yet on this module are listed in `tests/test_read_scope_sweep.py`.
 
@@ -57,6 +57,20 @@ def _closed_engagements(user: User, permission: Permission):
     return q
 
 
+def closed_subject_entities(user: User, permission: Permission):
+    """None when `user` reads every engagement; otherwise a select of the
+    `subject_entity_id`s (non-null) of the restricting engagements closed to
+    them for `permission`. The one definition of "an organization that is deal
+    data the user may not see" (planning#284): connector_instance_clause, the
+    bindable-organization list and the binding suggestion all use it."""
+    closed = _closed_engagements(user, permission)
+    if closed is None:
+        return None
+    return select(Engagement.subject_entity_id).where(
+        Engagement.id.in_(closed), Engagement.subject_entity_id.is_not(None)
+    )
+
+
 def _asset_rule(user: User, asset: Any, permission: Permission) -> ColumnElement[bool]:
     closed = _closed_engagements(user, permission)
     if closed is None:
@@ -88,6 +102,17 @@ def target_clause(user: User, target: Any) -> ColumnElement[bool]:
     if closed is None:
         return true()
     return or_(target.engagement_id.is_(None), target.engagement_id.notin_(closed))
+
+
+def connector_instance_clause(user: User, instance: Any) -> ColumnElement[bool]:
+    """WHERE clause limiting `instance` (a ConnectorInstance entity or alias): an
+    instance bound to the organization that is the subject of a restricting
+    engagement closed to `user` is itself deal data (planning#284). Unbound
+    and ours-bound instances follow the route's own permission."""
+    closed_subjects = closed_subject_entities(user, Permission.CONNECTORS_READ)
+    if closed_subjects is None:
+        return true()
+    return or_(instance.bound_entity_id.is_(None), instance.bound_entity_id.notin_(closed_subjects))
 
 
 def entity_clause(user: User, entity: Any) -> ColumnElement[bool]:

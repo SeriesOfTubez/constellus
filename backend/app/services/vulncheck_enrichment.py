@@ -39,8 +39,8 @@ import uuid
 
 from sqlalchemy.orm import Session
 
+from app.services import connector_instances
 from app.connectors.http import connector_get
-from app.core.secrets import get_secret
 from app.models.finding_canonical import FindingCanonical
 
 log = logging.getLogger(__name__)
@@ -71,9 +71,9 @@ def enrich_scan_findings(
     if not canonical_ids:
         return set()
 
-    api_key = get_secret("VULNCHECK_API_KEY")
+    api_key = (connector_instances.enabled_config(db, "vulncheck") or {}).get("api_key")
     if not api_key:
-        log.info("VulnCheck enrichment skipped — no VULNCHECK_API_KEY configured")
+        log.info("VulnCheck enrichment skipped — no enabled VulnCheck API key configured")
         return set()
 
     findings = (

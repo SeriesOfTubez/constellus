@@ -1,4 +1,5 @@
 import ipaddress
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -9,7 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.api.connectors import REGISTRY
 from app.api.deps import require_permission
-from app.core.permissions import Permission
+from app.core.permissions import Permission, has_permission
+from app.models.connector_instance import ConnectorInstance
 from app.api.findings import _NOT_EXCLUDED_FROM_MAIN
 from app.core.database import get_db
 from app.models.asset_canonical import AssetCanonical
@@ -166,6 +168,8 @@ def _compute_asset_risk(db: Session, assets: list[AssetCanonical]) -> dict:
     return rollup
 
 
+log = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
@@ -244,7 +248,7 @@ def lookup_domain_whois(
 def delete_assets_by_apex(
     data: DeleteByApexRequest,
     db: Session = Depends(get_db),
-    _=Depends(require_permission(Permission.ASSETS_DELETE)),
+    user: User = Depends(require_permission(Permission.ASSETS_DELETE)),
 ):
     """Delete all canonical assets for an apex group, optionally excluding the
     domain from its source connector. Cascades remove target_asset_links and
@@ -275,14 +279,39 @@ def delete_assets_by_apex(
     connector_excluded = None
     if data.exclude_from_connector:
         from app.models.target import Target
-        from app.services import connector_config as conn_svc
+        from app.services import connector_instances as conn_svc
 
         target = db.query(Target).filter(Target.value == data.apex).first()
-        if target and target.connector_id:
-            config = conn_svc.get_decrypted_config(db, target.connector_id) or {}
-            excluded = list(set(config.get("excluded_zones", []) + [data.apex]))
-            conn_svc.upsert_config(db, target.connector_id, {**config, "excluded_zones": excluded})
-            connector_excluded = target.connector_id
+        instance = target.connector_instance if target else None
+        if instance is not None:
+            # Exclusion rewrites the instance's config, so the caller needs the
+            # connector-configure permission AND to be allowed to read that
+            # instance (deal-bound instances are deal data, planning#261/#284).
+            # Otherwise skip it and say nothing about the instance.
+            readable = (
+                db.query(ConnectorInstance.id)
+                .filter(
+                    ConnectorInstance.id == instance.id,
+                    read_scope.connector_instance_clause(user, ConnectorInstance),
+                )
+                .first()
+                is not None
+            )
+            if not (readable and has_permission(user, Permission.CONNECTORS_CONFIGURE)):
+                log.warning(
+                    "Zone exclusion skipped for target %s: caller may not configure connector instance %s",
+                    target.id, instance.id,
+                )
+            elif conn_svc.config_is_unreadable(instance):
+                log.warning(
+                    "Zone exclusion skipped for target %s: config of connector instance %s cannot be decrypted",
+                    target.id, instance.id,
+                )
+            else:
+                config = conn_svc.decrypted_config(instance)
+                excluded = list(set(config.get("excluded_zones", []) + [data.apex]))
+                conn_svc.update_config(db, instance, {**config, "excluded_zones": excluded})
+                connector_excluded = instance.type
 
     db.commit()
     return {

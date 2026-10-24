@@ -32,7 +32,9 @@ class TargetResponse(BaseModel):
     value: str
     verified: bool
     verification_method: str | None
-    connector_id: str | None
+    connector_instance_id: uuid.UUID | None
+    connector_instance_name: str | None
+    connector_type: str | None
     token: str
     whois_org: str | None
     whois_asn: str | None
@@ -670,7 +672,9 @@ def _to_response(
         value=t.value,
         verified=t.verified,
         verification_method=t.verification_method,
-        connector_id=t.connector_id,
+        connector_instance_id=t.connector_instance_id,
+        connector_instance_name=t.connector_instance.name if t.connector_instance else None,
+        connector_type=t.connector_instance.type if t.connector_instance else None,
         token=t.token,
         whois_org=t.whois_org,
         whois_asn=t.whois_asn,

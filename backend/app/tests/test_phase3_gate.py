@@ -16,7 +16,7 @@ scanning entirely.
 
 Dev-DB caveat (same as test_cidr_sweep.py): there is no dedicated test
 database. Every test below snapshots and restores the shared rows it
-touches (the `nuclei` connector_config row's `enabled` flag, the
+touches (the `nuclei` connector instance's `enabled` flag, the
 `probe_authorisation_mode` app setting) in a `finally`, and deletes any
 `AuthorisationDecision` / `AssetCanonical` / `AssetState` rows it creates.
 `_run_pipeline` is driven directly with `skip_discovery=True` and assets
@@ -39,7 +39,7 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.asset_state import AssetState
 from app.models.authorisation_decision import AuthorisationDecision
 from app.services import app_settings as settings_svc
-from app.services import connector_config
+from app.tests import connector_helpers as ch
 from app.services import probe_authorisation
 from app.services import scan_executor
 from app.tests import _decision_log
@@ -111,20 +111,17 @@ def _run_pipeline_with_stub(chunk_scope: dict, stub, mode: str) -> uuid.UUID:
     caller can query/clean up the decision rows it produced."""
     db = SessionLocal()
     scan_run_id = uuid.uuid4()
-    nuclei_row = connector_config.get_one(db, "nuclei")
-    had_row = nuclei_row is not None
-    original_enabled = nuclei_row.enabled if nuclei_row else None
+    nuclei_snap = ch.snapshot(db, "nuclei")
     original_mode = settings_svc.get(db, "probe_authorisation_mode")
     try:
-        connector_config.set_enabled(db, "nuclei", True)
+        ch.force_enabled(db, "nuclei")
         _set_probe_mode(db, mode)
         scan_executor._run_pipeline(
             db, scan_run_id, chunk_scope, {}, "disabled", "standard", True,
             {"nuclei": stub}, [], frozenset(),
         )
     finally:
-        if had_row:
-            connector_config.set_enabled(db, "nuclei", original_enabled)
+        ch.restore(db, "nuclei", nuclei_snap)
         _set_probe_mode(db, original_mode)
         db.close()
     return scan_run_id

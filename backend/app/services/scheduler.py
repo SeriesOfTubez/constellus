@@ -82,21 +82,24 @@ def _seed_default_connectors() -> None:
 
     Currently just Certspotter — it works with no configuration (free
     rate-limited tier) and is core to passive subdomain discovery. If a
-    user disables it via the UI, that choice persists; we only insert a
-    row if none exists for the connector.
+    user disables it via the UI, that choice persists; we only create the
+    instance if none exists for the type.
     """
-    from app.models.connector_config import ConnectorConfig
+    from app.services import connector_instances
     db = SessionLocal()
     try:
-        for connector_id in ("certspotter",):
-            existing = db.query(ConnectorConfig).filter(
-                ConnectorConfig.connector_id == connector_id
-            ).first()
-            if existing is not None:
+        for connector_type in ("certspotter",):
+            if connector_instances.list_of_type(db, connector_type):
                 continue
-            db.add(ConnectorConfig(connector_id=connector_id, enabled=True))
-            log.info("Seeded default-enabled connector %s", connector_id)
+            connector_instances.create(
+                db, type=connector_type, name=connector_type,
+                bound_entity_id=None, config={}, created_by_id=None,
+            )
+            log.info("Seeded default-enabled connector %s", connector_type)
         db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("Seeding default connectors failed")
     finally:
         db.close()
 

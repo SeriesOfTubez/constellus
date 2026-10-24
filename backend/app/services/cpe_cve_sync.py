@@ -32,8 +32,8 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from sqlalchemy.orm import Session
 
+from app.services import connector_instances
 from app.connectors.http import connector_get
-from app.core.secrets import get_secret
 from app.models.app_settings import AppSetting
 from app.models.cpe_cve_range import CpeCveRange
 from app.services.cpe_cve_index import parse_configurations, replace_cve_ranges
@@ -67,8 +67,8 @@ def _set_setting(db: Session, key: str, value: str) -> None:
     db.commit()
 
 
-def _vc_headers() -> dict | None:
-    api_key = get_secret("VULNCHECK_API_KEY")
+def _vc_headers(db: Session) -> dict | None:
+    api_key = (connector_instances.enabled_config(db, "vulncheck") or {}).get("api_key")
     if not api_key:
         return None
     return {"Accept": "application/json", "Authorization": f"Bearer {api_key}"}
@@ -80,9 +80,9 @@ def seed_from_vulncheck_backup(db: Session) -> int:
     """Seed the index from the VulnCheck nist-nvd2 backup (full history). Streams
     the zip to a temp file, parses each gzipped NVD-2.0 feed chunk, filters to the
     D7 products. Returns rows written. Idempotent; skipped without an API key."""
-    headers = _vc_headers()
+    headers = _vc_headers(db)
     if headers is None:
-        log.warning("CPE index seed skipped — no VULNCHECK_API_KEY configured")
+        log.warning("CPE index seed skipped — no enabled VulnCheck API key configured")
         return 0
     now = datetime.now(timezone.utc)
 
@@ -141,9 +141,9 @@ def delta_from_vulncheck(db: Session) -> int:
     """Refresh recently-modified CVEs from the VulnCheck nist-nvd2 `lastMod`
     window (parses both NVD `configurations` and VulnCheck `vcConfigurations`).
     Advances the cursor. Returns rows written. Skipped without an API key."""
-    headers = _vc_headers()
+    headers = _vc_headers(db)
     if headers is None:
-        log.info("CPE index delta skipped — no VULNCHECK_API_KEY configured")
+        log.info("CPE index delta skipped — no enabled VulnCheck API key configured")
         return 0
 
     now = datetime.now(timezone.utc)

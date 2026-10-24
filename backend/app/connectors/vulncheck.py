@@ -9,7 +9,7 @@ This connector is config/test plumbing only. It does NOT implement enrich():
 the actual NVD2/KEV/XDB lookups run as an explicit post-scan step (see
 app.services.cve_enrichment / the Constellus Risk Score pipeline), the same
 way eol_enrichment and cve_enrichment call their APIs directly via
-get_secret() + connector_get() rather than through the generic Phase 2
+the connector's instance config + connector_get() rather than through the generic Phase 2
 enrichment loop. Declaring it as a plain BaseConnector — not an
 EnrichmentConnector — keeps it out of that loop.
 """
@@ -20,7 +20,6 @@ from typing import Any
 import httpx
 
 from app.connectors.base import BaseConnector, ConnectorPhase, TestResult
-from app.core.secrets import get_secret
 
 log = logging.getLogger(__name__)
 
@@ -47,11 +46,11 @@ class VulnCheckConnector(BaseConnector):
             },
         }
 
-    def is_configured(self) -> bool:
-        return bool(get_secret("VULNCHECK_API_KEY"))
+    def is_configured(self, config: dict[str, Any]) -> bool:
+        return bool(config.get("api_key"))
 
     def _test(self, config: dict[str, Any]) -> TestResult:
-        api_key = get_secret("VULNCHECK_API_KEY")
+        api_key = config.get("api_key")
         if not api_key:
             return TestResult(success=False, message="VulnCheck API key not configured")
 

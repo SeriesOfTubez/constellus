@@ -88,7 +88,7 @@ class NucleiConnector(ScanningConnector):
             },
         }
 
-    def is_configured(self) -> bool:
+    def is_configured(self, config: dict[str, Any]) -> bool:
         return bool(_SCANNER_TOKEN)
 
     def _test(self, config: dict) -> TestResult:
