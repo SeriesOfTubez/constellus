@@ -146,6 +146,7 @@ DMARC_VENDOR_REPORT_HOSTS: dict[str, frozenset[str]] = {
     "dmarc.postmarkapp.com": frozenset(),  # Postmark
     "dmarcanalyzer.com": frozenset(),  # Mimecast DMARC Analyzer
     "uriports.com": frozenset(),  # URIports (per-customer HOST, so no shared local parts)
+    "sdmarc.net": frozenset(),  # Sendmarc
     "vali.email": frozenset({"*"}),  # Valimail
     "emaildefense.proofpoint.com": frozenset({"*"}),  # Proofpoint
 }
