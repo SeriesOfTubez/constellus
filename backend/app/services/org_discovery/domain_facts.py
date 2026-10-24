@@ -1,9 +1,10 @@
 """Passive facts about one domain, for the org-discovery verifiers
-(planning#277 S1b): its nameservers, MX hosts, SPF senders and WHOIS
-registrant organization.
+(planning#277 S1b): its nameservers, MX hosts, SPF senders, DMARC report
+addresses (with the RFC 7489 s7.1 external-destination authorisation
+lookups) and WHOIS registrant organization.
 
-Everything here is a lookup of PUBLIC records about a domain we were handed;
-nothing connects to the domain. A lookup that fails is recorded in
+Everything here is a lookup of PUBLIC DNS records about a domain we were
+handed; nothing connects to the domain. A lookup that fails is recorded in
 `lookup_errors` and yields empty facts. A failure is never a match.
 
 ## Transaction ownership
@@ -17,12 +18,16 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import re
+import secrets
+import urllib.parse
 from dataclasses import dataclass
 
 import dns.exception
 import dns.resolver
 from sqlalchemy.orm import Session
 
+from app.core.apex import apex_domain
 from app.services import whois_service
 from app.services.discovery import dns_records
 from app.services.org_discovery.lists import fold_org, is_bulk_spf_include
@@ -34,6 +39,15 @@ log = logging.getLogger(__name__)
 _MIN_IP4_PREFIX = 16
 _MIN_IP6_PREFIX = 32
 
+# Guards against a hostile DMARC record, NOT settings: at most this many
+# addresses are kept per rua / ruf tag ...
+_MAX_REPORT_ADDRESSES = 10
+# ... and at most this many external report hosts get authorisation lookups
+# (the rest are recorded as "unchecked", with no query).
+_MAX_REPORT_AUTH_HOSTS = 5
+
+_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
 
 @dataclass(frozen=True)
 class DomainFacts:
@@ -44,7 +58,11 @@ class DomainFacts:
     spf_includes: tuple[str, ...]  # every include/redirect target seen, bulk ones too (evidence)
     registrant_org: str | None  # as WHOIS gave it
     registrant_org_folded: str | None
-    lookup_errors: tuple[str, ...]  # "ns" | "mx" | "spf" | "whois"
+    lookup_errors: tuple[str, ...]  # "ns" | "mx" | "spf" | "whois" | "dmarc" | "dmarc_report_auth"
+    dmarc_record_name: str | None = None  # "_dmarc.<name>" the policy was read from (apex fallback), None = none found
+    dmarc_rua: tuple[str, ...] = ()  # normalised mailto addresses, record order, deduped
+    dmarc_ruf: tuple[str, ...] = ()
+    dmarc_report_auth: tuple[tuple[str, str], ...] = ()  # (report host, status), sorted by host
 
 
 def _host(value: object) -> str:
@@ -79,6 +97,96 @@ def _fetch_spf_strict(resolver, domain: str) -> tuple[str | None, bool]:
         if txt.lower().startswith("v=spf1"):
             return txt, False
     return None, False
+
+
+def _txt_strings(answer) -> list[str]:
+    return [b"".join(rdata.strings).decode("ascii", errors="replace") for rdata in answer]
+
+
+def parse_dmarc(txt: str) -> dict[str, str] | None:
+    """Tag map of a DMARC record, or None when the first tag is not v=DMARC1."""
+    tags: list[tuple[str, str]] = []
+    for part in txt.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        key, _, value = part.partition("=")
+        tags.append((key.strip().lower(), value.strip()))
+    if not tags or tags[0][0] != "v" or tags[0][1].lower() != "dmarc1":
+        return None
+    return dict(tags)
+
+
+def _valid_host(host: str) -> bool:
+    if len(host) > 253:
+        return False
+    labels = host.split(".")
+    return len(labels) >= 2 and all(_LABEL_RE.match(label) for label in labels)
+
+
+def parse_report_uris(value: str) -> tuple[str, ...]:
+    """Normalised `local@host` addresses from a rua / ruf value (mailto only)."""
+    out: list[str] = []
+    for uri in value.split(","):
+        uri = uri.strip()
+        if uri[:7].lower() != "mailto:":
+            continue
+        rest = uri[7:].split("!", 1)[0].split("?", 1)[0]  # RFC 7489 s6.2 size limit; header params
+        addr = urllib.parse.unquote(rest).strip().lower()
+        if addr.count("@") != 1:
+            continue
+        local, host = addr.split("@")
+        if not 1 <= len(local) <= 64 or any(ch.isspace() for ch in local):
+            continue
+        if not _valid_host(host):
+            continue
+        if addr not in out:
+            out.append(addr)
+        if len(out) >= _MAX_REPORT_ADDRESSES:
+            break
+    return tuple(out)
+
+
+def _fetch_dmarc_strict(resolver, host: str) -> tuple[str | None, bool]:
+    """The DMARC record at `_dmarc.<host>`: (record, failed). No record and
+    several records (RFC 7489 s6.6.3: no policy) are answers, not failures."""
+    try:
+        answer = resolver.resolve(f"_dmarc.{host}", "TXT")
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+        return None, False
+    except dns.exception.DNSException as exc:
+        log.debug("DMARC lookup failed for %s: %s", host, exc)
+        return None, True
+    found = [t for t in _txt_strings(answer) if parse_dmarc(t) is not None]
+    return (found[0], False) if len(found) == 1 else (None, False)
+
+
+def _report_txt_is_dmarc(resolver, qname: str) -> str:
+    """"yes" | "no" | "error" for a v=DMARC1 TXT answer at `qname`."""
+    try:
+        answer = resolver.resolve(qname, "TXT")
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+        return "no"
+    except dns.exception.DNSException as exc:
+        log.debug("DMARC authorisation lookup failed for %s: %s", qname, exc)
+        return "error"
+    return "yes" if any(t.strip().lower().startswith("v=dmarc1") for t in _txt_strings(answer)) else "no"
+
+
+def _report_auth(resolver, apex: str, host: str) -> str:
+    """RFC 7489 s7.1: does `host` publish `<apex>._report._dmarc.<host>`?
+    "authorised" | "wildcard" | "absent" | "error". A wildcard authorises
+    everyone, so it proves nothing; it is detected with a random probe label
+    that is never stored (evidence stays deterministic)."""
+    specific = _report_txt_is_dmarc(resolver, f"{apex}._report._dmarc.{host}")
+    if specific == "error":
+        return "error"
+    if specific == "no":
+        return "absent"
+    probe = _report_txt_is_dmarc(resolver, f"{secrets.token_hex(8)}._report._dmarc.{host}")
+    if probe == "error":
+        return "error"
+    return "wildcard" if probe == "yes" else "authorised"
 
 
 def walk_spf_senders(resolver, domain: str, spf: str, state: dict, seen: set) -> None:
@@ -155,6 +263,36 @@ def collect(db: Session, domain: str, *, resolver=None) -> DomainFacts:
     elif spf:
         walk_spf_senders(resolver, domain, spf, state, set())
 
+    apex = apex_domain(domain)
+    dmarc_record_name = None
+    dmarc_txt, failed = _fetch_dmarc_strict(resolver, domain)
+    if failed:
+        errors.append("dmarc")  # a failure is not an absence: no apex fallback
+    elif dmarc_txt is not None:
+        dmarc_record_name = f"_dmarc.{domain}"
+    elif apex and apex != domain:
+        dmarc_txt, failed = _fetch_dmarc_strict(resolver, apex)
+        if failed:
+            errors.append("dmarc")
+        elif dmarc_txt is not None:
+            dmarc_record_name = f"_dmarc.{apex}"
+
+    rua: tuple[str, ...] = ()
+    ruf: tuple[str, ...] = ()
+    auth: list[tuple[str, str]] = []
+    tags = parse_dmarc(dmarc_txt) if dmarc_txt else None
+    if tags is not None:
+        rua = parse_report_uris(tags.get("rua", ""))
+        ruf = parse_report_uris(tags.get("ruf", ""))
+        if apex:
+            hosts = sorted({a.split("@")[1] for a in rua + ruf})
+            external = [h for h in hosts if h != apex and not h.endswith("." + apex)]
+            for h in external[:_MAX_REPORT_AUTH_HOSTS]:
+                auth.append((h, _report_auth(resolver, apex, h)))
+            auth.extend((h, "unchecked") for h in external[_MAX_REPORT_AUTH_HOSTS:])
+            if any(status == "error" for _, status in auth):
+                errors.append("dmarc_report_auth")
+
     registrant = None
     try:
         registrant = (whois_service.lookup_domain_cached(db, domain).get("registrant_org") or "").strip() or None
@@ -172,4 +310,8 @@ def collect(db: Session, domain: str, *, resolver=None) -> DomainFacts:
         registrant_org=registrant,
         registrant_org_folded=fold_org(registrant),
         lookup_errors=tuple(errors),
+        dmarc_record_name=dmarc_record_name,
+        dmarc_rua=rua,
+        dmarc_ruf=ruf,
+        dmarc_report_auth=tuple(sorted(auth)),
     )

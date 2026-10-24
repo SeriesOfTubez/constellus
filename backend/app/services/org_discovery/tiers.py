@@ -51,10 +51,10 @@ SIGNALS: dict[str, SignalSpec] = {
     "mx_into_claimed": SignalSpec(SUPPORTING, "mail", True, "Its mail is routed through a claimed domain's MX."),
     "spf_sender_shared": SignalSpec(SUPPORTING, "mail", True, "Its SPF names a sender shared with a claimed domain."),
     "dmarc_report_to_claimed": SignalSpec(
-        SUPPORTING, "mail", False, "Its DMARC reports go to a claimed domain."
+        SUPPORTING, "mail", True, "Its DMARC reports go to a claimed domain."
     ),
     "dmarc_exact_vendor": SignalSpec(
-        SUPPORTING, "mail", False, "Its DMARC reporting address matches a claimed domain's at a known vendor."
+        SUPPORTING, "mail", True, "Its DMARC reporting address matches a claimed domain's at a known vendor."
     ),
     "registrant_org_match": SignalSpec(
         SUPPORTING, "registration", True, "Registrant organization matches a claimed domain's."
@@ -66,7 +66,7 @@ SIGNALS: dict[str, SignalSpec] = {
         SUPPORTING, "hosting", True, "Shares a dedicated IP with a claimed domain."
     ),
     "dmarc_exact_generic": SignalSpec(
-        CONTEXT, "mail", False, "Its DMARC reporting address matches a claimed domain's at a generic provider."
+        CONTEXT, "mail", True, "Its DMARC reporting address matches a claimed domain's, but the address is shared or not at a known vendor."
     ),
     "name_similarity": SignalSpec(CONTEXT, "name", False, "The domain resembles a claimed domain's name."),
     "ai_mention": SignalSpec(CONTEXT, "research", False, "An AI read mentioned the domain."),

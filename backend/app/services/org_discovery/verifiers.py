@@ -1,6 +1,10 @@
 """Verifiers: DNS / WHOIS rules that relate an OPEN candidate domain to a
 CLAIMED one (planning#277 S1b).
 
+Rules cover shared / claimed nameservers, MX, SPF senders, DMARC report
+addresses (reports sent to a claimed domain, or the same vendor mailbox) and
+the WHOIS registrant organization.
+
 Each `match_*` rule is a pure function over two `DomainFacts` (the candidate
 `c` and the claimed anchor `a`) and returns a `Match` or None. `verify_pair`
 checks the pair is eligible, stores the rule's inputs as evidence and records
@@ -39,12 +43,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.connectors.base import is_provider_managed_mx
+from app.core.apex import apex_domain
 from app.models.scope_candidate import ScopeCandidate
 from app.services import entity_graph
 from app.services.org_discovery import candidates
 from app.services.org_discovery.candidates import SignalOutcome
 from app.services.org_discovery.domain_facts import DomainFacts
-from app.services.org_discovery.lists import is_provider_ns
+from app.services.org_discovery.lists import dmarc_vendor_address_kind, is_provider_ns
 
 _SHOW = 3  # matched values spelled out in a quote; the rest are "+N more"
 
@@ -145,7 +150,79 @@ def match_registrant_org(c: DomainFacts, a: DomainFacts) -> Match | None:
     )
 
 
-RULES = (match_ns, match_mx, match_spf, match_registrant_org)
+def _addr_host(address: str) -> str:
+    return address.partition("@")[2]
+
+
+def match_dmarc_report(c: DomainFacts, a: DomainFacts) -> Match | None:
+    """The candidate's DMARC reports go to the claimed anchor, and the anchor's
+    own DNS authorises it (RFC 7489 s7.1, status "authorised": a wildcard
+    authorises everyone and proves nothing). Never the reverse direction."""
+    auth = dict(c.dmarc_report_auth)
+    matched = tuple(sorted({
+        addr for addr in c.dmarc_rua + c.dmarc_ruf
+        if _under_or_equal(_addr_host(addr), a.domain) and auth.get(_addr_host(addr)) == "authorised"
+    }))
+    if not matched:
+        return None
+    return Match(
+        signal_type="dmarc_report_to_claimed",
+        matched_values=matched,
+        evidence=_base(
+            "dmarc_report_to_claimed", c, a, matched,
+            candidate_dmarc_record_name=c.dmarc_record_name,
+            candidate_rua=list(c.dmarc_rua), candidate_ruf=list(c.dmarc_ruf),
+            report_auth={h: auth[h] for h in sorted({_addr_host(m) for m in matched})},
+        ),
+        quote=(
+            f"{c.domain} sends DMARC reports to claimed {a.domain} ({_shown(matched)}), "
+            f"authorised in {a.domain}'s DNS"
+        ),
+    )
+
+
+def match_dmarc_exact(c: DomainFacts, a: DomainFacts, claimed_domains: frozenset[str] = frozenset()) -> Match | None:
+    """Both domains report to the same address, which is not under a claimed
+    domain (that is `dmarc_report_to_claimed`) nor under the candidate's own
+    apex (the reverse direction). A per-customer mailbox at a known DMARC
+    vendor is `dmarc_exact_vendor`; any other shared address is Context only."""
+    owners = claimed_domains | {a.domain}
+    c_apex = apex_domain(c.domain) or c.domain
+    shared = {
+        addr for addr in set(c.dmarc_rua + c.dmarc_ruf) & set(a.dmarc_rua + a.dmarc_ruf)
+        if not any(_under_or_equal(_addr_host(addr), d) for d in owners)
+        and not _under_or_equal(_addr_host(addr), c_apex)
+    }
+    vendor = tuple(sorted(x for x in shared if dmarc_vendor_address_kind(x) == "per_customer"))
+    inputs = dict(
+        candidate_dmarc_record_name=c.dmarc_record_name, claimed_dmarc_record_name=a.dmarc_record_name,
+        candidate_rua=list(c.dmarc_rua), candidate_ruf=list(c.dmarc_ruf),
+        claimed_rua=list(a.dmarc_rua), claimed_ruf=list(a.dmarc_ruf),
+    )
+    if vendor:
+        return Match(
+            signal_type="dmarc_exact_vendor",
+            matched_values=vendor,
+            evidence=_base(
+                "dmarc_exact_vendor", c, a, vendor, **inputs,
+                vendor_kind={x: dmarc_vendor_address_kind(x) for x in vendor},
+            ),
+            quote=_quote(c, a, "DMARC reporting address" if len(vendor) == 1 else "DMARC reporting addresses", vendor),
+        )
+    if shared:
+        matched = tuple(sorted(shared))
+        return Match(
+            signal_type="dmarc_exact_generic",
+            matched_values=matched,
+            evidence=_base("dmarc_exact_generic", c, a, matched, **inputs),
+            quote=_quote(c, a, "DMARC reporting address" if len(matched) == 1 else "DMARC reporting addresses", matched),
+        )
+    return None
+
+
+RULES = (match_ns, match_mx, match_spf, match_registrant_org, match_dmarc_report, match_dmarc_exact)
+# Rules that also need every claimed domain in the root.
+_TAKES_CLAIMED = frozenset({match_ns, match_dmarc_exact})
 
 
 def _eligible(candidate: ScopeCandidate, anchor: ScopeCandidate, cf: DomainFacts, af: DomainFacts) -> bool:
@@ -176,7 +253,7 @@ def verify_pair(
     eligible (see `_eligible`). Flushes; never commits (see module docstring).
 
     `claimed_domains`: every claimed domain in the root, for `match_ns`'s
-    vanity test; read from the database when not given."""
+    vanity / DMARC-owner tests; read from the database when not given."""
     if not _eligible(candidate, anchor, candidate_facts, anchor_facts):
         return []
     if claimed_domains is None:
@@ -188,8 +265,8 @@ def verify_pair(
         ).scalars())
     outcomes: list[SignalOutcome] = []
     for rule in RULES:
-        if rule is match_ns:
-            match = match_ns(candidate_facts, anchor_facts, claimed_domains)
+        if rule in _TAKES_CLAIMED:
+            match = rule(candidate_facts, anchor_facts, claimed_domains)
         else:
             match = rule(candidate_facts, anchor_facts)
         if match is None:

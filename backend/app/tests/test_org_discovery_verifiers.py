@@ -44,13 +44,18 @@ class FakeResolver:
     """`answers[(name, rdtype)]` is a list of rdata-like items, or an exception
     class/instance to raise. A missing key is NXDOMAIN. Every request is logged."""
 
-    def __init__(self, answers):
+    def __init__(self, answers, wild=None):
         self.answers = answers
+        self.wild = wild or {}  # suffix -> answer for ANY name ending "." + suffix (TXT)
         self.calls: list[tuple[str, str]] = []
 
     def resolve(self, name, rdtype):
         self.calls.append((name, rdtype))
         found = self.answers.get((name, rdtype), dns.resolver.NXDOMAIN)
+        if (name, rdtype) not in self.answers:
+            for suffix, ans in self.wild.items():
+                if rdtype == "TXT" and name.endswith("." + suffix):
+                    found = ans
         if isinstance(found, type) and issubclass(found, BaseException):
             raise found()
         if isinstance(found, BaseException):
@@ -632,3 +637,417 @@ def test_record_signal_validates_stores_sorted_and_deduplicated(w):
     out = rec(["b.example.net", "a.example.net", "b.example.net"])
     w.db.commit()
     assert out.signal.matched_values == ["a.example.net", "b.example.net"]
+
+
+# ── DMARC: vendor table, parsing, collect ───────────────────────────────────
+
+_VENDORS = list(lists.DMARC_VENDOR_REPORT_HOSTS)
+_PER_CUSTOMER = [h for h, v in lists.DMARC_VENDOR_REPORT_HOSTS.items() if not v]
+_ALL_SHARED = [h for h, v in lists.DMARC_VENDOR_REPORT_HOSTS.items() if "*" in v]
+
+
+def test_vendor_table_has_both_kinds():
+    assert _PER_CUSTOMER and _ALL_SHARED  # the parametrisations below are not empty
+
+
+@pytest.mark.parametrize("host", _PER_CUSTOMER)
+def test_dmarc_vendor_per_customer(host):
+    assert lists.dmarc_vendor_address_kind(f"abc123@{host}") == "per_customer"
+    assert lists.dmarc_vendor_address_kind(f"abc123@sub.{host.upper()}.") == "per_customer"
+
+
+@pytest.mark.parametrize("host", _ALL_SHARED)
+def test_dmarc_vendor_shared_via_star(host):
+    assert lists.dmarc_vendor_address_kind(f"anything@{host}") == "shared"
+
+
+def test_dmarc_vendor_shared_via_listed_local_part(monkeypatch):
+    monkeypatch.setitem(lists.DMARC_VENDOR_REPORT_HOSTS, "vendor.example", frozenset({"reports"}))
+    assert lists.dmarc_vendor_address_kind("reports@vendor.example") == "shared"
+    assert lists.dmarc_vendor_address_kind("cust42@vendor.example") == "per_customer"
+
+
+@pytest.mark.parametrize("address", [
+    "a@fabrikam.com", "a@mail.contoso.example", "a@" + "x" + _VENDORS[0], "a@" + _VENDORS[0] + ".fabrikam.com",
+])
+def test_dmarc_non_vendor_and_label_boundary(address):
+    assert lists.dmarc_vendor_address_kind(address) is None
+
+
+@pytest.mark.parametrize("address", ["", "nohost", "a@b@" + _VENDORS[0], "@" + _VENDORS[0], "a@"])
+def test_dmarc_vendor_malformed(address):
+    assert lists.dmarc_vendor_address_kind(address) is None
+
+
+def test_parse_dmarc():
+    assert domain_facts.parse_dmarc("v=DMARC1; p=none; rua=mailto:a@fabrikam.com") == {
+        "v": "DMARC1", "p": "none", "rua": "mailto:a@fabrikam.com"}
+    assert domain_facts.parse_dmarc("p=none; v=DMARC1") is None  # v must be first
+    assert domain_facts.parse_dmarc("v=DMARC2; p=none") is None
+    assert domain_facts.parse_dmarc("") is None
+    assert domain_facts.parse_dmarc("  V = dmarc1 ;; junk; =x; P=reject ;") is not None  # case, junk tolerated
+    t = domain_facts.parse_dmarc("V=dmarc1;;junk;RUA=mailto:a@fabrikam.com")
+    assert t["rua"] == "mailto:a@fabrikam.com" and t["junk"] == ""
+
+
+def test_parse_report_uris():
+    p = domain_facts.parse_report_uris
+    assert p("mailto:A@Fabrikam.com, mailto:b@contoso.com!10m") == ("a@fabrikam.com", "b@contoso.com")
+    assert p("mailto:a@fabrikam.com?subject=x") == ("a@fabrikam.com",)
+    assert p("MAILTO:a%40fabrikam.com") == ("a@fabrikam.com",)
+    assert p("https://fabrikam.com/r, ftp://x, a@fabrikam.com") == ()
+    assert p("foobar:a@fabrikam.com") == ()  # a 7-char non-mailto scheme still is not mailto
+    assert p("mailto:a@b@fabrikam.com,mailto:a@bad_host.com,mailto:a@localhost,mailto:a@-x.com,"
+             "mailto:@fabrikam.com,mailto:a b@fabrikam.com,mailto:a@fabrikam..com") == ()
+    assert p("mailto:a@fabrikam.com,mailto:A@FABRIKAM.com") == ("a@fabrikam.com",)
+    assert p("mailto:" + "a" * 65 + "@fabrikam.com") == ()
+    many = ",".join(f"mailto:u{n}@fabrikam.com" for n in range(15))
+    assert len(p(many)) == 10 and p(many)[0] == "u0@fabrikam.com"
+
+
+def _dm(domain, rec, extra=None, wild=None):
+    answers = {(f"_dmarc.{domain}", "TXT"): [txt(rec)]}
+    answers.update(extra or {})
+    return FakeResolver(answers, wild)
+
+
+def test_collect_reads_rua_and_ruf(no_whois):
+    r = _dm("fabrikam.com", "v=DMARC1; p=none; rua=mailto:r@fabrikam.com; ruf=mailto:f@fabrikam.com")
+    f = domain_facts.collect(None, "fabrikam.com", resolver=r)
+    assert f.dmarc_record_name == "_dmarc.fabrikam.com"
+    assert f.dmarc_rua == ("r@fabrikam.com",) and f.dmarc_ruf == ("f@fabrikam.com",)
+    assert f.dmarc_report_auth == () and f.lookup_errors == ()
+    assert not [c for c in r.calls if "_report._dmarc" in c[0]]  # in-org: no authorisation lookup
+
+
+def test_collect_two_dmarc_records_is_no_policy_and_no_error(no_whois):
+    r = FakeResolver({("_dmarc.fabrikam.com", "TXT"): [
+        txt("v=DMARC1; rua=mailto:a@fabrikam.com"), txt("v=DMARC1; rua=mailto:b@fabrikam.com")]})
+    f = domain_facts.collect(None, "fabrikam.com", resolver=r)
+    assert ("_dmarc.fabrikam.com", "TXT") in r.calls  # reached
+    assert f.dmarc_record_name is None and f.dmarc_rua == () and "dmarc" not in f.lookup_errors
+
+
+def test_collect_non_dmarc_txt_is_ignored(no_whois):
+    r = FakeResolver({("_dmarc.fabrikam.com", "TXT"): [txt("something else"), txt("v=DMARC1; rua=mailto:a@fabrikam.com")]})
+    f = domain_facts.collect(None, "fabrikam.com", resolver=r)
+    assert f.dmarc_rua == ("a@fabrikam.com",)
+
+
+def test_collect_subdomain_falls_back_to_apex(no_whois):
+    r = _dm("fabrikam.com", "v=DMARC1; rua=mailto:a@fabrikam.com")
+    f = domain_facts.collect(None, "mail.fabrikam.com", resolver=r)
+    assert [c[0] for c in r.calls if c[0].startswith("_dmarc.")] == ["_dmarc.mail.fabrikam.com", "_dmarc.fabrikam.com"]
+    assert f.dmarc_record_name == "_dmarc.fabrikam.com" and f.dmarc_rua == ("a@fabrikam.com",)
+    own = _dm("mail.fabrikam.com", "v=DMARC1; rua=mailto:s@fabrikam.com", {
+        ("_dmarc.fabrikam.com", "TXT"): [txt("v=DMARC1; rua=mailto:a@fabrikam.com")]})
+    g = domain_facts.collect(None, "mail.fabrikam.com", resolver=own)
+    assert g.dmarc_record_name == "_dmarc.mail.fabrikam.com" and g.dmarc_rua == ("s@fabrikam.com",)
+
+
+def test_collect_failed_subdomain_lookup_does_not_fall_back(no_whois):
+    r = _dm("fabrikam.com", "v=DMARC1; rua=mailto:a@fabrikam.com",
+            {("_dmarc.mail.fabrikam.com", "TXT"): dns.exception.Timeout})
+    f = domain_facts.collect(None, "mail.fabrikam.com", resolver=r)
+    assert ("_dmarc.mail.fabrikam.com", "TXT") in r.calls  # attempted
+    assert ("_dmarc.fabrikam.com", "TXT") not in r.calls
+    assert f.dmarc_record_name is None and f.dmarc_rua == () and "dmarc" in f.lookup_errors
+
+
+def test_collect_failed_apex_fallback_records_error(no_whois):
+    r = FakeResolver({("_dmarc.fabrikam.com", "TXT"): dns.resolver.NoNameservers})
+    f = domain_facts.collect(None, "mail.fabrikam.com", resolver=r)
+    assert ("_dmarc.fabrikam.com", "TXT") in r.calls and f.lookup_errors == ("dmarc",)
+
+
+def test_collect_no_dmarc_record_issues_no_report_auth_query(no_whois):
+    r = FakeResolver({})
+    f = domain_facts.collect(None, "fabrikam.com", resolver=r)
+    assert ("_dmarc.fabrikam.com", "TXT") in r.calls  # the lookup happened ...
+    assert not [c for c in r.calls if "_report._dmarc" in c[0]]  # ... and nothing followed
+    assert f.dmarc_record_name is None and f.dmarc_report_auth == () and f.lookup_errors == ()
+
+
+_EXT = "reports.contoso.example"
+
+
+def _ext(rec_host=_EXT, apex="fabrikam.com", domain=None, **kw):
+    domain = domain or apex
+    rec = f"v=DMARC1; rua=mailto:x@{rec_host}"
+    return _dm(domain, rec, kw.get("extra"), kw.get("wild"))
+
+
+def test_report_auth_authorised(no_whois):
+    r = _ext(extra={(f"fabrikam.com._report._dmarc.{_EXT}", "TXT"): [txt("v=DMARC1")]})
+    f = domain_facts.collect(None, "fabrikam.com", resolver=r)
+    assert f.dmarc_report_auth == ((_EXT, "authorised"),) and f.lookup_errors == ()
+    names = [c[0] for c in r.calls if "_report._dmarc" in c[0]]
+    assert len(names) == 2 and names[0] == f"fabrikam.com._report._dmarc.{_EXT}"  # specific then probe
+
+
+def test_report_auth_absent_nxdomain_and_no_probe(no_whois):
+    r = _ext()
+    f = domain_facts.collect(None, "fabrikam.com", resolver=r)
+    assert f.dmarc_report_auth == ((_EXT, "absent"),)
+    assert len([c for c in r.calls if "_report._dmarc" in c[0]]) == 1  # no probe when nothing to probe against
+
+
+def test_report_auth_non_dmarc_txt_is_absent(no_whois):
+    r = _ext(extra={(f"fabrikam.com._report._dmarc.{_EXT}", "TXT"): [txt("hello")]})
+    assert domain_facts.collect(None, "fabrikam.com", resolver=r).dmarc_report_auth == ((_EXT, "absent"),)
+
+
+def test_report_auth_wildcard(no_whois):
+    r = _ext(wild={f"_report._dmarc.{_EXT}": [txt("v=DMARC1")]})
+    f = domain_facts.collect(None, "fabrikam.com", resolver=r)
+    assert f.dmarc_report_auth == ((_EXT, "wildcard"),)
+
+
+def test_report_auth_specific_error(no_whois):
+    r = _ext(extra={(f"fabrikam.com._report._dmarc.{_EXT}", "TXT"): dns.exception.Timeout})
+    f = domain_facts.collect(None, "fabrikam.com", resolver=r)
+    assert f.dmarc_report_auth == ((_EXT, "error"),)
+    assert f.lookup_errors == ("dmarc_report_auth",)
+
+
+def test_report_auth_probe_error(no_whois):
+    r = _ext(extra={(f"fabrikam.com._report._dmarc.{_EXT}", "TXT"): [txt("v=DMARC1")]},
+             wild={f"_report._dmarc.{_EXT}": dns.resolver.NoNameservers})
+    f = domain_facts.collect(None, "fabrikam.com", resolver=r)
+    assert f.dmarc_report_auth == ((_EXT, "error"),) and f.lookup_errors == ("dmarc_report_auth",)
+
+
+def test_report_auth_skips_in_org_hosts(no_whois):
+    r = _dm("fabrikam.com", "v=DMARC1; rua=mailto:a@fabrikam.com,mailto:b@dmarc.fabrikam.com")
+    f = domain_facts.collect(None, "fabrikam.com", resolver=r)
+    assert f.dmarc_rua == ("a@fabrikam.com", "b@dmarc.fabrikam.com")
+    assert f.dmarc_report_auth == () and not [c for c in r.calls if "_report._dmarc" in c[0]]
+
+
+def test_report_auth_cap_of_five(no_whois):
+    hosts = [f"h{n}.contoso.example" for n in range(6)]
+    rec = "v=DMARC1; rua=" + ",".join(f"mailto:x@{h}" for h in reversed(hosts))
+    r = _dm("fabrikam.com", rec)
+    f = domain_facts.collect(None, "fabrikam.com", resolver=r)
+    assert dict(f.dmarc_report_auth) == {**{h: "absent" for h in hosts[:5]}, hosts[5]: "unchecked"}
+    assert [h for h, _ in f.dmarc_report_auth] == hosts  # sorted by host
+    assert len([c for c in r.calls if "_report._dmarc" in c[0]]) == 5
+    assert not [c for c in r.calls if c[0].endswith(f"_report._dmarc.{hosts[5]}")]
+
+
+def test_report_auth_name_uses_the_apex_for_a_subdomain(no_whois):
+    r = _dm("mail.fabrikam.com", f"v=DMARC1; rua=mailto:x@{_EXT}")
+    domain_facts.collect(None, "mail.fabrikam.com", resolver=r)
+    assert (f"fabrikam.com._report._dmarc.{_EXT}", "TXT") in r.calls
+    assert not [c for c in r.calls if c[0].startswith("mail.fabrikam.com._report")]
+
+
+def test_collect_dmarc_is_deterministic_despite_the_random_probe(no_whois):
+    def run():
+        r = _ext(extra={(f"fabrikam.com._report._dmarc.{_EXT}", "TXT"): [txt("v=DMARC1")]})
+        return domain_facts.collect(None, "fabrikam.com", resolver=r), r
+
+    (a, ra), (b, rb) = run(), run()
+    assert a == b and a.dmarc_report_auth == ((_EXT, "authorised"),)
+    probe = lambda r: [c[0] for c in r.calls if "_report._dmarc" in c[0]][1]  # noqa: E731
+    assert probe(ra) != probe(rb)  # the probe label really was random ...
+    assert probe(ra).split(".")[0] not in repr(a)  # ... and is stored nowhere
+
+
+# ── DMARC rules (slice B) ───────────────────────────────────────────────────
+
+_V = _PER_CUSTOMER[0]
+_SHARED_V = _ALL_SHARED[0]
+
+
+def _rep(c_dom="cand.fabrikam.net", a_dom="fabrikam.com", status="authorised", **kw):
+    addr = kw.pop("addr", f"dmarc@{a_dom}")
+    host = addr.split("@")[1]
+    auth = () if status is None else ((host, status),)
+    c = facts(c_dom, dmarc_record_name=f"_dmarc.{c_dom}", dmarc_rua=(addr,), dmarc_report_auth=auth, **kw)
+    return c, facts(a_dom)
+
+
+def test_dmarc_report_authorised_matches_with_addresses_and_auth_evidence():
+    c, a = _rep()
+    m = verifiers.match_dmarc_report(c, a)
+    assert m.signal_type == "dmarc_report_to_claimed"
+    assert m.matched_values == ("dmarc@fabrikam.com",)
+    assert m.evidence["report_auth"] == {"fabrikam.com": "authorised"}
+    assert m.evidence["candidate_rua"] == ["dmarc@fabrikam.com"] and m.evidence["candidate_ruf"] == []
+    assert m.evidence["candidate_dmarc_record_name"] == "_dmarc.cand.fabrikam.net"
+    assert m.quote == (
+        "cand.fabrikam.net sends DMARC reports to claimed fabrikam.com (dmarc@fabrikam.com), "
+        "authorised in fabrikam.com's DNS"
+    )
+
+
+@pytest.mark.parametrize("status", ["wildcard", "absent", "error", "unchecked", None])
+def test_dmarc_report_only_authorised_counts(status):
+    c, a = _rep(status=status)
+    assert verifiers.match_dmarc_report(c, a) is None
+    c, a = _rep(status="authorised")  # same fixture, status restored: the path is reachable
+    assert verifiers.match_dmarc_report(c, a) is not None
+
+
+def test_dmarc_report_to_a_different_claimed_domain_is_not_this_pairs_signal():
+    c, a = _rep(addr="dmarc@contoso.com")
+    assert verifiers.match_dmarc_report(c, a) is None
+
+
+def test_dmarc_report_ruf_counts_and_subdomain_of_anchor_matches():
+    addr = "dmarc@reports.fabrikam.com"
+    c = facts("cand.fabrikam.net", dmarc_ruf=(addr,), dmarc_report_auth=(("reports.fabrikam.com", "authorised"),))
+    m = verifiers.match_dmarc_report(c, facts("fabrikam.com"))
+    assert m.matched_values == (addr,) and m.evidence["candidate_ruf"] == [addr]
+
+
+def test_dmarc_report_reverse_direction_is_not_a_match():
+    a = facts("fabrikam.com", dmarc_rua=("dmarc@cand.fabrikam.net",),
+              dmarc_report_auth=(("cand.fabrikam.net", "authorised"),))
+    assert verifiers.match_dmarc_report(facts("cand.fabrikam.net"), a) is None
+
+
+def _ex(c_rua=(), a_rua=(), c_ruf=(), c_dom="cand.fabrikam.net", a_dom="fabrikam.com"):
+    return (facts(c_dom, dmarc_rua=tuple(c_rua), dmarc_ruf=tuple(c_ruf)),
+            facts(a_dom, dmarc_rua=tuple(a_rua)))
+
+
+def test_dmarc_exact_vendor_per_customer_address():
+    addr = f"abc123@{_V}"
+    c, a = _ex([addr], [addr])
+    m = verifiers.match_dmarc_exact(c, a, frozenset({"fabrikam.com"}))
+    assert m.signal_type == "dmarc_exact_vendor" and m.matched_values == (addr,)
+    assert m.evidence["vendor_kind"] == {addr: "per_customer"}
+    assert m.evidence["claimed_rua"] == [addr]
+
+
+def test_dmarc_exact_vendor_suppresses_generic_and_carries_only_vendor_addresses():
+    v, g = f"abc123@{_V}", "reports@mailbox.example"
+    c, a = _ex([v, g], [v, g])
+    m = verifiers.match_dmarc_exact(c, a, frozenset())
+    assert m.signal_type == "dmarc_exact_vendor" and m.matched_values == (v,)
+
+
+def test_dmarc_exact_shared_vendor_mailbox_and_non_vendor_are_generic():
+    for addr in (f"abc123@{_SHARED_V}", "reports@mailbox.example"):
+        c, a = _ex([addr], [addr])
+        m = verifiers.match_dmarc_exact(c, a, frozenset())
+        assert m.signal_type == "dmarc_exact_generic" and m.matched_values == (addr,)
+        assert "vendor_kind" not in m.evidence
+
+
+def test_dmarc_exact_ruf_of_candidate_counts():
+    addr = f"abc123@{_V}"
+    c, a = _ex(c_ruf=[addr], a_rua=[addr])
+    assert verifiers.match_dmarc_exact(c, a, frozenset()).signal_type == "dmarc_exact_vendor"
+
+
+@pytest.mark.parametrize("addr", ["x@fabrikam.com", "x@reports.fabrikam.com", "x@contoso.com", "x@cand.fabrikam.net",
+                                  "x@other.fabrikam.net"])
+def test_dmarc_exact_owned_or_reverse_addresses_are_not_exact_matches(addr):
+    c, a = _ex([addr], [addr])
+    assert verifiers.match_dmarc_exact(c, a, frozenset({"fabrikam.com", "contoso.com"})) is None
+    # the same fixture with an unowned address does match: the exclusion above is what stopped it
+    c, a = _ex(["x@mailbox.example"], ["x@mailbox.example"])
+    assert verifiers.match_dmarc_exact(c, a, frozenset({"fabrikam.com", "contoso.com"})) is not None
+
+
+def test_dmarc_exact_no_overlap_and_empty_records_are_none():
+    c, a = _ex([f"a@{_V}"], [f"b@{_V}"])
+    assert verifiers.match_dmarc_exact(c, a, frozenset()) is None
+    c, a = _ex([], [])
+    assert verifiers.match_dmarc_exact(c, a, frozenset()) is None
+
+
+def test_dmarc_evidence_is_byte_identical_across_builds():
+    addr = f"abc123@{_V}"
+    c, a = _ex([addr], [addr])
+    dump = lambda m: json.dumps(m.evidence, sort_keys=True, separators=(",", ":"))  # noqa: E731
+    assert dump(verifiers.match_dmarc_exact(c, a, frozenset())) == dump(verifiers.match_dmarc_exact(c, a, frozenset()))
+    c, a = _rep()
+    assert dump(verifiers.match_dmarc_report(c, a)) == dump(verifiers.match_dmarc_report(c, a))
+
+
+def test_verify_pair_writes_dmarc_report_signal_with_evidence_and_dedups(w):
+    root, cand, anchor = _pair(w)
+    addr = f"dmarc@{anchor.value}"
+    cf = facts(cand.value, dmarc_record_name=f"_dmarc.{cand.value}", dmarc_rua=(addr,),
+               dmarc_report_auth=((anchor.value, "authorised"),))
+    af = facts(anchor.value)
+    kw = dict(candidate=cand, anchor=anchor, candidate_facts=cf, anchor_facts=af)
+    first = verifiers.verify_pair(w.db, **kw)
+    w.db.commit()
+    assert [o.signal.signal_type for o in first] == ["dmarc_report_to_claimed"] and first[0].created_signal
+    s = _signals(w, cand, "dmarc_report_to_claimed")[0]
+    assert s.matched_values == [addr]
+    assert cand.value in s.quote and "authorised in" in s.quote
+    body = w.db.execute(text(
+        "select b.content from evidence_fetches f join evidence_blobs b on b.sha256 = f.sha256 where f.id = :i"),
+        {"i": s.evidence_id}).scalar_one()
+    doc = json.loads(bytes(body))
+    assert doc["rule"] == "dmarc_report_to_claimed" and doc["report_auth"] == {anchor.value: "authorised"}
+    again = verifiers.verify_pair(w.db, **kw)
+    w.db.commit()
+    assert [o.created_signal for o in again] == [False] and again[0].signal.id == first[0].signal.id
+    assert len(_signals(w, cand, "dmarc_report_to_claimed")) == 1
+
+
+def test_verify_pair_writes_dmarc_exact_vendor_and_dedups(w):
+    root, cand, anchor = _pair(w)
+    addr = f"abc123@{_V}"
+    cf = facts(cand.value, dmarc_rua=(addr,))
+    af = facts(anchor.value, dmarc_rua=(addr,))
+    kw = dict(candidate=cand, anchor=anchor, candidate_facts=cf, anchor_facts=af)
+    first = verifiers.verify_pair(w.db, **kw)
+    w.db.commit()
+    assert [o.signal.signal_type for o in first] == ["dmarc_exact_vendor"]
+    assert _signals(w, cand, "dmarc_exact_vendor")[0].matched_values == [addr]
+    again = verifiers.verify_pair(w.db, **kw)
+    w.db.commit()
+    assert [o.created_signal for o in again] == [False]
+    assert len(_signals(w, cand, "dmarc_exact_vendor")) == 1
+
+
+def test_verify_pair_passes_claimed_domains_to_the_dmarc_exact_rule(w):
+    root, cand, anchor = _pair(w)
+    third = w.candidate(root, value=f"third-{hexid()}.contoso.com")
+    _claim(w, third, root)
+    # both report to a mailbox under a THIRD claimed domain of the root: that is
+    # dmarc_report_to_claimed territory (unauthorised here), never an exact match
+    addr = f"dmarc@{third.value}"
+    cf = facts(cand.value, dmarc_rua=(addr,))
+    af = facts(anchor.value, dmarc_rua=(addr,))
+    out = verifiers.verify_pair(w.db, candidate=cand, anchor=anchor, candidate_facts=cf, anchor_facts=af)
+    w.db.commit()
+    assert out == []
+    # the path is reached: the same shape under an UNCLAIMED domain is generic
+    loose = f"dmarc@loose-{hexid()}.contoso.org"
+    out = verifiers.verify_pair(
+        w.db, candidate=cand, anchor=anchor,
+        candidate_facts=facts(cand.value, dmarc_rua=(loose,)), anchor_facts=facts(anchor.value, dmarc_rua=(loose,)),
+    )
+    w.db.commit()
+    assert [o.signal.signal_type for o in out] == ["dmarc_exact_generic"]
+
+
+def test_dmarc_supporting_plus_mx_is_a_lead_but_plus_vanity_ns_is_proposable(w):
+    root, cand, anchor = _pair(w)
+    _drop_seed_signal(w, cand)
+    addr = f"abc123@{_V}"
+    cf = facts(cand.value, mx=(f"mail.{anchor.value}",), dmarc_rua=(addr,))
+    af = facts(anchor.value, dmarc_rua=(addr,))
+    out = verifiers.verify_pair(w.db, candidate=cand, anchor=anchor, candidate_facts=cf, anchor_facts=af)
+    w.db.commit()
+    assert sorted(o.signal.signal_type for o in out) == ["dmarc_exact_vendor", "mx_into_claimed"]
+    assert _strength(w, cand) == ("lead", False)  # both are the mail family
+    _drop_seed_signal(w, cand)
+    w.db.execute(text("delete from scope_signals where candidate_id = :c"), {"c": cand.id})
+    w.db.commit()
+    ns = (f"ns1.{anchor.value}",)
+    cf = facts(cand.value, ns=ns, dmarc_rua=(addr,))
+    af = facts(anchor.value, ns=ns, dmarc_rua=(addr,))
+    out = verifiers.verify_pair(w.db, candidate=cand, anchor=anchor, candidate_facts=cf, anchor_facts=af)
+    w.db.commit()
+    assert sorted(o.signal.signal_type for o in out) == ["dmarc_exact_vendor", "shared_vanity_ns"]
+    assert _strength(w, cand) == ("supporting", True)
