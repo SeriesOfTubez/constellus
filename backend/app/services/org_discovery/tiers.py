@@ -46,10 +46,10 @@ SIGNALS: dict[str, SignalSpec] = {
         STRONG, "capture", False, "The domain redirects into a claimed domain (planning#280)."
     ),
     "shared_vanity_ns": SignalSpec(
-        SUPPORTING, "dns_hosting", False, "Shares a vanity nameserver with a claimed domain."
+        SUPPORTING, "dns_hosting", True, "Shares a vanity nameserver with a claimed domain."
     ),
-    "mx_into_claimed": SignalSpec(SUPPORTING, "mail", False, "Its mail is routed through a claimed domain's MX."),
-    "spf_sender_shared": SignalSpec(SUPPORTING, "mail", False, "Its SPF names a sender shared with a claimed domain."),
+    "mx_into_claimed": SignalSpec(SUPPORTING, "mail", True, "Its mail is routed through a claimed domain's MX."),
+    "spf_sender_shared": SignalSpec(SUPPORTING, "mail", True, "Its SPF names a sender shared with a claimed domain."),
     "dmarc_report_to_claimed": SignalSpec(
         SUPPORTING, "mail", False, "Its DMARC reports go to a claimed domain."
     ),
@@ -57,13 +57,13 @@ SIGNALS: dict[str, SignalSpec] = {
         SUPPORTING, "mail", False, "Its DMARC reporting address matches a claimed domain's at a known vendor."
     ),
     "registrant_org_match": SignalSpec(
-        SUPPORTING, "registration", False, "Registrant organization matches a claimed domain's."
+        SUPPORTING, "registration", True, "Registrant organization matches a claimed domain's."
     ),
     "research_quote": SignalSpec(
         SUPPORTING, "research", False, "A researched source quotes the domain as the organization's."
     ),
     "reverse_ip_dedicated": SignalSpec(
-        SUPPORTING, "hosting", False, "Shares a dedicated IP with a claimed domain."
+        SUPPORTING, "hosting", True, "Shares a dedicated IP with a claimed domain."
     ),
     "dmarc_exact_generic": SignalSpec(
         CONTEXT, "mail", False, "Its DMARC reporting address matches a claimed domain's at a generic provider."

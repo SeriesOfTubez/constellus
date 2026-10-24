@@ -400,7 +400,18 @@ def _run_edgar_ingest(run_id: uuid.UUID, cik: str) -> None:
         )
         counts = dataclasses.asdict(result)
         counts.pop("entity_id", None)
+        counts.pop("created_candidate_ids", None)  # UUIDs; not a run count
         _mark_run(run_id, status="succeeded", result=counts, finished_at=datetime.now(timezone.utc))
+        if result.created_candidate_ids:
+            # planning#277 S1b. Runs after the run is recorded and in its own
+            # session; a verifier failure never fails the ingest or the read.
+            # (`_run_ingest_then_read` calls this function, so both paths pass here.)
+            try:
+                from app.services.org_discovery import runner
+
+                runner.verify_new_candidates(result.created_candidate_ids)
+            except Exception:
+                log.exception("org-discovery verification failed after ingest cik=%s", cik)
     except Exception as exc:
         log.exception("edgar ingest failed for cik=%s", cik)
         # Class name + message only, truncated: enough for the person who

@@ -41,6 +41,8 @@ class ScopeCandidate(Base):
     __table_args__ = (
         UniqueConstraint("root_entity_id", "kind", "value", name="uq_scope_candidates_root_kind_value"),
         Index("ix_scope_candidates_root_status", "root_entity_id", "status"),
+        # The post-discovery reverse-IP step finds claimed candidates by target (0084).
+        Index("ix_scope_candidates_target_id", "target_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("uuidv7()"))
@@ -105,6 +107,9 @@ class ScopeSignal(Base):
     )
     quote: Mapped[str | None] = mapped_column(Text, nullable=True)
     observer_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("observers.id"), nullable=True)
+    # What two domains were found to share (migration 0084): NS/MX hosts,
+    # SPF senders, the folded registrant org, an IP. NULL for document types.
+    matched_values: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

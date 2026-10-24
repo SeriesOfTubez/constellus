@@ -102,6 +102,11 @@ _EGRESS: dict[str, tuple[str, str, str | None]] = {
     "target_service.py": (
         "ESTABLISHES_AUTH", "same TXT verification path", None,
     ),
+    "org_discovery/domain_facts.py": (
+        "ESTABLISHES_AUTH",
+        "NS/MX/TXT lookups through a public recursor about a CANDIDATE domain (not yet a target) to decide "
+        "whether it may be claimed; gating on authorisation would be circular (planning#277 S1b)", None,
+    ),
     "cloud_ranges.py": (
         "THIRD_PARTY", "provider range dataset mirror", None,
     ),

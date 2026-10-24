@@ -200,7 +200,28 @@ def test_every_literal_signal_type_passed_to_record_signal_is_built():
     for signal_type, sites in literals.items():
         assert signal_type in SIGNALS, (signal_type, sites)
         assert SIGNALS[signal_type].built, f"{signal_type} has no generator but is recorded at {sites}"
-    assert non_literal == [], f"record_signal called with a non-literal signal_type at {non_literal}"
+    # The verifier passes `match.signal_type`; that one file is exempt from the literal rule, and
+    # the test below pins every type its `Match(...)` constructors can emit instead.
+    assert [site for site in non_literal if not site.startswith("services/org_discovery/verifiers.py")] == [], (
+        f"record_signal called with a non-literal signal_type at {non_literal}"
+    )
+    assert len([s for s in non_literal if s.startswith("services/org_discovery/verifiers.py")]) == 1
+
+
+def test_every_signal_type_the_verifiers_can_emit_is_built():
+    path = APP_DIR / "services" / "org_discovery" / "verifiers.py"
+    emitted: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Match":
+            kw = {k.arg: k.value for k in node.keywords}
+            value = kw.get("signal_type")
+            assert isinstance(value, ast.Constant) and isinstance(value.value, str), (
+                f"verifiers.py:{node.lineno}: Match(signal_type=...) must be a literal"
+            )
+            emitted.add(value.value)
+    assert emitted == {"shared_vanity_ns", "mx_into_claimed", "spf_sender_shared", "registrant_org_match"}
+    for signal_type in emitted:
+        assert SIGNALS[signal_type].built, signal_type
 
 
 def test_the_literal_scan_would_catch_an_unbuilt_type():

@@ -62,6 +62,25 @@ _GUARDED_MODULES = [
 
 
 @pytest.fixture(autouse=True)
+def _offline_org_verifier_facts(monkeypatch):
+    """planning#277 S1b: claiming / adding through the API schedules the
+    verifier run, and under `TestClient` a background task runs inline. Left
+    alone it would do real DNS and WHOIS lookups from every such test, so the
+    runner's one network seam answers "nothing known" unless a test installs
+    its own (test_org_discovery_runner.py does)."""
+    from app.services.org_discovery import runner
+    from app.services.org_discovery.domain_facts import DomainFacts
+
+    monkeypatch.setattr(
+        runner, "_collect",
+        lambda db, domain: DomainFacts(
+            domain=domain, ns=(), mx=(), spf_senders=(), spf_includes=(), registrant_org=None,
+            registrant_org_folded=None, lookup_errors=(),
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _restore_monkeypatched_modules():
     snapshots = [(mod, vars(mod).copy()) for mod in _GUARDED_MODULES]
     yield

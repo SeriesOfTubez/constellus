@@ -187,12 +187,22 @@ def record_signal(
     evidence_id: uuid.UUID | None = None,
     quote: str | None = None,
     observer_id: uuid.UUID | None = None,
+    matched_values: list[str] | None = None,
 ) -> SignalOutcome:
     """Record one signal for (root, kind, value), creating the candidate if
-    this is its first Strong/Supporting signal. Flushes; never commits."""
+    this is its first Strong/Supporting signal. Flushes; never commits.
+
+    `matched_values` is what the two domains share (a verifier's NS host,
+    an IP, ...); stored sorted and de-duplicated, never empty."""
     spec = SIGNALS.get(signal_type)
     if spec is None:
         raise CandidateInvalid(f"unknown signal type {signal_type!r}")
+    if matched_values is not None:
+        if any(not isinstance(v, str) or not v.strip() for v in matched_values):
+            raise CandidateInvalid("matched values must be non-blank strings")
+        matched_values = sorted(set(matched_values)) or None
+        if matched_values is None:
+            raise CandidateInvalid("matched values, when given, must not be empty")
     if kind not in CANDIDATE_KINDS:
         raise CandidateInvalid(f"unknown candidate kind {kind!r}")
     value = normalise_domain(value)
@@ -275,6 +285,7 @@ def record_signal(
             evidence_id=evidence_id,
             quote=quote,
             observer_id=observer_id,
+            matched_values=matched_values,
         )
         .on_conflict_do_update(constraint="uq_scope_signals_route", set_={"last_seen_at": _now()})
         .returning(table.c.id, literal_column("(xmax = 0)").label("inserted"))
@@ -332,11 +343,14 @@ def add_by_person(
     excerpt: str,
     quote: str,
     user,
+    new_candidate_ids: list[uuid.UUID] | None = None,
 ) -> ScopeCandidate:
     """A person adds a domain with evidence. `excerpt` is stored as
     `person_supplied` evidence attributed to `source_url`; `quote` must be a
     substring of `excerpt` and must contain the domain as written (ASCII or
-    punycode). The signal is Strong (`person_evidence`). Owner: commits."""
+    punycode). The signal is Strong (`person_evidence`). Owner: commits. `new_candidate_ids`,
+    when given, receives the candidate's id only if this call CREATED it
+    (appended after the commit)."""
     if db.get(OrgEntity, root_entity_id) is None:
         raise CandidateNotFound("organization not found")
     domain = normalise_domain(domain)
@@ -383,6 +397,8 @@ def add_by_person(
         db.rollback()
         raise CandidateConflict("could not record the domain; it may have been added at the same time") from exc
     db.refresh(candidate)
+    if outcome.created_candidate and new_candidate_ids is not None:
+        new_candidate_ids.append(candidate.id)
     return candidate
 
 

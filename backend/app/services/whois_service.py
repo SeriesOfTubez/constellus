@@ -121,7 +121,9 @@ def _fresh_domain_lookup(domain: str) -> dict:
             return empty
         return {
             "registrar": _first_str(w.get("registrar")),
-            "registrant_org": _first_str(w.get("org") or w.get("registrant_org") or w.get("registrant_name")),
+            # The organization only. Never the registrant NAME: that is a
+            # person, and org discovery matches on this field (planning#277).
+            "registrant_org": _first_str(w.get("org") or w.get("registrant_org")),
             "registrant_country": _first_str(w.get("country") or w.get("registrant_country")),
             "creation_date": _first_date(w.get("creation_date")),
             "expiration_date": _first_date(w.get("expiration_date")),

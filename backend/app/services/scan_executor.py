@@ -28,6 +28,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.connectors.base import (
@@ -233,6 +234,18 @@ def _run(db: Session, scan_run_id: uuid.UUID, scope: dict, registry: dict) -> No
     except Exception as exc:
         db.rollback()
         _record_post_scan_failure(db, run, "Dangling-DNS analysis", exc)
+
+    # Org-discovery reverse IP (planning#277 S1b part C) — for each claimed
+    # candidate whose Target is in this run's scope, look up who else sits on
+    # its dedicated addresses (third-party passive DNS, no probe of anyone).
+    # Needs the discovery phase's fresh A/AAAA records, so it is skipped with it.
+    if not skip_discovery:
+        try:
+            _org_discovery_reverse_ip(db, scope)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            _record_post_scan_failure(db, run, "Org-discovery reverse IP", exc)
 
     # CPE normalization — turn each touched IP asset's banner/Shodan service
     # data into structured software intel (vendor/product/full-version/CPE 2.3)
@@ -594,6 +607,31 @@ def _stamp_scope_target_engagements(db: Session, run: ScanRun, scope: dict) -> N
         for target_id, engagement_id, posture_value in rows
     ]
     db.commit()
+
+
+def _org_discovery_reverse_ip(db: Session, scope: dict) -> None:
+    """Run the org-discovery reverse-IP generator for every CLAIMED candidate
+    whose Target's value is in this run's scope. This session only selects;
+    `reverse_ip_for_claimed` opens its own.
+
+    Not `run.scope_target_engagements`: that stamps only targets WITH an
+    engagement, and an ours organization's claims land in the estate
+    (engagement NULL), so every one of them would be missed."""
+    from app.models.scope_candidate import ScopeCandidate
+    from app.models.target import Target
+    from app.services.org_discovery import runner as org_runner
+
+    values = list(scope.get("domains") or [])
+    if not values:
+        return
+    claimed_ids = list(db.execute(
+        select(ScopeCandidate.id)
+        .join(Target, Target.id == ScopeCandidate.target_id)
+        .where(Target.value.in_(values), ScopeCandidate.status == "claimed")
+        .order_by(ScopeCandidate.id)
+    ).scalars())
+    for candidate_id in claimed_ids:
+        org_runner.reverse_ip_for_claimed(candidate_id)
 
 
 def _resolve_dynamic_scope(db: Session, template: ScanTemplate) -> dict:
