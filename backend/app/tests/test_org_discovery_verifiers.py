@@ -294,7 +294,7 @@ def test_spf_cycle_is_walked_once(no_whois):
     })
     f = domain_facts.collect(None, "fabrikam.com", resolver=r)
     assert r.calls.count(("a.fabrikam.net", "TXT")) == 1 and r.calls.count(("b.fabrikam.net", "TXT")) == 1
-    assert ("a.fabrikam.net" in f.spf_senders) and ("b.fabrikam.net" in f.spf_senders)
+    assert {"a.fabrikam.net", "b.fabrikam.net"}.issubset(f.spf_senders)
 
 
 def test_walk_state_flags_the_cap():
@@ -312,7 +312,7 @@ def test_match_ns_positive_and_negative():
     a = facts("fabrikam.com", ns=("ns1.fabrikam.com", "ns9.other.example.net"))
     m = verifiers.match_ns(c, a)
     assert m.signal_type == "shared_vanity_ns" and m.matched_values == ("ns1.fabrikam.com",)
-    assert "fabrikam.net" in m.quote and "fabrikam.com" in m.quote and "ns1.fabrikam.com" in m.quote
+    assert m.quote == "fabrikam.net and claimed fabrikam.com share nameserver ns1.fabrikam.com"
     assert verifiers.match_ns(c, facts("fabrikam.com", ns=("ns1.contoso-dns.com",))) is None
     assert verifiers.match_ns(c, facts("fabrikam.com")) is None
 
