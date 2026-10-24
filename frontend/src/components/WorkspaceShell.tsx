@@ -9,6 +9,8 @@ export interface TabDef {
 interface WorkspaceShellProps {
   title: string
   subtitle?: string
+  /** Rendered under the subtitle (e.g. a KPI row). */
+  headerExtra?: React.ReactNode
   tabs: TabDef[]
   activeTab: string
   onTabChange: (key: string) => void
@@ -24,6 +26,7 @@ interface WorkspaceShellProps {
 export function WorkspaceShell({
   title,
   subtitle,
+  headerExtra,
   tabs,
   activeTab,
   onTabChange,
@@ -39,6 +42,7 @@ export function WorkspaceShell({
         <div>
           <h1 className="text-2xl font-semibold">{title}</h1>
           {subtitle && <p className="text-sm text-muted-foreground mt-0.5">{subtitle}</p>}
+          {headerExtra && <div className="mt-3">{headerExtra}</div>}
         </div>
         {primaryAction && <div className="shrink-0">{primaryAction}</div>}
       </div>

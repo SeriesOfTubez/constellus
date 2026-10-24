@@ -37,6 +37,7 @@ const NAV = [
   { to: "/assets",    label: "Assets",    icon: Globe },
   { to: "/explore",   label: "Explore",   icon: Network },
   { to: "/reports",   label: "Reports",   icon: FileText },
+  { to: "/organizations", label: "Organizations", icon: Building2 },
   { to: "/entities",  label: "Entities",  icon: Building2 },
 ]
 

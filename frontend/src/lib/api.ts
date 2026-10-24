@@ -96,6 +96,9 @@ export type User = {
   is_active: boolean
   created_at: string
   last_login_at: string | null
+  /** Effective permissions, from `/auth/me` only. Absent on a session persisted
+   *  before this field existed — treated as "unknown" (see `useCan`). */
+  permissions?: string[]
 }
 
 export type TokenResponse = {
