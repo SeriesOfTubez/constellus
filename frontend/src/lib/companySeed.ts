@@ -1,4 +1,4 @@
-// planning#232 — pure helpers for the Setup wizard's "Your company" step:
+// planning#232 — pure helpers for the new-organization ingest progress panel:
 // map the ingest run + its acquisition_read follow-up to what the step shows.
 import type { EntityIngestRun } from "@/lib/api"
 
@@ -116,13 +116,4 @@ export function seedProgress(i: SeedProgressInput): SeedProgress {
     hint: null,
     polling: true,
   }
-}
-
-// Plain-words message for a failed search / seed call.
-export function describeSeedError(status: number | undefined, fallback: string): string {
-  if (status === 409) return "SEC access isn't configured (SEC_USER_AGENT), or this company is an engagement subject."
-  if (status === 404) return "No such SEC registrant."
-  if (status === 422) return "Enter a company name to search."
-  if (status === 502) return "SEC EDGAR returned an error. Try again in a moment."
-  return fallback
 }

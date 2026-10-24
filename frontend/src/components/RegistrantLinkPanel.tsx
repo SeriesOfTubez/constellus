@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { entityHref } from "@/lib/organizations"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -247,7 +248,7 @@ export function RegistrantLinkPanel({ entity, isAdmin }: { entity: OrgEntity; is
               {taken ? (
                 <p className="text-destructive" role="alert">
                   That CIK is already on{" "}
-                  <Link to={`/entities/${taken.entity_id}`} className="underline">{taken.legal_name}</Link>.
+                  <Link to={entityHref(taken.entity_id)} className="underline">{taken.legal_name}</Link>.
                 </p>
               ) : linkMutation.error && (
                 <p className="text-destructive" role="alert">{(linkMutation.error as Error).message}</p>
@@ -350,7 +351,7 @@ export function RegistrantLinkPanel({ entity, isAdmin }: { entity: OrgEntity; is
                             {c.taken_by_id ? (
                               <span className="text-xs text-muted-foreground">
                                 Already on{" "}
-                                <Link to={`/entities/${c.taken_by_id}`} className="underline">{c.taken_by_name}</Link>
+                                <Link to={entityHref(c.taken_by_id)} className="underline">{c.taken_by_name}</Link>
                               </span>
                             ) : (
                               <Button size="sm" variant="outline" onClick={() => { linkMutation.reset(); setSelected(c) }}>

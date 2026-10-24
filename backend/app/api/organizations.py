@@ -72,6 +72,11 @@ class OrganizationSummary(BaseModel):
     rejected: int
 
 
+class LocateResponse(BaseModel):
+    org_id: uuid.UUID
+    node: uuid.UUID | None  # None when the entity IS the root
+
+
 class TreeNodeResponse(BaseModel):
     entity_id: uuid.UUID
     name: str
@@ -282,17 +287,22 @@ def _http_error(exc: Exception) -> HTTPException:
 # ── shared reads ────────────────────────────────────────────────────────────
 
 
-def _require_visible_root(db: Session, user: User, org_id: uuid.UUID) -> uuid.UUID:
-    """404 unless `org_id` is a root the caller may read."""
+def _visible_root(db: Session, user: User, org_id: uuid.UUID) -> bool:
+    """Is `org_id` a root the caller may read?"""
     root = aliased(OrgEntity)
     found = db.execute(
         select(root.id).where(
             root.id == org_id, root.relationship.isnot(None), read_scope.entity_clause(user, root)
         )
     ).scalar_one_or_none()
-    if found is None:
+    return found is not None
+
+
+def _require_visible_root(db: Session, user: User, org_id: uuid.UUID) -> uuid.UUID:
+    """404 unless `org_id` is a root the caller may read."""
+    if not _visible_root(db, user, org_id):
         raise HTTPException(status_code=404, detail="Organization not found")
-    return found
+    return org_id
 
 
 def _aff_id_expr():
@@ -641,6 +651,33 @@ def list_signal_types(_=Depends(require_permission(Permission.ENTITIES_READ))):
         )
         for t, spec in SIGNALS.items()
     ]
+
+
+@router.get("/locate/{entity_id}", response_model=LocateResponse)
+def locate_entity(
+    entity_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_READ)),
+):
+    """Which organization page shows this entity? Membership is decided by the same
+    read-scoped `org_tree` walk `/tree` uses, so the page always contains the node."""
+    ent = aliased(OrgEntity)
+    entity = db.execute(
+        select(ent).where(ent.id == entity_id, read_scope.entity_clause(current_user, ent))
+    ).scalar_one_or_none()
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    if entity.relationship is not None and _visible_root(db, current_user, entity.id):
+        return LocateResponse(org_id=entity.id, node=None)
+    # resolve() only proposes candidates (it ignores read scope); the tree decides.
+    stops = sorted(entity_relationship.resolve(db, entity_id).stops, key=lambda s: (s.depth, str(s.entity_id)))
+    for stop in stops:
+        if not _visible_root(db, current_user, stop.entity_id):
+            continue
+        for n in org_tree_sql.org_tree(db, current_user, stop.entity_id):
+            if n.entity_id == entity_id and n.status == "confirmed":
+                return LocateResponse(org_id=stop.entity_id, node=entity_id)
+    raise HTTPException(status_code=404, detail="Not part of an organization you can see")
 
 
 @router.get("/{org_id}/tree", response_model=list[TreeNodeResponse])

@@ -899,3 +899,17 @@ def test_recorded_live_run_replays_through_the_loop(model, recorded_world, peopl
     assert "IGNORE ALL PREVIOUS" in json.dumps(s.bodies[7]["messages"][-1])
     assert [t["tool"] for t in q3["tool_trace"]] == ["run_query"]
     assert q3["sanitised"]["images"] == 1 and "exfil.example" not in q3["content"]
+
+
+def test_sanitiser_keeps_org_entity_links_and_drops_the_removed_entities_route():
+    """Entity citations point at the org page resolver (planning#277 S2c);
+    the removed `/entities/<id>` page is no longer an internal link."""
+    eid = "11111111-1111-1111-1111-111111111111"
+    text = f"See [Example Holdings A](/organizations/entity/{eid}) and [old](/entities/{eid})."
+    out, removed = chat.sanitise(text, {eid})
+    assert f"[Example Holdings A](/organizations/entity/{eid})" in out
+    assert "/entities/" not in out.replace("/organizations/entity/", "") and "and old." in out
+    assert removed["links"] == 1
+    # An uncited id on the new path is still dropped.
+    out2, removed2 = chat.sanitise(f"[x](/organizations/entity/{eid})", set())
+    assert out2 == "x" and removed2["links"] == 1

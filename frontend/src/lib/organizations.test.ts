@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest"
 import {
-  type CandidateRow, type SignalDetail, type TreeNode,
+  defaultSegment,
+  type AddOrgState, type CandidateRow, type SignalDetail, type TreeNode,
+  addOrgRequest, addOrgStepValid, filerStatsLine, relationshipOptions,
+  entityHref, orgEntityTarget,
   anchorText, candidateParams, groupRows, relationNote, segmentCount, severityBar, splitSignals, stateInfo, tierChipClass, treeRows,
 } from "@/lib/organizations"
 
@@ -104,5 +107,74 @@ describe("stateInfo / grouping / signals", () => {
     const s = splitSignals([d("a", "supporting"), d("b", "context"), d("c", "strong")])
     expect(s.counting.map(x => x.id)).toEqual(["c", "a"])
     expect(s.context.map(x => x.id)).toEqual(["b"])
+  })
+})
+
+describe("add-organization helpers", () => {
+  const st = (over: Partial<AddOrgState> = {}): AddOrgState => ({
+    domain: "  fabrikam.com ", cik: "0000000001", orgName: " Example Holdings A ", relationship: "ours",
+    reference: " TICKET-1 ", engagementName: "", ...over,
+  })
+  it("filerStatsLine formats and marks partial", () => {
+    const s = { total_filings: 12, first_filing: "2001-02-03", last_filing: "2024-05-06", latest_10k: "2024-03-01", partial: false }
+    expect(filerStatsLine(s)).toBe("12 filings, 2001–2024, latest 10-K 2024-03-01")
+    expect(filerStatsLine({ ...s, partial: true })).toBe("12 filings, 2001–2024, latest 10-K 2024-03-01 (partial)")
+    expect(filerStatsLine({ ...s, total_filings: 1, first_filing: null, latest_10k: null })).toBe("1 filing")
+    expect(filerStatsLine(null)).toBeNull()
+  })
+  it("addOrgRequest trims and nulls", () => {
+    expect(addOrgRequest(st())).toEqual({
+      seed_domain: "fabrikam.com", org_name: "Example Holdings A", cik: "0000000001",
+      relationship: "ours", reference: "TICKET-1", engagement_name: null,
+    })
+  })
+  it("addOrgRequest: cik null for none; engagement_name null for ours even if typed; set for ma_target", () => {
+    expect(addOrgRequest(st({ cik: null, engagementName: "Typed earlier" }))).toMatchObject({ cik: null, engagement_name: null })
+    expect(addOrgRequest(st({ relationship: "ma_target", engagementName: " Deal X " }))).toMatchObject({ engagement_name: "Deal X" })
+  })
+  it("addOrgRequest refuses a missing relationship", () => {
+    expect(() => addOrgRequest(st({ relationship: null }))).toThrow()
+  })
+  it("step validity", () => {
+    expect(addOrgStepValid(1, st({ domain: "   " }), true)).toBe(false)
+    expect(addOrgStepValid(1, st(), true)).toBe(true)
+    expect(addOrgStepValid(2, st({ domain: "" }), true)).toBe(true)
+    expect(addOrgStepValid(3, st(), true)).toBe(true)
+    expect(addOrgStepValid(3, st({ reference: "  " }), true)).toBe(false)
+    expect(addOrgStepValid(3, st({ orgName: " " }), true)).toBe(false)
+    expect(addOrgStepValid(3, st({ relationship: null }), true)).toBe(false)
+    expect(addOrgStepValid(3, st(), false)).toBe(false)
+    expect(addOrgStepValid(3, st({ relationship: "ma_target" }), false)).toBe(false) // no engagement name
+    expect(addOrgStepValid(3, st({ relationship: "ma_target", engagementName: "Deal X" }), false)).toBe(true)
+  })
+  it("relationshipOptions", () => {
+    expect(relationshipOptions(true).map(o => [o.value, o.disabled])).toEqual([["ours", false], ["ma_target", false]])
+    const noPerm = relationshipOptions(false)
+    expect(noPerm[0]).toMatchObject({ value: "ours", disabled: true, hint: "Needs permission to mark organizations as ours" })
+    expect(noPerm[1].disabled).toBe(false)
+    expect(relationshipOptions(true, "ours").map(o => o.value)).toEqual(["ours"])
+  })
+})
+
+describe("entity links", () => {
+  const ID = "7a1b2c3d-0000-4000-8000-000000000001"
+  it("entityHref points at the resolver route", () => {
+    expect(entityHref(ID)).toBe(`/organizations/entity/${ID}`)
+  })
+  it("orgEntityTarget omits node for a root", () => {
+    expect(orgEntityTarget({ org_id: "o1", node: null })).toBe("/organizations/o1?tab=companies")
+  })
+  it("orgEntityTarget carries the node", () => {
+    expect(orgEntityTarget({ org_id: "o1", node: "n2" })).toBe("/organizations/o1?tab=companies&node=n2")
+  })
+})
+
+describe("defaultSegment", () => {
+  it("opens on Candidates while there is something to review", () => {
+    expect(defaultSegment({ claimed: 3, proposed: 2 })).toBe("candidates")
+    expect(defaultSegment({ claimed: 0, proposed: 0 })).toBe("candidates")
+  })
+  it("opens on All when nothing is to review but something is claimed (a just-added org)", () => {
+    expect(defaultSegment({ claimed: 1, proposed: 0 })).toBe("all")
   })
 })

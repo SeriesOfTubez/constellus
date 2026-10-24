@@ -25,8 +25,7 @@ import Engagements from "@/pages/admin/Engagements"
 import EngagementDetail from "@/pages/admin/EngagementDetail"
 import EntityReview from "@/pages/admin/EntityReview"
 import Organizations from "@/pages/Organizations"
-import Entities from "@/pages/Entities"
-import EntityDetail from "@/pages/EntityDetail"
+import OrganizationEntityRedirect from "@/pages/OrganizationEntityRedirect"
 import Activity from "@/pages/admin/Activity"
 import Sso from "@/pages/admin/Sso"
 import Users from "@/pages/admin/Users"
@@ -97,9 +96,8 @@ export default function App() {
               <Route path="/explore" element={<Explore />} />
               <Route path="/reports" element={<Reports />} />
               <Route path="/organizations" element={<Organizations />} />
+              <Route path="/organizations/entity/:id" element={<OrganizationEntityRedirect />} />
               <Route path="/organizations/:orgId" element={<Organizations />} />
-              <Route path="/entities" element={<Entities />} />
-              <Route path="/entities/:id" element={<EntityDetail />} />
               <Route path="/scans" element={<Navigate to="/admin/activity" replace />} />
 
               <Route element={<ProtectedRoute roles={["admin", "integration_admin"]} />}>

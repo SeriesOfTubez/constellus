@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import true
+from sqlalchemy import false, true
 
 from app.models.asset_canonical import AssetCanonical
 from app.models.finding_canonical import FindingCanonical
@@ -467,3 +467,110 @@ def test_candidate_list_404s_for_unknown_non_root_and_hidden_root(w, monkeypatch
 def test_signal_types_is_not_shadowed_by_the_org_id_routes(w):
     r = client.get("/api/organizations/signal-types", headers=w.headers(role=VIEWER))
     assert r.status_code == 200 and isinstance(r.json(), list)  # not a 422 from a UUID path param
+
+
+# ── locate ──────────────────────────────────────────────────────────────────
+
+
+def _locate(w, entity_id, headers=None):
+    return client.get(f"/api/organizations/locate/{entity_id}", headers=headers or w.headers(role=VIEWER))
+
+
+def test_locate_a_root_is_itself_with_no_node(w):
+    root = w.ours()
+    r = _locate(w, root.id)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"org_id": str(root.id), "node": None}
+
+
+def test_locate_a_confirmed_subsidiary_two_hops_down(w):
+    root = w.ours()
+    sub = w.child_of(w.child_of(root))
+    r = _locate(w, sub.id)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"org_id": str(root.id), "node": str(sub.id)}
+
+
+def test_locate_an_acquired_entity_goes_to_the_acquirer(w):
+    root = w.ours()
+    bought = w.entity()
+    w.edge(root, bought, "acquired")
+    r = _locate(w, bought.id)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"org_id": str(root.id), "node": str(bought.id)}
+
+
+def test_locate_404s_for_a_proposed_only_subsidiary(w):
+    root = w.ours()
+    w.child_of(root)  # the walk has something to find
+    prop = w.entity()
+    w.edge(prop, root, "subsidiary_of", confirm=False)
+    assert _locate(w, prop.id).status_code == 404
+    assert _locate(w, root.id).status_code == 200  # the route works for this root
+
+
+def test_locate_404s_for_an_entity_with_no_path_to_a_root(w):
+    w.ours()
+    lone = w.entity()
+    r = _locate(w, lone.id)
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Not part of an organization you can see"
+
+
+def test_locate_404s_under_a_root_the_caller_cannot_see_but_not_for_a_member(w, monkeypatch):
+    root, _eng = w.deal()
+    sub = w.child_of(root)
+    member = w.headers(role=VIEWER)
+    outsider_user = w.user(VIEWER)
+    outsider = w.headers(user=outsider_user)
+    # `entity_clause` grants everything today, so scope is simulated the way the tree tests do:
+    # everything under the restricted root is hidden from the non-member only.
+    hidden = {root.id, sub.id}
+    monkeypatch.setattr(
+        read_scope, "entity_clause",
+        lambda user, entity: true() if user.id != outsider_user.id else entity.id.notin_(hidden),
+    )
+    ok = _locate(w, sub.id, member)
+    assert ok.status_code == 200, ok.text
+    assert ok.json() == {"org_id": str(root.id), "node": str(sub.id)}
+    assert _locate(w, sub.id, outsider).status_code == 404
+    # entity visible but its root hidden: still 404, via the root check rather than the entity load
+    monkeypatch.setattr(
+        read_scope, "entity_clause",
+        lambda user, entity: true() if user.id != outsider_user.id else entity.id != root.id,
+    )
+    assert _locate(w, sub.id, member).status_code == 200
+    assert _locate(w, sub.id, outsider).status_code == 404
+
+
+def test_locate_404s_when_the_only_edge_to_the_root_is_hidden_by_relation_scope(w, monkeypatch):
+    """`resolve()` walks edges without read scope; membership must come from the
+    scoped tree, so an edge the caller cannot read never locates."""
+    root = w.ours()
+    sub = w.child_of(root)
+    outsider_user = w.user(VIEWER)
+    outsider = w.headers(user=outsider_user)
+    monkeypatch.setattr(
+        read_scope, "relation_clause",
+        lambda user, rel: true() if user.id != outsider_user.id else false(),
+    )
+    ok = _locate(w, sub.id, w.headers(role=VIEWER))
+    assert ok.status_code == 200, ok.text
+    assert ok.json() == {"org_id": str(root.id), "node": str(sub.id)}
+    assert _locate(w, sub.id, outsider).status_code == 404
+
+
+def test_locate_a_nested_root_is_itself_not_its_parent_root(w):
+    root = w.ours()
+    nested = w.child_of(root)
+    w.ours(nested)
+    assert w.db.get(type(nested), nested.id).relationship == "ours"
+    r = _locate(w, nested.id)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"org_id": str(nested.id), "node": None}
+
+
+def test_locate_404s_for_an_unknown_uuid(w):
+    r = _locate(w, uuid.uuid4())
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Entity not found"

@@ -551,7 +551,7 @@ def _footnote(c: dict, facts: dict, number: int) -> str:
                 return f"{marker} finding: {md_escape(f['title'])} (/findings/{md_escape(f['id'])})"
     if c["kind"] == "entity" and c.get("ref"):
         return (f"{marker} entity: {md_escape(c['path'])} = {md_escape(c['value'])} "
-                f"(/entities/{md_escape(c['ref'])})")
+                f"(/organizations/entity/{md_escape(c['ref'])})")
     return f"{marker} fact: {md_escape(c['path'])} = {md_escape(c['value'])}"
 
 

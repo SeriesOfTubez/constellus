@@ -18,7 +18,7 @@ describe("ChatMarkdown — the second layer behind the server sanitiser", () => 
   })
 
   it("links a record page by id", () => {
-    for (const kind of ["assets", "findings", "entities"]) {
+    for (const kind of ["assets", "findings", "organizations/entity"]) {
       const html = render(`See [the record](/${kind}/${ID}).`)
       expect(html).toMatch(new RegExp(`<a [^>]*href="/${kind}/${ID}"`))
       expect(html).toContain(">the record</a>")

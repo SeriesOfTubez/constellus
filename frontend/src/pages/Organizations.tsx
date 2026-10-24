@@ -5,15 +5,18 @@ import { Building2, ChevronDown, ChevronRight, Plus } from "lucide-react"
 import { api, ApiError } from "@/lib/api"
 import { useFlyout } from "@/lib/flyout"
 import { useDebouncedUrlState, useUrlState } from "@/lib/listView"
-import { useCan, usePermissionsSync } from "@/lib/permissions"
+import { useCan } from "@/lib/permissions"
 import { relativeTime } from "@/lib/time"
 import {
   type CandidateDetail, type CandidatePage, type CandidateRow, type OrgDetailSummary, type OrgGroupMode,
   type OrganizationSummary, type Segment, type SignalType, type TreeNode,
   GROUP_OPTIONS, SEGMENTS, SEGMENT_LABEL, STRENGTH_LABEL, TIER_LEGEND,
   candidateParams, confirmedNodes, destinationText, groupRows, headerSubtitle, orgPill, segmentCount, treeRows,
+  defaultSegment,
 } from "@/lib/organizations"
+import { AddOrganizationDialog } from "@/components/AddOrganizationFlow"
 import { WorkspaceShell } from "@/components/WorkspaceShell"
+import { EntityDetailContent } from "@/components/EntityDetailContent"
 import {
   AssetsCell, CandidateFlyoutContent, DECIDE, OrganizationCell, SignalsCell, StateCell, errorDetail,
 } from "@/components/OrgCandidateParts"
@@ -30,6 +33,20 @@ import { IndeterminateCheckbox } from "@/components/ui/indeterminate-checkbox"
 import { cn } from "@/lib/utils"
 
 const PROPOSE = "entities.propose_candidate"
+const CREATE_ORG = "organizations.create"
+
+/** Add organization: renders nothing without `organizations.create` (cosmetic; the server enforces). */
+function AddOrganizationButton({ size = "sm", className }: { size?: "sm" | "default"; className?: string }) {
+  const can = useCan()
+  const [open, setOpen] = useState(false)
+  if (!can(CREATE_ORG)) return null
+  return (
+    <>
+      <Button size={size} className={className} onClick={() => setOpen(true)}><Plus className="h-4 w-4 mr-1" />Add organization</Button>
+      <AddOrganizationDialog open={open} onOpenChange={setOpen} />
+    </>
+  )
+}
 const PAGE = 200
 
 function isNotFound(e: unknown) { return e instanceof ApiError && e.status === 404 }
@@ -108,6 +125,7 @@ function LeftPanel({
   const [browsing, setBrowsing] = useState(false)
   return (
     <aside className="w-[260px] shrink-0 border-r bg-card/30 overflow-y-auto">
+      <div className="p-2 border-b empty:hidden"><AddOrganizationButton className="w-full" /></div>
       {orgId && !browsing ? (
         <>
           <button type="button" onClick={() => setBrowsing(true)}
@@ -339,8 +357,9 @@ function OrgWorkspace({
   const qc = useQueryClient()
   const can = useCan()
   const [tab, setTab] = useUrlState("tab", "domains")
-  const [segmentRaw, setSegment] = useUrlState("seg", "candidates")
-  const segment = (SEGMENTS as string[]).includes(segmentRaw) ? (segmentRaw as Segment) : "candidates"
+  const defaultSeg = defaultSegment(org)
+  const [segmentRaw, setSegment] = useUrlState("seg", defaultSeg)
+  const segment = (SEGMENTS as string[]).includes(segmentRaw) ? (segmentRaw as Segment) : defaultSeg
   const [q, setQ] = useDebouncedUrlState("q")
   const [qApplied] = useUrlState("q", "")
   const [strength, setStrength] = useUrlState("strength", "all")
@@ -466,7 +485,16 @@ function OrgWorkspace({
   let body: React.ReactNode
   if (tab === "asns") body = <Placeholder text="ASN and IP-space discovery is not built yet." />
   else if (tab === "acquisitions") body = <Placeholder text="Acquisition roll-ups are not built yet." />
-  else if (tab === "companies") body = <Placeholder text="Companies & filings are not built yet." />
+  else if (tab === "companies") {
+    const shownId = node ?? org.id
+    const shownName = node ? nodes.find(n => n.entity_id === node)?.name : undefined
+    body = (
+      <div className="space-y-4">
+        {node && <p className="text-sm text-muted-foreground">Showing {shownName ?? "the selected company"}</p>}
+        <EntityDetailContent entityId={shownId} key={shownId} />
+      </div>
+    )
+  }
   else if (listQ.isLoading) body = <div className="space-y-2">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}</div>
   else if (listQ.isError) body = <Placeholder text={`Could not load domains: ${errorDetail(listQ.error)}`} />
   else {
@@ -559,12 +587,11 @@ function OrgWorkspace({
 // ── route component ─────────────────────────────────────────────────────────
 
 export default function Organizations() {
-  usePermissionsSync()
   const { orgId } = useParams<{ orgId?: string }>()
   const [searchParams, setSearchParams] = useSearchParams()
   const node = searchParams.get("node")
 
-  const orgsQ = useQuery({ queryKey: ["organizations"], queryFn: () => api.get<OrganizationSummary[]>("/organizations") })
+  const orgsQ = useQuery({ queryKey: ["organizations"], queryFn: () => api.get<OrganizationSummary[]>("/organizations/") })
   const orgs = orgsQ.data
   const org = orgs?.find(o => o.id === orgId)
 
@@ -585,7 +612,8 @@ export default function Organizations() {
         <LeftPanel orgs={[]} nodes={undefined} node={null} onNode={() => undefined} />
         <div className="flex-1 flex items-center justify-center p-12 text-center text-muted-foreground">
           <div><Building2 className="h-12 w-12 mx-auto mb-4 opacity-30" /><p className="font-medium">No organizations yet</p>
-            <p className="text-sm mt-1">An organization is added from its primary domain.</p></div>
+            <p className="text-sm mt-1">An organization is added from its primary domain.</p>
+            <div className="mt-4"><AddOrganizationButton size="default" /></div></div>
         </div>
       </div>
     )

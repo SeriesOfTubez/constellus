@@ -177,7 +177,7 @@ export function summariseQuery(q: QueryObject): string {
 
 // ── links ─────────────────────────────────────────────────────────────────────
 
-const INTERNAL_HREF = /^\/(assets|findings|entities)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const INTERNAL_HREF = /^\/(assets|findings|organizations\/entity)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** The only links an answer may render: a record page by id. Everything else
  *  (external URLs, autolinks, `www.` literals, `javascript:`, anchors) is

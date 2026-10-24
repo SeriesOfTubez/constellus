@@ -122,6 +122,13 @@ export interface CandidateDetail extends CandidateRow {
 
 export type Segment = "all" | "candidates" | "claimed" | "rejected"
 export const SEGMENTS: Segment[] = ["all", "candidates", "claimed", "rejected"]
+
+/** Candidates is the review queue, so it is the default view, except for an org with
+ *  nothing to review but something claimed (e.g. just added from its seed), where an
+ *  empty Candidates view would hide the claimed domains. */
+export function defaultSegment(org: Pick<OrganizationSummary, "claimed" | "proposed">): Segment {
+  return org.proposed === 0 && org.claimed > 0 ? "all" : "candidates"
+}
 export const SEGMENT_LABEL: Record<Segment, string> = {
   all: "All", candidates: "Candidates", claimed: "Claimed", rejected: "Rejected",
 }
@@ -325,4 +332,123 @@ export function eventText(e: CandidateEvent, connectorName: string | null): stri
   const by = e.connector_instance_id ? ` by ${connectorName ? `connector ${connectorName}` : "a connector"}` : ""
   const reason = e.reason ? `: ${e.reason}` : ""
   return `${e.event}${by}${reason}`
+}
+
+// ── add-organization flow (planning#277 S2c) ────────────────────────────────
+
+export type OrgRelationship = "ours" | "ma_target"
+
+export interface FilingStats {
+  total_filings: number
+  first_filing: string | null
+  last_filing: string | null
+  latest_10k: string | null
+  partial: boolean
+}
+
+export interface FilerHit {
+  cik: string
+  display_name: string | null
+  edgar_url: string
+  matched_filings: { form: string; file_date: string | null; accession: string }[]
+  why: string[]
+  stats: FilingStats | null
+  entity_id: string | null
+}
+
+export interface AddOrganizationResponse {
+  organization_id: string
+  relationship: OrgRelationship
+  engagement: unknown | null
+  candidate_id: string | null
+  target_id: string | null
+  assignment_role: string | null
+  ingest_run_id: string | null
+  ingest: "queued" | "already_running" | "not_requested"
+}
+
+export interface AddOrgState {
+  domain: string
+  /** The chosen filer's CIK; null = "None of these: continue without a filer". */
+  cik: string | null
+  orgName: string
+  relationship: OrgRelationship | null
+  reference: string
+  engagementName: string
+}
+
+export interface AddOrgRequest {
+  seed_domain: string
+  org_name: string
+  cik: string | null
+  relationship: OrgRelationship
+  reference: string
+  engagement_name: string | null
+}
+
+/** "N filings, YYYY–YYYY, latest 10-K YYYY-MM-DD (partial)". Null without stats. */
+export function filerStatsLine(stats: FilingStats | null): string | null {
+  if (!stats) return null
+  const parts = [`${stats.total_filings} filing${stats.total_filings === 1 ? "" : "s"}`]
+  if (stats.first_filing && stats.last_filing) {
+    const a = stats.first_filing.slice(0, 4)
+    const b = stats.last_filing.slice(0, 4)
+    parts.push(a === b ? a : `${a}–${b}`)
+  }
+  if (stats.latest_10k) parts.push(`latest 10-K ${stats.latest_10k}`)
+  const line = parts.join(", ")
+  return stats.partial ? `${line} (partial)` : line
+}
+
+export function addOrgRequest(s: AddOrgState): AddOrgRequest {
+  if (!s.relationship) throw new Error("relationship is required")
+  return {
+    seed_domain: s.domain.trim(),
+    org_name: s.orgName.trim(),
+    cik: s.cik,
+    relationship: s.relationship,
+    reference: s.reference.trim(),
+    engagement_name: s.relationship === "ma_target" ? s.engagementName.trim() : null,
+  }
+}
+
+/** Cosmetic gating; the server enforces. Step 2 (filer) is always valid: "none" is a choice. */
+export function addOrgStepValid(step: 1 | 2 | 3, s: AddOrgState, canMarkOurs: boolean): boolean {
+  if (step === 1) return s.domain.trim().length > 0
+  if (step === 2) return true
+  if (!s.orgName.trim() || !s.reference.trim() || !s.relationship) return false
+  if (s.relationship === "ours") return canMarkOurs
+  return s.engagementName.trim().length > 0
+}
+
+export interface RelationshipOption { value: OrgRelationship; label: string; disabled: boolean; hint: string | null }
+
+const OURS_HINT = "Needs permission to mark organizations as ours"
+
+export function relationshipOptions(canMarkOurs: boolean, preset?: OrgRelationship): RelationshipOption[] {
+  const ours: RelationshipOption = {
+    value: "ours", label: "Ours", disabled: !canMarkOurs, hint: canMarkOurs ? null : OURS_HINT,
+  }
+  const target: RelationshipOption = { value: "ma_target", label: "M&A target", disabled: false, hint: null }
+  if (preset === "ours") return [ours]
+  if (preset === "ma_target") return [target]
+  return [ours, target]
+}
+
+// ── entity links (planning#277 S2c) ───────────────────────────────────────────
+
+/** The one page link to a company. The route resolves which organization (and
+ *  which node in its tree) the entity belongs to, then redirects there. */
+export function entityHref(id: string): string {
+  return `/organizations/entity/${id}`
+}
+
+export interface LocateResponse { org_id: string; node: string | null }
+
+/** Where `locate` sends the browser: the org workspace, Companies tab, with the
+ *  node selected unless the entity is the root. */
+export function orgEntityTarget({ org_id, node }: LocateResponse): string {
+  const q = new URLSearchParams({ tab: "companies" })
+  if (node) q.set("node", node)
+  return `/organizations/${org_id}?${q.toString()}`
 }

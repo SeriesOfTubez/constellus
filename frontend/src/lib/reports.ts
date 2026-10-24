@@ -6,6 +6,7 @@
  */
 import { api } from "@/lib/api"
 import { exploreHref, isInternalHref, type QueryObject } from "@/lib/chat"
+import { entityHref } from "@/lib/organizations"
 
 export type ReportKind = "exec_summary" | "ma_brief"
 
@@ -165,7 +166,7 @@ export function citationHref(
     return isInternalHref(href) ? href : null
   }
   if (c.kind === "entity" && c.ref) {
-    const href = `/entities/${c.ref}`
+    const href = entityHref(c.ref)
     return isInternalHref(href) ? href : null
   }
   return null

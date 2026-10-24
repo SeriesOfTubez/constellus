@@ -8,18 +8,35 @@ import { useAuthStore } from "@/lib/auth"
  *  every permission independently, so never treat this as security. */
 export function useCan(): (perm: string) => boolean {
   const permissions = useAuthStore(s => s.user?.permissions)
-  return (perm: string) => permissions?.includes(perm) ?? false
+  return (perm: string) => holdsPermission(permissions, perm)
 }
 
-/** Refreshes the stored user once when its permissions are unknown (a session
- *  that predates the `permissions` field), so gated controls appear without a
- *  re-login. Failure is silent: the controls simply stay hidden. */
+/** Pure core of `useCan`: unknown (undefined) permissions hold nothing. */
+export function holdsPermission(permissions: string[] | undefined, perm: string): boolean {
+  return permissions?.includes(perm) ?? false
+}
+
+/** Refresh once per app load whenever a user is signed in, so a role change
+ *  shows without re-login (the persisted user's permissions may be stale). */
+export function shouldRefreshPermissions(hasUser: boolean, alreadyRefreshedThisLoad: boolean): boolean {
+  return hasUser && !alreadyRefreshedThisLoad
+}
+
+let refreshedThisLoad = false
+/** Test-only: forget that this load already refreshed. */
+export function resetPermissionsRefreshForTests(): void {
+  refreshedThisLoad = false
+}
+
+/** Refreshes the stored user from `/auth/me` once per app load (module-level
+ *  guard, so remounts don't refetch). Failure is silent: gates keep the
+ *  persisted permissions, or stay hidden if there were none. */
 export function usePermissionsSync(): void {
   const hasUser = useAuthStore(s => s.user !== null)
-  const known = useAuthStore(s => s.user?.permissions !== undefined)
   const setUser = useAuthStore(s => s.setUser)
   useEffect(() => {
-    if (!hasUser || known) return
+    if (!shouldRefreshPermissions(hasUser, refreshedThisLoad)) return
+    refreshedThisLoad = true
     api.get<User>("/auth/me").then(setUser).catch(() => undefined)
-  }, [hasUser, known, setUser])
+  }, [hasUser, setUser])
 }

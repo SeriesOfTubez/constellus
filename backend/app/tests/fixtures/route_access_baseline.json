@@ -405,6 +405,12 @@
  "GET /api/organizations/filer-search": [
   "admin"
  ],
+ "GET /api/organizations/locate/{entity_id}": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
  "GET /api/organizations/signal-types": [
   "admin",
   "integration_admin",

@@ -1228,7 +1228,7 @@ def test_render_markdown_for_ma_brief_escapes_hostile_names_in_title_and_rows():
     assert f"- a.example.com \\({EVIL_ESCAPED}\\)" in md                       # domain row
     assert f"- {EVIL_ESCAPED} \\[1\\]" in md                                   # the statement
     assert "entity: lists.family.rows\\[0\\].name" in md
-    assert "(/entities/11111111-1111-1111-1111-111111111111)" in md
+    assert "(/organizations/entity/11111111-1111-1111-1111-111111111111)" in md
     for heading in ("## Confirmed corporate family", "## Confirmed acquisitions", "## Confirmed former names",
                     "## Accepted candidate domains", "### Family"):
         assert heading in md

@@ -38,7 +38,6 @@ const NAV = [
   { to: "/explore",   label: "Explore",   icon: Network },
   { to: "/reports",   label: "Reports",   icon: FileText },
   { to: "/organizations", label: "Organizations", icon: Building2 },
-  { to: "/entities",  label: "Entities",  icon: Building2 },
 ]
 
 // One item shape, two modes. Collapsed items are a fixed 40×40 square; their

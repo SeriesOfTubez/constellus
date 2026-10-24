@@ -91,6 +91,7 @@ NOT_YET_SCOPED = {
     "/api/organizations/candidates/{candidate_id}": "entity",
     "/api/organizations/{org_id}/summary": "entity",
     "/api/organizations/{org_id}/tree": "entity",
+    "/api/organizations/locate/{entity_id}": "entity",
 }
 
 EXEMPT = {
