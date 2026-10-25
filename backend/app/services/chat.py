@@ -29,7 +29,7 @@ asked of the model:
 - **The answer is sanitised before it is stored or returned:** markdown
   images and raw HTML tags are removed (an injected image URL would
   exfiltrate data on render), autolinks are de-linked, and a link survives only when it points
-  at `/assets|/findings|/entities/<id>` for a record a tool returned in this
+  at `/assets|/findings|/organizations/entity/<id>` for a record a tool returned in this
   question. The UI (slice 2) renders with images and auto-links off as well.
 - **Every call is strict** (`chat_round` forces it) and goes through the
   ledger, budget and guardrail checks like any other LLM call.
@@ -101,7 +101,7 @@ Rules:
 - Build run_query objects from the registry below. Put every condition from the question in "where" (use null only when the question really asks for everything). Ports and their services are reached with {"exists": {"relation": "port", "where": ...}} on an asset query; findings of an asset with {"exists": {"relation": "finding", "where": ...}}. Company queries (entity, relation, domain) have no exists blocks; the family_of fields take an engagement id and mean the corporate family of that engagement's subject over CONFIRMED edges.
 - Do not set include.excluded_verifications unless the user asks about rejected or excluded findings. Do not set include.suppressed or include.third_party unless asked.
 - If a query is invalid, read the errors in the tool result and fix the query.
-- Cite records as markdown links: [hostname or title](/assets/<id>), [title](/findings/<id>), [name](/entities/<id>), using ids from tool results. Do not include images or any other links.
+- Cite records as markdown links: [hostname or title](/assets/<id>), [title](/findings/<id>), [name](/organizations/entity/<id>), using ids from tool results. Do not include images or any other links.
 - Be concise. If the data cannot answer the question, say so.
 
 REGISTRY: """
@@ -193,7 +193,7 @@ def _tool_run_query(db: Session, args: dict[str, Any], user: User) -> ToolOutcom
     counted = query_compiler.count_query(db, q, user)
     sample = query_compiler.run_query(db, q.model_copy(update={"limit": min(q.limit, ROWS_TO_MODEL)}), user)
     dumped = q.model_dump(by_alias=True, mode="json")
-    # asset, finding and entity rows are citable (/assets, /findings, /entities); relation and
+    # asset, finding and entity rows are citable (/assets, /findings, /organizations/entity); relation and
     # domain rows have no page of their own, so they produce no cite ids.
     cite = {str(r[k]) for r in sample["rows"] for k in ("asset.id", "finding.id", "entity.id") if r.get(k)}
     return ToolOutcome(
@@ -289,7 +289,7 @@ _AUTOLINK = re.compile(r"<((?:https?|ftp|mailto|data|javascript):[^<>\s]*)>", re
 _REF_DEF = re.compile(r"^[ \t]*\[[^\[\]\n]+\]:[ \t]*\S+.*$", re.MULTILINE)
 # An HTML tag: "<" then a letter or "/". "ports < 1024" and "<5" are not tags.
 _HTML_TAG = re.compile(r"</?[A-Za-z][^<>]*>")
-_INTERNAL = re.compile(r"^/(assets|findings|entities)/([0-9a-fA-F-]{36})$")
+_INTERNAL = re.compile(r"^/(assets|findings|organizations/entity)/([0-9a-fA-F-]{36})$")
 
 
 def sanitise(text: str, cite_ids: set[str]) -> tuple[str, dict[str, int]]:

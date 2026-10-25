@@ -96,6 +96,9 @@ export type User = {
   is_active: boolean
   created_at: string
   last_login_at: string | null
+  /** Effective permissions, from `/auth/me` only. Absent on a session persisted
+   *  before this field existed — treated as "unknown" (see `useCan`). */
+  permissions?: string[]
 }
 
 export type TokenResponse = {
@@ -115,8 +118,21 @@ export type ConnectorInstanceSummary = {
   // False when the bound organization no longer satisfies the binding rule
   // (its deal's engagement re-opened): syncing is paused.
   binding_ok: boolean
+  // Unresolved zone clashes recorded for this instance (planning#277).
+  open_zone_clashes: number
   created_at: string
   updated_at: string
+}
+
+export type ZoneClash = {
+  id: string
+  zone: string
+  reason: string
+  conflicting_candidate_id: string | null
+  conflicting_target_id: string | null
+  first_seen_at: string
+  last_seen_at: string
+  resolved_at: string | null
 }
 
 export type ConnectorTypeSummary = {

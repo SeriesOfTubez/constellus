@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { exploreHref, isInternalHref, type QueryObject } from "@/lib/chat"
+import { entityHref } from "@/lib/organizations"
 import {
   KIND_LABELS, SECTIONS_BY_KIND, citationHref, formatCount, listRowText,
   type Report, type Statement,
@@ -132,7 +133,7 @@ function FactLists({ report }: { report: Report }) {
               <ul className="list-disc pl-5 space-y-1">
                 {list.rows.map((row, i) => {
                   const text = listRowText(key, row)
-                  const href = `/entities/${row.entity_id}`
+                  const href = row.entity_id ? entityHref(row.entity_id) : ""
                   return (
                     <li key={i} className="text-sm">
                       {row.entity_id && isInternalHref(href)
@@ -192,8 +193,8 @@ export function ReportView({ report, engagementName, onDelete, onDownload }: Pro
         {report.kind === "ma_brief" && report.facts?.subject && (
           <p className="text-sm text-muted-foreground">
             Subject:{" "}
-            {isInternalHref(`/entities/${report.facts.subject.id}`)
-              ? <Link to={`/entities/${report.facts.subject.id}`} className="hover:underline">{report.facts.subject.name}</Link>
+            {isInternalHref(entityHref(report.facts.subject.id))
+              ? <Link to={entityHref(report.facts.subject.id)} className="hover:underline">{report.facts.subject.name}</Link>
               : report.facts.subject.name}
           </p>
         )}

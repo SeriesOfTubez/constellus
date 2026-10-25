@@ -88,12 +88,12 @@ describe("summariseQuery", () => {
 })
 
 describe("isInternalHref", () => {
-  it.each([`/assets/${ID}`, `/findings/${ID}`, `/entities/${ID.toUpperCase()}`])("accepts %s", h => {
+  it.each([`/assets/${ID}`, `/findings/${ID}`, `/organizations/entity/${ID.toUpperCase()}`])("accepts %s", h => {
     expect(isInternalHref(h)).toBe(true)
   })
   it.each([
     "", "https://evil.example", `https://evil.example/assets/${ID}`, `//evil.example/assets/${ID}`,
-    `/assets/${ID}/`, `/assets/${ID}?x=1`, `/assets/${ID}#x`, `/targets/${ID}`, "/assets/not-a-uuid",
+    `/assets/${ID}/`, `/assets/${ID}?x=1`, `/assets/${ID}#x`, `/targets/${ID}`, `/entities/${ID}`, `/organizations/${ID}`, "/assets/not-a-uuid",
     `/assets/${ID.replace(/-/g, "")}`, `javascript:/assets/${ID}`, ` /assets/${ID}`,
   ])("rejects %s", h => {
     expect(isInternalHref(h)).toBe(false)

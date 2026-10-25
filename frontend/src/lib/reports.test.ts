@@ -58,7 +58,7 @@ describe("SECTION_LABELS", () => {
 
 describe("citationHref entity", () => {
   it("links a uuid entity ref and refuses a non-uuid", () => {
-    expect(citationHref(cite("entity", ID), report)).toBe(`/entities/${ID}`)
+    expect(citationHref(cite("entity", ID), report)).toBe(`/organizations/entity/${ID}`)
     expect(citationHref(cite("entity", "x/../y"), report)).toBeNull()
     expect(citationHref(cite("entity", null), report)).toBeNull()
   })

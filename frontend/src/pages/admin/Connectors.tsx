@@ -2,7 +2,7 @@ import { useState, useEffect } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
-  Plug, FlaskConical, Save, Loader2, Search, Globe, RefreshCw, Zap, Bot, Plus, Trash2, TriangleAlert, Building2, Wand2,
+  Plug, FlaskConical, Save, Loader2, Search, Globe, RefreshCw, Zap, Bot, Plus, Trash2, TriangleAlert, Building2, Wand2, ChevronDown, ChevronRight,
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { AdminBreadcrumb } from "@/components/AdminBreadcrumb"
@@ -22,13 +22,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   api, type ApiError, type BindableOrganization, type BindingSuggestion, type ConnectorInstanceSummary,
-  type ConnectorTypeSummary, type ZoneEntry,
+  type ConnectorTypeSummary, type ZoneClash, type ZoneEntry,
 } from "@/lib/api"
 import { CORE_IMPACT_COPY } from "@/lib/connector-copy"
 import {
-  PHASE_ORDER, bindingErrorMessage, bindingWarning, canSync, deleteConflictMessage, groupByPhase, hasZones,
-  suggestionCopy,
+  BINDING_NEEDS_PERMISSION_COPY, PHASE_ORDER, bindingControl, bindingErrorMessage, bindingWarning, canSync, instancePatch,
+  clashReasonLabel, deleteConflictMessage, groupByPhase, hasZones, suggestionCopy,
 } from "@/lib/connectors"
+import { useCan } from "@/lib/permissions"
 
 const PHASE_META: Record<string, { label: string; description: string }> = {
   discovery:    { label: "Discovery",    description: "DNS and zone data sources" },
@@ -161,6 +162,7 @@ function GlobalCardBody({
           </div>
           <InstanceButtons type={type} instance={instance} onConfigure={onConfigure} />
         </div>
+        <div className="mt-2"><ClashesSection instance={instance} /></div>
       </CardContent>
     </>
   )
@@ -200,6 +202,85 @@ function SetUpBody({
   )
 }
 
+/** Collapsible "Clashes (n)": zones this instance listed that conflict with
+ * something already attributed elsewhere. Loaded only when expanded; nothing
+ * renders when there are none. Neutral/amber, never severity colours. */
+export function ClashesSection({ instance }: { instance: ConnectorInstanceSummary }) {
+  const [open, setOpen] = useState(false)
+  const n = instance.open_zone_clashes
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["connector-zone-clashes", instance.id],
+    queryFn: () => api.get<ZoneClash[]>(`/connectors/instances/${instance.id}/zone-clashes`),
+    enabled: open && n > 0,
+  })
+  if (!(n > 0)) return null
+  const Chevron = open ? ChevronDown : ChevronRight
+  return (
+    <div className="text-xs">
+      <button
+        type="button"
+        className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-medium"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Chevron className="h-3.5 w-3.5" />
+        Clashes ({n})
+      </button>
+      {open && (
+        <div className="mt-1.5 space-y-1.5">
+          {isLoading && <Skeleton className="h-8 w-full" />}
+          {error && <p className="text-destructive">{(error as ApiError).message || "Could not load clashes"}</p>}
+          {data?.map((c) => (
+            <div key={c.id} className="rounded border border-amber-500/30 px-2 py-1.5">
+              <p><span className="font-mono">{c.zone}</span> <span className="text-muted-foreground">{clashReasonLabel(c.reason)}</span></p>
+              <p className="text-muted-foreground">
+                first seen {new Date(c.first_seen_at).toLocaleDateString()} · last seen {new Date(c.last_seen_at).toLocaleDateString()}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Binding control for an account-scoped instance: the picker with
+ * entities.decide_candidate, else the current binding read-only. */
+export function InstanceBindingControl({
+  type, instance, org, onChange, getConfig,
+}: {
+  type: ConnectorTypeSummary
+  instance: ConnectorInstanceSummary
+  org: string
+  onChange: (id: string) => void
+  getConfig: () => Record<string, string | boolean>
+}) {
+  const can = useCan()
+  if (bindingControl(type.account_scoped, can("entities.decide_candidate")) === "picker") {
+    return (
+      <OrganizationField
+        type={type}
+        value={org}
+        onChange={onChange}
+        getConfig={getConfig}
+        instanceId={instance.id}
+        currentOrg={instance.bound_entity_id ? { id: instance.bound_entity_id, name: instance.bound_entity_name ?? "Bound organization" } : null}
+      />
+    )
+  }
+  return (
+    <div className="space-y-1">
+      <Label>Organization</Label>
+      <p className="text-sm">
+        {instance.bound_entity_id
+          ? `Bound to ${instance.bound_entity_name ?? "an organization"}`
+          : "Not bound to an organization"}
+      </p>
+      <p className="text-xs text-muted-foreground">{BINDING_NEEDS_PERMISSION_COPY}</p>
+    </div>
+  )
+}
+
 function AccountRow({
   type, instance, onConfigure, onDelete,
 }: {
@@ -231,6 +312,7 @@ function AccountRow({
           {warning}
         </p>
       )}
+      <ClashesSection instance={instance} />
       <InstanceButtons type={type} instance={instance} onConfigure={onConfigure} onDelete={onDelete} />
     </li>
   )
@@ -467,6 +549,21 @@ function OrganizationField({
   )
 }
 
+/** Add button for the Add sheet; blocked (disabled) for an account-scoped type when the user
+ * cannot bind an organization, since the org is required there. Reads the permission itself
+ * so the gate is testable outside the (SSR-empty) sheet portal. */
+export function AddInstanceButton({
+  accountScoped, disabled, pending, onClick,
+}: { accountScoped: boolean; disabled: boolean; pending: boolean; onClick: () => void }) {
+  const control = bindingControl(accountScoped, useCan()("entities.decide_candidate"))
+  return (
+    <Button onClick={onClick} disabled={disabled || control === "blocked"}>
+      {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+      Add
+    </Button>
+  )
+}
+
 function AddInstanceSheet({ type, onClose }: { type: ConnectorTypeSummary | null; onClose: () => void }) {
   const qc = useQueryClient()
   const [name, setName] = useState("")
@@ -474,6 +571,8 @@ function AddInstanceSheet({ type, onClose }: { type: ConnectorTypeSummary | null
   const [values, setValues] = useState<Record<string, string | boolean>>({})
   const [error, setError] = useState<string | null>(null)
   const typeId = type?.id
+  const canDecide = useCan()("entities.decide_candidate")
+  const control = bindingControl(!!type?.account_scoped, canDecide)
 
   useEffect(() => {
     if (type) {
@@ -517,15 +616,17 @@ function AddInstanceSheet({ type, onClose }: { type: ConnectorTypeSummary | null
             values={values}
             onChange={(key, v) => setValues((s) => ({ ...s, [key]: v }))}
           />
-          <OrganizationField type={type} value={org} onChange={setOrg} getConfig={() => values} />
+          {control === "picker" ? (
+            <OrganizationField type={type} value={org} onChange={setOrg} getConfig={() => values} />
+          ) : (
+            <p className="text-xs text-muted-foreground">{BINDING_NEEDS_PERMISSION_COPY}</p>
+          )}
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
         <SheetFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => { setError(null); create.mutate() }} disabled={create.isPending || !name.trim()}>
-            {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            Add
-          </Button>
+          <AddInstanceButton accountScoped={!!type.account_scoped} disabled={create.isPending || !name.trim()}
+            pending={create.isPending} onClick={() => { setError(null); create.mutate() }} />
         </SheetFooter>
       </SheetContent>
     </Sheet>
@@ -546,6 +647,7 @@ function ConfigSheet({
   const [org, setOrg] = useState("")
   const [error, setError] = useState<string | null>(null)
   const instanceId = instance?.id
+  const canDecide = useCan()("entities.decide_candidate")
 
   const { data } = useQuery({
     queryKey: ["connector-config", instanceId],
@@ -574,9 +676,7 @@ function ConfigSheet({
     mutationFn: async () => {
       if (!type || !instance) return
       if (type.account_scoped) {
-        const patch: Record<string, unknown> = {}
-        if (name.trim() !== instance.name) patch.name = name.trim()
-        if (org && org !== instance.bound_entity_id) patch.bound_entity_id = org
+        const patch = instancePatch(instance, { name, org }, canDecide)
         if (Object.keys(patch).length > 0) await api.patch(`/connectors/instances/${instance.id}`, patch)
       }
       await api.put(`/connectors/instances/${instance.id}/config`, { config: values })
@@ -604,14 +704,7 @@ function ConfigSheet({
               <Label htmlFor="instance-name">Name</Label>
               <Input id="instance-name" value={name} onChange={(e) => setName(e.target.value)} />
             </div>
-            <OrganizationField
-              type={type}
-              value={org}
-              onChange={setOrg}
-              getConfig={() => values}
-              instanceId={instance.id}
-              currentOrg={instance.bound_entity_id ? { id: instance.bound_entity_id, name: instance.bound_entity_name ?? "Bound organization" } : null}
-            />
+            <InstanceBindingControl type={type} instance={instance} org={org} onChange={setOrg} getConfig={() => values} />
             {bindingWarning(instance) && (
               <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
                 <TriangleAlert className="h-3.5 w-3.5 mt-0.5 shrink-0" />

@@ -89,6 +89,9 @@ NOT_YET_SCOPED = {
     "/api/organizations/": "entity",
     "/api/organizations/{org_id}/candidates": "entity",
     "/api/organizations/candidates/{candidate_id}": "entity",
+    "/api/organizations/{org_id}/summary": "entity",
+    "/api/organizations/{org_id}/tree": "entity",
+    "/api/organizations/locate/{entity_id}": "entity",
 }
 
 EXEMPT = {
@@ -111,6 +114,7 @@ EXEMPT = {
     "/api/notifications/digest-settings": "notification configuration",
     "/api/notifications/rules": "notification configuration",
     "/api/organizations/filer-search": "external SEC lookup; reads no stored rows",
+    "/api/organizations/signal-types": "the static signal catalogue; reads no stored rows",
     "/api/query/schema": "the static query schema; the rows come from POST /api/query, which applies read_scope",
     "/api/scan-templates/_/jobs": "admin-only scheduler state",
     "/api/settings/": "application settings",

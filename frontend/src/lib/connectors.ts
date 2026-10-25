@@ -84,3 +84,43 @@ export function deleteConflictMessage(err: Refusal): string | null {
   if (n === 0) return "Still used by targets — disable it instead"
   return `Used by ${n} target${n === 1 ? "" : "s"} — disable it instead`
 }
+
+const CLASH_REASONS: Record<string, string> = {
+  claimed_by_other_org: "already claimed by another organization",
+  target_in_other_scope: "already a target in another scope",
+  target_other_entity: "already a target of another company",
+  not_a_claimable_domain: "not a domain that can be claimed",
+  conflict_not_visible: "conflicts with something you can't see",
+}
+
+/** Plain-language reason for a zone clash; an unknown server reason renders raw. */
+export function clashReasonLabel(reason: string): string {
+  return CLASH_REASONS[reason] ?? reason
+}
+
+export const BINDING_NEEDS_PERMISSION_COPY = "Changing the binding needs permission to decide candidates."
+
+/** How the organization binding is presented (cosmetic; the server enforces
+ * entities.decide_candidate). "picker" with the permission; without it,
+ * "blocked" for an account-scoped type (org required, so Add is disabled) and
+ * "readonly" otherwise (the Edit sheet shows the current binding unchanged). */
+export function bindingControl(
+  accountScoped: boolean,
+  canDecide: boolean,
+): "picker" | "readonly" | "blocked" {
+  if (canDecide) return "picker"
+  return accountScoped ? "blocked" : "readonly"
+}
+
+/** The account-scoped PATCH body for an instance edit. The binding is only sent when the
+ * user may decide candidates (cosmetic; the server enforces) and it actually changed. */
+export function instancePatch(
+  current: { name: string; bound_entity_id: string | null },
+  edited: { name: string; org: string },
+  canDecide: boolean,
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = {}
+  if (edited.name.trim() !== current.name) patch.name = edited.name.trim()
+  if (canDecide && edited.org && edited.org !== current.bound_entity_id) patch.bound_entity_id = edited.org
+  return patch
+}

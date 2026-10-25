@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react"
-import { Link, useParams } from "react-router-dom"
+import { Link } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Check, ChevronLeft, Loader2, Sparkles, SquareArrowOutUpRight, X } from "lucide-react"
+import { Check, Loader2, Sparkles, SquareArrowOutUpRight, X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -26,6 +26,7 @@ import {
 } from "@/lib/api"
 import { useAuthStore } from "@/lib/auth"
 import { openEvidence } from "@/lib/evidence"
+import { entityHref } from "@/lib/organizations"
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -210,8 +211,8 @@ function AcquisitionReadPanel({ isAdmin, run, hasSections, busy, onStart }: {
   )
 }
 
-export default function EntityDetail() {
-  const { id = "" } = useParams<{ id: string }>()
+export function EntityDetailContent({ entityId }: { entityId: string }) {
+  const id = entityId
   const qc = useQueryClient()
   const { user } = useAuthStore()
   const isAdmin = user?.role === "admin"
@@ -339,14 +340,11 @@ export default function EntityDetail() {
   })
 
   if (entitiesLoading) {
-    return <div className="p-6 max-w-6xl mx-auto space-y-3">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-16 w-full" />)}</div>
+    return <div className="space-y-3">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-16 w-full" />)}</div>
   }
   if (!entity) {
     return (
-      <div className="p-6 max-w-6xl mx-auto space-y-4">
-        <Link to="/entities" className="inline-flex items-center text-sm text-muted-foreground hover:text-primary">
-          <ChevronLeft className="h-4 w-4" /> Entities
-        </Link>
+      <div className="space-y-4">
         <Empty>Entity not found.</Empty>
       </div>
     )
@@ -359,12 +357,8 @@ export default function EntityDetail() {
   const unassignedLiveEngagements = liveEngagements.filter(e => e.subject_entity_id === null)
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-8">
+    <div className="space-y-8">
       <div className="space-y-2">
-        <Link to="/entities" className="inline-flex items-center text-sm text-muted-foreground hover:text-primary">
-          <ChevronLeft className="h-4 w-4" /> Entities
-        </Link>
-        <h1 className="text-2xl font-semibold">{entity.legal_name}</h1>
         <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
           <span>CIK <span className="font-mono">{entity.cik ?? "—"}</span></span>
           {entity.lei && <span>LEI <span className="font-mono">{entity.lei}</span></span>}
@@ -459,7 +453,7 @@ export default function EntityDetail() {
                     return (
                       <TableRow key={`${edge.subject}-${edge.object}-${edge.relation}`}>
                         <TableCell className="font-medium align-top">
-                          <Link to={`/entities/${other}`} className="hover:text-primary">{nameById.get(other) ?? other}</Link>
+                          <Link to={entityHref(other)} className="hover:text-primary">{nameById.get(other) ?? other}</Link>
                         </TableCell>
                         <TableCell className="align-top">
                           {edge.confirmed ? <Badge>Confirmed</Badge> : <Badge variant="outline">Proposed</Badge>}
@@ -536,7 +530,7 @@ export default function EntityDetail() {
                     <li key={j} className={appeared ? "text-green-700 dark:text-green-400" : ""} data-appeared={appeared || undefined}>
                       {appeared && "+ "}
                       {r.subsidiary_entity_id
-                        ? <Link to={`/entities/${r.subsidiary_entity_id}`} className="hover:underline">{r.name}</Link>
+                        ? <Link to={entityHref(r.subsidiary_entity_id)} className="hover:underline">{r.name}</Link>
                         : r.name}
                       {r.jurisdiction && <span className="text-muted-foreground"> — {r.jurisdiction}</span>}
                     </li>

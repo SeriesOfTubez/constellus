@@ -30,3 +30,10 @@ class UserResponse(BaseModel):
     last_login_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+
+class MeResponse(UserResponse):
+    """`/auth/me` only: the caller's own effective permissions. Not on
+    `UserResponse`, so user administration never lists another user's."""
+
+    permissions: list[str]

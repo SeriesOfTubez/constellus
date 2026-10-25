@@ -28,48 +28,38 @@ class SignalSpec:
     family: str
     built: bool  # has a generator/verifier in this slice
     description: str
+    label: str = ""  # short human name for the UI (every entry sets one; a test enforces it)
 
 
 SIGNALS: dict[str, SignalSpec] = {
-    "admin_seed": SignalSpec(STRONG, "seed", True, "An admin named this domain when adding the organization."),
-    "person_evidence": SignalSpec(STRONG, "person", True, "A person added the domain with a sourced excerpt."),
+    "admin_seed": SignalSpec(STRONG, "seed", True, "An admin named this domain when adding the organization.", label="Admin seed"),
+    "person_evidence": SignalSpec(STRONG, "person", True, "A person added the domain with a sourced excerpt.", label="Person evidence"),
     "filer_10k_website": SignalSpec(
-        STRONG, "filings", True, "A confirmed filer's own 10-K names it as its website."
-    ),
+        STRONG, "filings", True, "A confirmed filer's own 10-K names it as its website.", label="Filer 10-K website"),
     "connector_zone": SignalSpec(
-        STRONG, "connector", True, "An active zone in a connector account we hold (credentialed proof of control)."
-    ),
+        STRONG, "connector", True, "An active zone in a connector account we hold (credentialed proof of control).", label="Connector zone"),
     "registrant_email_claimed": SignalSpec(
-        STRONG, "registration", False, "Registrant email on a claimed domain (deferred: domain RDAP follow-up)."
-    ),
+        STRONG, "registration", False, "Registrant email on a claimed domain (deferred: domain RDAP follow-up).", label="Registrant email on claimed"),
     "redirect_to_claimed": SignalSpec(
-        STRONG, "capture", False, "The domain redirects into a claimed domain (planning#280)."
-    ),
+        STRONG, "capture", False, "The domain redirects into a claimed domain (planning#280).", label="Redirects to claimed"),
     "shared_vanity_ns": SignalSpec(
-        SUPPORTING, "dns_hosting", True, "Shares a vanity nameserver with a claimed domain."
-    ),
-    "mx_into_claimed": SignalSpec(SUPPORTING, "mail", True, "Its mail is routed through a claimed domain's MX."),
-    "spf_sender_shared": SignalSpec(SUPPORTING, "mail", True, "Its SPF names a sender shared with a claimed domain."),
+        SUPPORTING, "dns_hosting", True, "Shares a vanity nameserver with a claimed domain.", label="Shared vanity nameserver"),
+    "mx_into_claimed": SignalSpec(SUPPORTING, "mail", True, "Its mail is routed through a claimed domain's MX.", label="MX into claimed"),
+    "spf_sender_shared": SignalSpec(SUPPORTING, "mail", True, "Its SPF names a sender shared with a claimed domain.", label="Shared SPF sender"),
     "dmarc_report_to_claimed": SignalSpec(
-        SUPPORTING, "mail", True, "Its DMARC reports go to a claimed domain."
-    ),
+        SUPPORTING, "mail", True, "Its DMARC reports go to a claimed domain.", label="DMARC reports to claimed"),
     "dmarc_exact_vendor": SignalSpec(
-        SUPPORTING, "mail", True, "Its DMARC reporting address matches a claimed domain's at a known vendor."
-    ),
+        SUPPORTING, "mail", True, "Its DMARC reporting address matches a claimed domain's at a known vendor.", label="DMARC vendor address match"),
     "registrant_org_match": SignalSpec(
-        SUPPORTING, "registration", True, "Registrant organization matches a claimed domain's."
-    ),
+        SUPPORTING, "registration", True, "Registrant organization matches a claimed domain's.", label="Registrant organization match"),
     "research_quote": SignalSpec(
-        SUPPORTING, "research", False, "A researched source quotes the domain as the organization's."
-    ),
+        SUPPORTING, "research", False, "A researched source quotes the domain as the organization's.", label="Research quote"),
     "reverse_ip_dedicated": SignalSpec(
-        SUPPORTING, "hosting", True, "Shares a dedicated IP with a claimed domain."
-    ),
+        SUPPORTING, "hosting", True, "Shares a dedicated IP with a claimed domain.", label="Dedicated IP shared"),
     "dmarc_exact_generic": SignalSpec(
-        CONTEXT, "mail", True, "Its DMARC reporting address matches a claimed domain's, but the address is shared or not at a known vendor."
-    ),
-    "name_similarity": SignalSpec(CONTEXT, "name", False, "The domain resembles a claimed domain's name."),
-    "ai_mention": SignalSpec(CONTEXT, "research", False, "An AI read mentioned the domain."),
+        CONTEXT, "mail", True, "Its DMARC reporting address matches a claimed domain's, but the address is shared or not at a known vendor.", label="DMARC address match (generic)"),
+    "name_similarity": SignalSpec(CONTEXT, "name", False, "The domain resembles a claimed domain's name.", label="Name similarity"),
+    "ai_mention": SignalSpec(CONTEXT, "research", False, "An AI read mentioned the domain.", label="AI mention"),
 }
 
 

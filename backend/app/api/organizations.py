@@ -23,18 +23,23 @@ from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.api.deps import require_permission
+from app.api.findings import _NOT_EXCLUDED_FROM_MAIN, _OPEN_STATES
 from app.core.database import get_db
 from app.core.permissions import Permission, has_permission
 from app.models.connector_instance import ConnectorInstance
+from app.models.asset_canonical import AssetCanonical
 from app.models.engagement import Engagement, EngagementPosture
+from app.models.finding_canonical import FindingCanonical
 from app.models.org_entity import OrgEntity
 from app.models.scope_candidate import ScopeCandidate, ScopeCandidateEvent, ScopeSignal
+from app.models.target_asset_link import TargetAssetLink
 from app.models.user import User
 from app.services import audit, edgar_ingest, entity_relationship, organizations, read_scope, sec_edgar
+from app.services import org_tree as org_tree_sql
 from app.services.org_discovery import candidates, filer_search, runner
 from app.services.org_discovery import strength as strength_sql
 from app.services.org_discovery.tiers import SIGNALS
@@ -65,6 +70,41 @@ class OrganizationSummary(BaseModel):
     proposed: int
     leads: int
     rejected: int
+
+
+class LocateResponse(BaseModel):
+    org_id: uuid.UUID
+    node: uuid.UUID | None  # None when the entity IS the root
+
+
+class TreeNodeResponse(BaseModel):
+    entity_id: uuid.UUID
+    name: str
+    parent_id: uuid.UUID | None
+    relation: Literal["subsidiary_of", "acquired"] | None
+    event_date: str | None
+    status: Literal["confirmed", "proposed"]
+    depth: int
+
+
+class OrganizationDetailSummary(BaseModel):
+    claimed: int
+    to_review: int
+    leads: int
+    rejected: int
+    assets_under_claimed_scope: int
+    has_filer: bool
+    affiliates: int
+    proposed_affiliates: int
+
+
+class SignalTypeResponse(BaseModel):
+    signal_type: str
+    tier: str
+    family: str
+    label: str
+    description: str
+    built: bool
 
 
 class AddOrganizationRequest(BaseModel):
@@ -128,6 +168,14 @@ class PreviouslyRejected(BaseModel):
     at: str
 
 
+class SeverityCounts(BaseModel):
+    critical: int = 0
+    high: int = 0
+    medium: int = 0
+    low: int = 0
+    unknown: int = 0
+
+
 class CandidateRow(BaseModel):
     id: uuid.UUID
     root_entity_id: uuid.UUID
@@ -143,6 +191,15 @@ class CandidateRow(BaseModel):
     previously_rejected: PreviouslyRejected | None
     target_id: uuid.UUID | None
     decided_by_connector_instance_id: uuid.UUID | None = None
+    # Null unless the row is claimed AND has a target (planning#277 S2).
+    asset_count: int | None = None
+    open_findings: SeverityCounts | None = None
+    worst_severity: Literal["critical", "high", "medium", "low", "unknown"] | None = None
+
+
+class CandidatePage(BaseModel):
+    items: list[CandidateRow]
+    total: int
 
 
 class AnchorDetail(BaseModel):
@@ -230,17 +287,78 @@ def _http_error(exc: Exception) -> HTTPException:
 # ── shared reads ────────────────────────────────────────────────────────────
 
 
-def _require_visible_root(db: Session, user: User, org_id: uuid.UUID) -> uuid.UUID:
-    """404 unless `org_id` is a root the caller may read."""
+def _visible_root(db: Session, user: User, org_id: uuid.UUID) -> bool:
+    """Is `org_id` a root the caller may read?"""
     root = aliased(OrgEntity)
     found = db.execute(
         select(root.id).where(
             root.id == org_id, root.relationship.isnot(None), read_scope.entity_clause(user, root)
         )
     ).scalar_one_or_none()
-    if found is None:
+    return found is not None
+
+
+def _require_visible_root(db: Session, user: User, org_id: uuid.UUID) -> uuid.UUID:
+    """404 unless `org_id` is a root the caller may read."""
+    if not _visible_root(db, user, org_id):
         raise HTTPException(status_code=404, detail="Organization not found")
-    return found
+    return org_id
+
+
+def _aff_id_expr():
+    """The stored-or-default affiliate of a candidate: ONE expression, used by
+    the candidate list, the subtree filter and the summary."""
+    return func.coalesce(ScopeCandidate.affiliated_entity_id, strength_sql.default_affiliate_expr(ScopeCandidate.id))
+
+
+def _subtree_or_404(db: Session, user: User, org_id: uuid.UUID, node_id: uuid.UUID) -> set[uuid.UUID]:
+    try:
+        return org_tree_sql.subtree_ids(db, user, org_id, node_id)
+    except org_tree_sql.NodeNotInTree:
+        raise HTTPException(status_code=404, detail="Affiliate not found in this organization's tree")
+
+
+_SEVERITY_ORDER = ("critical", "high", "medium", "low", "unknown")
+
+
+def _target_rollups(db: Session, user: User, target_ids: set[uuid.UUID]) -> dict[uuid.UUID, tuple[int, SeverityCounts]]:
+    """Asset count and OPEN-finding severity counts per target, for a whole
+    page in two queries. "Open" is the Findings API's own definition
+    (`_OPEN_STATES`, not excluded by the shared-infra verifier); assets and
+    findings the caller may not read are not counted."""
+    if not target_ids:
+        return {}
+    link = TargetAssetLink
+    asset_counts = dict(db.execute(
+        select(link.target_id, func.count(func.distinct(link.asset_canonical_id)))
+        .join(AssetCanonical, AssetCanonical.id == link.asset_canonical_id)
+        .where(link.target_id.in_(target_ids), read_scope.asset_clause(user, AssetCanonical))
+        .group_by(link.target_id)
+    ).all())
+    sev: dict[uuid.UUID, dict[str, int]] = {}
+    for target_id, severity, n in db.execute(
+        select(link.target_id, FindingCanonical.severity, func.count(func.distinct(FindingCanonical.id)))
+        .join(AssetCanonical, AssetCanonical.id == link.asset_canonical_id)
+        .join(FindingCanonical, FindingCanonical.asset_canonical_id == AssetCanonical.id)
+        .where(
+            link.target_id.in_(target_ids),
+            FindingCanonical.state.in_(_OPEN_STATES),
+            _NOT_EXCLUDED_FROM_MAIN,
+            read_scope.finding_clause(user, FindingCanonical, AssetCanonical),
+        )
+        .group_by(link.target_id, FindingCanonical.severity)
+    ).all():
+        bucket = severity if severity in _SEVERITY_ORDER else "unknown"
+        sev.setdefault(target_id, {}).setdefault(bucket, 0)
+        sev[target_id][bucket] += n
+    return {t: (asset_counts.get(t, 0), SeverityCounts(**sev.get(t, {}))) for t in target_ids}
+
+
+def _worst(counts: SeverityCounts) -> str | None:
+    for name in _SEVERITY_ORDER:
+        if getattr(counts, name) > 0:
+            return name
+    return None
 
 
 def _candidate_query(db: Session, user: User, *, candidate_ids):
@@ -249,7 +367,7 @@ def _candidate_query(db: Session, user: User, *, candidate_ids):
     sc = ScopeCandidate
     root, aff = aliased(OrgEntity), aliased(OrgEntity)
     st = strength_sql.strength_subquery(candidate_ids=candidate_ids)
-    aff_id = func.coalesce(sc.affiliated_entity_id, strength_sql.default_affiliate_expr(sc.id))
+    aff_id = _aff_id_expr()
     query = (
         select(
             sc,
@@ -274,7 +392,7 @@ def _names(db: Session, ids: set[uuid.UUID]) -> dict[uuid.UUID, str]:
     return {i: n for i, n in db.execute(select(OrgEntity.id, OrgEntity.legal_name).where(OrgEntity.id.in_(ids))).all()}
 
 
-def _rows(db: Session, result_rows) -> list[CandidateRow]:
+def _rows(db: Session, user: User, result_rows) -> list[CandidateRow]:
     """Candidate rows -> responses, with the signal summaries, first-seen
     and previously-rejected fields fetched for the whole page in two
     queries."""
@@ -303,9 +421,15 @@ def _rows(db: Session, result_rows) -> list[CandidateRow]:
         .order_by(ev.at.asc())
     ).all():
         previous[cid] = PreviouslyRejected(reason=reason, at=at.isoformat())  # latest wins
+    rollups = _target_rollups(
+        db, user,
+        {r.ScopeCandidate.target_id for r in result_rows
+         if r.ScopeCandidate.status == "claimed" and r.ScopeCandidate.target_id is not None},
+    )
     out: list[CandidateRow] = []
     for r in result_rows:
         c = r.ScopeCandidate
+        rollup = rollups.get(c.target_id) if c.status == "claimed" and c.target_id is not None else None
         out.append(CandidateRow(
             id=c.id, root_entity_id=c.root_entity_id, value=c.value, kind=c.kind, status=c.status,
             strength=r.strength, proposable=bool(r.proposable),
@@ -316,6 +440,9 @@ def _rows(db: Session, result_rows) -> list[CandidateRow]:
             previously_rejected=previous.get(c.id),
             target_id=c.target_id,
             decided_by_connector_instance_id=c.decided_by_connector_instance_id,
+            asset_count=rollup[0] if rollup else None,
+            open_findings=rollup[1] if rollup else None,
+            worst_severity=_worst(rollup[1]) if rollup else None,
         ))
     return out
 
@@ -325,7 +452,7 @@ def _one_row(db: Session, user: User, candidate_id: uuid.UUID) -> tuple[Candidat
     row = db.execute(query.where(ScopeCandidate.id == candidate_id).execution_options(populate_existing=True)).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    return _rows(db, [row])[0], row.ScopeCandidate
+    return _rows(db, user, [row])[0], row.ScopeCandidate
 
 
 def _require_visible_candidate(db: Session, user: User, candidate_id: uuid.UUID) -> None:
@@ -464,15 +591,14 @@ def list_organizations(
 
     sc = ScopeCandidate
     st = strength_sql.strength_subquery(candidate_ids=select(sc.id).where(sc.root_entity_id.in_(root_ids)))
-    is_open = sc.status == "open"
     counts = {
         r.root_entity_id: r
         for r in db.execute(
             select(
                 sc.root_entity_id,
                 func.count().filter(sc.status == "claimed").label("claimed"),
-                func.count().filter(and_(is_open, st.proposable)).label("proposed"),
-                func.count().filter(and_(is_open, ~st.proposable, st.signal_count >= 1)).label("leads"),
+                func.count().filter(strength_sql.is_to_review(sc.status, st)).label("proposed"),
+                func.count().filter(strength_sql.is_lead(sc.status, st)).label("leads"),
                 func.count().filter(sc.status == "rejected").label("rejected"),
             )
             .select_from(sc)
@@ -512,38 +638,159 @@ def list_organizations(
     return out
 
 
+# ── catalogue, tree, summary ────────────────────────────────────────────────
+
+
+@router.get("/signal-types", response_model=list[SignalTypeResponse])
+def list_signal_types(_=Depends(require_permission(Permission.ENTITIES_READ))):
+    """The static signal catalogue (`tiers.SIGNALS`), for labels and filters."""
+    return [
+        SignalTypeResponse(
+            signal_type=t, tier=spec.tier, family=spec.family, label=spec.label,
+            description=spec.description, built=spec.built,
+        )
+        for t, spec in SIGNALS.items()
+    ]
+
+
+@router.get("/locate/{entity_id}", response_model=LocateResponse)
+def locate_entity(
+    entity_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_READ)),
+):
+    """Which organization page shows this entity? Membership is decided by the same
+    read-scoped `org_tree` walk `/tree` uses, so the page always contains the node."""
+    ent = aliased(OrgEntity)
+    entity = db.execute(
+        select(ent).where(ent.id == entity_id, read_scope.entity_clause(current_user, ent))
+    ).scalar_one_or_none()
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    if entity.relationship is not None and _visible_root(db, current_user, entity.id):
+        return LocateResponse(org_id=entity.id, node=None)
+    # resolve() only proposes candidates (it ignores read scope); the tree decides.
+    stops = sorted(entity_relationship.resolve(db, entity_id).stops, key=lambda s: (s.depth, str(s.entity_id)))
+    for stop in stops:
+        if not _visible_root(db, current_user, stop.entity_id):
+            continue
+        for n in org_tree_sql.org_tree(db, current_user, stop.entity_id):
+            if n.entity_id == entity_id and n.status == "confirmed":
+                return LocateResponse(org_id=stop.entity_id, node=entity_id)
+    raise HTTPException(status_code=404, detail="Not part of an organization you can see")
+
+
+@router.get("/{org_id}/tree", response_model=list[TreeNodeResponse])
+def get_tree(
+    org_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_READ)),
+):
+    _require_visible_root(db, current_user, org_id)
+    return [
+        TreeNodeResponse(
+            entity_id=n.entity_id, name=n.name, parent_id=n.parent_id, relation=n.relation,
+            event_date=n.event_date.isoformat() if n.event_date else None, status=n.status, depth=n.depth,
+        )
+        for n in org_tree_sql.org_tree(db, current_user, org_id)
+    ]
+
+
+@router.get("/{org_id}/summary", response_model=OrganizationDetailSummary)
+def get_summary(
+    org_id: uuid.UUID,
+    subtree_of: uuid.UUID | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_READ)),
+):
+    _require_visible_root(db, current_user, org_id)
+    nodes = org_tree_sql.org_tree(db, current_user, org_id)
+    scope_ids = _subtree_or_404(db, current_user, org_id, subtree_of) if subtree_of is not None else None
+    sc = ScopeCandidate
+    st = strength_sql.strength_subquery(candidate_ids=select(sc.id).where(sc.root_entity_id == org_id))
+    in_scope = [sc.root_entity_id == org_id, read_scope.domain_clause(current_user, sc)]
+    if scope_ids is not None:
+        in_scope.append(_aff_id_expr().in_(scope_ids))
+    c = db.execute(
+        select(
+            func.count().filter(sc.status == "claimed").label("claimed"),
+            func.count().filter(strength_sql.is_to_review(sc.status, st)).label("to_review"),
+            func.count().filter(strength_sql.is_lead(sc.status, st)).label("leads"),
+            func.count().filter(sc.status == "rejected").label("rejected"),
+        )
+        .select_from(sc)
+        .outerjoin(st.subquery, st.candidate_id == sc.id)
+        .where(*in_scope)
+    ).one()
+    claimed_targets = select(sc.target_id).where(*in_scope, sc.status == "claimed", sc.target_id.is_not(None))
+    assets = db.execute(
+        select(func.count(func.distinct(TargetAssetLink.asset_canonical_id)))
+        .join(AssetCanonical, AssetCanonical.id == TargetAssetLink.asset_canonical_id)
+        .where(TargetAssetLink.target_id.in_(claimed_targets), read_scope.asset_clause(current_user, AssetCanonical))
+    ).scalar_one()
+    has_filer = db.execute(select(OrgEntity.cik.is_not(None)).where(OrgEntity.id == org_id)).scalar_one()
+    return OrganizationDetailSummary(
+        claimed=c.claimed, to_review=c.to_review, leads=c.leads, rejected=c.rejected,
+        assets_under_claimed_scope=assets, has_filer=bool(has_filer),
+        affiliates=sum(1 for n in nodes if n.status == "confirmed" and n.parent_id is not None),
+        proposed_affiliates=sum(1 for n in nodes if n.status == "proposed"),
+    )
+
+
 # ── candidates ──────────────────────────────────────────────────────────────
 
 
-@router.get("/{org_id}/candidates", response_model=list[CandidateRow])
+@router.get("/{org_id}/candidates", response_model=CandidatePage)
 def list_candidates(
     org_id: uuid.UUID,
     status: Literal["open", "claimed", "rejected", "all"] = "open",
     include_leads: bool = False,
     strength: Literal["strong", "supporting", "lead", "context"] | None = None,
     affiliated_entity_id: uuid.UUID | None = None,
+    subtree_of: uuid.UUID | None = None,
+    q: str | None = Query(None, max_length=253),
+    signal_type: str | None = None,
+    leads_only: bool = False,
     limit: int = Query(_DEFAULT_LIMIT, ge=1, le=_MAX_LIMIT),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission(Permission.ENTITIES_READ)),
 ):
     _require_visible_root(db, current_user, org_id)
+    if signal_type is not None and signal_type not in SIGNALS:
+        raise HTTPException(status_code=422, detail="Unknown signal_type")
+    scope_ids = _subtree_or_404(db, current_user, org_id, subtree_of) if subtree_of is not None else None
     sc = ScopeCandidate
     query, st, aff_id = _candidate_query(
         db, current_user, candidate_ids=select(sc.id).where(sc.root_entity_id == org_id)
     )
     query = query.where(sc.root_entity_id == org_id)
-    if status != "all":
-        query = query.where(sc.status == status)
-    if not include_leads:
-        # An open candidate is shown only once it clears the propose bar.
-        query = query.where(or_(sc.status != "open", st.proposable))
+    if leads_only:
+        # Exactly the summary's `leads` bucket: status / include_leads do not apply.
+        query = query.where(strength_sql.is_lead(sc.status, st))
+    else:
+        if status != "all":
+            query = query.where(sc.status == status)
+        if not include_leads:
+            # An open candidate is shown only once it clears the propose bar.
+            query = query.where(or_(sc.status != "open", st.proposable))
+    if scope_ids is not None:
+        query = query.where(aff_id.in_(scope_ids))
+    if q:
+        # Bound parameter; LIKE wildcards in the input are matched literally.
+        literal = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.where(sc.value.ilike(f"%{literal}%", escape="\\"))
+    if signal_type is not None:
+        query = query.where(
+            exists().where(ScopeSignal.candidate_id == sc.id, ScopeSignal.signal_type == signal_type)
+        )
     if strength is not None:
         query = query.where(st.strength == strength)
     if affiliated_entity_id is not None:
         query = query.where(aff_id == affiliated_entity_id)
+    total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
     query = query.order_by(st.rank.desc(), sc.value, sc.id).limit(limit).offset(offset)
-    return _rows(db, db.execute(query).all())
+    return CandidatePage(items=_rows(db, current_user, db.execute(query).all()), total=total)
 
 
 @router.get("/candidates/{candidate_id}", response_model=CandidateDetail)

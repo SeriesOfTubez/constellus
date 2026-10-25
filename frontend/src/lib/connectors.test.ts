@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import type { BindingSuggestion } from "@/lib/api"
 import { inst, typ } from "@/lib/connectors.fixtures"
 import {
-  bindingErrorMessage, bindingWarning, canSync, deleteConflictMessage, groupByPhase, hasZones, suggestionCopy,
+  bindingControl, bindingErrorMessage, bindingWarning, clashReasonLabel, canSync, deleteConflictMessage, groupByPhase, hasZones, instancePatch, suggestionCopy,
 } from "@/lib/connectors"
 
 describe("groupByPhase", () => {
@@ -69,5 +69,38 @@ describe("deleteConflictMessage", () => {
   })
   it("is null for any other status", () => {
     expect(deleteConflictMessage({ status: 500, body: { target_ids: ["a"] } })).toBeNull()
+  })
+})
+
+describe("clashReasonLabel", () => {
+  it("words all five server reasons and passes an unknown one through", () => {
+    expect(clashReasonLabel("claimed_by_other_org")).toBe("already claimed by another organization")
+    expect(clashReasonLabel("target_in_other_scope")).toBe("already a target in another scope")
+    expect(clashReasonLabel("target_other_entity")).toBe("already a target of another company")
+    expect(clashReasonLabel("not_a_claimable_domain")).toBe("not a domain that can be claimed")
+    expect(clashReasonLabel("conflict_not_visible")).toBe("conflicts with something you can't see")
+    expect(clashReasonLabel("brand_new_reason")).toBe("brand_new_reason")
+  })
+})
+
+describe("bindingControl", () => {
+  it("covers all four combinations", () => {
+    expect(bindingControl(true, true)).toBe("picker")
+    expect(bindingControl(true, false)).toBe("blocked")
+    expect(bindingControl(false, true)).toBe("picker")
+    expect(bindingControl(false, false)).toBe("readonly")
+  })
+})
+
+describe("instancePatch", () => {
+  const cur = { name: "A", bound_entity_id: "o1" }
+  it("sends a changed binding only with decide permission", () => {
+    expect(instancePatch(cur, { name: "A", org: "o2" }, true)).toEqual({ bound_entity_id: "o2" })
+    expect(instancePatch(cur, { name: "A", org: "o2" }, false)).toEqual({})
+  })
+  it("omits an unchanged or empty binding even with permission, and always sends a rename", () => {
+    expect(instancePatch(cur, { name: "A", org: "o1" }, true)).toEqual({})
+    expect(instancePatch(cur, { name: "A", org: "" }, true)).toEqual({})
+    expect(instancePatch(cur, { name: " B ", org: "o2" }, false)).toEqual({ name: "B" })
   })
 })

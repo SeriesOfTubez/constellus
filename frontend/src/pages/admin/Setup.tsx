@@ -18,7 +18,7 @@ import { CORE_IMPACT_COPY } from "@/lib/connector-copy"
 import { useAuthStore } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 
-import { CompanySeedStep } from "@/pages/admin/CompanySeedStep"
+import { SetupOrganizationStep } from "@/pages/admin/SetupOrganizationStep"
 
 const STEPS = ["Welcome", "Admin Account", "Connect data sources", "Your company", "Done"]
 
@@ -379,7 +379,7 @@ export default function Setup() {
           {step === 2 && <ConnectSourcesStep onContinue={() => setStep(3)} />}
 
           {/* Step 3: Your company (planning#232) */}
-          {step === 3 && <CompanySeedStep onContinue={() => setStep(4)} />}
+          {step === 3 && <SetupOrganizationStep onContinue={() => setStep(4)} />}
 
           {/* Step 4: Done */}
           {step === 4 && (
