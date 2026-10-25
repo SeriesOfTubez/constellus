@@ -191,10 +191,18 @@ class CandidateRow(BaseModel):
     previously_rejected: PreviouslyRejected | None
     target_id: uuid.UUID | None
     decided_by_connector_instance_id: uuid.UUID | None = None
+    # Set exactly for an ASN or CIDR (migration 0087).
+    rir: str | None = None
+    rir_handle: str | None = None
     # Null unless the row is claimed AND has a target (planning#277 S2).
     asset_count: int | None = None
     open_findings: SeverityCounts | None = None
     worst_severity: Literal["critical", "high", "medium", "low", "unknown"] | None = None
+
+
+class ClaimResponse(CandidateRow):
+    # CIDR candidates claimed by an ASN claim's cascade (0 for a domain or CIDR).
+    claimed_prefixes: int = 0
 
 
 class CandidatePage(BaseModel):
@@ -440,6 +448,7 @@ def _rows(db: Session, user: User, result_rows) -> list[CandidateRow]:
             previously_rejected=previous.get(c.id),
             target_id=c.target_id,
             decided_by_connector_instance_id=c.decided_by_connector_instance_id,
+            rir=c.rir, rir_handle=c.rir_handle,
             asset_count=rollup[0] if rollup else None,
             open_findings=rollup[1] if rollup else None,
             worst_severity=_worst(rollup[1]) if rollup else None,
@@ -603,7 +612,7 @@ def list_organizations(
             )
             .select_from(sc)
             .outerjoin(st.subquery, st.candidate_id == sc.id)
-            .where(sc.root_entity_id.in_(root_ids), read_scope.domain_clause(current_user, sc))
+            .where(sc.root_entity_id.in_(root_ids), sc.kind == "domain", read_scope.domain_clause(current_user, sc))
             .group_by(sc.root_entity_id)
         ).all()
     }
@@ -708,7 +717,7 @@ def get_summary(
     scope_ids = _subtree_or_404(db, current_user, org_id, subtree_of) if subtree_of is not None else None
     sc = ScopeCandidate
     st = strength_sql.strength_subquery(candidate_ids=select(sc.id).where(sc.root_entity_id == org_id))
-    in_scope = [sc.root_entity_id == org_id, read_scope.domain_clause(current_user, sc)]
+    in_scope = [sc.root_entity_id == org_id, sc.kind == "domain", read_scope.domain_clause(current_user, sc)]
     if scope_ids is not None:
         in_scope.append(_aff_id_expr().in_(scope_ids))
     c = db.execute(
@@ -744,6 +753,7 @@ def get_summary(
 def list_candidates(
     org_id: uuid.UUID,
     status: Literal["open", "claimed", "rejected", "all"] = "open",
+    kind: Literal["domain", "asn", "cidr"] = "domain",
     include_leads: bool = False,
     strength: Literal["strong", "supporting", "lead", "context"] | None = None,
     affiliated_entity_id: uuid.UUID | None = None,
@@ -764,7 +774,7 @@ def list_candidates(
     query, st, aff_id = _candidate_query(
         db, current_user, candidate_ids=select(sc.id).where(sc.root_entity_id == org_id)
     )
-    query = query.where(sc.root_entity_id == org_id)
+    query = query.where(sc.root_entity_id == org_id, sc.kind == kind)
     if leads_only:
         # Exactly the summary's `leads` bucket: status / include_leads do not apply.
         query = query.where(strength_sql.is_lead(sc.status, st))
@@ -890,7 +900,7 @@ def add_candidate(
     return _one_row(db, current_user, candidate.id)[0]
 
 
-@router.post("/candidates/{candidate_id}/claim", response_model=CandidateRow)
+@router.post("/candidates/{candidate_id}/claim", response_model=ClaimResponse)
 def claim_candidate(
     request: Request,
     candidate_id: uuid.UUID,
@@ -919,15 +929,22 @@ def claim_candidate(
         value=c.value,
         destination=c.accepted_into,
         engagement=str(c.engagement_id) if c.engagement_id else None,
-        target=str(result.target.id),
+        target=str(result.target.id) if result.target is not None else None,
         created=result.created,
+        kind=c.kind,
+        claimed_prefixes=[str(p.candidate.id) for p in result.prefixes],
     )
-    if result.created:
-        from app.api.targets import _launch_initial_discovery
+    from app.api.targets import _launch_initial_discovery
 
+    if result.created:
         _launch_initial_discovery(db, result.target, current_user.id, background_tasks)
-    background_tasks.add_task(runner.verify_after_claim, c.id)
-    return _one_row(db, current_user, candidate_id)[0]
+    for prefix in result.prefixes:
+        if prefix.created:
+            _launch_initial_discovery(db, prefix.target, current_user.id, background_tasks)
+    if c.kind == "domain":
+        background_tasks.add_task(runner.verify_after_claim, c.id)
+    row = _one_row(db, current_user, candidate_id)[0]
+    return ClaimResponse(**row.model_dump(), claimed_prefixes=len(result.prefixes))
 
 
 @router.post("/candidates/{candidate_id}/reject", response_model=CandidateRow)

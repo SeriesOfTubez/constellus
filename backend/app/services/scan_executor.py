@@ -638,7 +638,7 @@ def _org_discovery_reverse_ip(db: Session, scope: dict) -> None:
     claimed_ids = list(db.execute(
         select(ScopeCandidate.id)
         .join(Target, Target.id == ScopeCandidate.target_id)
-        .where(Target.value.in_(values), ScopeCandidate.status == "claimed")
+        .where(Target.value.in_(values), ScopeCandidate.kind == "domain", ScopeCandidate.status == "claimed")
         .order_by(ScopeCandidate.id)
     ).scalars())
     for candidate_id in claimed_ids:

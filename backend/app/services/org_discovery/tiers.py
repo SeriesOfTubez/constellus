@@ -6,11 +6,11 @@ is a LEAD: stored, not shown in the default queue.
 
 `built` says whether a generator or verifier for the type exists in the
 code base today. A type that is not built is still in the table (and in
-migration 0083's CHECK) so the SQL strength calculation and the tests can
+migrations 0083 / 0087's CHECK) so the SQL strength calculation and the tests can
 exercise it before its generator lands; the invariant test refuses a
 `record_signal(signal_type=...)` call site for a type that is not built.
 
-`SIGNALS.keys()` must equal migration 0083's `SIGNAL_TYPES`
+`SIGNALS.keys()` must equal migration 0087's `SIGNAL_TYPES`
 (`test_org_discovery_schema.py`).
 """
 
@@ -60,6 +60,28 @@ SIGNALS: dict[str, SignalSpec] = {
         CONTEXT, "mail", True, "Its DMARC reporting address matches a claimed domain's, but the address is shared or not at a known vendor.", label="DMARC address match (generic)"),
     "name_similarity": SignalSpec(CONTEXT, "name", False, "The domain resembles a claimed domain's name.", label="Name similarity"),
     "ai_mention": SignalSpec(CONTEXT, "research", False, "An AI read mentioned the domain.", label="AI mention"),
+    "rir_contact_email_claimed": SignalSpec(
+        STRONG, "rir", False,
+        "A validated RIR organization, person or role contact email is at a claimed domain, on a handle that holds RIR-issued resources.",
+        label="RIR contact email on claimed"),
+    "rir_contact_email_unvalidated": SignalSpec(
+        SUPPORTING, "rir_unvalidated", False,
+        "An RIR contact email is at a claimed domain, on a resource-holding handle, but the contact has not passed the RIR's validation.",
+        label="RIR contact email (unvalidated)"),
+    "rir_allocation_dedicated_ip": SignalSpec(
+        SUPPORTING, "rir_ip", False,
+        "The handle holds an allocation containing a claimed IP address classified as dedicated.",
+        label="Allocation holds a dedicated IP"),
+    "peeringdb_website_claimed": SignalSpec(
+        SUPPORTING, "peeringdb", False, "The PeeringDB organization's website is a claimed domain.",
+        label="PeeringDB website is claimed"),
+    "rir_reassigned_elsewhere": SignalSpec(
+        CONTEXT, "rir", False,
+        "The prefix lies inside a matched handle's allocation but is reassigned to another handle.",
+        label="Reassigned to another handle"),
+    "bgp_announced_not_allocated": SignalSpec(
+        CONTEXT, "bgp", False, "A matched ASN announces the prefix, but it is allocated to another handle.",
+        label="Announced, not allocated"),
 }
 
 

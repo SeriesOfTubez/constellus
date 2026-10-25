@@ -161,7 +161,7 @@ def record_reverse_ip(
     Never reads an entity name.
     """
     result = ReverseIpResult()
-    if claimed.status != "claimed":
+    if claimed.status != "claimed" or claimed.kind != "domain":
         return result
     claimed_value = claimed.value
     claimed_apex = apex_domain(claimed_value)
@@ -197,7 +197,8 @@ def record_reverse_ip(
         arrived = min(claimed_here)
         root_claimed = set(db.execute(
             select(ScopeCandidate.value).where(
-                ScopeCandidate.root_entity_id == root_id, ScopeCandidate.status == "claimed"
+                ScopeCandidate.root_entity_id == root_id, ScopeCandidate.kind == "domain",
+                ScopeCandidate.status == "claimed",
             )
         ).scalars())
 
