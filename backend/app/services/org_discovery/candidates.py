@@ -52,9 +52,10 @@ or any Supporting/Context signal, is stored and changes nothing.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from sqlalchemy import literal_column, select
@@ -68,16 +69,18 @@ from app.models.org_entity import RELATIONSHIP_MA_TARGET, RELATIONSHIP_OURS, Org
 from app.models.scope_candidate import (
     ANCHOR_KINDS,
     CANDIDATE_KINDS,
+    RIRS,
     ScopeCandidate,
     ScopeCandidateEvent,
     ScopeSignal,
 )
 from app.models.target import Target, TargetType, VerificationMethod
-from app.services import entity_graph, entity_relationship, target_service
+from app.services import cloud_ranges, entity_graph, entity_relationship, target_service
 from app.services.org_discovery import strength as strength_sql
 from app.services.org_discovery.tiers import SIGNALS, STRONG
 
 TARGET_SOURCE_TYPE = "candidate_domain"
+CIDR_TARGET_SOURCE_TYPE = "candidate_cidr"
 
 # Same shape as migration 0083's `ck_scope_candidates_domain_shape`.
 _DOMAIN_RE = re.compile(r"^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})$")
@@ -136,6 +139,82 @@ def normalise_domain(value: str) -> str:
     return canonical
 
 
+_ASN_RE = re.compile(r"^(?:as)?([0-9]{1,10})$", re.IGNORECASE)
+# Private / reserved ASNs (RFC 6996, 7300, 6793). The documentation ranges
+# (RFC 5398: 64496-64511, 65536-65551) are NOT here: they are allowed.
+_BAD_ASN_RANGES = (
+    (0, 0), (23456, 23456), (64512, 65534), (65535, 65535), (4200000000, 4294967294), (4294967295, 4294967295),
+)
+
+
+def normalise_asn(value: str) -> str:
+    """Canonical form stored in `scope_candidates.value` for an ASN:
+    `AS<number>`. Accepts `AS64500`, `as64500` and `64500` (trimmed).
+    Raises `CandidateInvalid` for anything that is not a public ASN
+    (0, AS_TRANS 23456, 64512-65535 and 4200000000-4294967295, or beyond 32 bits)."""
+    match = _ASN_RE.match((value or "").strip())
+    if match is None:
+        raise CandidateInvalid("not an ASN (expected AS64500 or 64500)")
+    number = int(match.group(1))
+    if number > 4294967295 or any(low <= number <= high for low, high in _BAD_ASN_RANGES):
+        raise CandidateInvalid("not a public ASN (zero, AS_TRANS, private-use or reserved)")
+    return f"AS{number}"
+
+
+# Space an organization cannot own, as networks so that a prefix which merely
+# OVERLAPS one (a /1, a supernet) is refused as well as one inside it.
+# Documentation ranges (RFC 5737, 2001:db8::/32) are deliberately absent.
+_NON_CLAIMABLE_V4 = tuple(ipaddress.ip_network(n) for n in (
+    "0.0.0.0/8",        # "this network", unspecified
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",  # RFC 1918
+    "100.64.0.0/10",    # CGNAT
+    "127.0.0.0/8",      # loopback
+    "169.254.0.0/16",   # link-local
+    "224.0.0.0/4",      # multicast
+    "240.0.0.0/4",      # reserved (and the broadcast address)
+))
+_NON_CLAIMABLE_V6 = tuple(ipaddress.ip_network(n) for n in (
+    "::/96",            # unspecified, loopback and the deprecated IPv4-compatible block
+    "::ffff:0:0/96",    # IPv4-mapped
+    "fc00::/7",         # unique local
+    "fe80::/10",        # link-local
+    "ff00::/8",         # multicast
+))
+_GLOBAL_UNICAST_V6 = ipaddress.ip_network("2000::/3")  # everything else is reserved
+
+
+def normalise_cidr(value: str) -> str:
+    """Canonical form stored in `scope_candidates.value` for a CIDR: Python's
+    `str(network)`, which equals Postgres's `value::cidr::text` (lower-case,
+    `::` compressed). Host bits set is refused (strict). Raises
+    `CandidateInvalid` for a network that is, or overlaps, loopback,
+    link-local, multicast, unspecified, reserved, RFC 1918, CGNAT, ULA or the
+    IPv4-mapped / IPv4-compatible IPv6 blocks."""
+    try:
+        network = ipaddress.ip_network((value or "").strip(), strict=True)
+    except ValueError as exc:
+        raise CandidateInvalid(f"not a CIDR: {exc}") from exc
+    if network.version == 4:
+        blocked = any(network.overlaps(b) for b in _NON_CLAIMABLE_V4)
+    else:
+        blocked = any(network.overlaps(b) for b in _NON_CLAIMABLE_V6) or not network.subnet_of(_GLOBAL_UNICAST_V6)
+    if blocked:
+        raise CandidateInvalid("not a claimable public network (private, reserved, loopback, link-local or multicast space)")
+    return str(network).lower()
+
+
+def _normalise_registry(rir: str | None, rir_handle: str | None) -> tuple[str, str]:
+    """`rir` (lower-cased, one of `RIRS`) and the holder handle (trimmed,
+    non-empty, otherwise kept as written) an ASN / CIDR candidate requires."""
+    rir = (rir or "").strip().lower()
+    if rir not in RIRS:
+        raise CandidateInvalid(f"rir must be one of {', '.join(sorted(RIRS))}")
+    handle = (rir_handle or "").strip()
+    if not handle:
+        raise CandidateInvalid("rir_handle is required for an ASN or CIDR")
+    return rir, handle
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -190,12 +269,19 @@ def record_signal(
     quote: str | None = None,
     observer_id: uuid.UUID | None = None,
     matched_values: list[str] | None = None,
+    rir: str | None = None,
+    rir_handle: str | None = None,
 ) -> SignalOutcome:
     """Record one signal for (root, kind, value), creating the candidate if
     this is its first Strong/Supporting signal. Flushes; never commits.
 
     `matched_values` is what the two domains share (a verifier's NS host,
-    an IP, ...); stored sorted and de-duplicated, never empty."""
+    an IP, ...); stored sorted and de-duplicated, never empty.
+
+    `kind` 'asn' / 'cidr' REQUIRE `rir` and `rir_handle` (the registry and the
+    holder handle the resource was found under) and a domain refuses them. An
+    existing candidate under a different registry / handle is a conflict: a
+    prefix is never silently moved between holders."""
     spec = SIGNALS.get(signal_type)
     if spec is None:
         raise CandidateInvalid(f"unknown signal type {signal_type!r}")
@@ -207,7 +293,19 @@ def record_signal(
             raise CandidateInvalid("matched values, when given, must not be empty")
     if kind not in CANDIDATE_KINDS:
         raise CandidateInvalid(f"unknown candidate kind {kind!r}")
-    value = normalise_domain(value)
+    if kind == "domain":
+        if rir is not None or rir_handle is not None:
+            raise CandidateInvalid("rir and rir_handle are only for an ASN or CIDR")
+        value = normalise_domain(value)
+        quote_needle = value
+    else:
+        rir, rir_handle = _normalise_registry(rir, rir_handle)
+        if kind == "asn":
+            value = normalise_asn(value)
+            quote_needle = value.lower()
+        else:
+            value = normalise_cidr(value)
+            quote_needle = str(ipaddress.ip_network(value).network_address)
     if anchor_kind not in ANCHOR_KINDS:
         raise CandidateInvalid(f"unknown anchor kind {anchor_kind!r}")
 
@@ -225,8 +323,14 @@ def record_signal(
             raise CandidateInvalid("quote is required")
         if len(quote) > _MAX_QUOTE:
             raise CandidateInvalid(f"quote is longer than {_MAX_QUOTE} characters")
-        if value not in quote.lower():
-            raise CandidateInvalid("quote must contain the domain as written (ASCII or punycode form)")
+        if quote_needle not in quote.lower():
+            raise CandidateInvalid(
+                {
+                    "domain": "quote must contain the domain as written (ASCII or punycode form)",
+                    "asn": "quote must contain the ASN as written",
+                    "cidr": "quote must contain the network address (the registry's range or prefix as written)",
+                }[kind]
+            )
 
     if not _in_tree(db, root_entity_id, via_entity_id):
         raise CandidateInvalid(f"via entity is {NOT_IN_TREE_MESSAGE}")
@@ -269,7 +373,10 @@ def record_signal(
             return SignalOutcome(outcome="skipped_context_only")
         inserted = db.execute(
             pg_insert(ScopeCandidate.__table__)
-            .values(id=uuid.uuid4(), root_entity_id=root_entity_id, kind=kind, value=value, status="open")
+            .values(
+                id=uuid.uuid4(), root_entity_id=root_entity_id, kind=kind, value=value, status="open",
+                rir=rir, rir_handle=rir_handle,
+            )
             .on_conflict_do_nothing(constraint="uq_scope_candidates_root_kind_value")
             .returning(ScopeCandidate.__table__.c.id)
         ).scalar()
@@ -283,6 +390,10 @@ def record_signal(
             )
             .execution_options(populate_existing=True)
         ).scalar_one()
+    if (candidate.rir, candidate.rir_handle) != (rir, rir_handle):
+        raise CandidateConflict(
+            f"{value} is already a candidate under a different registry or holder handle; it is never moved"
+        )
 
     table = ScopeSignal.__table__
     row = db.execute(
@@ -421,10 +532,20 @@ def add_by_person(
 
 
 @dataclass
-class ClaimResult:
+class PrefixClaim:
+    """One CIDR candidate claimed by an ASN's cascade."""
+
     candidate: ScopeCandidate
     target: Target
     created: bool
+
+
+@dataclass
+class ClaimResult:
+    candidate: ScopeCandidate
+    target: Target | None  # None for an ASN: it has no target, its prefixes do
+    created: bool
+    prefixes: list[PrefixClaim] = field(default_factory=list)  # an ASN's cascaded CIDRs
 
 
 def _strength_row(db: Session, candidate_id: uuid.UUID):
@@ -466,8 +587,8 @@ def _destination(db: Session, root: OrgEntity) -> Engagement | None:
 
 
 def _attach_or_create_target(
-    db: Session, *, value: str, destination_id: uuid.UUID | None, entity_id: uuid.UUID, user, now: datetime,
-    elsewhere_message: str, other_entity_message: str,
+    db: Session, *, value: str, target_type: TargetType, source_type: str, destination_id: uuid.UUID | None,
+    entity_id: uuid.UUID, user, now: datetime, elsewhere_message: str, other_entity_message: str,
 ) -> tuple[Target, bool]:
     # FOR UPDATE: the check below and the write must not interleave with another
     # claim attributing the same target (held until the caller's commit).
@@ -483,13 +604,13 @@ def _attach_or_create_target(
         return existing, False
     target = Target(
         id=uuid.uuid4(),
-        type=TargetType.DOMAIN.value,
+        type=target_type.value,
         value=value,
         verified=True,
         verification_method=VerificationMethod.MANUAL.value,
         verified_by_id=user.id,
         verified_at=now,
-        source_type=TARGET_SOURCE_TYPE,
+        source_type=source_type,
         engagement_id=destination_id,
         entity_id=entity_id,
     )
@@ -499,10 +620,11 @@ def _attach_or_create_target(
 
 def _write_claim(
     db: Session, candidate: ScopeCandidate, *, affiliated_id: uuid.UUID, destination_id: uuid.UUID | None,
-    target: Target, user, now: datetime, connector_instance: ConnectorInstance | None = None,
+    target: Target | None, user, now: datetime, connector_instance: ConnectorInstance | None = None,
 ) -> None:
     """The decider is a person (`user`) or, for `claim_by_connector`, a
-    connector instance (`user` None): exactly one of the two."""
+    connector instance (`user` None): exactly one of the two. `target` is
+    None only for an ASN."""
     candidate.status = "claimed"
     candidate.affiliated_entity_id = affiliated_id
     candidate.decided_at = now
@@ -510,12 +632,84 @@ def _write_claim(
     candidate.decided_by_connector_instance_id = connector_instance.id if connector_instance is not None else None
     candidate.accepted_into = "engagement" if destination_id is not None else "estate"
     candidate.engagement_id = destination_id
-    candidate.target_id = target.id
+    candidate.target_id = target.id if target is not None else None
     db.add(ScopeCandidateEvent(
         id=uuid.uuid4(), candidate_id=candidate.id, event="claimed",
         user_id=user.id if user is not None else None,
         connector_instance_id=connector_instance.id if connector_instance is not None else None,
     ))
+
+
+def _require_cloud_dataset(db: Session) -> None:
+    """Fail CLOSED: a prefix cannot be shown not to be cloud space while the
+    cloud-range dataset has never been loaded. A stale dataset still counts
+    as loaded. Called once per claim of a CIDR or an ASN, before any prefix."""
+    if cloud_ranges.dataset_state(db) is None:
+        raise CandidateConflict(
+            "the cloud-range dataset has not been loaded, so this prefix cannot be shown not to be cloud space"
+        )
+
+
+def _claim_rolled_back(exc: IntegrityError) -> CandidateConflict:
+    # Most likely `uq_targets_value` (the same target added concurrently).
+    constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None) or "integrity error"
+    return CandidateConflict(f"claim was rolled back ({constraint}); nothing was changed")
+
+
+def _refuse_cloud_space(db: Session, prefix: str) -> None:
+    """Cloud and hosting space is never claimable (planning#278): a
+    provider's published range is the provider's, whoever rents an address."""
+    if cloud_ranges.overlaps_any(db, prefix):
+        raise CandidateConflict(f"{prefix} overlaps published cloud ranges; cloud and hosting space is never claimable")
+
+
+def _claim_handle_prefixes(
+    db: Session, *, asn: ScopeCandidate, affiliated_id: uuid.UUID, destination_id: uuid.UUID | None, user, now: datetime,
+) -> list[PrefixClaim]:
+    """Claiming an ASN claims its RIR handle's ALLOCATIONS (never its BGP
+    announcements): every CIDR candidate of the same root, registry and
+    handle that is `open` and proposable becomes a CIDR target in the same
+    destination, with the same affiliate, in the caller's transaction.
+    Rejected and already-claimed prefixes are left alone. Locks the handle's
+    CIDR candidates `ORDER BY id`. Flushes only. Raises `CandidateConflict`
+    (the caller rolls back) when ANY of the handle's prefixes, in any status,
+    overlaps a published cloud range, or when a prefix cannot be claimed."""
+    handle_cidrs = list(db.execute(
+        select(ScopeCandidate).where(
+            ScopeCandidate.root_entity_id == asn.root_entity_id,
+            ScopeCandidate.kind == "cidr",
+            ScopeCandidate.rir == asn.rir,
+            ScopeCandidate.rir_handle == asn.rir_handle,
+        ).order_by(ScopeCandidate.id).with_for_update().execution_options(populate_existing=True)
+    ).scalars())
+    for cidr in handle_cidrs:
+        if cloud_ranges.overlaps_any(db, cidr.value):
+            raise CandidateConflict(
+                f"the holder's space ({cidr.value}) overlaps published cloud ranges; "
+                "cloud and hosting ASNs are never claimable"
+            )
+    open_ids = [c.id for c in handle_cidrs if c.status == "open"]
+    proposable: set[uuid.UUID] = set()
+    if open_ids:
+        s = strength_sql.strength_subquery(candidate_ids=open_ids)
+        proposable = set(db.execute(select(s.subquery.c.candidate_id).where(s.subquery.c.proposable)).scalars())
+    claimed: list[PrefixClaim] = []
+    for cidr in handle_cidrs:
+        if cidr.id not in proposable:
+            continue
+        target, created = _attach_or_create_target(
+            db, value=cidr.value, target_type=TargetType.CIDR, source_type=CIDR_TARGET_SOURCE_TYPE,
+            destination_id=destination_id, entity_id=affiliated_id, user=user, now=now,
+            elsewhere_message=f"{cidr.value} is already a target outside this destination; change it on the target itself",
+            other_entity_message=f"the target {cidr.value} is already attributed to a different entity",
+        )
+        if created:
+            db.flush()
+        _write_claim(db, cidr, affiliated_id=affiliated_id, destination_id=destination_id,
+                     target=target, user=user, now=now)
+        claimed.append(PrefixClaim(candidate=cidr, target=target, created=created))
+    db.flush()
+    return claimed
 
 
 def claim_by_connector(
@@ -534,6 +728,8 @@ def claim_by_connector(
         raise CandidateNotFound("candidate not found")
     if locked.status != "open":
         raise CandidateConflict(f"candidate is already {locked.status}")
+    if locked.kind != "domain":
+        raise CandidateConflict("a connector zone can only claim a domain")
     if instance.bound_entity_id is None or locked.root_entity_id != instance.bound_entity_id:
         raise CandidateConflict("the candidate belongs to a different organization than the connector instance")
     from app.services.connector_instances import SCOPE_ESTATE, instance_scope_key
@@ -624,15 +820,38 @@ def claim(
         raise CandidateInvalid(f"affiliated company is {NOT_IN_TREE_MESSAGE}")
 
     now = _now()
+    target: Target | None = None
+    created = False
+    prefixes: list[PrefixClaim] = []
     try:
-        target, created = _attach_or_create_target(
-            db, value=candidate.value, destination_id=destination_id, entity_id=affiliated_id, user=user, now=now,
-            elsewhere_message="that domain is already a target outside this destination; change it on the target itself",
-            other_entity_message="that target is already attributed to a different entity",
-        )
+        if candidate.kind in ("asn", "cidr"):
+            _require_cloud_dataset(db)
+        if candidate.kind == "asn":
+            prefixes = _claim_handle_prefixes(
+                db, asn=candidate, affiliated_id=affiliated_id, destination_id=destination_id, user=user, now=now,
+            )
+        elif candidate.kind == "cidr":
+            _refuse_cloud_space(db, candidate.value)
+            target, created = _attach_or_create_target(
+                db, value=candidate.value, target_type=TargetType.CIDR, source_type=CIDR_TARGET_SOURCE_TYPE,
+                destination_id=destination_id, entity_id=affiliated_id, user=user, now=now,
+                elsewhere_message="that prefix is already a target outside this destination; change it on the target itself",
+                other_entity_message="that target is already attributed to a different entity",
+            )
+        else:
+            target, created = _attach_or_create_target(
+                db, value=candidate.value, target_type=TargetType.DOMAIN, source_type=TARGET_SOURCE_TYPE,
+                destination_id=destination_id, entity_id=affiliated_id, user=user, now=now,
+                elsewhere_message="that domain is already a target outside this destination; change it on the target itself",
+                other_entity_message="that target is already attributed to a different entity",
+            )
     except CandidateConflict:
         db.rollback()
         raise
+    except IntegrityError as exc:
+        # A flush inside the ASN cascade (or a target insert): nothing is committed.
+        db.rollback()
+        raise _claim_rolled_back(exc) from exc
 
     try:
         if created:
@@ -644,18 +863,21 @@ def claim(
                      target=target, user=user, now=now)
         db.commit()
     except IntegrityError as exc:
-        # Most likely `uq_targets_value` (the same target added
-        # concurrently). Either way nothing was written: the target insert
-        # and the decision share this one commit.
+        # Nothing was written: the target insert and the decision share this one commit.
         db.rollback()
-        constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None) or "integrity error"
-        raise CandidateConflict(f"claim was rolled back ({constraint}); nothing was changed") from exc
+        raise _claim_rolled_back(exc) from exc
     db.refresh(candidate)
-    db.refresh(target)
+    if target is not None:
+        db.refresh(target)
     if created:
         # Tag rules -- the same step `ensure_pending` runs for a new target.
         target_service._apply_target_rules(db, target)
-    return ClaimResult(candidate=candidate, target=target, created=created)
+    for prefix in prefixes:
+        db.refresh(prefix.candidate)
+        db.refresh(prefix.target)
+        if prefix.created:
+            target_service._apply_target_rules(db, prefix.target)
+    return ClaimResult(candidate=candidate, target=target, created=created, prefixes=prefixes)
 
 
 def _claim_seed(
@@ -667,13 +889,16 @@ def _claim_seed(
     seed's own `admin_seed` signal is Strong; that is checked, not assumed).
     The destination is the one the caller just created. Flushes only; the
     caller owns the commit and the rollback."""
+    if candidate.kind != "domain":
+        raise ValueError("the seed candidate must be a domain")
     row = _strength_row(db, candidate.id)
     if row is None or not row.proposable or "admin_seed" not in (row.strong_types or []):
         raise RuntimeError("the seed candidate has no admin_seed signal")
     destination_id = engagement.id if engagement is not None else None
     now = _now()
     target, created = _attach_or_create_target(
-        db, value=candidate.value, destination_id=destination_id, entity_id=root.id, user=user, now=now,
+        db, value=candidate.value, target_type=TargetType.DOMAIN, source_type=TARGET_SOURCE_TYPE,
+        destination_id=destination_id, entity_id=root.id, user=user, now=now,
         elsewhere_message=elsewhere_message, other_entity_message=elsewhere_message,
     )
     if created:

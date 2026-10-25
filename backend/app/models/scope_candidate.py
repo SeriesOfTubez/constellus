@@ -7,11 +7,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
-# Mirror the CHECK-backed vocabularies in migration 0083 by hand (the same
-# pattern as `entity_relation.py`). `test_org_discovery_schema.py` fails if
-# any of these drifts from the migration's lists; `SIGNAL_TYPES` is also
-# compared with `org_discovery.tiers.SIGNALS`.
-CANDIDATE_KINDS: frozenset[str] = frozenset({"domain"})
+# Mirror the CHECK-backed vocabularies in migrations 0083 / 0086 / 0087 by
+# hand (the same pattern as `entity_relation.py`). `test_org_discovery_schema.py`
+# fails if any of these drifts from the migration's lists; `SIGNAL_TYPES` is
+# also compared with `org_discovery.tiers.SIGNALS`.
+CANDIDATE_KINDS: frozenset[str] = frozenset({"domain", "asn", "cidr"})
+# The registries an ASN / CIDR candidate's `rir` may name (migration 0087).
+RIRS: frozenset[str] = frozenset({"arin", "ripe", "apnic", "lacnic", "afrinic"})
 CANDIDATE_STATUSES: frozenset[str] = frozenset({"open", "claimed", "rejected"})
 ACCEPTED_INTO: frozenset[str] = frozenset({"engagement", "estate"})
 SIGNAL_TYPES: frozenset[str] = frozenset({
@@ -20,14 +22,17 @@ SIGNAL_TYPES: frozenset[str] = frozenset({
     "mx_into_claimed", "spf_sender_shared", "dmarc_report_to_claimed",
     "dmarc_exact_vendor", "registrant_org_match", "research_quote",
     "reverse_ip_dedicated", "dmarc_exact_generic", "name_similarity", "ai_mention",
+    "rir_contact_email_claimed", "rir_allocation_dedicated_ip", "peeringdb_website_claimed",
+    "rir_reassigned_elsewhere", "bgp_announced_not_allocated",
+    "rir_contact_email_unvalidated",
 })
 ANCHOR_KINDS: frozenset[str] = frozenset({"claimed_candidate", "filer_filing", "person", "connector_instance"})
 EVENT_KINDS: frozenset[str] = frozenset({"claimed", "rejected", "unlocked"})
 
 
 class ScopeCandidate(Base):
-    """Something (a domain today) that may belong to a root organization
-    (planning#277 S1a). Never scan scope by itself: only `claim`, called by
+    """Something (a domain, an ASN or a CIDR) that may belong to a root
+    organization (planning#277 S1a, planning#278 S3a). Never scan scope by itself: only `claim`, called by
     a person, turns one into a `Target`.
 
     Migration 0083's docstring carries the invariants: root/kind/value are
@@ -35,12 +40,18 @@ class ScopeCandidate(Base):
     only, and every decision column follows `status`. Strength is not stored;
     it is calculated on load from the candidate's `ScopeSignal` rows
     (`org_discovery.strength`).
+
+    An ASN or CIDR carries the RIR and holder handle it was found under
+    (`rir`, `rir_handle`, both immutable; NULL exactly for a domain, migration
+    0087). Claiming an ASN claims the CIDR candidates with the same RIR and
+    handle; each claimed CIDR becomes a CIDR target, an ASN has none.
     """
 
     __tablename__ = "scope_candidates"
     __table_args__ = (
         UniqueConstraint("root_entity_id", "kind", "value", name="uq_scope_candidates_root_kind_value"),
         Index("ix_scope_candidates_root_status", "root_entity_id", "status"),
+        Index("ix_scope_candidates_root_rir_handle", "root_entity_id", "rir", "rir_handle"),
         # The post-discovery reverse-IP step finds claimed candidates by target (0084).
         Index("ix_scope_candidates_target_id", "target_id"),
     )
@@ -51,6 +62,9 @@ class ScopeCandidate(Base):
     )
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     value: Mapped[str] = mapped_column(Text, nullable=False)
+    # The registry and holder handle of an ASN / CIDR candidate; NULL for a domain (migration 0087).
+    rir: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rir_handle: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="open", server_default=text("'open'"))
     affiliated_entity_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("org_entities.id", ondelete="RESTRICT"), nullable=True

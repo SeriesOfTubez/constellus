@@ -260,6 +260,7 @@ def verify_pair(
         claimed_domains = frozenset(db.execute(
             select(ScopeCandidate.value).where(
                 ScopeCandidate.root_entity_id == candidate.root_entity_id,
+                ScopeCandidate.kind == "domain",
                 ScopeCandidate.status == "claimed",
             )
         ).scalars())

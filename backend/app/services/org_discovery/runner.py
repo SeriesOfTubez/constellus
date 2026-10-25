@@ -70,7 +70,10 @@ def _run_pair(
         # Facts first: `collect` commits, so it must not run over pending writes.
         candidate = db.get(ScopeCandidate, candidate_id)
         anchor = db.get(ScopeCandidate, anchor_id)
-        if candidate is None or anchor is None or candidate.status != "open" or anchor.status != "claimed":
+        if (
+            candidate is None or anchor is None or candidate.status != "open" or anchor.status != "claimed"
+            or candidate.kind != "domain" or anchor.kind != "domain"
+        ):
             report.candidates_skipped += 1
             return
         cf = _facts(db, cache, candidate.value)
@@ -107,6 +110,7 @@ def _claimed_ids(db: Session, root_entity_id: uuid.UUID, *, excluding: uuid.UUID
     return list(db.execute(
         select(ScopeCandidate.id).where(
             ScopeCandidate.root_entity_id == root_entity_id,
+            ScopeCandidate.kind == "domain",
             ScopeCandidate.status == "claimed",
             ScopeCandidate.id != excluding,
         ).order_by(ScopeCandidate.id)
@@ -122,7 +126,7 @@ def verify_new_candidates(candidate_ids: list[uuid.UUID]) -> VerifyReport:
     try:
         for candidate_id in candidate_ids:
             candidate = db.get(ScopeCandidate, candidate_id)
-            if candidate is None or candidate.status != "open":
+            if candidate is None or candidate.status != "open" or candidate.kind != "domain":
                 report.candidates_skipped += 1
                 continue
             root_id = candidate.root_entity_id
@@ -145,12 +149,13 @@ def verify_after_claim(claimed_candidate_id: uuid.UUID) -> VerifyReport:
     db = SessionLocal()
     try:
         anchor = db.get(ScopeCandidate, claimed_candidate_id)
-        if anchor is None or anchor.status != "claimed":
+        if anchor is None or anchor.status != "claimed" or anchor.kind != "domain":
             report.candidates_skipped += 1
         else:
             open_ids = list(db.execute(
                 select(ScopeCandidate.id).where(
                     ScopeCandidate.root_entity_id == anchor.root_entity_id,
+                    ScopeCandidate.kind == "domain",
                     ScopeCandidate.status == "open",
                 ).order_by(ScopeCandidate.id)
             ).scalars())
@@ -179,7 +184,7 @@ def reverse_ip_for_claimed(claimed_candidate_id: uuid.UUID) -> ReverseIpResult:
     try:
         try:
             claimed = db.get(ScopeCandidate, claimed_candidate_id)
-            if claimed is not None and claimed.status == "claimed":
+            if claimed is not None and claimed.status == "claimed" and claimed.kind == "domain":
                 result = generators.record_reverse_ip(db, claimed=claimed, observer_id=None)
             db.commit()
         except Exception:

@@ -30,6 +30,7 @@ _MIGRATION = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "008
 
 
 _MIGRATION_0086 = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0086_connector_zone_anchor.py"
+_MIGRATION_0087 = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0087_asn_cidr_candidates.py"
 
 
 def _load(path, name):
@@ -46,6 +47,11 @@ def _migration():
 def _migration_0086():
     # 0086 widens ANCHOR_KINDS and adds CLASH_REASONS; the rest stays in 0083.
     return _load(_MIGRATION_0086, "migration_0086")
+
+
+def _migration_0087():
+    # 0087 widens KINDS and SIGNAL_TYPES and adds RIRS; the rest stays in 0083.
+    return _load(_MIGRATION_0087, "migration_0087")
 
 
 @pytest.fixture
@@ -121,16 +127,18 @@ def _insert_signal(db, candidate_id, via_id, **over) -> uuid.UUID:
 
 def test_model_vocabularies_equal_the_migrations_check_lists():
     m = _migration()
-    assert model.CANDIDATE_KINDS == set(m.KINDS)
+    m87 = _migration_0087()
+    assert model.CANDIDATE_KINDS == set(m87.KINDS)
+    assert model.RIRS == set(m87.RIRS)
     assert model.CANDIDATE_STATUSES == set(m.CANDIDATE_STATUSES)
     assert model.ACCEPTED_INTO == set(m.ACCEPTED_INTO)
-    assert model.SIGNAL_TYPES == set(m.SIGNAL_TYPES)
+    assert model.SIGNAL_TYPES == set(m87.SIGNAL_TYPES)
     assert model.ANCHOR_KINDS == set(_migration_0086().ANCHOR_KINDS)
     assert model.EVENT_KINDS == set(m.EVENT_KINDS)
 
 
 def test_tier_table_keys_equal_the_migrations_signal_type_list():
-    m = _migration()
+    m = _migration_0087()
     assert set(SIGNALS) == set(m.SIGNAL_TYPES) == model.SIGNAL_TYPES
     assert len(m.SIGNAL_TYPES) == len(set(m.SIGNAL_TYPES))
     assert {s.tier for s in SIGNALS.values()} <= set(TIERS)
@@ -149,7 +157,10 @@ def test_the_live_check_constraints_carry_the_same_lists(w):
         return set(re.findall(r"'([a-z_0-9]+)'::text", definition))
 
     m = _migration()
-    assert listed("ck_scope_signals_signal_type") == set(m.SIGNAL_TYPES)
+    m87 = _migration_0087()
+    assert listed("ck_scope_signals_signal_type") == set(m87.SIGNAL_TYPES)
+    assert listed("ck_scope_candidates_kind") == set(m87.KINDS)
+    assert listed("ck_scope_candidates_rir") == set(m87.RIRS)
     assert listed("ck_scope_signals_anchor_kind") == set(_migration_0086().ANCHOR_KINDS)
     assert listed("ck_connector_zone_clashes_reason") == set(_migration_0086().CLASH_REASONS)
     assert listed("ck_scope_candidate_events_event") == set(m.EVENT_KINDS)
@@ -180,7 +191,7 @@ def test_domain_shape(w, bad):
 
 def test_kind_is_a_closed_list(w):
     root = w.ours()
-    _fails(w.db, "ck_scope_candidates_kind", lambda: _insert_candidate(w.db, root.id, kind="asn", value="AS64500"))
+    _fails(w.db, "ck_scope_candidates_kind", lambda: _insert_candidate(w.db, root.id, kind="email", value="a@example.com"))
 
 
 def test_status_is_a_closed_list(w):

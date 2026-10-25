@@ -272,6 +272,23 @@ def lookup(db: Session, ip: str) -> CloudRangeMatch | None:
     )
 
 
+def overlaps_any(db: Session, cidr: str) -> bool:
+    """True when `cidr` overlaps ANY published cloud/hosting prefix: contains
+    one, is contained by one, or equals one. Org discovery uses it to refuse
+    claiming such space as an organization's own (planning#278): a provider's
+    published range belongs to the provider, not to a tenant. An empty
+    mirror answers False, which means "no overlap in what is loaded", NOT
+    "not cloud space": a caller that must fail closed checks `dataset_state`
+    first (org discovery's claim does). Raises `ValueError` for a malformed
+    `cidr` (checked before the database sees it)."""
+    ipaddress.ip_network(cidr, strict=True)
+    row = db.execute(
+        text("SELECT 1 FROM cloud_ranges WHERE prefix && CAST(:p AS cidr) LIMIT 1"),
+        {"p": cidr},
+    ).first()
+    return row is not None
+
+
 def dataset_state(db: Session) -> DatasetState | None:
     meta = db.get(CloudRangeMeta, True)
     if meta is None:
