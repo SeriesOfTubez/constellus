@@ -12,6 +12,7 @@ from app.models.system_log import SystemLog
 from app.models.app_settings import AppSetting
 from app.models.whois_cache import WhoisCache
 from app.models.domain_whois_cache import DomainWhoisCache
+from app.models.rir_lookup_cache import RirLookupCache
 from app.models.scan_template import ScanTemplate
 from app.models.asset_canonical import AssetCanonical
 from app.models.finding_canonical import FindingCanonical
@@ -79,6 +80,7 @@ __all__ = [
     "AppSetting",
     "WhoisCache",
     "DomainWhoisCache",
+    "RirLookupCache",
     "ScanTemplate",
     "AssetCanonical",
     "FindingCanonical",

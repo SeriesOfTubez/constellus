@@ -61,11 +61,11 @@ SIGNALS: dict[str, SignalSpec] = {
     "name_similarity": SignalSpec(CONTEXT, "name", False, "The domain resembles a claimed domain's name.", label="Name similarity"),
     "ai_mention": SignalSpec(CONTEXT, "research", False, "An AI read mentioned the domain.", label="AI mention"),
     "rir_contact_email_claimed": SignalSpec(
-        STRONG, "rir", False,
+        STRONG, "rir", True,
         "A validated RIR organization, person or role contact email is at a claimed domain, on a handle that holds RIR-issued resources.",
         label="RIR contact email on claimed"),
     "rir_contact_email_unvalidated": SignalSpec(
-        SUPPORTING, "rir_unvalidated", False,
+        SUPPORTING, "rir_unvalidated", True,
         "An RIR contact email is at a claimed domain, on a resource-holding handle, but the contact has not passed the RIR's validation.",
         label="RIR contact email (unvalidated)"),
     "rir_allocation_dedicated_ip": SignalSpec(
@@ -76,7 +76,7 @@ SIGNALS: dict[str, SignalSpec] = {
         SUPPORTING, "peeringdb", False, "The PeeringDB organization's website is a claimed domain.",
         label="PeeringDB website is claimed"),
     "rir_reassigned_elsewhere": SignalSpec(
-        CONTEXT, "rir", False,
+        CONTEXT, "rir", True,
         "The prefix lies inside a matched handle's allocation but is reassigned to another handle.",
         label="Reassigned to another handle"),
     "bgp_announced_not_allocated": SignalSpec(

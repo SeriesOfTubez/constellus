@@ -195,7 +195,7 @@ def test_rir_and_handle_are_immutable(w):
     w.db.commit()
 
 
-def test_the_new_signal_types_are_registered_unbuilt():
+def test_the_new_signal_types_are_registered_and_built_only_where_a_generator_exists():
     from app.services.org_discovery.tiers import SIGNALS
 
     expected = {
@@ -203,9 +203,10 @@ def test_the_new_signal_types_are_registered_unbuilt():
         "rir_allocation_dedicated_ip": ("supporting", "rir_ip"), "peeringdb_website_claimed": ("supporting", "peeringdb"),
         "rir_reassigned_elsewhere": ("context", "rir"), "bgp_announced_not_allocated": ("context", "bgp"),
     }
+    built = {"rir_contact_email_claimed", "rir_contact_email_unvalidated", "rir_reassigned_elsewhere"}  # S3b1 ARIN
     for name, (tier, family) in expected.items():
         spec = SIGNALS[name]
-        assert (spec.tier, spec.family, spec.built) == (tier, family, False), name
+        assert (spec.tier, spec.family, spec.built) == (tier, family, name in built), name
         assert spec.label and spec.description
     assert "IS validated" not in SIGNALS["rir_contact_email_claimed"].description  # prose, not a marker
     assert "validated" in SIGNALS["rir_contact_email_claimed"].description
