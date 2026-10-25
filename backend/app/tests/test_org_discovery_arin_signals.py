@@ -19,7 +19,7 @@ from app.core.database import SessionLocal
 from app.models.rir_lookup_cache import RirLookupCache
 from app.models.scope_candidate import ScopeCandidate, ScopeSignal
 from app.models.target import Target
-from app.services.org_discovery import arin, runner
+from app.services.org_discovery import arin, ripe, runner
 from app.services.org_discovery import candidates as cd
 from app.services.org_discovery import rir_fetch as rf
 from app.services.org_discovery import strength as strength_sql
@@ -29,7 +29,21 @@ from app.tests.test_org_discovery_arin import (
 )
 from app.tests.test_org_discovery_asn_cidr import _Meta
 
-REAL_RIR_COLLECT = True  # the autouse stub is off; every test here that reaches the runner patches its own seam
+REAL_RIR_COLLECT = True  # the autouse stub is off; every test here that reaches the runner patches its own seams
+
+
+def _empty_ripe(db, domain):
+    return ripe.RipeCollection(
+        domain=domain, docs_found=0, docs_seen=0, fulltext_truncated=False, docs_other_type=0,
+        contacts_not_exact=0, matched=(), resources=(), orgs_followed=0, fetch_failed=0,
+        budget_exhausted=False, invalid_handles=0, invalid=0, skipped_status=0, skipped_source=0,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_live_ripe(monkeypatch):
+    """The conftest stub is off for this module; RIPE must never reach the network from here."""
+    monkeypatch.setattr(runner, "_ripe_collect", _empty_ripe)
 
 A24 = ipaddress.ip_network("198.51.100.0/24")
 B24 = ipaddress.ip_network("203.0.113.0/24")
@@ -365,7 +379,8 @@ def test_runner_end_to_end_commits_signals_visible_from_a_fresh_session(w, t, mo
     claimed = _claimed(w, root, d)
     r = runner.rir_for_claimed(claimed.id)
     assert router.calls  # the transport was reached
-    assert r.signals_recorded == 2 and len(r.created_candidate_ids) == 2
+    assert r.arin.signals_recorded == 2 and len(r.arin.created_candidate_ids) == 2
+    assert r.ripe == ripe.RipeRecordResult()
     assert _fresh(root.id) == [("asn", "AS64500", "arin", oh), ("cidr", A24S, "arin", oh)]
 
 
@@ -383,7 +398,7 @@ def test_runner_rolls_back_the_signal_step_but_keeps_the_cache(w, t, monkeypatch
     claimed = _claimed(w, root, d)
     r = runner.rir_for_claimed(claimed.id)
     assert router.calls  # collect ran
-    assert r == arin.ArinRecordResult()
+    assert r.arin == arin.ArinRecordResult() and r.ripe == ripe.RipeRecordResult()
     assert _fresh(root.id) == []
     db = SessionLocal()
     try:
@@ -398,9 +413,10 @@ def test_runner_skips_a_candidate_that_is_not_claimed(w, t, monkeypatch):
     monkeypatch.setattr(runner, "_rir_collect", lambda db, domain: seen.append(domain))
     root = w.ours()
     open_c = w.candidate(root, value=_dom(t))
-    assert runner.rir_for_claimed(open_c.id) == arin.ArinRecordResult()
+    empty = runner.RirRunResult()
+    assert runner.rir_for_claimed(open_c.id) == empty
     assert seen == []
-    assert runner.rir_for_claimed(uuid.uuid4()) == arin.ArinRecordResult()
+    assert runner.rir_for_claimed(uuid.uuid4()) == empty
     claimed = _claimed(w, root, _dom(t + "Y"))
     monkeypatch.setattr(runner, "_rir_collect", lambda db, domain: arin.ArinCollection(
         domain=domain, pocs_listed=0, pocs_truncated=False, pocs_not_exact=0, matched=()))

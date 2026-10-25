@@ -98,14 +98,24 @@ def _offline_org_verifier_facts(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _offline_org_rir_collect(request, monkeypatch):
-    """planning#278 S3b1: a claimed domain's follow-up also asks ARIN, and under
-    `TestClient` a background task runs inline, so every API test that claims a
-    domain would reach ARIN live. The runner's RIR seam answers "no contacts"
-    unless the test module sets `REAL_RIR_COLLECT = True` (and then patches
-    `rir_fetch.connector_get` itself)."""
+    """planning#278 S3b1/S3b2: a claimed domain's follow-up also asks ARIN and
+    RIPE, and under `TestClient` a background task runs inline, so every API
+    test that claims a domain would reach them live. The runner's two RIR seams
+    (`_rir_collect`, `_ripe_collect`) answer "no contacts" unless the test
+    module sets `REAL_RIR_COLLECT = True` (and then patches both seams, or
+    `rir_fetch.connector_get`, itself)."""
     if getattr(request.module, "REAL_RIR_COLLECT", False):
         return
-    from app.services.org_discovery import arin, runner
+    from app.services.org_discovery import arin, ripe, runner
+
+    monkeypatch.setattr(
+        runner, "_ripe_collect",
+        lambda db, domain: ripe.RipeCollection(
+            domain=domain, docs_found=0, docs_seen=0, fulltext_truncated=False, docs_other_type=0,
+            contacts_not_exact=0, matched=(), resources=(), orgs_followed=0, fetch_failed=0,
+            budget_exhausted=False, invalid_handles=0, invalid=0, skipped_status=0, skipped_source=0,
+        ),
+    )
 
     monkeypatch.setattr(
         runner, "_rir_collect",
