@@ -97,6 +97,25 @@ def _offline_org_verifier_facts(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _offline_org_rir_collect(request, monkeypatch):
+    """planning#278 S3b1: a claimed domain's follow-up also asks ARIN, and under
+    `TestClient` a background task runs inline, so every API test that claims a
+    domain would reach ARIN live. The runner's RIR seam answers "no contacts"
+    unless the test module sets `REAL_RIR_COLLECT = True` (and then patches
+    `rir_fetch.connector_get` itself)."""
+    if getattr(request.module, "REAL_RIR_COLLECT", False):
+        return
+    from app.services.org_discovery import arin, runner
+
+    monkeypatch.setattr(
+        runner, "_rir_collect",
+        lambda db, domain: arin.ArinCollection(
+            domain=domain, pocs_listed=0, pocs_truncated=False, pocs_not_exact=0, matched=(),
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _restore_monkeypatched_modules():
     snapshots = [(mod, vars(mod).copy()) for mod in _GUARDED_MODULES]
     yield

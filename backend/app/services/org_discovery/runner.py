@@ -13,6 +13,16 @@ the middle of one. Each pair is its own unit of work: `verify_pair` then
 candidate and anchor rows are re-loaded by id for every pair, since a status
 may have changed between pairs.
 
+`rir_for_claimed` is a session owner in two steps: `arin.collect` flushes the
+RIR cache rows, which are COMMITTED before any signal is written (a failed
+signal write must not lose a fetch that already cost a rate-limited request);
+then `record_arin` writes the signals, and this module commits. `record_arin`
+is not a single unit of work: `entity_graph.store_evidence` commits once per
+record (as in `record_reverse_ip`), so a failure rolls back only the record in
+progress; the earlier ones stay, each complete. The claimed candidate is
+re-loaded between the two steps, since the commit expired it and its status
+may have changed.
+
 ## Facts cache
 
 One `dict[str, DomainFacts]` per run: a domain is looked up once however many
@@ -33,7 +43,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.scope_candidate import ScopeCandidate
-from app.services.org_discovery import domain_facts, generators, verifiers
+from app.services.org_discovery import arin, domain_facts, generators, rir_fetch, verifiers
 from app.services.org_discovery.generators import ReverseIpResult
 from app.services.org_discovery.domain_facts import DomainFacts
 
@@ -52,6 +62,11 @@ class VerifyReport:
 def _collect(db: Session, domain: str) -> DomainFacts:
     """The one place the runner reaches the network (tests replace it)."""
     return domain_facts.collect(db, domain)
+
+
+def _rir_collect(db: Session, domain: str) -> arin.ArinCollection:
+    """The one place the RIR generator reaches the network (tests replace it)."""
+    return arin.collect(db, domain, rir_fetch.Budget())
 
 
 def _facts(db: Session, cache: dict[str, DomainFacts], domain: str) -> DomainFacts:
@@ -171,6 +186,12 @@ def verify_after_claim(claimed_candidate_id: uuid.UUID) -> VerifyReport:
         reverse_ip_for_claimed(claimed_candidate_id)
     except Exception:
         log.exception("org-discovery reverse-IP after claim failed candidate=%s", claimed_candidate_id)
+    # RIR (ARIN) resources for the claimed domain's contacts: likewise its own
+    # session, likewise unable to fail the follow-up.
+    try:
+        rir_for_claimed(claimed_candidate_id)
+    except Exception:
+        log.exception("org-discovery RIR after claim failed candidate=%s", claimed_candidate_id)
     return report
 
 
@@ -203,5 +224,47 @@ def reverse_ip_for_claimed(claimed_candidate_id: uuid.UUID) -> ReverseIpResult:
         result.signals_resighted, result.skipped_inactive_or_previous_tenant, result.no_claimed_history,
         result.invalid,
         len(result.created_candidate_ids),
+    )
+    return result
+
+
+def rir_for_claimed(claimed_candidate_id: uuid.UUID) -> arin.ArinRecordResult:
+    """ARIN generator for one claimed domain, in its own session. The fetch
+    (which commits its cache rows) runs before any signal write; the signals
+    are then one unit of work. Created ASN/CIDR candidates are NOT run through
+    the domain verifiers (they are not domains)."""
+    result = arin.ArinRecordResult()
+    db = SessionLocal()
+    try:
+        try:
+            claimed = db.get(ScopeCandidate, claimed_candidate_id)
+            if claimed is None or claimed.status != "claimed" or claimed.kind != "domain":
+                return result
+            domain = claimed.value
+            db.rollback()  # end the read before the fetch commits
+            collection = _rir_collect(db, domain)
+            db.commit()  # the cache rows, kept even if the signal step fails
+            claimed = db.get(ScopeCandidate, claimed_candidate_id)
+            if claimed is None or claimed.status != "claimed":
+                return result
+            result = arin.record_arin(db, claimed=claimed, collection=collection, observer_id=None)
+            db.commit()
+        except Exception:
+            db.rollback()
+            result = arin.ArinRecordResult()
+            log.exception("org-discovery RIR failed candidate=%s", claimed_candidate_id)
+            return result
+    finally:
+        db.close()
+    log.info(
+        "org-discovery rir_for_claimed pocs_listed=%d pocs_truncated=%s pocs_not_exact=%d fetch_failed=%d "
+        "budget_exhausted=%s invalid_handles=%d nets_failed=%d signals_recorded=%d signals_resighted=%d "
+        "candidates_created=%d orgs_holding_nothing=%d invalid=%d holder_conflict=%d context_recorded=%d "
+        "context_no_candidate=%d",
+        result.pocs_listed, result.pocs_truncated, result.pocs_not_exact, result.fetch_failed,
+        result.budget_exhausted, result.invalid_handles, sum(result.nets_failed.values()),
+        result.signals_recorded, result.signals_resighted, len(result.created_candidate_ids),
+        result.orgs_holding_nothing, result.invalid, result.holder_conflict, result.context_recorded,
+        result.context_no_candidate,
     )
     return result
