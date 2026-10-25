@@ -197,10 +197,10 @@ def _summary(w, root, qs=""):
 
 def test_subtree_filter_includes_a_grandchilds_candidate_under_the_child_not_under_a_sibling(w):
     root, child, grand, sibling, ids = _mixed(w)
-    assert "a-strong.example.com" in _values(_list(w, root, f"subtree_of={child.id}"))   # via grand, under child
-    assert "a-strong.example.com" in _values(_list(w, root, f"subtree_of={grand.id}"))
-    sib = _values(_list(w, root, f"subtree_of={sibling.id}"))
-    assert "a-strong.example.com" not in sib and "b-supp.example.com" in sib  # the sibling's own is there
+    assert {"a-strong.example.com"} <= set(_values(_list(w, root, f"subtree_of={child.id}")))   # via grand, under child
+    assert {"a-strong.example.com"} <= set(_values(_list(w, root, f"subtree_of={grand.id}")))
+    sib = set(_values(_list(w, root, f"subtree_of={sibling.id}")))
+    assert not {"a-strong.example.com"} & sib and {"b-supp.example.com"} <= sib  # the sibling's own is there
     # the same on the summary
     assert _summary(w, root, f"subtree_of={child.id}")["to_review"] == 1       # strong only
     assert _summary(w, root, f"subtree_of={sibling.id}")["to_review"] == 1     # supp only
