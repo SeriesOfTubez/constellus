@@ -623,7 +623,9 @@ def _stamp_scope_target_engagements(db: Session, run: ScanRun, scope: dict) -> N
 def _org_discovery_reverse_ip(db: Session, scope: dict) -> None:
     """Run the org-discovery reverse-IP generator for every CLAIMED candidate
     whose Target's value is in this run's scope. This session only selects;
-    `reverse_ip_for_claimed` opens its own.
+    `reverse_ip_for_claimed` opens its own. The reverse-IP refresh may have
+    produced new verdicts, so each touched root is swept once afterwards by
+    `dedicated_ip_for_root`.
 
     Not `run.scope_target_engagements`: that stamps only targets WITH an
     engagement, and an ours organization's claims land in the estate
@@ -635,14 +637,19 @@ def _org_discovery_reverse_ip(db: Session, scope: dict) -> None:
     values = list(scope.get("domains") or [])
     if not values:
         return
-    claimed_ids = list(db.execute(
-        select(ScopeCandidate.id)
-        .join(Target, Target.id == ScopeCandidate.target_id)
-        .where(Target.value.in_(values), ScopeCandidate.kind == "domain", ScopeCandidate.status == "claimed")
-        .order_by(ScopeCandidate.id)
-    ).scalars())
-    for candidate_id in claimed_ids:
+    claimed = [
+        (row.id, row.root_entity_id)
+        for row in db.execute(
+            select(ScopeCandidate.id, ScopeCandidate.root_entity_id)
+            .join(Target, Target.id == ScopeCandidate.target_id)
+            .where(Target.value.in_(values), ScopeCandidate.kind == "domain", ScopeCandidate.status == "claimed")
+            .order_by(ScopeCandidate.id)
+        )
+    ]
+    for candidate_id, _root_id in claimed:
         org_runner.reverse_ip_for_claimed(candidate_id)
+    for root_id in sorted({root_id for _cid, root_id in claimed}, key=str):
+        org_runner.dedicated_ip_for_root(root_id)
 
 
 def _resolve_dynamic_scope(db: Session, template: ScanTemplate) -> dict:

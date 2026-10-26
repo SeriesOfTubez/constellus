@@ -69,7 +69,7 @@ SIGNALS: dict[str, SignalSpec] = {
         "An RIR contact email is at a claimed domain, on a resource-holding handle, but the contact has not passed the RIR's validation.",
         label="RIR contact email (unvalidated)"),
     "rir_allocation_dedicated_ip": SignalSpec(
-        SUPPORTING, "rir_ip", False,
+        SUPPORTING, "rir_ip", True,
         "The handle holds an allocation containing a claimed IP address classified as dedicated.",
         label="Allocation holds a dedicated IP"),
     "peeringdb_website_claimed": SignalSpec(

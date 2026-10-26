@@ -203,7 +203,10 @@ def test_the_new_signal_types_are_registered_and_built_only_where_a_generator_ex
         "rir_allocation_dedicated_ip": ("supporting", "rir_ip"), "peeringdb_website_claimed": ("supporting", "peeringdb"),
         "rir_reassigned_elsewhere": ("context", "rir"), "bgp_announced_not_allocated": ("context", "bgp"),
     }
-    built = {"rir_contact_email_claimed", "rir_contact_email_unvalidated", "rir_reassigned_elsewhere"}  # S3b1 ARIN
+    built = {
+        "rir_contact_email_claimed", "rir_contact_email_unvalidated", "rir_reassigned_elsewhere",  # S3b1 ARIN
+        "rir_allocation_dedicated_ip",  # S3c1
+    }
     for name, (tier, family) in expected.items():
         spec = SIGNALS[name]
         assert (spec.tier, spec.family, spec.built) == (tier, family, name in built), name
