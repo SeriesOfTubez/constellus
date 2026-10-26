@@ -716,6 +716,9 @@
  "POST /api/organizations/{org_id}/candidates": [
   "admin"
  ],
+ "POST /api/organizations/{org_id}/recheck": [
+  "admin"
+ ],
  "POST /api/query": [
   "admin",
   "integration_admin",

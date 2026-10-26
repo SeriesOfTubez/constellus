@@ -68,6 +68,9 @@ class Budget:
     limit: int = MAX_REQUESTS_PER_RUN
     used: int = 0  # network requests made
     cache_hits: int = 0
+    # A cached row fetched before this time is refetched. Set by a manual
+    # Re-check to the run start, so a key repeated inside the run is fetched once.
+    fresh_since: datetime | None = None
 
 
 _HANDLE_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?$", re.ASCII)
@@ -286,7 +289,10 @@ def get(
     now = now or datetime.now(timezone.utc)
 
     row = db.get(RirLookupCache, (rir, cache_key))
-    if row is not None and now - row.fetched_at < CACHE_TTL:
+    if (
+        row is not None and now - row.fetched_at < CACHE_TTL
+        and (budget.fresh_since is None or row.fetched_at >= budget.fresh_since)
+    ):
         budget.cache_hits += 1
         return row.body
 
