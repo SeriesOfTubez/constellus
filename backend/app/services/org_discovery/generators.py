@@ -9,6 +9,7 @@ reads an entity name.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -256,4 +257,140 @@ def record_reverse_ip(
                 result.signals_resighted += 1
             if outcome.created_candidate and outcome.candidate is not None:
                 result.created_candidate_ids.append(outcome.candidate.id)
+    return result
+
+
+@dataclass
+class RirDedicatedIpResult:
+    claimed_domains: int = 0
+    ips_checked: int = 0
+    no_claim: int = 0  # no cached reverse-IP claim for the address
+    not_dedicated: int = 0  # a claim was read and its verdict was not "dedicated"
+    outside_candidates: int = 0  # dedicated, but inside no open CIDR candidate of the root
+    signals_recorded: int = 0
+    signals_resighted: int = 0
+    invalid: int = 0
+    conflict: int = 0
+
+
+def record_rir_dedicated_ip(
+    db: Session,
+    *,
+    root_entity_id: uuid.UUID,
+    observer_id: uuid.UUID | None = None,
+) -> RirDedicatedIpResult:
+    """A dedicated address of a claimed domain that lies inside an open CIDR
+    candidate becomes a `rir_allocation_dedicated_ip` signal on that CIDR (a
+    Supporting signal: it can make a lead proposable alongside another
+    signal, but never makes anything Strong).
+
+    The guards (false attribution is the failure this product cannot afford):
+    the verdict is read from the cached reverse-IP claim only
+    (`hosting_classifier.reverse_ip_claim`, read-only: nothing is fetched and
+    no budget is spent) and only "dedicated" counts; the addresses are the
+    claimed domain's OWN A/AAAA records (`_claimed_ips`); only the root's OPEN
+    CIDR candidates are considered, never claimed, rejected or otherwise
+    closed ones, and never ASN candidates (the signal goes only on the CIDR
+    whose prefix contains the address). It never creates or moves a candidate:
+    only the values (with their own RIR and handle) of candidates that already
+    exist are passed to `record_signal`.
+
+    Transaction ownership: `entity_graph.store_evidence` COMMITS, so only a
+    session owner may call this; the signal writes are flushed, and the
+    caller commits them. Never reads an entity name.
+    """
+    result = RirDedicatedIpResult()
+    # Plain values first: `store_evidence` commits and expires ORM objects.
+    domains = [
+        (row.id, row.value, row.affiliated_entity_id)
+        for row in db.execute(
+            select(ScopeCandidate.id, ScopeCandidate.value, ScopeCandidate.affiliated_entity_id).where(
+                ScopeCandidate.root_entity_id == root_entity_id,
+                ScopeCandidate.kind == "domain",
+                ScopeCandidate.status == "claimed",
+            ).order_by(ScopeCandidate.id)
+        )
+    ]
+    cidrs: list[tuple[str, str, str, ipaddress.IPv4Network | ipaddress.IPv6Network]] = []
+    for row in db.execute(
+        select(ScopeCandidate.value, ScopeCandidate.rir, ScopeCandidate.rir_handle).where(
+            ScopeCandidate.root_entity_id == root_entity_id,
+            ScopeCandidate.kind == "cidr",
+            ScopeCandidate.status == "open",
+        )
+    ):
+        try:
+            net = ipaddress.ip_network(row.value)
+        except ValueError:
+            continue
+        cidrs.append((row.value, row.rir, row.rir_handle, net))
+    cidrs.sort(key=lambda c: c[0])
+    now = datetime.now(timezone.utc)
+
+    for domain_id, domain_value, affiliated_id in domains:
+        result.claimed_domains += 1
+        for ip in _claimed_ips(db, domain_value):
+            result.ips_checked += 1
+            claim = hosting_classifier.reverse_ip_claim(db, ip)
+            if claim is None:
+                result.no_claim += 1
+                continue
+            if claim.get("sharing") != "dedicated":
+                result.not_dedicated += 1
+                continue
+            try:
+                addr = ipaddress.ip_address(ip)
+            except ValueError:
+                result.invalid += 1
+                continue
+            matching = [c for c in cidrs if c[3].version == addr.version and addr in c[3]]
+            if not matching:
+                result.outside_candidates += 1
+                continue
+            for cidr_value, rir, rir_handle, _net in matching:
+                body = json.dumps(
+                    {
+                        "rule": "rir_allocation_dedicated_ip", "ip": ip, "sharing": "dedicated",
+                        "cidr": cidr_value, "rir": rir, "rir_handle": rir_handle, "claimed": domain_value,
+                    },
+                    sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8")
+                evidence = entity_graph.store_evidence(
+                    db,
+                    content=body,
+                    content_type="application/json",
+                    source_url=(
+                        f"https://org-discovery.invalid/generate/rir_allocation_dedicated_ip/"
+                        f"{cidr_value}/{domain_value}/{ip}"
+                    ),
+                    fetched_at=now,
+                    origin="fetched",
+                )
+                try:
+                    outcome = candidates.record_signal(
+                        db,
+                        root_entity_id=root_entity_id,
+                        kind="cidr",
+                        value=cidr_value,
+                        rir=rir,
+                        rir_handle=rir_handle,
+                        signal_type="rir_allocation_dedicated_ip",
+                        anchor_kind="claimed_candidate",
+                        anchor_candidate_id=domain_id,
+                        via_entity_id=affiliated_id,
+                        evidence_id=evidence.id,
+                        quote=f"{cidr_value} contains {ip}, a dedicated address that claimed {domain_value} resolves to",
+                        observer_id=observer_id,
+                        matched_values=[ip],
+                    )
+                except candidates.CandidateInvalid:
+                    result.invalid += 1
+                    continue
+                except candidates.CandidateConflict:
+                    result.conflict += 1
+                    continue
+                if outcome.created_signal:
+                    result.signals_recorded += 1
+                else:
+                    result.signals_resighted += 1
     return result

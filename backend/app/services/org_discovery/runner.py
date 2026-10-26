@@ -46,7 +46,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.scope_candidate import ScopeCandidate
 from app.services.org_discovery import arin, domain_facts, generators, ripe, rir_fetch, verifiers
-from app.services.org_discovery.generators import ReverseIpResult
+from app.services.org_discovery.generators import ReverseIpResult, RirDedicatedIpResult
 from app.services.org_discovery.domain_facts import DomainFacts
 
 log = logging.getLogger(__name__)
@@ -169,12 +169,14 @@ def verify_after_claim(claimed_candidate_id: uuid.UUID) -> VerifyReport:
     candidate that stops being open mid-run is."""
     report = VerifyReport()
     cache: dict[str, DomainFacts] = {}
+    root_id: uuid.UUID | None = None
     db = SessionLocal()
     try:
         anchor = db.get(ScopeCandidate, claimed_candidate_id)
         if anchor is None or anchor.status != "claimed" or anchor.kind != "domain":
             report.candidates_skipped += 1
         else:
+            root_id = anchor.root_entity_id  # captured while the session is open
             open_ids = list(db.execute(
                 select(ScopeCandidate.id).where(
                     ScopeCandidate.root_entity_id == anchor.root_entity_id,
@@ -200,7 +202,42 @@ def verify_after_claim(claimed_candidate_id: uuid.UUID) -> VerifyReport:
         rir_for_claimed(claimed_candidate_id)
     except Exception:
         log.exception("org-discovery RIR after claim failed candidate=%s", claimed_candidate_id)
+    # Last: the dedicated-IP sweep of the root's open CIDR candidates, which
+    # may have just been created by the RIR step. Its own session, likewise
+    # unable to fail the follow-up.
+    if root_id is not None:
+        try:
+            dedicated_ip_for_root(root_id)
+        except Exception:
+            log.exception("org-discovery dedicated-IP after claim failed candidate=%s", claimed_candidate_id)
     return report
+
+
+def dedicated_ip_for_root(root_entity_id: uuid.UUID) -> RirDedicatedIpResult:
+    """The dedicated-IP generator for one root, as one unit of work in its own
+    session. `record_rir_dedicated_ip` stores evidence, which commits inside
+    it, so this is a session owner. A failure rolls back and yields the empty
+    result."""
+    result = RirDedicatedIpResult()
+    db = SessionLocal()
+    try:
+        try:
+            result = generators.record_rir_dedicated_ip(db, root_entity_id=root_entity_id, observer_id=None)
+            db.commit()
+        except Exception:
+            db.rollback()
+            result = RirDedicatedIpResult()
+            log.exception("org-discovery dedicated-IP failed root=%s", root_entity_id)
+    finally:
+        db.close()
+    log.info(
+        "org-discovery dedicated_ip_for_root claimed_domains=%d ips_checked=%d no_claim=%d not_dedicated=%d "
+        "outside_candidates=%d signals_recorded=%d signals_resighted=%d invalid=%d conflict=%d",
+        result.claimed_domains, result.ips_checked, result.no_claim, result.not_dedicated,
+        result.outside_candidates, result.signals_recorded, result.signals_resighted, result.invalid,
+        result.conflict,
+    )
+    return result
 
 
 def reverse_ip_for_claimed(claimed_candidate_id: uuid.UUID) -> ReverseIpResult:
