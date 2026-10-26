@@ -104,6 +104,10 @@ _EGRESS: dict[str, tuple[str, str, str | None]] = {
         "NS/MX/TXT lookups through a public recursor about a CANDIDATE domain (not yet a target) to decide "
         "whether it may be claimed; gating on authorisation would be circular (planning#277 S1b)", None,
     ),
+    "org_discovery/rir_fetch.py": (
+        "THIRD_PARTY", "ARIN / RIPE registry lookups on fixed base URLs, about a candidate organisation; "
+        "never a host we are pointed at (planning#278 S3b2). Imports urllib.parse only, to build the cache key", None,
+    ),
     "cloud_ranges.py": (
         "THIRD_PARTY", "provider range dataset mirror", None,
     ),
