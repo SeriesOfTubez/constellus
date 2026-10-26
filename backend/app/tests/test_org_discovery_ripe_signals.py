@@ -394,7 +394,7 @@ def test_no_ripe_path_can_write_a_strong_signal():
 # ── runner ───────────────────────────────────────────────────────────────────
 
 
-def _empty_arin(db, domain):
+def _empty_arin(db, domain, fresh_since=None):
     return arin.ArinCollection(domain=domain, pocs_listed=0, pocs_truncated=False, pocs_not_exact=0, matched=())
 
 
@@ -426,8 +426,8 @@ def _fresh(root_id):
 
 def test_both_registries_run_and_each_records(w, t, monkeypatch):
     root, claimed = _setup(w, t)
-    monkeypatch.setattr(runner, "_rir_collect", lambda db, d: _arin_coll(d, t))
-    monkeypatch.setattr(runner, "_ripe_collect", lambda db, d: _ripe_coll(d))
+    monkeypatch.setattr(runner, "_rir_collect", lambda db, d, fresh_since=None: _arin_coll(d, t))
+    monkeypatch.setattr(runner, "_ripe_collect", lambda db, d, fresh_since=None: _ripe_coll(d))
     out = runner.rir_for_claimed(claimed.id)
     assert out.arin.signals_recorded == 1 and out.ripe.signals_recorded == 1
     assert _fresh(root.id) == [("asn", "AS64500", "ripe"), ("asn", "AS64501", "arin")]
@@ -436,11 +436,11 @@ def test_both_registries_run_and_each_records(w, t, monkeypatch):
 def test_an_arin_failure_does_not_stop_ripe(w, t, monkeypatch):
     root, claimed = _setup(w, t)
 
-    def boom(db, d):
+    def boom(db, d, fresh_since=None):
         raise RuntimeError("arin down")
 
     monkeypatch.setattr(runner, "_rir_collect", boom)
-    monkeypatch.setattr(runner, "_ripe_collect", lambda db, d: _ripe_coll(d))
+    monkeypatch.setattr(runner, "_ripe_collect", lambda db, d, fresh_since=None: _ripe_coll(d))
     out = runner.rir_for_claimed(claimed.id)
     assert out.arin == arin.ArinRecordResult() and out.ripe.signals_recorded == 1
     assert _fresh(root.id) == [("asn", "AS64500", "ripe")]
@@ -449,10 +449,10 @@ def test_an_arin_failure_does_not_stop_ripe(w, t, monkeypatch):
 def test_a_ripe_failure_does_not_undo_arin(w, t, monkeypatch):
     root, claimed = _setup(w, t)
 
-    def boom(db, d):
+    def boom(db, d, fresh_since=None):
         raise RuntimeError("ripe down")
 
-    monkeypatch.setattr(runner, "_rir_collect", lambda db, d: _arin_coll(d, t))
+    monkeypatch.setattr(runner, "_rir_collect", lambda db, d, fresh_since=None: _arin_coll(d, t))
     monkeypatch.setattr(runner, "_ripe_collect", boom)
     out = runner.rir_for_claimed(claimed.id)
     assert out.ripe == ripe.RipeRecordResult() and out.arin.signals_recorded == 1
@@ -465,8 +465,8 @@ def test_a_ripe_record_failure_rolls_back_but_keeps_the_arin_signals(w, t, monke
     def boom(*a, **k):
         raise RuntimeError("record exploded")
 
-    monkeypatch.setattr(runner, "_rir_collect", lambda db, d: _arin_coll(d, t))
-    monkeypatch.setattr(runner, "_ripe_collect", lambda db, d: _ripe_coll(d))
+    monkeypatch.setattr(runner, "_rir_collect", lambda db, d, fresh_since=None: _arin_coll(d, t))
+    monkeypatch.setattr(runner, "_ripe_collect", lambda db, d, fresh_since=None: _ripe_coll(d))
     monkeypatch.setattr(ripe, "record_ripe", boom)
     out = runner.rir_for_claimed(claimed.id)
     assert out.ripe == ripe.RipeRecordResult() and out.arin.signals_recorded == 1
@@ -476,8 +476,8 @@ def test_a_ripe_record_failure_rolls_back_but_keeps_the_arin_signals(w, t, monke
 def test_both_seams_empty_gives_the_empty_run_result(w, t, monkeypatch):
     root, claimed = _setup(w, t)
     reached = []
-    monkeypatch.setattr(runner, "_rir_collect", lambda db, d: reached.append("arin") or _empty_arin(db, d))
-    monkeypatch.setattr(runner, "_ripe_collect", lambda db, d: reached.append("ripe") or _coll(d, [], []))
+    monkeypatch.setattr(runner, "_rir_collect", lambda db, d, fresh_since=None: reached.append("arin") or _empty_arin(db, d))
+    monkeypatch.setattr(runner, "_ripe_collect", lambda db, d, fresh_since=None: reached.append("ripe") or _coll(d, [], []))
     assert runner.rir_for_claimed(claimed.id) == runner.RirRunResult(arin.ArinRecordResult(), ripe.RipeRecordResult())
     assert reached == ["arin", "ripe"]  # both seams were reached
 
@@ -486,8 +486,8 @@ def test_an_unclaimed_or_missing_candidate_reaches_neither_seam(w, t, monkeypatc
     root = w.ours()
     open_c = w.candidate(root, value=_dom(t))
     seen = []
-    monkeypatch.setattr(runner, "_rir_collect", lambda db, d: seen.append("arin") or _empty_arin(db, d))
-    monkeypatch.setattr(runner, "_ripe_collect", lambda db, d: seen.append("ripe") or _coll(d, [], []))
+    monkeypatch.setattr(runner, "_rir_collect", lambda db, d, fresh_since=None: seen.append("arin") or _empty_arin(db, d))
+    monkeypatch.setattr(runner, "_ripe_collect", lambda db, d, fresh_since=None: seen.append("ripe") or _coll(d, [], []))
     empty = runner.RirRunResult()
     assert runner.rir_for_claimed(open_c.id) == empty
     assert runner.rir_for_claimed(uuid.uuid4()) == empty
@@ -512,7 +512,7 @@ def test_the_conftest_stub_keeps_ripe_offline_by_default(w, t, monkeypatch):
 def test_end_to_end_through_the_real_collector_and_wire_shapes(w, t, monkeypatch, cache_clean):
     router = Router()
     monkeypatch.setattr(rf, "connector_get", router)
-    monkeypatch.setattr(runner, "_ripe_collect", lambda db, d: ripe.collect(db, d, rf.Budget()))
+    monkeypatch.setattr(runner, "_ripe_collect", lambda db, d, fresh_since=None: ripe.collect(db, d, rf.Budget(fresh_since=fresh_since)))
     root, claimed = _setup(w, t)
     dom = claimed.value
     org, org2, rl = "ORG-E2E1-TEST", "ORG-E2E2-TEST", "RL-E2E-TEST"

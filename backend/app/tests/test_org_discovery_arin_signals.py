@@ -32,7 +32,7 @@ from app.tests.test_org_discovery_asn_cidr import _Meta
 REAL_RIR_COLLECT = True  # the autouse stub is off; every test here that reaches the runner patches its own seams
 
 
-def _empty_ripe(db, domain):
+def _empty_ripe(db, domain, fresh_since=None):
     return ripe.RipeCollection(
         domain=domain, docs_found=0, docs_seen=0, fulltext_truncated=False, docs_other_type=0,
         contacts_not_exact=0, matched=(), resources=(), orgs_followed=0, fetch_failed=0,
@@ -372,7 +372,7 @@ def test_runner_end_to_end_commits_signals_visible_from_a_fresh_session(w, t, mo
     router = Router()
     monkeypatch.setattr(rf, "connector_get", router)
     monkeypatch.setattr(
-        runner, "_rir_collect", lambda db, domain: arin.collect(db, domain, rf.Budget()),
+        runner, "_rir_collect", lambda db, domain, fresh_since=None: arin.collect(db, domain, rf.Budget(fresh_since=fresh_since)),
     )
     root = w.ours()
     oh, d = _wire(router, t)
@@ -387,7 +387,7 @@ def test_runner_end_to_end_commits_signals_visible_from_a_fresh_session(w, t, mo
 def test_runner_rolls_back_the_signal_step_but_keeps_the_cache(w, t, monkeypatch, cache_clean):
     router = Router()
     monkeypatch.setattr(rf, "connector_get", router)
-    monkeypatch.setattr(runner, "_rir_collect", lambda db, domain: arin.collect(db, domain, rf.Budget()))
+    monkeypatch.setattr(runner, "_rir_collect", lambda db, domain, fresh_since=None: arin.collect(db, domain, rf.Budget(fresh_since=fresh_since)))
 
     def boom(*a, **k):
         raise RuntimeError("record exploded")
@@ -410,7 +410,7 @@ def test_runner_rolls_back_the_signal_step_but_keeps_the_cache(w, t, monkeypatch
 
 def test_runner_skips_a_candidate_that_is_not_claimed(w, t, monkeypatch):
     seen = []
-    monkeypatch.setattr(runner, "_rir_collect", lambda db, domain: seen.append(domain))
+    monkeypatch.setattr(runner, "_rir_collect", lambda db, domain, fresh_since=None: seen.append(domain))
     root = w.ours()
     open_c = w.candidate(root, value=_dom(t))
     empty = runner.RirRunResult()
@@ -418,7 +418,7 @@ def test_runner_skips_a_candidate_that_is_not_claimed(w, t, monkeypatch):
     assert seen == []
     assert runner.rir_for_claimed(uuid.uuid4()) == empty
     claimed = _claimed(w, root, _dom(t + "Y"))
-    monkeypatch.setattr(runner, "_rir_collect", lambda db, domain: arin.ArinCollection(
+    monkeypatch.setattr(runner, "_rir_collect", lambda db, domain, fresh_since=None: arin.ArinCollection(
         domain=domain, pocs_listed=0, pocs_truncated=False, pocs_not_exact=0, matched=()))
     runner.rir_for_claimed(claimed.id)  # control: a claimed one reaches the seam
 

@@ -24,6 +24,14 @@ writes the signals, and this module commits. Neither is a single unit of work:
 earlier ones stay, each complete. The claimed candidate is re-loaded between
 the two steps, since the commit expired it and its status may have changed.
 
+## Manual Re-check (`recheck_root`, planning#278 S3c2)
+
+Re-asks ARIN and RIPE for the whole root: one run-level `fresh_since` (taken at
+the start) is passed to every domain's RIR steps, so cache rows older than the
+run are refetched and a key repeated inside the run is fetched once. The RIR
+steps run per claimed domain, then the dedicated-IP sweep once. An in-process
+slot (`try_begin_recheck`) keeps one Re-check per root at a time.
+
 ## Facts cache
 
 One `dict[str, DomainFacts]` per run: a domain is looked up once however many
@@ -36,8 +44,11 @@ of INFO.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Callable
 
 from sqlalchemy import select
@@ -66,15 +77,15 @@ def _collect(db: Session, domain: str) -> DomainFacts:
     return domain_facts.collect(db, domain)
 
 
-def _rir_collect(db: Session, domain: str) -> arin.ArinCollection:
+def _rir_collect(db: Session, domain: str, fresh_since: datetime | None = None) -> arin.ArinCollection:
     """The one place the RIR generator reaches the network (tests replace it)."""
-    return arin.collect(db, domain, rir_fetch.Budget())
+    return arin.collect(db, domain, rir_fetch.Budget(fresh_since=fresh_since))
 
 
-def _ripe_collect(db: Session, domain: str) -> ripe.RipeCollection:
+def _ripe_collect(db: Session, domain: str, fresh_since: datetime | None = None) -> ripe.RipeCollection:
     """The one place the RIPE generator reaches the network (tests replace it).
     Its own Budget: a separate registry with a separate rate limit."""
-    return ripe.collect(db, domain, rir_fetch.Budget())
+    return ripe.collect(db, domain, rir_fetch.Budget(fresh_since=fresh_since))
 
 
 def _facts(db: Session, cache: dict[str, DomainFacts], domain: str) -> DomainFacts:
@@ -129,15 +140,17 @@ def _summary(run: str, report: VerifyReport) -> None:
     )
 
 
-def _claimed_ids(db: Session, root_entity_id: uuid.UUID, *, excluding: uuid.UUID) -> list[uuid.UUID]:
-    return list(db.execute(
-        select(ScopeCandidate.id).where(
-            ScopeCandidate.root_entity_id == root_entity_id,
-            ScopeCandidate.kind == "domain",
-            ScopeCandidate.status == "claimed",
-            ScopeCandidate.id != excluding,
-        ).order_by(ScopeCandidate.id)
-    ).scalars())
+def _claimed_ids(
+    db: Session, root_entity_id: uuid.UUID, *, excluding: uuid.UUID | None = None,
+) -> list[uuid.UUID]:
+    stmt = select(ScopeCandidate.id).where(
+        ScopeCandidate.root_entity_id == root_entity_id,
+        ScopeCandidate.kind == "domain",
+        ScopeCandidate.status == "claimed",
+    )
+    if excluding is not None:
+        stmt = stmt.where(ScopeCandidate.id != excluding)
+    return list(db.execute(stmt.order_by(ScopeCandidate.id)).scalars())
 
 
 def verify_new_candidates(candidate_ids: list[uuid.UUID]) -> VerifyReport:
@@ -309,15 +322,17 @@ def _rir_step(registry: str, claimed_candidate_id: uuid.UUID, collect: Callable,
     return result
 
 
-def rir_for_claimed(claimed_candidate_id: uuid.UUID) -> RirRunResult:
+def rir_for_claimed(claimed_candidate_id: uuid.UUID, *, fresh_since: datetime | None = None) -> RirRunResult:
     """ARIN, then RIPE, generators for one claimed domain, each in its own
     session (see the module docstring). The fetch (which commits its cache
     rows) runs before any signal write; the signals are then one unit of work.
+    `fresh_since` (a manual Re-check's run start) makes the collectors refetch
+    cache rows older than it; None (the claim follow-up) uses the cache as is.
     Created ASN/CIDR candidates are NOT run through the domain verifiers (they
     are not domains). The collectors are looked up at call time so tests can
     replace the seams."""
     a = _rir_step(
-        "arin", claimed_candidate_id, lambda db, d: _rir_collect(db, d), arin.record_arin, arin.ArinRecordResult,
+        "arin", claimed_candidate_id, lambda db, d: _rir_collect(db, d, fresh_since=fresh_since), arin.record_arin, arin.ArinRecordResult,
     )
     log.info(
         "org-discovery rir_for_claimed pocs_listed=%d pocs_truncated=%s pocs_not_exact=%d fetch_failed=%d "
@@ -331,7 +346,7 @@ def rir_for_claimed(claimed_candidate_id: uuid.UUID) -> RirRunResult:
         a.context_no_candidate,
     )
     r = _rir_step(
-        "ripe", claimed_candidate_id, lambda db, d: _ripe_collect(db, d), lambda db, **kw: ripe.record_ripe(db, **kw),
+        "ripe", claimed_candidate_id, lambda db, d: _ripe_collect(db, d, fresh_since=fresh_since), lambda db, **kw: ripe.record_ripe(db, **kw),
         ripe.RipeRecordResult,
     )
     log.info(
@@ -345,3 +360,72 @@ def rir_for_claimed(claimed_candidate_id: uuid.UUID) -> RirRunResult:
         r.invalid, r.holder_conflict, r.context_recorded, r.context_no_candidate,
     )
     return RirRunResult(arin=a, ripe=r)
+
+
+# In-process Re-check slot: one manual Re-check per root at a time. A guard, not
+# a setting. A slot whose background task never ran (process died, task dropped)
+# is reclaimable after RECHECK_STALE_AFTER_S.
+_recheck_lock = threading.Lock()
+_recheck_running: dict[uuid.UUID, float] = {}
+RECHECK_STALE_AFTER_S = 2 * 60 * 60
+
+
+def try_begin_recheck(root_entity_id: uuid.UUID) -> bool:
+    """Take the root's Re-check slot; False if a younger one is held."""
+    with _recheck_lock:
+        started = _recheck_running.get(root_entity_id)
+        if started is not None and time.monotonic() - started < RECHECK_STALE_AFTER_S:
+            return False
+        _recheck_running[root_entity_id] = time.monotonic()
+        return True
+
+
+def end_recheck(root_entity_id: uuid.UUID) -> None:
+    with _recheck_lock:
+        _recheck_running.pop(root_entity_id, None)
+
+
+@dataclass
+class RecheckResult:
+    claimed_domains: int = 0
+    domains_failed: int = 0
+    runs: list[RirRunResult] = field(default_factory=list)
+    dedicated: RirDedicatedIpResult = field(default_factory=RirDedicatedIpResult)
+
+
+def recheck_root(root_entity_id: uuid.UUID) -> RecheckResult:
+    """Manual Re-check of one root: every claimed domain's ARIN and RIPE steps
+    with a run-level `fresh_since`, then the dedicated-IP sweep once. The CALLER
+    holds the slot (`try_begin_recheck`); this function releases it in `finally`.
+    Opens its own sessions (see the module docstring); never call it inside a
+    request transaction."""
+    result = RecheckResult()
+    try:
+        fresh_since = datetime.now(timezone.utc)
+        db = SessionLocal()
+        try:
+            ids = _claimed_ids(db, root_entity_id)
+        finally:
+            db.close()
+        result.claimed_domains = len(ids)
+        for cid in ids:
+            try:
+                result.runs.append(rir_for_claimed(cid, fresh_since=fresh_since))
+            except Exception:
+                result.domains_failed += 1
+                log.exception("org-discovery re-check RIR failed candidate=%s", cid)
+        try:
+            result.dedicated = dedicated_ip_for_root(root_entity_id)
+        except Exception:
+            log.exception("org-discovery re-check dedicated-IP failed root=%s", root_entity_id)
+    finally:
+        end_recheck(root_entity_id)
+    log.info(
+        "org-discovery recheck_root claimed_domains=%d domains_failed=%d rir_signals_recorded=%d "
+        "candidates_created=%d dedicated_signals_recorded=%d",
+        result.claimed_domains, result.domains_failed,
+        sum(r.arin.signals_recorded + r.ripe.signals_recorded for r in result.runs),
+        sum(len(r.arin.created_candidate_ids) + len(r.ripe.created_candidate_ids) for r in result.runs),
+        result.dedicated.signals_recorded,
+    )
+    return result

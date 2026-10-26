@@ -263,6 +263,10 @@ class AddCandidateRequest(BaseModel):
     quote: str
 
 
+class RecheckAccepted(BaseModel):
+    claimed_domains: int
+
+
 class ClaimRequest(BaseModel):
     affiliated_entity_id: uuid.UUID | None = None
 
@@ -898,6 +902,32 @@ def add_candidate(
     if created:  # add_by_person has committed
         background_tasks.add_task(runner.verify_new_candidates, created)
     return _one_row(db, current_user, candidate.id)[0]
+
+
+@router.post("/{org_id}/recheck", response_model=RecheckAccepted, status_code=202)
+def recheck_organization(
+    request: Request,
+    org_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_DECIDE_CANDIDATE)),
+):
+    """Re-asks ARIN and RIPE for every claimed domain of the root, ignoring
+    cache rows older than the run start, then runs the dedicated-IP sweep.
+    Passive registry lookups; never un-claims anything."""
+    _require_visible_root(db, current_user, org_id)
+    n = db.scalar(
+        select(func.count()).select_from(ScopeCandidate).where(
+            ScopeCandidate.root_entity_id == org_id,
+            ScopeCandidate.kind == "domain",
+            ScopeCandidate.status == "claimed",
+        )
+    ) or 0
+    if not runner.try_begin_recheck(org_id):
+        raise HTTPException(409, "A re-check of this organization is already running")
+    audit.record_detail(request, organization=str(org_id), claimed_domains=n)
+    background_tasks.add_task(runner.recheck_root, org_id)
+    return RecheckAccepted(claimed_domains=n)
 
 
 @router.post("/candidates/{candidate_id}/claim", response_model=ClaimResponse)

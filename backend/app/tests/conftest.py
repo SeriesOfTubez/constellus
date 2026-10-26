@@ -110,7 +110,7 @@ def _offline_org_rir_collect(request, monkeypatch):
 
     monkeypatch.setattr(
         runner, "_ripe_collect",
-        lambda db, domain: ripe.RipeCollection(
+        lambda db, domain, fresh_since=None: ripe.RipeCollection(
             domain=domain, docs_found=0, docs_seen=0, fulltext_truncated=False, docs_other_type=0,
             contacts_not_exact=0, matched=(), resources=(), orgs_followed=0, fetch_failed=0,
             budget_exhausted=False, invalid_handles=0, invalid=0, skipped_status=0, skipped_source=0,
@@ -119,7 +119,7 @@ def _offline_org_rir_collect(request, monkeypatch):
 
     monkeypatch.setattr(
         runner, "_rir_collect",
-        lambda db, domain: arin.ArinCollection(
+        lambda db, domain, fresh_since=None: arin.ArinCollection(
             domain=domain, pocs_listed=0, pocs_truncated=False, pocs_not_exact=0, matched=(),
         ),
     )
