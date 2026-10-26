@@ -13,7 +13,7 @@ Run with:  scripts/test.sh app/tests/test_org_discovery_schema.py
 
 import importlib.util
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -21,7 +21,12 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from app.models import scope_candidate as model
-from app.models.scope_candidate import ScopeCandidate, ScopeCandidateEvent, ScopeSignal
+from app.models.scope_candidate import (
+    ScopeCandidate,
+    ScopeCandidateEvent,
+    ScopeCandidateReassignment,
+    ScopeSignal,
+)
 from app.models.user import User
 from app.services.org_discovery.tiers import CONTEXT, SIGNALS, STRONG, SUPPORTING, TIERS
 from app.tests._org_world import World, hexid
@@ -31,6 +36,7 @@ _MIGRATION = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "008
 
 _MIGRATION_0086 = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0086_connector_zone_anchor.py"
 _MIGRATION_0087 = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0087_asn_cidr_candidates.py"
+_MIGRATION_0089 = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0089_scope_candidate_reassignments.py"
 
 
 def _load(path, name):
@@ -52,6 +58,10 @@ def _migration_0086():
 def _migration_0087():
     # 0087 widens KINDS and SIGNAL_TYPES and adds RIRS; the rest stays in 0083.
     return _load(_MIGRATION_0087, "migration_0087")
+
+
+def _migration_0089():
+    return _load(_MIGRATION_0089, "migration_0089")
 
 
 @pytest.fixture
@@ -133,6 +143,7 @@ def test_model_vocabularies_equal_the_migrations_check_lists():
     assert model.CANDIDATE_STATUSES == set(m.CANDIDATE_STATUSES)
     assert model.ACCEPTED_INTO == set(m.ACCEPTED_INTO)
     assert model.SIGNAL_TYPES == set(m87.SIGNAL_TYPES)
+    assert model.REASSIGNED_HOLDER_KINDS == set(_migration_0089().HOLDER_KINDS)
     assert model.ANCHOR_KINDS == set(_migration_0086().ANCHOR_KINDS)
     assert model.EVENT_KINDS == set(m.EVENT_KINDS)
 
@@ -165,6 +176,7 @@ def test_the_live_check_constraints_carry_the_same_lists(w):
     assert listed("ck_connector_zone_clashes_reason") == set(_migration_0086().CLASH_REASONS)
     assert listed("ck_scope_candidate_events_event") == set(m.EVENT_KINDS)
     assert listed("ck_scope_candidates_status") == set(m.CANDIDATE_STATUSES)
+    assert listed("ck_scope_candidate_reassignments_holder_kind") == set(_migration_0089().HOLDER_KINDS)
 
 
 def test_clash_reasons_model_equals_the_migration():
@@ -451,3 +463,154 @@ def test_a_user_row_is_still_deletable_after_all_this(w):
     w.db.commit()
     w.users.remove(uid)
     assert w.db.get(User, uid) is None
+
+
+# ── reassigned-away records (migration 0089, planning#278 S3c3a) ────────────
+
+_CLAIMED_CIDR = "192.0.2.0/24"  # RFC 5737
+
+
+def _cidr_candidate(w, root, *, value=_CLAIMED_CIDR, **over) -> uuid.UUID:
+    values = dict(kind="cidr", value=value, rir="arin", rir_handle="EXAMPLE-A-ARIN", **_claimed(root.id))
+    values.update(over)
+    return _insert_candidate(w.db, root.id, **values)
+
+
+def _insert_reassignment(db, candidate_id, evidence_id, **over) -> uuid.UUID:
+    values = dict(
+        id=uuid.uuid4(), candidate_id=candidate_id, prefix="192.0.2.128/25", new_holder_kind="org",
+        new_holder_handle="EXAMPLE-B", evidence_id=evidence_id,
+    )
+    values.update(over)
+    db.execute(ScopeCandidateReassignment.__table__.insert().values(**values))
+    db.commit()
+    return values["id"]
+
+
+def _reassignment_count(db, rid) -> int:
+    return db.execute(text("select count(*) from scope_candidate_reassignments where id = :i"), {"i": rid}).scalar_one()
+
+
+_TRIGGER_MSG = "must be a claimed cidr containing the prefix"
+
+
+def test_a_reassignment_needs_a_claimed_cidr_candidate(w):
+    root = w.ours()
+    ev = w.evidence_row()
+    open_cid = _cidr_candidate(w, root, status="open", affiliated_entity_id=None, decided_at=None, accepted_into=None)
+    _trigger_fails(w.db, _TRIGGER_MSG, lambda: _insert_reassignment(w.db, open_cid, ev.id))
+    # the same row, once the one precondition (claimed) is fixed
+    _update(w.db, ScopeCandidate, open_cid, **_claimed(root.id))
+    w.db.commit()
+    assert _reassignment_count(w.db, _insert_reassignment(w.db, open_cid, ev.id)) == 1
+
+    rej_cid = _cidr_candidate(w, root, value="198.51.100.0/24", **{**_rejected(), "affiliated_entity_id": None, "accepted_into": None})
+    _trigger_fails(w.db, _TRIGGER_MSG,
+                   lambda: _insert_reassignment(w.db, rej_cid, ev.id, prefix="198.51.100.72/29"))
+    ok_cid = _cidr_candidate(w, root, value="203.0.113.0/24")
+    assert _reassignment_count(w.db, _insert_reassignment(w.db, ok_cid, ev.id, prefix="203.0.113.0/26")) == 1
+
+
+def test_a_reassignment_needs_a_cidr_not_a_domain_or_asn(w):
+    root = w.ours()
+    ev = w.evidence_row()
+    dom = _insert_candidate(w.db, root.id, **_claimed(root.id))
+    asn = _insert_candidate(w.db, root.id, kind="asn", value="AS64500", rir="arin", rir_handle="EXAMPLE-A-ARIN",
+                            **_claimed(root.id))
+    for cid in (dom, asn):
+        _trigger_fails(w.db, _TRIGGER_MSG, lambda c=cid: _insert_reassignment(w.db, c, ev.id))
+    cidr = _cidr_candidate(w, root)
+    assert _reassignment_count(w.db, _insert_reassignment(w.db, cidr, ev.id)) == 1  # the path is reachable
+
+
+def test_the_prefix_must_lie_inside_the_candidates_prefix(w):
+    root = w.ours()
+    ev = w.evidence_row()
+    cid = _cidr_candidate(w, root, value="192.0.2.128/26")
+    for prefix in ("198.51.100.72/29", "192.0.2.0/24", "192.0.2.192/26", "0.0.0.0/0"):  # outside; larger; sibling; larger
+        _trigger_fails(w.db, _TRIGGER_MSG, lambda p=prefix: _insert_reassignment(w.db, cid, ev.id, prefix=p))
+    for prefix in ("192.0.2.128/26", "192.0.2.160/27"):  # equal; inside
+        assert _reassignment_count(w.db, _insert_reassignment(w.db, cid, ev.id, prefix=prefix)) == 1
+
+
+def test_handle_is_set_iff_org_or_customer(w):
+    root = w.ours()
+    ev = w.evidence_row()
+    cid = _cidr_candidate(w, root)
+    _fails(w.db, "ck_scope_candidate_reassignments_handle_iff_holder",
+           lambda: _insert_reassignment(w.db, cid, ev.id, new_holder_kind="org", new_holder_handle=None))
+    _fails(w.db, "ck_scope_candidate_reassignments_handle_iff_holder",
+           lambda: _insert_reassignment(w.db, cid, ev.id, new_holder_kind="customer", new_holder_handle=None))
+    _fails(w.db, "ck_scope_candidate_reassignments_handle_iff_holder",
+           lambda: _insert_reassignment(w.db, cid, ev.id, new_holder_kind="unknown", new_holder_handle="EXAMPLE-B"))
+    _fails(w.db, "ck_scope_candidate_reassignments_handle_iff_holder",
+           lambda: _insert_reassignment(w.db, cid, ev.id, new_holder_kind="unregistered", new_holder_handle="EXAMPLE-B"))
+    _fails(w.db, "ck_scope_candidate_reassignments_holder_kind",
+           lambda: _insert_reassignment(w.db, cid, ev.id, new_holder_kind="other", new_holder_handle=None))
+    for kind, handle in (("org", "EXAMPLE-B"), ("customer", "EXAMPLE-C"), ("unknown", None), ("unregistered", None)):
+        rid = _insert_reassignment(w.db, cid, ev.id, new_holder_kind=kind, new_holder_handle=handle)
+        assert _reassignment_count(w.db, rid) == 1
+
+
+def test_a_blank_handle_is_refused(w):
+    root = w.ours()
+    ev = w.evidence_row()
+    cid = _cidr_candidate(w, root)
+    _fails(w.db, "ck_scope_candidate_reassignments_handle_nonblank",
+           lambda: _insert_reassignment(w.db, cid, ev.id, new_holder_handle="  "))
+    assert _reassignment_count(w.db, _insert_reassignment(w.db, cid, ev.id, new_holder_handle="EXAMPLE-B")) == 1
+
+
+@pytest.mark.parametrize("bad", ["192.0.2.1/24", "192.0.2.0/024", "2001:DB8::/32"])
+def test_the_prefix_must_be_canonical(w, bad):
+    root = w.ours()
+    ev = w.evidence_row()
+    cid = _cidr_candidate(w, root, value="2001:db8::/32" if bad.startswith("2001") else _CLAIMED_CIDR)
+    with pytest.raises(DBAPIError):  # the CHECK, or the cast inside it, refuses
+        _insert_reassignment(w.db, cid, ev.id, prefix=bad)
+    w.db.rollback()
+    good = "2001:db8:1::/48" if bad.startswith("2001") else "192.0.2.128/25"
+    assert _reassignment_count(w.db, _insert_reassignment(w.db, cid, ev.id, prefix=good)) == 1
+
+
+def test_one_row_per_candidate_prefix_and_new_holder_even_with_a_null_handle(w):
+    root = w.ours()
+    ev = w.evidence_row()
+    cid = _cidr_candidate(w, root)
+    for kind, handle in (("org", "EXAMPLE-B"), ("unregistered", None)):
+        _insert_reassignment(w.db, cid, ev.id, new_holder_kind=kind, new_holder_handle=handle)
+        _fails(w.db, "uq_scope_candidate_reassignments_route",
+               lambda k=kind, h=handle: _insert_reassignment(w.db, cid, ev.id, new_holder_kind=k, new_holder_handle=h))
+    # a different new holder, or a different prefix, is a new row
+    assert _reassignment_count(w.db, _insert_reassignment(w.db, cid, ev.id, new_holder_handle="EXAMPLE-C")) == 1
+    assert _reassignment_count(w.db, _insert_reassignment(w.db, cid, ev.id, prefix="192.0.2.128/26")) == 1
+
+
+@pytest.mark.parametrize("column", [
+    "id", "candidate_id", "prefix", "new_holder_kind", "new_holder_handle", "evidence_id", "first_detected_at",
+    "created_at",
+])
+def test_only_last_seen_at_may_change_on_a_reassignment(w, column):
+    root = w.ours()
+    ev, other_ev = w.evidence_row(), w.evidence_row()
+    cid = _cidr_candidate(w, root)
+    other_cid = _cidr_candidate(w, root, value="198.51.100.0/24")
+    rid = _insert_reassignment(w.db, cid, ev.id)
+    new = {
+        "id": uuid.uuid4(), "candidate_id": other_cid, "prefix": "192.0.2.192/26", "new_holder_kind": "customer",
+        "new_holder_handle": "EXAMPLE-C", "evidence_id": other_ev.id, "first_detected_at": _now(),
+        "created_at": _now(),
+    }[column]
+    _trigger_fails(w.db, "only last_seen_at", lambda: _update(w.db, ScopeCandidateReassignment, rid, **{column: new}))
+    _update(w.db, ScopeCandidateReassignment, rid, last_seen_at=_now())  # the path IS reachable
+    w.db.commit()
+
+
+def test_last_seen_may_not_precede_first_detected(w):
+    root = w.ours()
+    ev = w.evidence_row()
+    cid = _cidr_candidate(w, root)
+    t = _now()
+    _fails(w.db, "ck_scope_candidate_reassignments_seen_order",
+           lambda: _insert_reassignment(w.db, cid, ev.id, first_detected_at=t, last_seen_at=t - timedelta(seconds=1)))
+    assert _reassignment_count(w.db, _insert_reassignment(w.db, cid, ev.id, first_detected_at=t, last_seen_at=t)) == 1

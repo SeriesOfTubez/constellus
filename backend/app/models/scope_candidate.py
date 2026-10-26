@@ -7,7 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
-# Mirror the CHECK-backed vocabularies in migrations 0083 / 0086 / 0087 by
+# Mirror the CHECK-backed vocabularies in migrations 0083 / 0086 / 0087 / 0089 by
 # hand (the same pattern as `entity_relation.py`). `test_org_discovery_schema.py`
 # fails if any of these drifts from the migration's lists; `SIGNAL_TYPES` is
 # also compared with `org_discovery.tiers.SIGNALS`.
@@ -28,6 +28,8 @@ SIGNAL_TYPES: frozenset[str] = frozenset({
 })
 ANCHOR_KINDS: frozenset[str] = frozenset({"claimed_candidate", "filer_filing", "person", "connector_instance"})
 EVENT_KINDS: frozenset[str] = frozenset({"claimed", "rejected", "unlocked"})
+# Who a claimed CIDR's space is registered to after a reassignment (migration 0089).
+REASSIGNED_HOLDER_KINDS: frozenset[str] = frozenset({"org", "customer", "unknown", "unregistered"})
 
 
 class ScopeCandidate(Base):
@@ -158,3 +160,31 @@ class ScopeCandidateEvent(Base):
     signal_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("scope_signals.id", ondelete="RESTRICT"), nullable=True
     )
+
+
+class ScopeCandidateReassignment(Base):
+    """A part of a claimed CIDR candidate's prefix that its registry now shows
+    under another holder, or under none (planning#278 S3c3a). Never changes the
+    claim. Only `last_seen_at` ever changes; migration 0089 carries the rules."""
+
+    __tablename__ = "scope_candidate_reassignments"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id", "prefix", "new_holder_kind", "new_holder_handle",
+            name="uq_scope_candidate_reassignments_route", postgresql_nulls_not_distinct=True,
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("uuidv7()"))
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scope_candidates.id", ondelete="RESTRICT"), nullable=False
+    )
+    prefix: Mapped[str] = mapped_column(Text, nullable=False)
+    new_holder_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    new_holder_handle: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("evidence_fetches.id", ondelete="RESTRICT"), nullable=False
+    )
+    first_detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

@@ -15,7 +15,7 @@ import uuid
 
 from sqlalchemy import or_, select, text
 
-from app.models.scope_candidate import ScopeCandidate, ScopeCandidateEvent, ScopeSignal
+from app.models.scope_candidate import ScopeCandidate, ScopeCandidateEvent, ScopeCandidateReassignment, ScopeSignal
 
 
 def purge(db, *, entity_ids=(), candidate_ids=(), connector_instance_ids=()) -> set[uuid.UUID]:
@@ -63,6 +63,10 @@ def purge(db, *, entity_ids=(), candidate_ids=(), connector_instance_ids=()) -> 
         db.query(ev).filter(or_(*conds_ev)).delete(synchronize_session=False)
     finally:
         db.execute(text("ALTER TABLE scope_candidate_events ENABLE TRIGGER trg_scope_candidate_events_append_only"))
+    # Reassigned-away records (planning#278 S3c3a) reference the candidate and their evidence (RESTRICT).
+    reassigned = db.query(ScopeCandidateReassignment).filter(ScopeCandidateReassignment.candidate_id.in_(cids))
+    evidence |= {r.evidence_id for r in reassigned.all()}
+    reassigned.delete(synchronize_session=False)
     db.query(sig).filter(sig.id.in_(sids)).delete(synchronize_session=False)
     db.query(ScopeCandidate).filter(ScopeCandidate.id.in_(cids)).delete(synchronize_session=False)
     db.commit()
