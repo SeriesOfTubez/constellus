@@ -4,6 +4,7 @@ import {
   type AddOrgState, type CandidateRow, type SignalDetail, type TreeNode,
   addOrgRequest, addOrgStepValid, filerStatsLine, relationshipOptions,
   entityHref, orgEntityTarget, registryChangeText, registryHolder,
+  formatClosed, formatShare, ipSpaceLabel, postureLabel,
   anchorText, candidateParams, groupRows, relationNote, segmentCount, severityBar, splitSignals, stateInfo, tierChipClass, treeRows,
 } from "@/lib/organizations"
 
@@ -204,5 +205,36 @@ describe("registry observations (S3d)", () => {
     expect(registryHolder(row({ rir: "arin", rir_handle: "EXAMPLE-ORG-1" }))).toBe("ARIN · EXAMPLE-ORG-1")
     expect(registryHolder(row({ rir: "ripe", rir_handle: "ORG-EX1-RIPE" }))).toBe("RIPE · ORG-EX1-RIPE")
     expect(registryHolder(row())).toBe("—")
+  })
+})
+
+describe("acquisition helpers", () => {
+  it("formatClosed does not timezone-shift and honours precision", () => {
+    expect(formatClosed("2021-03-01", "day")).toBe("1 Mar 2021")
+    expect(formatClosed("2021-03-12", "day")).toBe("12 Mar 2021")
+    expect(formatClosed("2021-03-01", "month")).toBe("Mar 2021")
+    expect(formatClosed("2021-01-01", "year")).toBe("2021")
+    expect(formatClosed("2021-03-12", "unknown")).toBe("12 Mar 2021")
+    expect(formatClosed("2021-03-12", null)).toBe("12 Mar 2021")
+    expect(formatClosed(null, "day")).toBe("—")
+  })
+  it("formatShare", () => {
+    expect(formatShare(null)).toBe("—")
+    expect(formatShare(0)).toBe("0%")
+    expect(formatShare(0.004)).toBe("<1%")
+    expect(formatShare(0.01)).toBe("1%")
+    expect(formatShare(0.456)).toBe("46%")
+  })
+  it("ipSpaceLabel", () => {
+    expect(ipSpaceLabel({ asns_claimed: 1, cidrs_claimed: 2 })).toBe("1 ASN · 2 prefixes")
+    expect(ipSpaceLabel({ asns_claimed: 0, cidrs_claimed: 3 })).toBe("3 prefixes")
+    expect(ipSpaceLabel({ asns_claimed: 2, cidrs_claimed: 1 })).toBe("2 ASNs · 1 prefix")
+    expect(ipSpaceLabel({ asns_claimed: 0, cidrs_claimed: 0 })).toBe("—")
+  })
+  it("postureLabel", () => {
+    expect(postureLabel("pre_close")).toBe("pre-close")
+    expect(postureLabel("day_0")).toBe("day 0")
+    expect(postureLabel("estate")).toBe("estate")
+    expect(postureLabel("weird")).toBe("weird")
   })
 })

@@ -45,6 +45,7 @@ class TreeNode:
     event_date: date | None
     status: str  # "confirmed" | "proposed"
     depth: int
+    event_date_precision: str | None = None  # the relation's; None on the root
 
 
 def _edges_from(db: Session, user, node_id: uuid.UUID):
@@ -54,7 +55,7 @@ def _edges_from(db: Session, user, node_id: uuid.UUID):
     rel = EntityRelation
     rows = db.execute(
         select(
-            rel.subject_id, rel.object_id, rel.relation, rel.event_date, rel.status,
+            rel.subject_id, rel.object_id, rel.relation, rel.event_date, rel.status, rel.event_date_precision,
         )
         .where(
             rel.status.in_(("confirmed", "proposed")),
@@ -67,11 +68,11 @@ def _edges_from(db: Session, user, node_id: uuid.UUID):
         .order_by(rel.created_at, rel.id)
     ).all()
     out = []
-    for subject_id, object_id, relation, event_date, status in rows:
+    for subject_id, object_id, relation, event_date, status, precision in rows:
         cid = subject_id if relation == "subsidiary_of" else object_id
         if cid == node_id:
             continue
-        out.append((cid, relation, event_date, status))
+        out.append((cid, relation, event_date, status, precision))
     if not out:
         return []
     ents = {
@@ -80,7 +81,11 @@ def _edges_from(db: Session, user, node_id: uuid.UUID):
             select(child).where(child.id.in_({o[0] for o in out}), read_scope.entity_clause(user, child))
         ).scalars()
     }
-    return [(cid, ents[cid], relation, event_date, status) for cid, relation, event_date, status in out if cid in ents]
+    return [
+        (cid, ents[cid], relation, event_date, status, precision)
+        for cid, relation, event_date, status, precision in out
+        if cid in ents
+    ]
 
 
 def org_tree(db: Session, user, root_id: uuid.UUID) -> list[TreeNode]:
@@ -95,19 +100,23 @@ def org_tree(db: Session, user, root_id: uuid.UUID) -> list[TreeNode]:
         depth += 1
         next_frontier: list[uuid.UUID] = []
         for parent_id in frontier:
-            for cid, ent, relation, event_date, status in _edges_from(db, user, parent_id):
+            for cid, ent, relation, event_date, status, precision in _edges_from(db, user, parent_id):
                 if cid in seen:
                     continue
                 if ent.relationship is not None:
                     continue  # a separate root: resolve() stops here too
                 if status == "confirmed":
                     seen.add(cid)
-                    nodes.append(TreeNode(cid, ent.legal_name, parent_id, relation, event_date, "confirmed", depth))
+                    nodes.append(TreeNode(
+                        cid, ent.legal_name, parent_id, relation, event_date, "confirmed", depth, precision
+                    ))
                     next_frontier.append(cid)
                 else:
                     # Shown, never walked, never in the subtree. Not added to
                     # `seen`: a later CONFIRMED path to the same entity wins.
-                    nodes.append(TreeNode(cid, ent.legal_name, parent_id, relation, event_date, "proposed", depth))
+                    nodes.append(TreeNode(
+                        cid, ent.legal_name, parent_id, relation, event_date, "proposed", depth, precision
+                    ))
         frontier = next_frontier
     # An entity reached as proposed first and confirmed later appears once, as confirmed.
     confirmed = {n.entity_id for n in nodes if n.status == "confirmed"}

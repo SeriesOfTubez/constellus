@@ -504,3 +504,64 @@ export function orgEntityTarget({ org_id, node }: LocateResponse): string {
   if (node) q.set("node", node)
   return `/organizations/${org_id}?${q.toString()}`
 }
+
+// Acquisitions roll-up (planning#277 S4a). Mirrors AcquisitionRow / AcquisitionRollup
+// in backend/app/api/organizations.py.
+export interface AcquisitionRow {
+  entity_id: string | null
+  name: string
+  organic: boolean
+  closed: string | null
+  closed_precision: string | null
+  postures: string[]
+  domains_claimed: number
+  domains_to_review: number
+  asns_claimed: number
+  cidrs_claimed: number
+  ip_to_review: number
+  assets: number
+  open_findings: SeverityCounts
+  worst_severity: SeverityKey | null
+  kev: number
+  risk_score_sum: number
+  risk_share: number | null
+}
+export interface AcquisitionRollup {
+  rows: AcquisitionRow[]
+  estate_risk_score_sum: number
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+/** ISO date -> display text, split by hand: new Date("2021-03-01") is UTC midnight and
+ *  would show the previous day west of UTC. Precisions: day | month | year | unknown. */
+export function formatClosed(closed: string | null, precision: string | null): string {
+  if (!closed) return "—"
+  const [y, m, d] = closed.slice(0, 10).split("-")
+  const month = MONTHS[Number(m) - 1]
+  if (precision === "year") return y
+  if (!month) return y || "—"
+  if (precision === "month") return `${month} ${y}`
+  return `${Number(d)} ${month} ${y}`
+}
+
+export function formatShare(share: number | null): string {
+  if (share === null) return "—"
+  if (share === 0) return "0%"
+  if (share < 0.01) return "<1%"
+  return `${Math.round(share * 100)}%`
+}
+
+export function ipSpaceLabel(row: Pick<AcquisitionRow, "asns_claimed" | "cidrs_claimed">): string {
+  const parts: string[] = []
+  if (row.asns_claimed > 0) parts.push(`${row.asns_claimed} ${row.asns_claimed === 1 ? "ASN" : "ASNs"}`)
+  if (row.cidrs_claimed > 0) parts.push(`${row.cidrs_claimed} ${row.cidrs_claimed === 1 ? "prefix" : "prefixes"}`)
+  return parts.length ? parts.join(" · ") : "—"
+}
+
+const POSTURE_LABEL: Record<string, string> = {
+  pre_close: "pre-close", day_0: "day 0", integrated: "integrated", abandoned: "abandoned", estate: "estate",
+}
+export function postureLabel(p: string): string {
+  return POSTURE_LABEL[p] ?? p
+}

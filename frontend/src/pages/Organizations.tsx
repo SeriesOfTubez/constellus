@@ -8,13 +8,14 @@ import { useDebouncedUrlState, useUrlState } from "@/lib/listView"
 import { useCan } from "@/lib/permissions"
 import { relativeTime } from "@/lib/time"
 import {
-  type CandidateDetail, type CandidatePage, type CandidateRow, type OrgDetailSummary, type OrgGroupMode,
+  type AcquisitionRollup, type CandidateDetail, type CandidatePage, type CandidateRow, type OrgDetailSummary, type OrgGroupMode,
   type OrganizationSummary, type Segment, type SignalType, type TreeNode,
   GROUP_OPTIONS, SEGMENTS, SEGMENT_LABEL, STRENGTH_LABEL, TIER_LEGEND,
   candidateParams, confirmedNodes, destinationText, groupRows, headerSubtitle, orgPill, segmentCount, treeRows,
   defaultSegment,
 } from "@/lib/organizations"
 import { AddOrganizationDialog } from "@/components/AddOrganizationFlow"
+import { AcquisitionsTable } from "@/components/OrgAcquisitionParts"
 import { IpSpaceTable, RecheckButton, RegistryObservations } from "@/components/OrgIpSpaceParts"
 import { WorkspaceShell } from "@/components/WorkspaceShell"
 import { EntityDetailContent } from "@/components/EntityDetailContent"
@@ -356,6 +357,7 @@ function OrgWorkspace({
   org, nodes, node, signalTypes,
 }: { org: OrganizationSummary; nodes: TreeNode[]; node: string | null; signalTypes: SignalType[] }) {
   const qc = useQueryClient()
+  const [, setSearchParams] = useSearchParams()
   const can = useCan()
   const [tab, setTab] = useUrlState("tab", "domains")
   const defaultSeg = defaultSegment(org)
@@ -431,6 +433,23 @@ function OrgWorkspace({
   })
   const asnRows = useMemo(() => asnQ.data?.pages.flatMap(p => p.items) ?? [], [asnQ.data])
   const cidrRows = useMemo(() => cidrQ.data?.pages.flatMap(p => p.items) ?? [], [cidrQ.data])
+  // Acquisitions tab (planning#277 S4a). Key starts with ["org-candidates", org.id] so
+  // invalidate() refreshes it after a claim.
+  const acqQ = useQuery({
+    queryKey: ["org-candidates", org.id, "acquisitions"],
+    enabled: tab === "acquisitions",
+    queryFn: () => api.get<AcquisitionRollup>(`/organizations/${org.id}/acquisitions`),
+  })
+  // One URL write for tab + node: two sequential setSearchParams calls would each start
+  // from the same stale params and the second would drop the first.
+  const openCompany = (entityId: string | null) =>
+    setSearchParams(prev => {
+      const n = new URLSearchParams(prev)
+      n.set("tab", "companies")
+      if (entityId) n.set("node", entityId); else n.delete("node")
+      n.delete("id")
+      return n
+    }, { replace: true })
   const flagsQ = useQuery({
     queryKey: ["org-candidates", org.id, "cidr-flags", subtreeOf],
     enabled: onAsns,
@@ -566,7 +585,23 @@ function OrgWorkspace({
       </div>
     )
   }
-  else if (tab === "acquisitions") body = <Placeholder text="Acquisition roll-ups are not built yet." />
+  else if (tab === "acquisitions") {
+    if (acqQ.isLoading) body = <div className="space-y-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}</div>
+    else if (acqQ.isError) body = <Placeholder text={`Could not load acquisitions: ${errorDetail(acqQ.error)}`} />
+    else {
+      const acqRows = acqQ.data?.rows ?? []
+      body = (
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">Risk each acquisition brought into the estate. Counts cover claimed scope only; each asset counts under one company.</p>
+          {!acqRows.some(r => r.organic === false) && (
+            <p className="text-sm text-muted-foreground">No confirmed acquisitions in this organization's tree yet.</p>
+          )}
+          {node && <p className="text-sm text-muted-foreground">Showing the whole organization; acquisitions roll up across the tree.</p>}
+          <AcquisitionsTable rows={acqRows} onOpenCompany={openCompany} />
+        </div>
+      )
+    }
+  }
   else if (tab === "companies") {
     const shownId = node ?? org.id
     const shownName = node ? nodes.find(n => n.entity_id === node)?.name : undefined

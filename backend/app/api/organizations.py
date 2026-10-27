@@ -42,11 +42,12 @@ from app.models.scope_candidate import (
     ScopeCandidateReassignment,
     ScopeSignal,
 )
+from app.models.target import Target
 from app.models.target_asset_link import TargetAssetLink
 from app.models.user import User
 from app.services import audit, edgar_ingest, entity_relationship, organizations, read_scope, sec_edgar
 from app.services import org_tree as org_tree_sql
-from app.services.org_discovery import candidates, filer_search, runner
+from app.services.org_discovery import candidates, filer_search, rollup, runner
 from app.services.org_discovery import strength as strength_sql
 from app.services.org_discovery.tiers import SIGNALS
 
@@ -180,6 +181,31 @@ class SeverityCounts(BaseModel):
     medium: int = 0
     low: int = 0
     unknown: int = 0
+
+
+class AcquisitionRow(BaseModel):
+    entity_id: uuid.UUID | None  # None on the organic row
+    name: str  # organic row: the root's legal name
+    organic: bool
+    closed: str | None  # ISO date of the acquired relation's event_date
+    closed_precision: str | None  # the relation's event_date_precision
+    postures: list[str]  # sorted distinct postures of the claimed targets' engagements; "estate" = no engagement
+    domains_claimed: int
+    domains_to_review: int
+    asns_claimed: int
+    cidrs_claimed: int
+    ip_to_review: int  # asn + cidr candidates still in review
+    assets: int
+    open_findings: SeverityCounts
+    worst_severity: Literal["critical", "high", "medium", "low", "unknown"] | None
+    kev: int  # CISA KEV only (`findings.kev`), as bod_sla does
+    risk_score_sum: int
+    risk_share: float | None  # None for every row when the estate sum is 0
+
+
+class AcquisitionRollup(BaseModel):
+    rows: list[AcquisitionRow]
+    estate_risk_score_sum: int
 
 
 class CandidateRow(BaseModel):
@@ -779,6 +805,134 @@ def get_summary(
         affiliates=sum(1 for n in nodes if n.status == "confirmed" and n.parent_id is not None),
         proposed_affiliates=sum(1 for n in nodes if n.status == "proposed"),
     )
+
+
+@router.get("/{org_id}/acquisitions", response_model=AcquisitionRollup)
+def get_acquisitions(
+    org_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_READ)),
+):
+    """What risk each acquisition brought into the estate: one row per confirmed
+    acquisition plus an organic row, counting CLAIMED scope only (rules in
+    `org_discovery.rollup`). Four queries, aggregated in Python."""
+    _require_visible_root(db, current_user, org_id)
+    nodes = org_tree_sql.org_tree(db, current_user, org_id)
+    deal_map = rollup.deal_of(nodes)
+    sc = ScopeCandidate
+
+    # 1. Claimed and to-review candidates, with their bucket's affiliate.
+    st = strength_sql.strength_subquery(candidate_ids=select(sc.id).where(sc.root_entity_id == org_id))
+    to_review = strength_sql.is_to_review(sc.status, st)
+    cand_rows = db.execute(
+        select(sc.id, _aff_id_expr().label("aff_id"), sc.kind, sc.target_id, sc.decided_at, sc.status, to_review.label("to_review"))
+        .select_from(sc)
+        .outerjoin(st.subquery, st.candidate_id == sc.id)
+        .where(sc.root_entity_id == org_id, read_scope.domain_clause(current_user, sc), or_(sc.status == "claimed", to_review))
+    ).all()
+
+    # An affiliate that is not a confirmed node (a proposed company, or one
+    # outside the tree) is not a deal: its candidates count as organic.
+    bucket_of = {c.id: deal_map.get(c.aff_id) for c in cand_rows}
+    claimed = [c for c in cand_rows if c.status == "claimed"]
+    claims = [rollup.Claim(c.id, c.kind, c.target_id, c.decided_at) for c in claimed if c.target_id is not None]
+    target_ids = {c.target_id for c in claims}
+
+    # 2. Links to readable assets, each asset attributed to ONE candidate.
+    links = []
+    if target_ids:
+        links = db.execute(
+            select(TargetAssetLink.target_id, TargetAssetLink.asset_canonical_id)
+            .join(AssetCanonical, AssetCanonical.id == TargetAssetLink.asset_canonical_id)
+            .where(TargetAssetLink.target_id.in_(target_ids), read_scope.asset_clause(current_user, AssetCanonical))
+        ).all()
+    owner = rollup.attribute(claims, [(t, a) for t, a in links])
+
+    # 3. Open findings per asset and severity, "open" exactly as `_target_rollups` defines it.
+    fnd = FindingCanonical
+    finding_rows = []
+    if owner:
+        finding_rows = db.execute(
+            select(
+                fnd.asset_canonical_id, fnd.severity, func.count(func.distinct(fnd.id)),
+                func.count(func.distinct(fnd.id)).filter(fnd.kev.is_(True)),
+                func.coalesce(func.sum(func.coalesce(fnd.risk_score, 0)), 0),
+            )
+            .join(AssetCanonical, AssetCanonical.id == fnd.asset_canonical_id)
+            .where(
+                fnd.asset_canonical_id.in_(
+                    select(TargetAssetLink.asset_canonical_id).where(TargetAssetLink.target_id.in_(target_ids))
+                ),
+                fnd.state.in_(_OPEN_STATES),
+                _NOT_EXCLUDED_FROM_MAIN,
+                read_scope.finding_clause(current_user, fnd, AssetCanonical),
+            )
+            .group_by(fnd.asset_canonical_id, fnd.severity)
+        ).all()
+
+    # 4. Target -> posture.
+    posture_of: dict[uuid.UUID, str] = {}
+    if target_ids:
+        posture_of = {
+            t: (p if p is not None else "estate")
+            for t, p in db.execute(
+                select(Target.id, Engagement.posture)
+                .outerjoin(Engagement, Engagement.id == Target.engagement_id)
+                .where(Target.id.in_(target_ids))
+            ).all()
+        }
+
+    # ── aggregate ───────────────────────────────────────────────────────────
+    buckets: list[uuid.UUID | None] = [n.entity_id for n in nodes if n.status == "confirmed" and n.relation == "acquired"]
+    buckets.append(None)
+    agg = {
+        b: {"dom": 0, "dom_rev": 0, "asn": 0, "cidr": 0, "ip_rev": 0, "assets": 0, "kev": 0, "risk": 0,
+            "sev": {}, "postures": set()}
+        for b in buckets
+    }
+    for c in cand_rows:
+        a = agg[bucket_of[c.id]]
+        if c.status == "claimed":
+            key = {"domain": "dom", "asn": "asn", "cidr": "cidr"}.get(c.kind)
+            if key:
+                a[key] += 1
+            if c.target_id is not None and c.target_id in posture_of:
+                a["postures"].add(posture_of[c.target_id])
+        elif c.to_review:
+            a["dom_rev" if c.kind == "domain" else "ip_rev"] += 1
+    for asset_id, cand_id in owner.items():
+        agg[bucket_of[cand_id]]["assets"] += 1
+    for asset_id, severity, n, kev_n, risk in finding_rows:
+        cand_id = owner.get(asset_id)
+        if cand_id is None:
+            continue  # an asset the caller may not read (asset_clause), or one with no claim
+        a = agg[bucket_of[cand_id]]
+        bucket = severity if severity in _SEVERITY_ORDER else "unknown"
+        a["sev"][bucket] = a["sev"].get(bucket, 0) + n
+        a["kev"] += kev_n
+        a["risk"] += int(risk)
+    estate = sum(a["risk"] for a in agg.values())
+
+    by_id = {n.entity_id: n for n in nodes}
+    out: list[AcquisitionRow] = []
+    for b in buckets:
+        a = agg[b]
+        counts = SeverityCounts(**a["sev"])
+        node = by_id[b] if b is not None else nodes[0]
+        out.append(AcquisitionRow(
+            entity_id=b, name=node.name, organic=b is None,
+            closed=node.event_date.isoformat() if b is not None and node.event_date else None,
+            closed_precision=node.event_date_precision if b is not None else None,
+            postures=sorted(a["postures"]),
+            domains_claimed=a["dom"], domains_to_review=a["dom_rev"], asns_claimed=a["asn"], cidrs_claimed=a["cidr"],
+            ip_to_review=a["ip_rev"], assets=a["assets"], open_findings=counts, worst_severity=_worst(counts),
+            kev=a["kev"], risk_score_sum=a["risk"], risk_share=(a["risk"] / estate) if estate > 0 else None,
+        ))
+    organic = out.pop()
+    out.sort(key=lambda r: r.name)
+    dated = sorted((r for r in out if r.closed is not None), key=lambda r: r.closed, reverse=True)  # stable
+    undated = [r for r in out if r.closed is None]
+    return AcquisitionRollup(rows=[*dated, *undated, organic], estate_risk_score_sum=estate)
 
 
 # ── candidates ──────────────────────────────────────────────────────────────
