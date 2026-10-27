@@ -60,7 +60,7 @@ def test_observer_permitted_truth_table():
     posture states, plus the fail-closed cases (`None` and an unseeded
     string) that only matter under passive-only."""
     for noise_class in OBSERVER_NOISE:
-        expected_passive = noise_class in {"silent", "third_party_infra"}
+        expected_passive = noise_class in {"silent", "third_party_infra", "browse"}
         assert posture.observer_permitted(passive_only=True, noise_class=noise_class) is expected_passive, noise_class
         # Not passive-only: every noise class is permitted, unconditionally.
         assert posture.observer_permitted(passive_only=False, noise_class=noise_class) is True, noise_class
@@ -120,6 +120,46 @@ def test_seeded_observers_reproduce_planning_193s_shipped_denial_set():
         f"denial set drifted from planning#193's shipped behaviour: "
         f"missing={_PLANNING_193_DENIAL_SET - denied}, extra={denied - _PLANNING_193_DENIAL_SET}"
     )
+
+
+# ── 3b. planning#280: `browse` is ADDED as permitted, nothing else moves ───
+
+def test_browse_is_permitted_under_passive_only_and_the_denied_classes_are_unchanged():
+    """planning#280 S5a is the one deliberate policy change since
+    planning#196, and it is an addition only. Pin the denied classes as a
+    literal (the pre-S5 pair) so a later edit that moves `browse` OR anything
+    else into the denied set, or drops a class out of it, fails here."""
+    assert "browse" in OBSERVER_NOISE
+    assert posture.observer_permitted(passive_only=True, noise_class="browse") is True
+    assert posture.PASSIVE_ONLY_DENIED_NOISE == frozenset({"target_infra", "target_host"})
+
+
+def test_a_browse_observer_in_the_live_table_is_permitted_and_the_193_denial_set_holds():
+    """The same property against the LIVE `observers` table: seed one
+    synthetic `browse` observer (no real one exists until S5b), apply the
+    policy to every row, and assert the browse row is permitted while the
+    denied set is still exactly planning#193's. Also proves the widened
+    `ck_observers_noise_class` (migration 0090) accepts the value: the
+    INSERT itself would raise otherwise."""
+    name = f"pa196-browse-{uuid.uuid4().hex[:10]}"
+    db = SessionLocal()
+    try:
+        db.add(Observer(name=name, kind="scan", trust="observed", addressing="name",
+                        noise_class="browse", description="synthetic planning#280 test row"))
+        db.commit()
+        rows = db.query(Observer.name, Observer.noise_class).all()
+        assert (name, "browse") in rows, "the synthetic browse observer was not read back"
+
+        denied = {n for n, nc in rows if not posture.observer_permitted(passive_only=True, noise_class=nc)}
+        assert name not in denied
+        assert denied == _PLANNING_193_DENIAL_SET, (
+            f"missing={_PLANNING_193_DENIAL_SET - denied}, extra={denied - _PLANNING_193_DENIAL_SET}"
+        )
+    finally:
+        db.rollback()
+        db.query(Observer).filter(Observer.name == name).delete()
+        db.commit()
+        db.close()
 
 
 # ── 4. SQL and Python renderings of the predicate agree ────────────────────
@@ -411,6 +451,8 @@ def _run():
         test_observer_permitted_truth_table,
         test_permitted_and_denied_noise_classes_partition_the_vocabulary,
         test_seeded_observers_reproduce_planning_193s_shipped_denial_set,
+        test_browse_is_permitted_under_passive_only_and_the_denied_classes_are_unchanged,
+        test_a_browse_observer_in_the_live_table_is_permitted_and_the_193_denial_set_holds,
         test_sql_and_python_renderings_of_the_predicate_agree,
         test_every_discovery_module_declares_a_seeded_observer_slug,
         test_posture_cap_permits_a_pre_close_asset_for_a_silent_observer,
