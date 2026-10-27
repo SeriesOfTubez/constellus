@@ -55,7 +55,8 @@ OBSERVER_ADDRESSING: frozenset[str] = frozenset({
 OBSERVER_NOISE: frozenset[str] = frozenset({
     "silent",             # no network I/O attributable to us: third-party APIs, or derived from existing claims
     "third_party_infra",  # queries someone else's infrastructure (public recursors), not the target's
-    "target_infra",       # queries the TARGET'S OWN infrastructure — authoritative nameservers
+    "browse",             # ONE ordinary page load by a stock browser, as any visitor makes (planning#280)
+    "target_infra",      # queries the TARGET'S OWN infrastructure — authoritative nameservers
     "target_host",        # packets at the target host itself
 })
 

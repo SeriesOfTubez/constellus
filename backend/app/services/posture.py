@@ -44,6 +44,16 @@ domain_affinity, shared_infra_verifier, dnsrecon, bruteforce}` —
 `test_seeded_observers_reproduce_planning_193s_shipped_denial_set` pins
 this directly against the live seeded table.
 
+## planning#280: `browse`, the one policy change since
+
+planning#280 ADDS a fifth noise class, `browse` (one ordinary page load,
+for a screenshot and its redirect chain/title/cert), and permits it under
+passive-only. That is a policy change, made on purpose and by addition
+only: the denied classes are still exactly `target_infra` and
+`target_host`, and the planning#193 denial set above is unchanged. The
+archive-first rule that goes with it (see `PASSIVE_ONLY_PERMITTED_NOISE`)
+is enforced by the capture producer, not here.
+
 ## planning#211: from a boolean to a real posture object
 
 The engagement object (`app.models.engagement.Engagement`) replaces
@@ -98,7 +108,19 @@ from app.models.target import Target
 # `target_infra` (queries the target's OWN authoritative nameservers) and
 # `target_host` (packets at the target host itself) are both noticeable and
 # both denied.
-PASSIVE_ONLY_PERMITTED_NOISE: frozenset[str] = frozenset({"silent", "third_party_infra"})
+#
+# `browse` (planning#280, Jason 2026-10-22) is the ONE deliberate policy
+# change since planning#196, and it is an addition: nothing left the denied
+# set. A browse load does reach the target host, but as a single page load
+# indistinguishable from any visitor's — no second request, no
+# link-following, no forms, no DOM extraction. Being in this set is
+# necessary, not sufficient: under a restricting posture the capture
+# producer must still prefer an archive snapshot younger than the admin
+# setting (default 7 days) and fall back to one live load only without one,
+# and the noise class belongs to the page-capture observer alone. A scanner
+# or crawler seeded as `browse` to get past this gate is a policy breach,
+# not a classification choice.
+PASSIVE_ONLY_PERMITTED_NOISE: frozenset[str] = frozenset({"silent", "third_party_infra", "browse"})
 
 # DERIVED by subtraction from the full vocabulary, not written out as its
 # own literal set, so the permitted/denied sets can never drift out of
