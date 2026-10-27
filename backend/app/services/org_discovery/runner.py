@@ -29,8 +29,15 @@ the two steps, since the commit expired it and its status may have changed.
 Re-asks ARIN and RIPE for the whole root: one run-level `fresh_since` (taken at
 the start) is passed to every domain's RIR steps, so cache rows older than the
 run are refetched and a key repeated inside the run is fetched once. The RIR
-steps run per claimed domain, then the dedicated-IP sweep once. An in-process
-slot (`try_begin_recheck`) keeps one Re-check per root at a time.
+steps run per claimed domain; then every CLAIMED CIDR candidate is re-checked
+prefix-first (planning#278 S3c3b2): the registry its own `rir` names is asked
+what holds that space now, and each reassigned-away part is recorded
+(`reassignment_for_root`). A RIPE candidate held by a contact (or whose holder
+kind is not on record) is skipped without a request, an incomplete answer
+writes nothing, and the record never un-claims or touches the Target. Then the
+dedicated-IP sweep runs once. An in-process slot (`try_begin_recheck`) keeps one
+Re-check per root at a time. The claim follow-up (`verify_after_claim`) does not
+run the reassignment sweep.
 
 ## Facts cache
 
@@ -43,6 +50,7 @@ of INFO.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -55,8 +63,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
-from app.models.scope_candidate import ScopeCandidate
-from app.services.org_discovery import arin, domain_facts, generators, ripe, rir_fetch, verifiers
+from app.models.evidence import EvidenceBlob, EvidenceFetch
+from app.models.scope_candidate import ScopeCandidate, ScopeSignal
+from app.services import entity_graph
+from app.services.org_discovery import (
+    arin, covering, domain_facts, generators, reassignment, ripe, rir_fetch, verifiers,
+)
 from app.services.org_discovery.generators import ReverseIpResult, RirDedicatedIpResult
 from app.services.org_discovery.domain_facts import DomainFacts
 
@@ -386,10 +398,174 @@ def end_recheck(root_entity_id: uuid.UUID) -> None:
 
 
 @dataclass
+class ReassignmentSweepResult:
+    candidates: int = 0  # claimed cidr candidates considered
+    clean: int = 0  # complete answer, nothing reassigned
+    reassigned: int = 0  # candidates with at least one part
+    parts_created: int = 0
+    parts_seen: int = 0
+    failed: int = 0  # an exception in that candidate's unit of work
+    indeterminate: dict[str, int] = field(default_factory=dict)  # by reason
+
+
+def _indeterminate(result: ReassignmentSweepResult, reason: str) -> None:
+    result.indeterminate[reason] = result.indeterminate.get(reason, 0) + 1
+
+
+def _ripe_holder_kind(db: Session, candidate: ScopeCandidate) -> str | None:
+    """The holder kind of a RIPE claim, read from the candidate's OWN signal
+    evidence (never inferred from the handle's shape): "org" only when every
+    matching body says org, "contact" when any does, None when unknown."""
+    rows = db.execute(
+        select(EvidenceBlob.content)
+        .join(EvidenceFetch, EvidenceFetch.sha256 == EvidenceBlob.sha256)
+        .join(ScopeSignal, ScopeSignal.evidence_id == EvidenceFetch.id)
+        .where(
+            ScopeSignal.candidate_id == candidate.id,
+            ScopeSignal.signal_type == "rir_contact_email_unvalidated",
+            ScopeSignal.evidence_id.is_not(None),
+        )
+    ).scalars().all()
+    kinds: set = set()
+    for content in rows:
+        try:
+            body = json.loads(bytes(content))
+        except ValueError:
+            continue
+        if isinstance(body, dict) and body.get("rir") == "ripe" and body.get("holder") == candidate.rir_handle:
+            kind = body.get("holder_kind")
+            kinds.add(kind if isinstance(kind, str) else None)
+    if "contact" in kinds:
+        return "contact"
+    if kinds == {"org"}:
+        return "org"
+    return None
+
+
+def _reassignment_evidence_url(rir: str, prefix: str, handle: str) -> str:
+    segs = ("rir_reassigned_away", rir, prefix, handle)
+    return "https://org-discovery.invalid/recheck/" + "/".join(
+        x.replace("/", "_").replace(" ", "") for x in segs
+    )
+
+
+def _reassignment_unit(
+    db: Session, candidate_id: uuid.UUID, root_entity_id: uuid.UUID, fresh_since: datetime,
+    result: ReassignmentSweepResult,
+) -> None:
+    candidate = db.get(ScopeCandidate, candidate_id)
+    if (
+        candidate is None or candidate.root_entity_id != root_entity_id
+        or candidate.kind != "cidr" or candidate.status != "claimed"
+    ):
+        return
+    rir = candidate.rir
+    if rir == "arin":
+        fetch = covering.fetch_arin
+    elif rir == "ripe":
+        fetch = covering.fetch_ripe
+    else:
+        _indeterminate(result, "unsupported_rir")
+        return
+    if rir == "ripe":
+        kind = _ripe_holder_kind(db, candidate)
+        if kind == "contact":
+            _indeterminate(result, "contact_held")
+            return
+        if kind != "org":
+            _indeterminate(result, "holder_unknown")
+            return
+    prefix, handle = candidate.value, candidate.rir_handle
+    db.rollback()  # end the read transaction before the registry fetch commits its cache rows
+    budget = rir_fetch.Budget(fresh_since=fresh_since)
+    cov = fetch(db, prefix, budget)
+    if cov.reason is not None:
+        _indeterminate(result, cov.reason)
+        return
+    found = reassignment.detect(prefix, handle, cov.answer)
+    if found is None:
+        _indeterminate(result, "detect_indeterminate")
+        return
+    if not found:
+        result.clean += 1
+        return
+    body = {
+        "rule": "rir_reassigned_away", "rir": rir, "candidate_id": str(candidate_id), "prefix": prefix,
+        "holder_handle": handle,
+        "reassigned": [
+            {"prefix": f.prefix, "new_holder_kind": f.new_holder_kind, "new_holder_handle": f.new_holder_handle}
+            for f in found
+        ],
+        "sources": [{"label": label, "body": b} for label, b in cov.sources],
+    }
+    now = datetime.now(timezone.utc)
+    # `store_evidence` COMMITS, so it is not inside any savepoint.
+    evidence = entity_graph.store_evidence(
+        db, content=json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        content_type="application/json",
+        source_url=_reassignment_evidence_url(rir, prefix, handle or ""),
+        fetched_at=now, origin="fetched",
+    )
+    created = seen = 0
+    for part in found:
+        outcome = reassignment.record_reassignment(
+            db, candidate_id=candidate_id, found=part, evidence_id=evidence.id, now=now,
+        )
+        if outcome == "created":
+            created += 1
+        else:
+            seen += 1
+    db.commit()
+    result.reassigned += 1
+    result.parts_created += created
+    result.parts_seen += seen
+
+
+def reassignment_for_root(root_entity_id: uuid.UUID, *, fresh_since: datetime) -> ReassignmentSweepResult:
+    """Every claimed CIDR candidate of the root, prefix-first against its own
+    registry (see the module docstring). Each candidate is its own unit of work
+    in its own session (`store_evidence` commits); a failure rolls back, is
+    counted, and the next candidate still runs. Counts only in logs."""
+    result = ReassignmentSweepResult()
+    db = SessionLocal()
+    try:
+        ids = list(db.execute(
+            select(ScopeCandidate.id).where(
+                ScopeCandidate.root_entity_id == root_entity_id,
+                ScopeCandidate.kind == "cidr",
+                ScopeCandidate.status == "claimed",
+            ).order_by(ScopeCandidate.id)
+        ).scalars())
+    finally:
+        db.close()
+    for cid in ids:
+        result.candidates += 1
+        db = SessionLocal()
+        try:
+            try:
+                _reassignment_unit(db, cid, root_entity_id, fresh_since, result)
+                db.commit()
+            except Exception:
+                db.rollback()
+                result.failed += 1
+                log.exception("org-discovery reassignment failed candidate=%s", cid)
+        finally:
+            db.close()
+    log.info(
+        "org-discovery reassignment_for_root candidates=%d clean=%d reassigned=%d parts_created=%d "
+        "parts_seen=%d failed=%d indeterminate=%d",
+        result.candidates, result.clean, result.reassigned, result.parts_created, result.parts_seen,
+        result.failed, sum(result.indeterminate.values()),
+    )
+    return result
+
+
+@dataclass
 class RecheckResult:
     claimed_domains: int = 0
     domains_failed: int = 0
     runs: list[RirRunResult] = field(default_factory=list)
+    reassignment: ReassignmentSweepResult = field(default_factory=ReassignmentSweepResult)
     dedicated: RirDedicatedIpResult = field(default_factory=RirDedicatedIpResult)
 
 
@@ -415,6 +591,10 @@ def recheck_root(root_entity_id: uuid.UUID) -> RecheckResult:
                 result.domains_failed += 1
                 log.exception("org-discovery re-check RIR failed candidate=%s", cid)
         try:
+            result.reassignment = reassignment_for_root(root_entity_id, fresh_since=fresh_since)
+        except Exception:
+            log.exception("org-discovery re-check reassignment sweep failed root=%s", root_entity_id)
+        try:
             result.dedicated = dedicated_ip_for_root(root_entity_id)
         except Exception:
             log.exception("org-discovery re-check dedicated-IP failed root=%s", root_entity_id)
@@ -422,10 +602,11 @@ def recheck_root(root_entity_id: uuid.UUID) -> RecheckResult:
         end_recheck(root_entity_id)
     log.info(
         "org-discovery recheck_root claimed_domains=%d domains_failed=%d rir_signals_recorded=%d "
-        "candidates_created=%d dedicated_signals_recorded=%d",
+        "candidates_created=%d reassigned=%d parts_created=%d dedicated_signals_recorded=%d",
         result.claimed_domains, result.domains_failed,
         sum(r.arin.signals_recorded + r.ripe.signals_recorded for r in result.runs),
         sum(len(r.arin.created_candidate_ids) + len(r.ripe.created_candidate_ids) for r in result.runs),
+        result.reassignment.reassigned, result.reassignment.parts_created,
         result.dedicated.signals_recorded,
     )
     return result

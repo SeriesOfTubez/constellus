@@ -85,8 +85,11 @@ def _seed(db, path, fetched_at, body=None):
 
 
 @pytest.fixture(autouse=True)
-def _slots():
+def _slots(monkeypatch):
     runner._recheck_running.clear()
+    # The reassignment sweep asks the registries for every claimed CIDR; its
+    # own tests (test_org_discovery_recheck_reassignment.py) stub the fetchers.
+    monkeypatch.setattr(runner, "reassignment_for_root", lambda rid, *, fresh_since: runner.ReassignmentSweepResult())
     yield
     runner._recheck_running.clear()
 

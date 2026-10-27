@@ -423,6 +423,12 @@
   "report_admin",
   "viewer"
  ],
+ "GET /api/organizations/{org_id}/reassignments": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
  "GET /api/organizations/{org_id}/summary": [
   "admin",
   "integration_admin",
