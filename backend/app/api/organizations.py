@@ -19,6 +19,7 @@ domains: a candidate is added with its evidence or comes from a signal.
 """
 
 import uuid
+from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
@@ -35,7 +36,12 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.engagement import Engagement, EngagementPosture
 from app.models.finding_canonical import FindingCanonical
 from app.models.org_entity import OrgEntity
-from app.models.scope_candidate import ScopeCandidate, ScopeCandidateEvent, ScopeSignal
+from app.models.scope_candidate import (
+    ScopeCandidate,
+    ScopeCandidateEvent,
+    ScopeCandidateReassignment,
+    ScopeSignal,
+)
 from app.models.target_asset_link import TargetAssetLink
 from app.models.user import User
 from app.services import audit, edgar_ingest, entity_relationship, organizations, read_scope, sec_edgar
@@ -210,6 +216,25 @@ class CandidatePage(BaseModel):
     total: int
 
 
+class ReassignmentRow(BaseModel):
+    id: uuid.UUID
+    candidate_id: uuid.UUID
+    candidate_value: str  # the claimed prefix
+    rir: str | None  # of the candidate
+    rir_handle: str | None  # the holder the prefix was claimed under
+    prefix: str  # the part now shown under another holder
+    new_holder_kind: str
+    new_holder_handle: str | None
+    evidence_id: uuid.UUID
+    first_detected_at: str  # ISO 8601, like CandidateRow.first_seen_at
+    last_seen_at: str
+
+
+class ReassignmentPage(BaseModel):
+    items: list[ReassignmentRow]
+    total: int
+
+
 class AnchorDetail(BaseModel):
     kind: str
     candidate_id: uuid.UUID | None = None
@@ -373,6 +398,12 @@ def _worst(counts: SeverityCounts) -> str | None:
     return None
 
 
+def _candidate_read_scope(user: User, sc, root):
+    """The two read_scope hooks every candidate read applies: ONE place, so a
+    tightening of either reaches the candidate list and the reassignment list."""
+    return (read_scope.entity_clause(user, root), read_scope.domain_clause(user, sc))
+
+
 def _candidate_query(db: Session, user: User, *, candidate_ids):
     """The SELECT every candidate read shares: candidate + calculated
     strength + stored-or-default affiliate, behind both read_scope hooks."""
@@ -393,7 +424,7 @@ def _candidate_query(db: Session, user: User, *, candidate_ids):
         .join(root, root.id == sc.root_entity_id)
         .outerjoin(st.subquery, st.candidate_id == sc.id)
         .outerjoin(aff, aff.id == aff_id)
-        .where(read_scope.entity_clause(user, root), read_scope.domain_clause(user, sc))
+        .where(*_candidate_read_scope(user, sc, root))
     )
     return query, st, aff_id
 
@@ -765,6 +796,7 @@ def list_candidates(
     q: str | None = Query(None, max_length=253),
     signal_type: str | None = None,
     leads_only: bool = False,
+    reassigned: bool | None = None,
     limit: int = Query(_DEFAULT_LIMIT, ge=1, le=_MAX_LIMIT),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -802,9 +834,55 @@ def list_candidates(
         query = query.where(st.strength == strength)
     if affiliated_entity_id is not None:
         query = query.where(aff_id == affiliated_entity_id)
+    if reassigned is not None:
+        has_rows = exists().where(ScopeCandidateReassignment.candidate_id == sc.id)
+        query = query.where(has_rows if reassigned else ~has_rows)
     total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
     query = query.order_by(st.rank.desc(), sc.value, sc.id).limit(limit).offset(offset)
     return CandidatePage(items=_rows(db, current_user, db.execute(query).all()), total=total)
+
+
+@router.get("/{org_id}/reassignments", response_model=ReassignmentPage)
+def list_reassignments(
+    org_id: uuid.UUID,
+    candidate_id: uuid.UUID | None = None,
+    new_holder_kind: Literal["org", "customer", "unknown", "unregistered"] | None = None,
+    seen_since: datetime | None = None,
+    limit: int = Query(_DEFAULT_LIMIT, ge=1, le=_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_READ)),
+):
+    """Reassigned-away records of this organization's claimed CIDR candidates
+    (planning#278 S3c3b2). A candidate_id of another root yields no rows."""
+    _require_visible_root(db, current_user, org_id)
+    sc, ra = ScopeCandidate, ScopeCandidateReassignment
+    root = aliased(OrgEntity)
+    query = (
+        select(ra, sc.value, sc.rir, sc.rir_handle)
+        .select_from(ra)
+        .join(sc, sc.id == ra.candidate_id)
+        .join(root, root.id == sc.root_entity_id)
+        .where(*_candidate_read_scope(current_user, sc, root), sc.root_entity_id == org_id)
+    )
+    if candidate_id is not None:
+        query = query.where(ra.candidate_id == candidate_id)
+    if new_holder_kind is not None:
+        query = query.where(ra.new_holder_kind == new_holder_kind)
+    if seen_since is not None:
+        query = query.where(ra.last_seen_at >= seen_since)
+    total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
+    query = query.order_by(ra.last_seen_at.desc(), ra.prefix, ra.id).limit(limit).offset(offset)
+    items = [
+        ReassignmentRow(
+            id=r.id, candidate_id=r.candidate_id, candidate_value=value, rir=rir, rir_handle=handle,
+            prefix=r.prefix, new_holder_kind=r.new_holder_kind, new_holder_handle=r.new_holder_handle,
+            evidence_id=r.evidence_id, first_detected_at=r.first_detected_at.isoformat(),
+            last_seen_at=r.last_seen_at.isoformat(),
+        )
+        for r, value, rir, handle in db.execute(query).all()
+    ]
+    return ReassignmentPage(items=items, total=total)
 
 
 @router.get("/candidates/{candidate_id}", response_model=CandidateDetail)
