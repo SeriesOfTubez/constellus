@@ -9,10 +9,15 @@ registry):
   validates its input (`validate_handle`, `candidates.normalise_domain`, IP
   forms). `get` checks the path again against the registry's path regex, which
   allows exactly the builders' shapes, and refuses anything else (`..`, `?`,
-  extra segments, a trailing slash).
+  extra segments, a trailing slash). An ARIN `cidr/<addr>/<len>/(less|more)`
+  path is re-parsed and rebuilt by `arin_cidr_less` / `arin_cidr_more` and must
+  match exactly (canonical address, no host bits), so the regex is only a shape
+  gate.
 - RIPE queries carry parameters: a validated params allowlist
   (`_validate_ripe`: keys, values, flag sets, canonical IP forms, the one
-  fulltext shape) that `get` re-checks before the cache read or any transport
+  fulltext shape, and the IP-form lookups: the default lookup (exact or
+  smallest covering object), `one-more` and `all-more`, each with exactly one
+  inetnum / inet6num type-filter and a canonical IP form) that `get` re-checks before the cache read or any transport
   call. Params are part of the cache key (`path?<sorted urlencoded pairs>`, in
   the existing `path` column) and are handed to httpx as a dict, never
   concatenated into the URL. ARIN takes no params.
@@ -80,6 +85,7 @@ _ARIN_PATH_RE = re.compile(
     rf"(?:poc/{_H}(?:/orgs)?"
     rf"|org/{_H}/(?:nets|asns)"
     rf"|net/{_H}(?:/children)?"
+    rf"|cidr/(?:[0-9.]{{7,15}}|[0-9a-f:]{{2,39}})/[0-9]{{1,3}}/(?:less|more)"
     rf"|pocs;domain={_DOMAIN_PART}(?:\.{_DOMAIN_PART})+)",
     re.ASCII,
 )
@@ -90,7 +96,7 @@ _RIPE_TYPES = frozenset({"inetnum", "inet6num", "aut-num", "organisation"})
 _RIPE_INVERSE = frozenset({"org", "admin-c", "tech-c", "abuse-c"})
 _RIPE_SEARCH_KEYS = frozenset({"query-string", "type-filter", "inverse-attribute", "flags"})
 _RIPE_FLAGS_REQUIRED = frozenset({"no-referenced", "no-irt"})
-_RIPE_FLAGS_ALLOWED = _RIPE_FLAGS_REQUIRED | {"one-more"}
+_RIPE_FLAGS_ALLOWED = _RIPE_FLAGS_REQUIRED | {"one-more", "all-more"}
 _RIPE_Q_RE = re.compile(r'\(e-mail:"([a-z0-9.-]+)"\) OR \(abuse-mailbox:"([a-z0-9.-]+)"\)', re.ASCII)
 
 
@@ -130,6 +136,51 @@ def arin_net(handle: str) -> str:
 
 def arin_net_children(handle: str) -> str:
     return f"net/{validate_handle(handle)}/children"
+
+
+def _canonical_cidr(prefix: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
+    """The network for a canonical CIDR text (no host bits, no leading zeros,
+    lower-case compressed IPv6); ValueError otherwise."""
+    if not isinstance(prefix, str):
+        raise ValueError("not a CIDR")
+    try:
+        net = ipaddress.ip_network(prefix, strict=True)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("not a CIDR") from exc
+    if str(net) != prefix:
+        raise ValueError("CIDR is not canonical")
+    return net
+
+
+def arin_cidr_less(prefix: str) -> str:
+    """Every registered net that contains `prefix` (inclusive of an exact match)."""
+    net = _canonical_cidr(prefix)
+    return f"cidr/{net.network_address}/{net.prefixlen}/less"
+
+
+def arin_cidr_more(prefix: str) -> str:
+    """Every registered net inside `prefix` (inclusive of an exact match)."""
+    net = _canonical_cidr(prefix)
+    return f"cidr/{net.network_address}/{net.prefixlen}/more"
+
+
+def _check_arin_cidr_path(path: str) -> None:
+    """Rebuild a `cidr/` path from its parts; ValueError unless identical."""
+    parts = path.split("/")
+    if len(parts) != 4:
+        raise ValueError("path is not one the builders make")
+    _, addr, plen, direction = parts
+    builder = {"less": arin_cidr_less, "more": arin_cidr_more}.get(direction)
+    if builder is None or builder(f"{addr}/{plen}") != path:
+        raise ValueError("path is not one the builders make")
+
+
+def ripe_key(prefix: str) -> tuple[str, str]:
+    """(query-string, object type) for a canonical CIDR."""
+    net = _canonical_cidr(prefix)
+    if isinstance(net, ipaddress.IPv4Network):
+        return f"{net.network_address} - {net.broadcast_address}", "inetnum"
+    return str(net), "inet6num"
 
 
 def _canonical_ipv4_range(value: str) -> bool:
@@ -202,16 +253,17 @@ def _validate_ripe(path: str, params: Params) -> None:
     if not _RIPE_FLAGS_REQUIRED <= flags or not flags <= _RIPE_FLAGS_ALLOWED:
         raise ValueError("bad flags")
 
-    if "one-more" in flags:
+    one_more, all_more = "one-more" in flags, "all-more" in flags
+    if one_more and all_more:
+        raise ValueError("one-more and all-more are exclusive")
+    if one_more or all_more or not inverse:
+        # IP form: one-more, all-more, or the default (exact / smallest covering) lookup
         if inverse or len(types) != 1 or types[0] not in ("inetnum", "inet6num"):
-            raise ValueError("bad one-more query")
+            raise ValueError("bad IP-form query")
         if not _ip_form_ok(types[0], qs[0]):
-            raise ValueError("one-more needs the canonical IP form")
-    elif inverse:
-        if _HANDLE_RE.fullmatch(qs[0]) is None:
-            raise ValueError("inverse query needs a handle")
-    else:
-        raise ValueError("not a query the builders make")
+            raise ValueError("IP-form query needs the canonical IP form")
+    elif _HANDLE_RE.fullmatch(qs[0]) is None:
+        raise ValueError("inverse query needs a handle")
 
 
 def ripe_fulltext_by_domain(domain: str, page: int) -> tuple[str, Params]:
@@ -255,6 +307,35 @@ def ripe_one_more(key: str, object_type: str) -> tuple[str, Params]:
     return "search.json", params
 
 
+def _ripe_ip_query(key: str, object_type: str, extra: Params) -> tuple[str, Params]:
+    if object_type not in ("inetnum", "inet6num"):
+        raise ValueError("IP-form lookups are for inetnum / inet6num only")
+    params: Params = (
+        ("query-string", key),
+        ("type-filter", object_type),
+        *extra,
+        ("flags", "no-referenced"),
+        ("flags", "no-irt"),
+    )
+    _validate_ripe("search.json", params)
+    return "search.json", params
+
+
+def ripe_covering(key: str, object_type: str) -> tuple[str, Params]:
+    """The exact match, else the smallest object covering `key` (one object)."""
+    return _ripe_ip_query(key, object_type, ())
+
+
+def ripe_all_more(key: str, object_type: str) -> tuple[str, Params]:
+    """Every more-specific object strictly inside `key`, at all depths."""
+    return _ripe_ip_query(key, object_type, (("flags", "all-more"),))
+
+
+def cache_key(path: str, params: Params | None) -> str:
+    """The cache key `get` uses: `path`, or `path?<sorted urlencoded params>`."""
+    return path if params is None else path + "?" + urllib.parse.urlencode(sorted(params))
+
+
 def ripe_get(db: Session, query: tuple[str, Params], budget: Budget, *, now: datetime | None = None) -> dict | None:
     return get(db, "ripe", query[0], budget, params=query[1], now=now)
 
@@ -271,6 +352,8 @@ def get(
         raise ValueError("unknown registry")
     if not isinstance(path, str) or _PATH_RES[rir].fullmatch(path) is None:
         raise ValueError("path is not one the builders make")
+    if rir == "arin" and path.startswith("cidr/"):
+        _check_arin_cidr_path(path)
     if rir == "arin":
         if params:
             raise ValueError("arin takes no params")
@@ -280,7 +363,7 @@ def get(
             raise ValueError("ripe needs params")
         params = tuple(params)
         _validate_ripe(path, params)
-    cache_key = path if params is None else path + "?" + urllib.parse.urlencode(sorted(params))
+    key = cache_key(path, params)
     wire_params: dict[str, list[str]] | None = None
     if params is not None:
         wire_params = {}
@@ -288,7 +371,7 @@ def get(
             wire_params.setdefault(k, []).append(v)
     now = now or datetime.now(timezone.utc)
 
-    row = db.get(RirLookupCache, (rir, cache_key))
+    row = db.get(RirLookupCache, (rir, key))
     if (
         row is not None and now - row.fetched_at < CACHE_TTL
         and (budget.fresh_since is None or row.fetched_at >= budget.fresh_since)
@@ -324,7 +407,7 @@ def get(
         raise RirFetchError(f"{rir} returned status {resp.status_code}")
 
     stmt = pg_insert(RirLookupCache).values(
-        rir=rir, path=cache_key, status_code=resp.status_code, body=body if body is not None else null(), fetched_at=now
+        rir=rir, path=key, status_code=resp.status_code, body=body if body is not None else null(), fetched_at=now
     )
     stmt = stmt.on_conflict_do_update(
         index_elements=[RirLookupCache.rir, RirLookupCache.path],
