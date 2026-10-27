@@ -3,12 +3,19 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import type { CandidateDetail, CandidateRow, OrganizationSummary, SignalDetail } from "@/lib/organizations"
-import { AssetsCell, CandidateFlyoutContent, SignalsCell, StateCell } from "@/components/OrgCandidateParts"
+import { AssetsCell, CandidateFlyoutContent, ClaimDialog, SignalsCell, StateCell } from "@/components/OrgCandidateParts"
 
 // Zustand's SSR snapshot is the store's INITIAL state, so setState cannot drive
 // renderToStaticMarkup; stand in for the permission hook instead.
 const perms = vi.hoisted(() => ({ current: [] as string[] }))
 vi.mock("@/lib/permissions", () => ({ useCan: () => (p: string) => perms.current.includes(p) }))
+
+// Radix Dialog portals its content, which renderToStaticMarkup cannot see; pass the
+// parts through so ClaimDialog's own markup is what is asserted.
+vi.mock("@/components/ui/dialog", () => {
+  const Pass = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>
+  return { Dialog: Pass, DialogContent: Pass, DialogDescription: Pass, DialogFooter: Pass, DialogHeader: Pass, DialogTitle: Pass }
+})
 
 const labelOf = (t: string) => ({ mx_into_claimed: "MX into claimed", shared_vanity_ns: "Shared vanity nameserver", name_similarity: "Name similarity", admin_seed: "Admin seed" }[t] ?? t)
 
@@ -16,7 +23,7 @@ const row = (over: Partial<CandidateRow> = {}): CandidateRow => ({
   id: "c1", root_entity_id: "r", value: "fabrikam.com", kind: "domain", status: "open", strength: "strong", proposable: true,
   affiliated: { id: "a", name: "Example Holdings A" }, affiliated_is_default: false, signals: [], first_seen_at: null,
   previously_rejected: null, target_id: null, decided_by_connector_instance_id: null, asset_count: null,
-  open_findings: null, worst_severity: null, ...over,
+  open_findings: null, worst_severity: null, rir: null, rir_handle: null, ...over,
 })
 const html = (n: React.ReactNode) => renderToStaticMarkup(<MemoryRouter><TooltipProvider>{n}</TooltipProvider></MemoryRouter>)
 const sig = (signal_type: string, tier: "strong" | "supporting" | "context") => ({ signal_type, tier, family: "f", count: 1 })
@@ -88,5 +95,27 @@ describe("flyout", () => {
     expect(out).not.toContain(">Reject<")
     expect(out).toContain("our estate")
     expect(out).toContain("by connector Zone account 1")
+  })
+})
+
+describe("S3d additions", () => {
+  beforeEach(() => { perms.current = [] })
+  it("renders the extra node before History", () => {
+    const out = html(
+      <CandidateFlyoutContent detail={detail({ kind: "cidr", status: "claimed" })} org={org} labelOf={labelOf} nodes={[]}
+        onClaim={async () => undefined} onReject={async () => undefined} extra={<div>EXTRA-BLOCK</div>} />,
+    )
+    expect(out).toContain("EXTRA-BLOCK")
+    expect(out.indexOf("EXTRA-BLOCK")).toBeLessThan(out.indexOf(">History<"))
+  })
+  it("ClaimDialog shows the optional description after the decider line", () => {
+    const d = (description?: string) => (
+      <ClaimDialog value="AS64496" description={description} nodes={[]} defaultId={null} onClose={() => undefined} onSubmit={async () => undefined} />
+    )
+    const out = renderToStaticMarkup(d("Claiming this ASN also claims its holder."))
+    expect(out).toContain("Claim AS64496")
+    expect(out).toContain("The claim is recorded with you as the decider.")
+    expect(out).toContain("Claiming this ASN also claims its holder.")
+    expect(renderToStaticMarkup(d())).not.toContain("Claiming this ASN")
   })
 })

@@ -15,6 +15,7 @@ import {
   defaultSegment,
 } from "@/lib/organizations"
 import { AddOrganizationDialog } from "@/components/AddOrganizationFlow"
+import { IpSpaceTable, RecheckButton, RegistryObservations } from "@/components/OrgIpSpaceParts"
 import { WorkspaceShell } from "@/components/WorkspaceShell"
 import { EntityDetailContent } from "@/components/EntityDetailContent"
 import {
@@ -368,6 +369,7 @@ function OrgWorkspace({
   const group = (GROUP_OPTIONS.some(o => o.value === groupRaw) ? groupRaw : "organization") as OrgGroupMode
   const [addOpen, setAddOpen] = useState(false)
   const [leadsOpen, setLeadsOpen] = useState(false)
+  const [regChange, setRegChange] = useUrlState("reg", "all")
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bulkOpen, setBulkOpen] = useState(false)
 
@@ -406,7 +408,39 @@ function OrgWorkspace({
   })
   const leadRows = leadsQ.data?.items ?? []
 
-  const allRows = useMemo(() => [...rows, ...leadRows], [rows, leadRows])
+  // ASNs & IP space tab (planning#278 S3d). Keys start with ["org-candidates", org.id]
+  // so invalidate() covers them.
+  const onAsns = tab === "asns"
+  const pageQuery = (kind: "asn" | "cidr") => ({
+    initialPageParam: 0,
+    enabled: onAsns,
+    queryFn: ({ pageParam }: { pageParam: number }) =>
+      api.get<CandidatePage>(`/organizations/${org.id}/candidates?${candidateParams({
+        segment, q: qApplied, subtreeOf, kind,
+        reassigned: kind === "cidr" && regChange === "changed" ? true : undefined,
+        limit: PAGE, offset: pageParam,
+      })}`),
+    getNextPageParam: (last: CandidatePage, all: CandidatePage[]) => {
+      const loaded = all.reduce((n, p) => n + p.items.length, 0)
+      return loaded < last.total ? loaded : undefined
+    },
+  })
+  const asnQ = useInfiniteQuery({ queryKey: ["org-candidates", org.id, "asn", segment, qApplied, subtreeOf], ...pageQuery("asn") })
+  const cidrQ = useInfiniteQuery({
+    queryKey: ["org-candidates", org.id, "cidr", segment, qApplied, subtreeOf, regChange], ...pageQuery("cidr"),
+  })
+  const asnRows = useMemo(() => asnQ.data?.pages.flatMap(p => p.items) ?? [], [asnQ.data])
+  const cidrRows = useMemo(() => cidrQ.data?.pages.flatMap(p => p.items) ?? [], [cidrQ.data])
+  const flagsQ = useQuery({
+    queryKey: ["org-candidates", org.id, "cidr-flags", subtreeOf],
+    enabled: onAsns,
+    queryFn: () => api.get<CandidatePage>(`/organizations/${org.id}/candidates?${candidateParams({
+      segment: "claimed", kind: "cidr", reassigned: true, subtreeOf, limit: 1000,
+    })}`),
+  })
+  const flagged = useMemo(() => new Set((flagsQ.data?.items ?? []).map(i => i.id)), [flagsQ.data])
+
+  const allRows = useMemo(() => [...rows, ...leadRows, ...asnRows, ...cidrRows], [rows, leadRows, asnRows, cidrRows])
   const { selected: openRow, open: openFlyout, close: closeFlyout } = useFlyout(allRows)
 
   const detailQ = useQuery({
@@ -468,6 +502,25 @@ function OrgWorkspace({
       </Select>
       <span className="text-xs text-muted-foreground">{TIER_LEGEND}</span>
     </>
+  ) : tab === "asns" ? (
+    <>
+      <div className="inline-flex rounded-md border h-9 p-0.5">
+        {SEGMENTS.map(sg => (
+          <button key={sg} type="button" aria-pressed={segment === sg} onClick={() => setSegment(sg)}
+            className={cn("px-3 text-sm rounded", segment === sg ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground")}>
+            {SEGMENT_LABEL[sg]}
+          </button>
+        ))}
+      </div>
+      <Input className="w-56 h-9" placeholder="Filter ASNs & prefixes…" value={q} onChange={e => setQ(e.target.value)} />
+      <Select value={regChange} onValueChange={setRegChange}>
+        <SelectTrigger className="w-48 h-9 text-sm"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">Any registry state</SelectItem>
+          <SelectItem value="changed">Registry change</SelectItem>
+        </SelectContent>
+      </Select>
+    </>
   ) : undefined
 
   const bulkBar = tab === "domains" && selectable && selectedRows.length > 0 ? (
@@ -483,7 +536,36 @@ function OrgWorkspace({
   const tableProps = { group, labelOf, selected, onToggle: toggle, onToggleAll: toggleAll, onOpen: openFlyout, activeId: openRow?.id }
 
   let body: React.ReactNode
-  if (tab === "asns") body = <Placeholder text="ASN and IP-space discovery is not built yet." />
+  if (tab === "asns") {
+    const section = (
+      title: string, noun: string, empty: string, qy: typeof asnQ, list: CandidateRow[], kind: "asn" | "cidr",
+    ) => (
+      <section className="space-y-3">
+        <h3 className="text-sm font-semibold">{title}</h3>
+        {qy.isLoading ? <div className="space-y-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}</div>
+          : qy.isError ? <Placeholder text={`Could not load ${noun}: ${errorDetail(qy.error)}`} />
+          : list.length === 0 ? <Placeholder text={empty} />
+          : <IpSpaceTable rows={list} kind={kind} flagged={flagged} labelOf={labelOf} onOpen={openFlyout} activeId={openRow?.id} />}
+        {!qy.isLoading && !qy.isError && (
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            <span>Showing {list.length} of {qy.data?.pages[0]?.total ?? 0}</span>
+            {qy.hasNextPage && (
+              <Button size="sm" variant="outline" disabled={qy.isFetchingNextPage} onClick={() => void qy.fetchNextPage()}>Load more</Button>
+            )}
+          </div>
+        )}
+      </section>
+    )
+    body = (
+      <div className="space-y-6">
+        <p className="text-xs text-muted-foreground">
+          ASNs and prefixes are found from claimed domains' registry records. Claiming an ASN claims its holder's allocations, not the prefixes it announces.
+        </p>
+        {regChange !== "changed" && section("ASNs", "ASNs", "No ASNs in this view.", asnQ, asnRows, "asn")}
+        {section("IP space", "IP space", "No prefixes in this view.", cidrQ, cidrRows, "cidr")}
+      </div>
+    )
+  }
   else if (tab === "acquisitions") body = <Placeholder text="Acquisition roll-ups are not built yet." />
   else if (tab === "companies") {
     const shownId = node ?? org.id
@@ -539,7 +621,7 @@ function OrgWorkspace({
         tabs={tabs}
         activeTab={tab}
         onTabChange={t => { setTab(t); setSelected(new Set()) }}
-        primaryAction={can(PROPOSE) ? (
+        primaryAction={tab === "asns" ? <RecheckButton orgId={org.id} /> : can(PROPOSE) ? (
           <Button size="sm" onClick={() => setAddOpen(true)}><Plus className="h-4 w-4 mr-1" />Add domain</Button>
         ) : undefined}
         toolbar={toolbar}
@@ -560,13 +642,15 @@ function OrgWorkspace({
           <SheetContent className="w-[560px] sm:max-w-[560px] flex flex-col gap-0 p-0">
             <SheetHeader className="px-6 pt-5 pb-3 border-b shrink-0">
               <SheetTitle className="font-mono text-base">{openRow.value}</SheetTitle>
-              <SheetDescription className="sr-only">Candidate domain detail</SheetDescription>
+              <SheetDescription className="sr-only">{`Candidate ${openRow.kind === "domain" ? "domain" : openRow.kind.toUpperCase()} detail`}</SheetDescription>
             </SheetHeader>
             {detailQ.isLoading ? <Skeleton className="m-6 h-40" />
               : detailQ.isError ? <p className="p-6 text-sm text-destructive">{errorDetail(detailQ.error)}</p>
               : detailQ.data && (
                 <CandidateFlyoutContent
                   detail={detailQ.data} org={org} labelOf={labelOf} nodes={confirmed}
+                  extra={detailQ.data.kind === "cidr" && detailQ.data.status === "claimed"
+                    ? <RegistryObservations orgId={org.id} candidateId={detailQ.data.id} /> : undefined}
                   onClaim={async aff => {
                     await api.post(`/organizations/candidates/${detailQ.data!.id}/claim`, aff ? { affiliated_entity_id: aff } : {})
                     invalidate()
