@@ -173,7 +173,8 @@ def main() -> int:
         f"final_url={C.get('final_url')} title={C.get('title')!r} san_dns={cert.get('san_dns')} cert_log_lines={len(cert_log)}")
 
     # 15
-    add(15, "Auth required", N["connect_noauth"].split(" ")[1:2] == ["407"], N["connect_noauth"])
+    code = (N["bare_connect_status"].split(" ")[1:2] or ["none"])[0]
+    add(15, "Auth required", code == "407", f"status={code}")
 
     w1 = max(len(r[1]) for r in rows)
     print(f"{'#':>2}  {'Check':<{w1}}  Result  Detail")

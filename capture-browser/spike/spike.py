@@ -108,10 +108,10 @@ def net_mode() -> dict:
         s = socket.create_connection(("capture-proxy", 3128), 5)
         s.sendall(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
         s.settimeout(5)
-        res["connect_noauth"] = s.recv(256).split(b"\r\n")[0].decode("latin1")
+        res["bare_connect_status"] = s.recv(256).split(b"\r\n")[0].decode("latin1")
         s.close()
     except OSError as e:
-        res["connect_noauth"] = f"error:{type(e).__name__}"
+        res["bare_connect_status"] = f"error:{type(e).__name__}"
     return res
 
 

@@ -16,7 +16,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt \
     && playwright install --with-deps --only-shell chromium \
     && rm -rf /var/lib/apt/lists/* /root/.cache \
-    && chmod -R a+rX /ms-playwright
+    && chmod -R a+rX /ms-playwright \
+    && python -m pip uninstall -y --root-user-action=ignore pip setuptools wheel
 
 RUN useradd --uid 10001 --create-home --shell /bin/false capture
 
