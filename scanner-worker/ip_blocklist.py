@@ -1,19 +1,20 @@
-"""Egress IP blocklist — the single source of truth, vendored into both trees.
+"""Egress IP blocklist — the single source of truth, vendored into all three trees.
 
-⚠️  THIS FILE EXISTS TWICE AND THE TWO COPIES MUST BE BYTE-IDENTICAL:
+⚠️  THIS FILE EXISTS THREE TIMES AND THE THREE COPIES MUST BE BYTE-IDENTICAL:
 
         backend/app/core/ip_blocklist.py
         scanner-worker/ip_blocklist.py
+        capture-proxy/ip_blocklist.py
 
-    The backend and scanner-worker are separate Docker build contexts
-    (`./backend` and `./scanner-worker` — see docker-compose.yml), so
-    neither can COPY a file from a shared parent directory, and the worker
-    image deliberately carries no backend package. Duplication is therefore
-    forced by the build topology; what is NOT forced is the duplication
+    The backend, scanner-worker and capture-proxy are separate Docker build
+    contexts (`./backend`, `./scanner-worker` and `./capture-proxy` — see
+    docker-compose.yml), so none of them can COPY a file from a shared
+    parent directory, and the worker image deliberately carries no backend
+    package. Duplication is therefore forced by the build topology; what is NOT forced is the duplication
     going unnoticed.
 
-    `test_blocklist_parity.py` (present in both test suites) compares the
-    two files' SHA-256 and fails if they differ. Edit one, run the tests,
+    `test_blocklist_parity.py` (present in all three test suites) compares
+    the three files' SHA-256 and fails if they differ. Edit one, run the tests,
     copy it across. The alarm fires in CI, not in production.
 
     Do not add imports beyond the standard library. The worker installs

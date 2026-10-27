@@ -94,9 +94,68 @@ services:
     networks:
       - data
 
+  # ── Page capture (planning#280 S5b-1) ─────────────────────────────────────
+  # capture-browser has NO route out: it is only on `capture_internal`
+  # (internal: true). capture-proxy is the only path to the world and is the
+  # security boundary (authenticates, resolves + validates + pins every host,
+  # logs every request). Neither service is on `app` or `data`: the browser must
+  # never be able to reach the backend or the database.
+  # CAPTURE_PROXY_TOKEN uses `:-` rather than `:?` on purpose: Compose interpolates
+  # EVERY service, profile-gated or not, so `:?` would break plain `docker compose
+  # up -d` for anyone without the token in .env. An empty token still fails closed:
+  # capture-proxy refuses to start and capture.run refuses to run.
+  # Profile-gated: plain `docker compose up -d` does not start them yet.
+  # Run the browser on demand: `docker compose --profile capture run --rm capture-browser ...`
+  capture-proxy:
+    build:
+      context: ./capture-proxy
+      dockerfile: Dockerfile
+    environment:
+      - CAPTURE_PROXY_TOKEN=${CAPTURE_PROXY_TOKEN:-}
+    networks:
+      - capture_internal
+      - capture_egress
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    profiles:
+      - capture
+
+  capture-browser:
+    build:
+      context: ./capture-browser
+      dockerfile: Dockerfile
+    environment:
+      - CAPTURE_PROXY_URL=http://capture-proxy:3128
+      - CAPTURE_PROXY_TOKEN=${CAPTURE_PROXY_TOKEN:-}
+    networks:
+      - capture_internal
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/capture
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+      # Docker's default profile + clone/unshare/chroot, so Chromium's own sandbox
+      # can run without any capability. See capture-browser/SECCOMP_SOURCE.md.
+      - seccomp=./capture-browser/seccomp.json
+    shm_size: "1gb"
+    depends_on:
+      - capture-proxy
+    profiles:
+      - capture
+
 networks:
   app:
   data:
+  capture_internal:
+    internal: true
+  capture_egress:
 
 volumes:
   db_data:
