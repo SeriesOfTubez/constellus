@@ -15,7 +15,8 @@ import {
   defaultSegment,
 } from "@/lib/organizations"
 import { AddOrganizationDialog } from "@/components/AddOrganizationFlow"
-import { AcquisitionsTable } from "@/components/OrgAcquisitionParts"
+import { AcquisitionTimeline, AcquisitionsTable } from "@/components/OrgAcquisitionParts"
+import { filterByDeal } from "@/lib/acquisitionTimeline"
 import { IpSpaceTable, RecheckButton, RegistryObservations } from "@/components/OrgIpSpaceParts"
 import { WorkspaceShell } from "@/components/WorkspaceShell"
 import { EntityDetailContent } from "@/components/EntityDetailContent"
@@ -372,6 +373,7 @@ function OrgWorkspace({
   const [addOpen, setAddOpen] = useState(false)
   const [leadsOpen, setLeadsOpen] = useState(false)
   const [regChange, setRegChange] = useUrlState("reg", "all")
+  const [deal, setDeal] = useUrlState("deal", "")
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bulkOpen, setBulkOpen] = useState(false)
 
@@ -590,6 +592,7 @@ function OrgWorkspace({
     else if (acqQ.isError) body = <Placeholder text={`Could not load acquisitions: ${errorDetail(acqQ.error)}`} />
     else {
       const acqRows = acqQ.data?.rows ?? []
+      const dealView = filterByDeal(acqRows, deal)
       body = (
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">Risk each acquisition brought into the estate. Counts cover claimed scope only; each asset counts under one company.</p>
@@ -597,7 +600,14 @@ function OrgWorkspace({
             <p className="text-sm text-muted-foreground">No confirmed acquisitions in this organization's tree yet.</p>
           )}
           {node && <p className="text-sm text-muted-foreground">Showing the whole organization; acquisitions roll up across the tree.</p>}
-          <AcquisitionsTable rows={acqRows} onOpenCompany={openCompany} />
+          <AcquisitionTimeline rows={acqRows} selected={deal || null} onSelect={id => setDeal(id ?? "")} />
+          {dealView.match && (
+            <Button variant="outline" size="sm" onClick={() => setDeal("")}>Showing {dealView.match.name} ✕</Button>
+          )}
+          {dealView.stale && (
+            <Button variant="outline" size="sm" onClick={() => setDeal("")}>That acquisition is not in this organization — clear filter</Button>
+          )}
+          <AcquisitionsTable rows={dealView.rows} onOpenCompany={openCompany} />
         </div>
       )
     }
