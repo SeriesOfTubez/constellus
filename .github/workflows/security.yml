@@ -224,6 +224,25 @@ jobs:
         working-directory: scanner-worker
         run: python -m pytest tests/ -q
 
+  capture-proxy-tests:
+    name: Capture-Proxy Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: capture-proxy
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run pytest
+        working-directory: capture-proxy
+        run: python -m pytest tests/ -q
+
   build:
     name: Build & Image Scan
     runs-on: ubuntu-latest
@@ -282,6 +301,110 @@ jobs:
 
       - name: Fail on image config findings
         if: steps.trivy_image_config.outcome == 'failure'
+        run: exit 1
+
+      - name: Build capture-proxy image
+        run: docker build -t constellus-capture-proxy:${{ github.sha }} capture-proxy
+
+      - name: Scan capture-proxy image (Trivy — CVEs)
+        id: trivy_image_vuln_capture_proxy
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: constellus-capture-proxy:${{ github.sha }}
+          scanners: vuln
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-image-vuln-capture-proxy.sarif
+
+      - name: Upload capture-proxy image CVE SARIF
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        if: always() && hashFiles('trivy-image-vuln-capture-proxy.sarif') != ''
+        with:
+          sarif_file: trivy-image-vuln-capture-proxy.sarif
+          category: trivy-image-vuln-capture-proxy
+
+      - name: Fail on capture-proxy image CVE findings
+        if: steps.trivy_image_vuln_capture_proxy.outcome == 'failure'
+        run: exit 1
+
+      - name: Scan capture-proxy image (Trivy — config)
+        id: trivy_image_config_capture_proxy
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: constellus-capture-proxy:${{ github.sha }}
+          scanners: misconfig
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-image-config-capture-proxy.sarif
+
+      - name: Upload capture-proxy image config SARIF
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        if: always() && hashFiles('trivy-image-config-capture-proxy.sarif') != ''
+        with:
+          sarif_file: trivy-image-config-capture-proxy.sarif
+          category: trivy-image-config-capture-proxy
+
+      - name: Fail on capture-proxy image config findings
+        if: steps.trivy_image_config_capture_proxy.outcome == 'failure'
+        run: exit 1
+
+      - name: Build capture-browser image
+        run: docker build -t constellus-capture-browser:${{ github.sha }} capture-browser
+
+      - name: Scan capture-browser image (Trivy — CVEs)
+        id: trivy_image_vuln_capture_browser
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: constellus-capture-browser:${{ github.sha }}
+          scanners: vuln
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-image-vuln-capture-browser.sarif
+
+      - name: Upload capture-browser image CVE SARIF
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        if: always() && hashFiles('trivy-image-vuln-capture-browser.sarif') != ''
+        with:
+          sarif_file: trivy-image-vuln-capture-browser.sarif
+          category: trivy-image-vuln-capture-browser
+
+      - name: Fail on capture-browser image CVE findings
+        if: steps.trivy_image_vuln_capture_browser.outcome == 'failure'
+        run: exit 1
+
+      - name: Scan capture-browser image (Trivy — config)
+        id: trivy_image_config_capture_browser
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: constellus-capture-browser:${{ github.sha }}
+          scanners: misconfig
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-image-config-capture-browser.sarif
+
+      - name: Upload capture-browser image config SARIF
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        if: always() && hashFiles('trivy-image-config-capture-browser.sarif') != ''
+        with:
+          sarif_file: trivy-image-config-capture-browser.sarif
+          category: trivy-image-config-capture-browser
+
+      - name: Fail on capture-browser image config findings
+        if: steps.trivy_image_config_capture_browser.outcome == 'failure'
         run: exit 1
 
       - name: Generate image SBOM

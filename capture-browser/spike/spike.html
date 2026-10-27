@@ -1,0 +1,89 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>spike</title>
+<!-- Check 8: hints that would leak a DNS lookup if the browser resolved directly. -->
+<link rel="dns-prefetch" href="//prefetch-__RAND__.example.net">
+<link rel="preconnect" href="https://preconnect-__RAND__.example.net">
+<script>
+"use strict";
+// All results are collected in window.__spike and read by spike.py.
+const S = (window.__spike = { done: false, secure: window.isSecureContext, fetches: [], webrtc: null, sw: null });
+const mode = new URLSearchParams(location.search).get("mode") || "main";
+
+async function tryFetch(url) {
+  const rec = { url, attempted: true, outcome: null };
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 8000);
+  try {
+    // no-cors: we only care that the request is sent; a proxy 403 on plain
+    // http surfaces as an opaque response, a failed CONNECT as a TypeError.
+    const r = await fetch(url, { mode: "no-cors", cache: "no-store", signal: ac.signal });
+    rec.outcome = "response:" + r.type;
+  } catch (e) {
+    rec.outcome = "error:" + (e && e.name);
+  }
+  clearTimeout(t);
+  S.fetches.push(rec);
+}
+
+async function swTest() {
+  if (!("serviceWorker" in navigator)) { S.sw = { present: false }; return; }
+  try {
+    const reg = await Promise.race([
+      navigator.serviceWorker.register("/sw.js"),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 5000)),
+    ]);
+    await new Promise((r) => setTimeout(r, 1500));
+    const regs = await navigator.serviceWorker.getRegistrations();
+    S.sw = { present: true, register_resolved_with: reg === undefined ? "undefined" : "registration", registrations: regs.length };
+  } catch (e) {
+    S.sw = { present: true, rejected: true, registrations: 0, error: String(e && e.name) + ": " + String(e && e.message).slice(0, 120) };
+  }
+}
+
+function webrtcTest() {
+  return new Promise((resolve) => {
+    const res = { types: [], addresses: [], error: null };
+    S.webrtc = res;
+    try {
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+      pc.createDataChannel("x");
+      pc.onicecandidate = (ev) => {
+        if (!ev.candidate) return;
+        const c = ev.candidate.candidate; // "candidate:... <addr> <port> typ <type> ..."
+        const m = / typ (\w+)/.exec(c);
+        const parts = c.split(" ");
+        res.types.push(m ? m[1] : "?");
+        res.addresses.push(parts[4]);
+      };
+      pc.createOffer().then((o) => pc.setLocalDescription(o)).catch((e) => { res.error = String(e); });
+      setTimeout(() => { try { pc.close(); } catch (e) {} resolve(); }, 5000);
+    } catch (e) { res.error = String(e); resolve(); }
+  });
+}
+
+(async () => {
+  if (mode === "sw") {
+    await swTest();
+  } else {
+    // Prime the proxy credential: Chromium answers the proxy's first 407 per
+    // request, and requests that start in parallel BEFORE any has completed can
+    // fail with a bare 407. The product's first request is the lone top-level
+    // navigation, so this mirrors it. (Finding recorded in the S5b-1 report.)
+    await tryFetch("https://example.com/spike-prime-__RAND__");
+    // Check 5: a public subresource that must go through the proxy.
+    const img = new Image();
+    img.src = "https://example.com/spike-img-__RAND__.png";
+    document.body.appendChild(img);
+    const targets = [
+      "http://10.0.0.1/", "https://10.0.0.1/",
+      "http://169.254.169.254/", "https://169.254.169.254/",
+      "http://[::ffff:a9fe:a9fe]/", "https://[::ffff:a9fe:a9fe]/",
+      "http://127.0.0.1:80/", "http://localhost/",
+      "http://10.0.0.1.nip.io/", "http://127.0.0.1.sslip.io/",
+    ];
+    await Promise.all([...targets.map(tryFetch), webrtcTest()]);
+  }
+  S.done = true;
+})();
+</script>

@@ -1,8 +1,8 @@
 """The drift alarm for the duplicated egress blocklist.
 
-`ip_blocklist.py` exists twice — once here, once at
-`backend/app/core/ip_blocklist.py` — because the backend and the worker are
-separate Docker build contexts and neither can COPY from a shared parent.
+`ip_blocklist.py` exists three times — `backend/app/core/`, `scanner-worker/`
+and `capture-proxy/` — because those are separate Docker build contexts and
+none of them can COPY from a shared parent.
 The duplication is forced by the build topology. The DRIFT is not.
 
 Before this file existed, the two copies were kept in step by a comment
@@ -16,12 +16,13 @@ Two independent checks, because each catches what the other misses:
 
   * a SHA-256 comparison — catches any divergence at all, including a
     comment or a new network added to one side only;
-  * a behavioural case table run against BOTH copies — catches the case
+  * a behavioural case table run against ALL THREE copies — catches the case
     where someone "fixes" the hash by copying a file that is itself wrong,
     and documents what the guard is actually for.
 
-An identical copy of this file lives in the scanner-worker suite, so the
-alarm fires whichever side CI runs. Only `_REPO_ROOT`'s depth differs.
+An identical copy of this file lives in each of the three suites, so the
+alarm fires whichever side CI runs. The repo root is found by walking up, so
+the file works unchanged from every depth.
 """
 
 import hashlib
@@ -30,9 +31,17 @@ import importlib.util
 import sys
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+def _find_repo_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "scanner-worker").is_dir() and (parent / "backend").is_dir():
+            return parent
+    raise RuntimeError("repo root not found above " + __file__)
+
+
+_REPO_ROOT = _find_repo_root()
 _WORKER_COPY = _REPO_ROOT / "scanner-worker" / "ip_blocklist.py"
 _BACKEND_COPY = _REPO_ROOT / "backend" / "app" / "core" / "ip_blocklist.py"
+_PROXY_COPY = _REPO_ROOT / "capture-proxy" / "ip_blocklist.py"
 
 
 def _load(path: Path, name: str):
@@ -85,35 +94,39 @@ _CASES = [
 ]
 
 
-def test_the_two_copies_are_byte_identical():
-    assert _WORKER_COPY.exists(), _WORKER_COPY
-    assert _BACKEND_COPY.exists(), _BACKEND_COPY
-    worker, backend = _sha(_WORKER_COPY), _sha(_BACKEND_COPY)
-    assert worker == backend, (
-        "ip_blocklist.py has DRIFTED between the backend and the scanner-worker.\n"
-        f"  {_BACKEND_COPY}  sha256={backend}\n"
-        f"  {_WORKER_COPY}  sha256={worker}\n"
-        "Edit one, then copy it over the other. The worker is the component "
-        "that actually opens sockets, so a worker copy lagging the backend is "
-        "a live egress hole, not a style inconsistency."
+def test_the_three_copies_are_byte_identical():
+    paths = {"backend": _BACKEND_COPY, "scanner-worker": _WORKER_COPY, "capture-proxy": _PROXY_COPY}
+    for path in paths.values():
+        assert path.exists(), path
+    shas = {name: _sha(path) for name, path in paths.items()}
+    assert len(set(shas.values())) == 1, (
+        "ip_blocklist.py has DRIFTED between the backend, the scanner-worker "
+        "and the capture-proxy.\n"
+        + "".join(f"  {paths[n]}  sha256={h}\n" for n, h in shas.items())
+        + "Edit one, then copy it over the others. The worker and the proxy are "
+        "the components that actually open sockets, so a copy lagging the "
+        "backend is a live egress hole, not a style inconsistency."
     )
 
 
-def test_both_copies_agree_on_every_case():
+def test_all_copies_agree_on_every_case():
     """Guards against 'fixing' the hash by copying a file that is itself
     wrong — the hash check alone would go green."""
     worker = _load(_WORKER_COPY, "_parity_worker_blocklist")
     backend = _load(_BACKEND_COPY, "_parity_backend_blocklist")
+    proxy = _load(_PROXY_COPY, "_parity_proxy_blocklist")
     for value, _expected, why in _CASES:
         ip = ipaddress.ip_address(value)
         assert worker.is_blocked(ip) == backend.is_blocked(ip), f"{value} ({why})"
+        assert proxy.is_blocked(ip) == backend.is_blocked(ip), f"{value} ({why})"
 
 
 def test_internal_destinations_are_blocked_however_they_are_spelled():
-    worker = _load(_WORKER_COPY, "_parity_worker_blocklist")
-    for value, expected, why in _CASES:
-        ip = ipaddress.ip_address(value)
-        assert worker.is_blocked(ip) is expected, f"{value} ({why})"
+    for name, path in (("worker", _WORKER_COPY), ("backend", _BACKEND_COPY), ("proxy", _PROXY_COPY)):
+        mod = _load(path, f"_parity_{name}_blocklist")
+        for value, expected, why in _CASES:
+            ip = ipaddress.ip_address(value)
+            assert mod.is_blocked(ip) is expected, f"{name}: {value} ({why})"
 
 
 def test_embedded_ipv4_does_not_claim_loopback_embeds_an_address():
