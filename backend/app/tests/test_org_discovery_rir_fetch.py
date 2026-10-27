@@ -270,3 +270,76 @@ def test_checks_accept_the_good_shapes(db):
     _insert(db)
     _insert(db, status_code=404, body=null())
     assert db.execute(select(RirLookupCache).where(RirLookupCache.path.like("%rirf-%"))).scalars().all()
+
+
+# ── prefix-first ARIN builders (planning#278 S3c3b1) ─────────────────────────
+
+@pytest.mark.parametrize("prefix, tail", [
+    ("192.0.2.0/24", "192.0.2.0/24"),
+    ("198.51.100.72/29", "198.51.100.72/29"),
+    ("2001:db8::/32", "2001:db8::/32"),
+    ("2001:db8:278:1::/64", "2001:db8:278:1::/64"),
+])
+def test_arin_cidr_builders_exact(prefix, tail):
+    assert rf.arin_cidr_less(prefix) == f"cidr/{tail}/less"
+    assert rf.arin_cidr_more(prefix) == f"cidr/{tail}/more"
+
+
+@pytest.mark.parametrize("bad", [
+    "192.0.2.1/24",  # host bits
+    "192.0.2.0",  # no length
+    "192.0.2.00/24",  # leading zero
+    "2001:DB8::/32",  # upper case
+    "2001:0db8::/32",  # expanded
+    "2001:db8::1/32",  # host bits
+    "192.0.2.0/24/less", "192.0.2.0/24?x=1", "192.0.2.0/24/../x", "../192.0.2.0/24", " 192.0.2.0/24",
+    "", None, 5, b"192.0.2.0/24", ("192.0.2.0/24",),
+])
+def test_arin_cidr_builders_reject(bad):
+    with pytest.raises(ValueError):
+        rf.arin_cidr_less(bad)
+    with pytest.raises(ValueError):
+        rf.arin_cidr_more(bad)
+
+
+@pytest.mark.parametrize("bad", [
+    "cidr/192.0.2.1/24/less",
+    "cidr/999.0.0.0/8/less",
+    "cidr/2001:DB8::/32/less",
+    "cidr/:::/32/less",
+    "cidr/192.0.2.0/24/less/",
+    "cidr/192.0.2.0/024/less",
+    "cidr/192.0.2.0/33/less",
+    "cidr/192.0.2.0/24/children",
+    "cidr/192.0.2.0/24",
+    "cidr/192.0.2.0/24/more?x=1",
+    "cidr/2001:db8::/129/more",
+])
+def test_get_refuses_hand_built_cidr_paths_without_transport(db, transport, bad):
+    b = rf.Budget()
+    with pytest.raises(ValueError):
+        rf.get(db, "arin", bad, b)
+    assert transport.calls == [] and b.used == 0
+
+
+@pytest.mark.parametrize("path", ["cidr/192.0.2.0/24/less", "cidr/192.0.2.0/24/more", "cidr/2001:db8::/32/less"])
+def test_get_cidr_good_path_reaches_transport(db, transport, path):
+    b = rf.Budget()
+    assert rf.get(db, "arin", path, b) == {"ok": True}
+    assert len(transport.calls) == 1
+    assert transport.calls[0][0] == "https://whois.arin.net/rest/" + path
+    assert transport.calls[0][1]["params"] is None
+
+
+def test_cache_key_helper():
+    assert rf.cache_key("net/H1", None) == "net/H1"
+    assert rf.cache_key("search.json", (("b", "2"), ("a", "1 x"))) == "search.json?a=1+x&b=2"
+
+
+def test_ripe_key():
+    assert rf.ripe_key("192.0.2.0/24") == ("192.0.2.0 - 192.0.2.255", "inetnum")
+    assert rf.ripe_key("198.51.100.72/29") == ("198.51.100.72 - 198.51.100.79", "inetnum")
+    assert rf.ripe_key("2001:db8::/32") == ("2001:db8::/32", "inet6num")
+    for bad in ("192.0.2.1/24", "2001:DB8::/32", None, "192.0.2.0"):
+        with pytest.raises(ValueError):
+            rf.ripe_key(bad)

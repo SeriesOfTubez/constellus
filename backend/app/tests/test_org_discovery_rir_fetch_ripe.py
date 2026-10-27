@@ -373,3 +373,64 @@ def test_validation_precedes_the_cache_read(db, transport):
     with pytest.raises(ValueError):
         rf.get(db, "ripe", path, b, params=bad)
     assert b.cache_hits == 0 and len(transport.calls) == 1
+
+
+# ── covering / all-more lookups (planning#278 S3c3b1) ────────────────────────
+
+def test_covering_and_all_more_builders_exact():
+    path, params = rf.ripe_covering(RANGE, "inetnum")
+    assert path == "search.json"
+    assert params == (("query-string", RANGE), ("type-filter", "inetnum"), *FLAGS)
+    path, params = rf.ripe_all_more(V6, "inet6num")
+    assert path == "search.json"
+    assert params == (
+        ("query-string", V6), ("type-filter", "inet6num"), ("flags", "all-more"), *FLAGS,
+    )
+
+
+@pytest.mark.parametrize("builder", [rf.ripe_covering, rf.ripe_all_more])
+@pytest.mark.parametrize("key, typ", [
+    (RANGE, "aut-num"), (RANGE, "organisation"), (RANGE, "person"),
+    ("192.0.2.0-192.0.2.255", "inetnum"), ("192.0.2.255 - 192.0.2.0", "inetnum"),
+    ("2001:db8::1/32", "inet6num"), (V6, "inetnum"), (RANGE, "inet6num"), ("192.0.2.0/24", "inetnum"),
+])
+def test_covering_builders_reject(builder, key, typ):
+    with pytest.raises(ValueError):
+        builder(key, typ)
+
+
+ALL_MORE = ("all-more", "no-referenced", "no-irt")
+DEFAULT = ("no-referenced", "no-irt")
+
+
+@pytest.mark.parametrize("case", [
+    pytest.param(_search(RANGE, ("inetnum",), (), DEFAULT), id="default-v4"),
+    pytest.param(_search(V6, ("inet6num",), (), DEFAULT), id="default-v6"),
+    pytest.param(_search(RANGE, ("inetnum",), (), ALL_MORE), id="all-more-v4"),
+    pytest.param(_search(V6, ("inet6num",), (), ALL_MORE), id="all-more-v6"),
+])
+def test_ip_form_queries_accepted(db, transport, case):
+    b = rf.Budget()
+    assert rf.get(db, "ripe", "search.json", b, params=case) == {"ok": True}
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("params", [
+    pytest.param(_search(RANGE, ("inetnum",), (), ("one-more", "all-more", "no-referenced", "no-irt")), id="both-flags"),
+    pytest.param(_search(RANGE, ("inetnum",), ("org",), ALL_MORE), id="all-more-inverse"),
+    pytest.param(_search(RANGE, ("inetnum",), ("org",), DEFAULT), id="default-ip-inverse"),
+    pytest.param(_search(RANGE, ("inetnum", "inet6num"), (), DEFAULT), id="default-two-types"),
+    pytest.param(_search(RANGE, ("inetnum", "inet6num"), (), ALL_MORE), id="all-more-two-types"),
+    pytest.param(_search(RANGE, ("aut-num",), (), ALL_MORE), id="all-more-aut-num"),
+    pytest.param(_search(RANGE, ("aut-num",), (), DEFAULT), id="default-aut-num"),
+    pytest.param(_search("192.0.2.0-192.0.2.255", ("inetnum",), (), ALL_MORE), id="all-more-no-spaces"),
+    pytest.param(_search("192.0.2.255 - 192.0.2.0", ("inetnum",), (), DEFAULT), id="default-reversed"),
+    pytest.param(_search("2001:db8::1/32", ("inet6num",), (), ALL_MORE), id="all-more-v6-host-bits"),
+    pytest.param(_search("2001:db8::1/32", ("inet6num",), (), DEFAULT), id="default-v6-host-bits"),
+    pytest.param(_search(ORG, ("inetnum",), (), ALL_MORE), id="all-more-handle"),
+])
+def test_ip_form_queries_refused_before_transport(db, transport, params):
+    b = rf.Budget()
+    with pytest.raises(ValueError):
+        rf.get(db, "ripe", "search.json", b, params=params)
+    assert transport.calls == [] and b.used == 0
