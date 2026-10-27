@@ -417,6 +417,12 @@
   "report_admin",
   "viewer"
  ],
+ "GET /api/organizations/{org_id}/acquisitions": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
  "GET /api/organizations/{org_id}/candidates": [
   "admin",
   "integration_admin",

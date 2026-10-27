@@ -87,6 +87,7 @@ NOT_YET_SCOPED = {
     "/api/entities/{entity_id}/subsidiary-listings": "entity",
     # organizations (planning#277): the hooks are called, and grant everything today
     "/api/organizations/": "entity",
+    "/api/organizations/{org_id}/acquisitions": "entity",
     "/api/organizations/{org_id}/candidates": "entity",
     "/api/organizations/{org_id}/reassignments": "entity",
     "/api/organizations/candidates/{candidate_id}": "entity",
