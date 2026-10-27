@@ -134,7 +134,7 @@ function SignalRow({ s, labelOf }: { s: SignalDetail; labelOf: LabelOf }) {
 }
 
 export function CandidateFlyoutContent({
-  detail, org, labelOf, nodes, onClaim, onReject,
+  detail, org, labelOf, nodes, onClaim, onReject, extra,
 }: {
   detail: CandidateDetail
   org: OrganizationSummary
@@ -142,6 +142,8 @@ export function CandidateFlyoutContent({
   nodes: TreeNode[]
   onClaim: (affiliatedEntityId: string | null) => Promise<void>
   onReject: (reason: string) => Promise<void>
+  /** Extra block rendered just before History (e.g. registry observations). */
+  extra?: React.ReactNode
 }) {
   const can = useCan()
   const { counting, context } = splitSignals(detail.signal_details)
@@ -186,6 +188,8 @@ export function CandidateFlyoutContent({
           </p>
         </section>
 
+        {extra}
+
         <section className="space-y-1">
           <h3 className="text-sm font-semibold">History</h3>
           {detail.events.length === 0
@@ -210,21 +214,26 @@ export function CandidateFlyoutContent({
         </div>
       )}
       {dialog === "claim" && (
-        <ClaimDialog domain={detail.value} nodes={nodes} defaultId={detail.affiliated.id}
+        <ClaimDialog value={detail.value} nodes={nodes} defaultId={detail.affiliated.id}
+          description={detail.kind === "asn" ? ASN_CLAIM_NOTE : undefined}
           onClose={() => setDialog(null)} onSubmit={async id => { await onClaim(id); setDialog(null) }} />
       )}
       {dialog === "reject" && (
-        <RejectDialog domain={detail.value} onClose={() => setDialog(null)}
+        <RejectDialog value={detail.value} onClose={() => setDialog(null)}
           onSubmit={async r => { await onReject(r); setDialog(null) }} />
       )}
     </div>
   )
 }
 
+const ASN_CLAIM_NOTE =
+  "Claiming this ASN also claims its registry holder's open, proposable prefixes as CIDR targets. Prefixes it only announces are not claimed."
+
 export function ClaimDialog({
-  domain, nodes, defaultId, onClose, onSubmit,
+  value, description, nodes, defaultId, onClose, onSubmit,
 }: {
-  domain: string
+  value: string
+  description?: string
   nodes: TreeNode[]
   defaultId: string | null
   onClose: () => void
@@ -237,8 +246,10 @@ export function ClaimDialog({
     <Dialog open onOpenChange={o => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Claim {domain}</DialogTitle>
-          <DialogDescription>The claim is recorded with you as the decider.</DialogDescription>
+          <DialogTitle>Claim {value}</DialogTitle>
+          <DialogDescription>
+            The claim is recorded with you as the decider.{description ? ` ${description}` : ""}
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-1.5">
           <Label>Organization it belongs to</Label>
@@ -263,8 +274,8 @@ export function ClaimDialog({
 }
 
 export function RejectDialog({
-  domain, onClose, onSubmit,
-}: { domain: string; onClose: () => void; onSubmit: (reason: string) => Promise<void> }) {
+  value, onClose, onSubmit,
+}: { value: string; onClose: () => void; onSubmit: (reason: string) => Promise<void> }) {
   const [reason, setReason] = useState("")
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -272,7 +283,7 @@ export function RejectDialog({
     <Dialog open onOpenChange={o => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Reject {domain}</DialogTitle>
+          <DialogTitle>Reject {value}</DialogTitle>
           <DialogDescription>A reason is required and is kept in the history.</DialogDescription>
         </DialogHeader>
         <div className="space-y-1.5">

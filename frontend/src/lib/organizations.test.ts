@@ -3,7 +3,7 @@ import {
   defaultSegment,
   type AddOrgState, type CandidateRow, type SignalDetail, type TreeNode,
   addOrgRequest, addOrgStepValid, filerStatsLine, relationshipOptions,
-  entityHref, orgEntityTarget,
+  entityHref, orgEntityTarget, registryChangeText, registryHolder,
   anchorText, candidateParams, groupRows, relationNote, segmentCount, severityBar, splitSignals, stateInfo, tierChipClass, treeRows,
 } from "@/lib/organizations"
 
@@ -11,7 +11,7 @@ const row = (over: Partial<CandidateRow> = {}): CandidateRow => ({
   id: "c1", root_entity_id: "r", value: "fabrikam.com", kind: "domain", status: "open", strength: "strong", proposable: true,
   affiliated: { id: "a", name: "Example Holdings A" }, affiliated_is_default: false, signals: [], first_seen_at: null,
   previously_rejected: null, target_id: null, decided_by_connector_instance_id: null, asset_count: null,
-  open_findings: null, worst_severity: null, ...over,
+  open_findings: null, worst_severity: null, rir: null, rir_handle: null, ...over,
 })
 
 describe("candidateParams", () => {
@@ -176,5 +176,33 @@ describe("defaultSegment", () => {
   })
   it("opens on All when nothing is to review but something is claimed (a just-added org)", () => {
     expect(defaultSegment({ claimed: 1, proposed: 0 })).toBe("all")
+  })
+})
+
+describe("registry observations (S3d)", () => {
+  const r = (over = {}) => ({ rir: "arin", prefix: "192.0.2.0/25", new_holder_kind: "org" as const, new_holder_handle: "EXAMPLE-ORG-1", ...over })
+  it("words each holder kind exactly", () => {
+    expect(registryChangeText(r())).toBe("ARIN now lists 192.0.2.0/25 under EXAMPLE-ORG-1 (organization)")
+    expect(registryChangeText(r({ new_holder_kind: "customer", new_holder_handle: "CUST-EX1" }))).toBe("ARIN now lists 192.0.2.0/25 under CUST-EX1 (customer)")
+    expect(registryChangeText(r({ new_holder_kind: "unknown", new_holder_handle: null }))).toBe("ARIN now lists 192.0.2.0/25 under an unidentified holder")
+    expect(registryChangeText(r({ new_holder_kind: "unregistered", new_holder_handle: null }))).toBe("ARIN shows 192.0.2.0/25 is no longer registered to anyone")
+  })
+  it("treats org/customer without a handle as unknown, and a null rir as The registry", () => {
+    expect(registryChangeText(r({ new_holder_handle: null }))).toBe("ARIN now lists 192.0.2.0/25 under an unidentified holder")
+    expect(registryChangeText(r({ new_holder_kind: "customer", new_holder_handle: null }))).toContain("an unidentified holder")
+    expect(registryChangeText(r({ rir: null }))).toBe("The registry now lists 192.0.2.0/25 under EXAMPLE-ORG-1 (organization)")
+    expect(registryChangeText(r({ rir: "ripe" }))).toMatch(/^RIPE now lists/)
+  })
+  it("candidateParams carries kind and reassigned only when asked", () => {
+    const p = candidateParams({ segment: "claimed", kind: "cidr", reassigned: true })
+    expect(p.get("kind")).toBe("cidr"); expect(p.get("reassigned")).toBe("true")
+    expect(candidateParams({ segment: "claimed", kind: "asn", reassigned: false }).get("reassigned")).toBe("false")
+    expect(candidateParams({ segment: "claimed", kind: "domain" }).toString()).toBe(candidateParams({ segment: "claimed" }).toString())
+    expect(candidateParams({ segment: "claimed" }).has("reassigned")).toBe(false)
+  })
+  it("registryHolder joins RIR and handle, dash when neither", () => {
+    expect(registryHolder(row({ rir: "arin", rir_handle: "EXAMPLE-ORG-1" }))).toBe("ARIN · EXAMPLE-ORG-1")
+    expect(registryHolder(row({ rir: "ripe", rir_handle: "ORG-EX1-RIPE" }))).toBe("RIPE · ORG-EX1-RIPE")
+    expect(registryHolder(row())).toBe("—")
   })
 })

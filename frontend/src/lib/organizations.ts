@@ -71,6 +71,9 @@ export interface CandidateRow {
   asset_count: number | null
   open_findings: SeverityCounts | null
   worst_severity: SeverityKey | null
+  /** Lowercase RIR (arin|ripe|apnic|lacnic|afrinic) and its handle; set for asn/cidr, null for domain. */
+  rir: string | null
+  rir_handle: string | null
 }
 
 export interface CandidatePage { items: CandidateRow[]; total: number }
@@ -118,6 +121,51 @@ export interface CandidateDetail extends CandidateRow {
   decided_by_connector_name: string | null
 }
 
+// ── registry observations (planning#278 S3d) ───────────────────────────────
+
+export type NewHolderKind = "org" | "customer" | "unknown" | "unregistered"
+
+/** A registry observation, NOT a finding: the registry now lists part of a claimed
+ *  prefix under another holder. Never changes the claim. */
+export interface ReassignmentRow {
+  id: string
+  candidate_id: string
+  candidate_value: string
+  rir: string | null
+  rir_handle: string | null
+  prefix: string
+  new_holder_kind: NewHolderKind
+  new_holder_handle: string | null
+  evidence_id: string | null
+  first_detected_at: string
+  last_seen_at: string
+}
+
+export interface ReassignmentPage { items: ReassignmentRow[]; total: number }
+
+export interface RecheckAccepted { claimed_domains: number }
+
+export function rirLabel(rir: string | null): string {
+  return rir ? rir.toUpperCase() : "The registry"
+}
+
+export function registryChangeText(
+  r: Pick<ReassignmentRow, "rir" | "prefix" | "new_holder_kind" | "new_holder_handle">,
+): string {
+  const who = rirLabel(r.rir)
+  if (r.new_holder_kind === "unregistered") return `${who} shows ${r.prefix} is no longer registered to anyone`
+  if ((r.new_holder_kind === "org" || r.new_holder_kind === "customer") && r.new_holder_handle) {
+    return `${who} now lists ${r.prefix} under ${r.new_holder_handle} (${r.new_holder_kind === "org" ? "organization" : "customer"})`
+  }
+  return `${who} now lists ${r.prefix} under an unidentified holder`
+}
+
+/** "ARIN · EXAMPLE-ORG-1"; a dash when the row carries no registry data. */
+export function registryHolder(row: CandidateRow): string {
+  if (!row.rir && !row.rir_handle) return "—"
+  return [rirLabel(row.rir), row.rir_handle].filter(Boolean).join(" · ")
+}
+
 // ── segments / query params ─────────────────────────────────────────────────
 
 export type Segment = "all" | "candidates" | "claimed" | "rejected"
@@ -145,6 +193,8 @@ export interface CandidateFilters {
   signalType?: string
   subtreeOf?: string | null
   leadsOnly?: boolean
+  kind?: "domain" | "asn" | "cidr"
+  reassigned?: boolean
   limit?: number
   offset?: number
 }
@@ -157,6 +207,8 @@ export function candidateParams(f: CandidateFilters): URLSearchParams {
   if (f.strength && f.strength !== "all") p.set("strength", f.strength)
   if (f.signalType && f.signalType !== "all") p.set("signal_type", f.signalType)
   if (f.subtreeOf) p.set("subtree_of", f.subtreeOf)
+  if (f.kind && f.kind !== "domain") p.set("kind", f.kind)
+  if (f.reassigned !== undefined) p.set("reassigned", f.reassigned ? "true" : "false")
   p.set("limit", String(f.limit ?? 200))
   if (f.offset) p.set("offset", String(f.offset))
   return p

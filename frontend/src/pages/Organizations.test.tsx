@@ -25,6 +25,7 @@ const ROW = {
   strength: "strong", proposable: true, affiliated: { id: null, name: null }, affiliated_is_default: false,
   signals: [], first_seen_at: null, previously_rejected: null, target_id: null,
   decided_by_connector_instance_id: null, asset_count: null, open_findings: null, worst_severity: null,
+  rir: null, rir_handle: null,
 } as CandidateRow
 
 function render(path: string) {
