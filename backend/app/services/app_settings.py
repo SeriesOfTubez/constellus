@@ -68,6 +68,15 @@ DEFAULTS = {
     # per UTC day, separate from the per-finding cap.
     "ai.cluster_writeups.mode": "on_demand",
     "ai.cluster_writeups.auto_daily_cap": "10",
+    # planning#280 S5b-2b - page capture: days before the same domain may be
+    # re-captured automatically, user-agent mode ("stock" | "identifying") and
+    # the identifying string, image size cap, queue timeout. Typed, clamped
+    # reads live in app.services.page_capture.
+    "capture.browse_revisit_days": "30",
+    "capture.user_agent_mode": "stock",
+    "capture.identifying_user_agent": "",
+    "capture.max_image_bytes": "2097152",
+    "capture.queue_timeout_seconds": "600",
 }
 
 

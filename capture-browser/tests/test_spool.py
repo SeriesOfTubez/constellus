@@ -1,5 +1,6 @@
 """Pure-function tests for capture.spool / capture.worker (no browser, no Playwright)."""
 
+import base64
 import json
 import os
 import stat
@@ -18,16 +19,25 @@ def _mk(root):
     return worker.check_dirs(str(root))
 
 
+_ABSENT = object()
+
+
+_ABSENT = object()
+
+
 def job(**over):
     j = {
-        "v": 1,
+        "v": 2,
         "capture_id": ID,
         "url": "https://example.com/",
         "viewport": {"width": 1280, "height": 800},
         "max_image_bytes": 2097152,
         "webp_qualities": [80, 60, 40],
+        "user_agent_mode": "stock",
     }
     j.update(over)
+    for k in [k for k, v in over.items() if v is _ABSENT]:
+        del j[k]
     return json.dumps(j).encode()
 
 
@@ -43,8 +53,28 @@ def test_valid_job_roundtrips():
 @pytest.mark.parametrize(
     "raw",
     [
-        job(v=2),
+        job(v=1),
+        job(v=3),
         job(v=True),
+        job(user_agent_mode=_ABSENT),
+        job(user_agent_mode="Stock"),
+        job(user_agent_mode="spoofed"),
+        job(user_agent_mode=None),
+        job(user_agent_mode=1),
+        job(user_agent_mode=["stock"]),
+        job(user_agent_mode="identifying"),
+        job(user_agent_mode="identifying", user_agent=None),
+        job(user_agent_mode="identifying", user_agent=5),
+        job(user_agent_mode="identifying", user_agent=""),
+        job(user_agent_mode="identifying", user_agent="a" * 257),
+        job(user_agent_mode="identifying", user_agent="Bot/1.0\r\nX-Evil: 1"),
+        job(user_agent_mode="identifying", user_agent="Bot\t1.0"),
+        job(user_agent_mode="identifying", user_agent="Bot/1.0 \u00e9"),
+        job(user_agent_mode="identifying", user_agent="Bot\x7f"),
+        job(user_agent_mode="stock", user_agent="Bot/1.0"),
+        job(user_agent_mode="stock", user_agent=None),
+        job(user_agent_mode="stock", user_agent=""),
+        job(max_image_bytes=8 * 1024 * 1024 + 1),
         job(capture_id="0190a1b2-c3d4-7e5f-8a6b-1234567890ac"),
         job(url="file:///etc/passwd"),
         job(url="ftp://example.com/"),
@@ -67,6 +97,35 @@ def test_valid_job_roundtrips():
 def test_invalid_jobs_are_rejected(raw):
     with pytest.raises(spool.InvalidJob):
         spool.validate_job(raw, ID)
+
+
+def test_stock_job_returns_no_user_agent():
+    j = spool.validate_job(job(), ID)
+    assert j["user_agent_mode"] == "stock" and j["user_agent"] is None
+
+
+def test_identifying_job_carries_the_user_agent():
+    ua = "ExampleScanner/1.0 (+https://scanner.example.test/about)"
+    j = spool.validate_job(job(user_agent_mode="identifying", user_agent=ua), ID)
+    assert j["user_agent_mode"] == "identifying" and j["user_agent"] == ua
+
+
+def test_identifying_user_agent_256_printable_chars_accepted():
+    ua = "".join(chr(0x20 + i % 95) for i in range(256))  # spans 0x20..0x7e
+    assert len(ua) == 256
+    assert spool.validate_job(job(user_agent_mode="identifying", user_agent=ua), ID)["user_agent"] == ua
+
+
+def test_max_image_bytes_boundary_is_8_mib():
+    assert spool.MAX_IMAGE_BYTES_LIMIT == 8 * 1024 * 1024
+    ok = spool.validate_job(job(max_image_bytes=8 * 1024 * 1024), ID)
+    assert ok["max_image_bytes"] == 8 * 1024 * 1024
+
+
+def test_result_version_is_independent_of_job_version():
+    assert spool.JOB_VERSION == 2
+    r, _ = spool.build_result(ID, error="x")
+    assert r["v"] == 1
 
 
 @pytest.mark.parametrize(
@@ -239,3 +298,110 @@ def test_process_invalid_job_writes_invalid_job_result_without_a_browser(tmp_pat
     r = json.loads(open(os.path.join(results, ID, "result.json")).read())
     assert r["error"] == "invalid_job" and r["final_url"] is None
     assert "playwright" not in sys.modules  # the browser path was never reached
+
+
+class _FakeCdp:
+    def send(self, method, params=None):
+        if method == "Page.captureScreenshot":
+            return {"data": base64.b64encode(b"RIFF....WEBP").decode()}
+        return {}  # Network.enable / Network.getCertificate (no tableNames -> cert None)
+
+
+class _FakePage:
+    url = "https://example.com/"
+
+    def evaluate(self, expr):
+        return "Mozilla/5.0 (X11; Linux) HeadlessChrome/999.0 Safari/537.36"
+
+    def on(self, *a):
+        pass
+
+    def goto(self, *a, **kw):
+        return None
+
+    def wait_for_load_state(self, *a, **kw):
+        pass
+
+    def title(self):
+        return "t"
+
+
+class _FakeCtx:
+    def new_page(self):
+        return _FakePage()
+
+    def close(self):
+        pass
+
+    def new_cdp_session(self, page):
+        return _FakeCdp()
+
+
+class _FakeBrowser:
+    def __init__(self):
+        self.context_kwargs = []
+
+    def new_context(self, **kw):
+        self.context_kwargs.append(kw)
+        return _FakeCtx()
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def fake_playwright(monkeypatch):
+    """Fake only the Playwright transport (sync_playwright -> chromium.launch ->
+    browser.new_context); capture.run, capture_page and new_context are REAL."""
+    import types
+
+    browser = _FakeBrowser()
+
+    class _P:
+        chromium = types.SimpleNamespace(launch=lambda **kw: browser)
+
+    class _CM:
+        def __enter__(self):
+            return _P()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("playwright.sync_api")
+    for name in ("Browser", "BrowserContext", "Playwright"):
+        setattr(mod, name, object)
+    mod.sync_playwright = lambda: _CM()
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", mod)
+    monkeypatch.setenv("CAPTURE_PROXY_URL", "http://proxy.example.test:3128")
+    monkeypatch.setenv("CAPTURE_PROXY_TOKEN", "t")
+    sys.modules.pop("capture.run", None)  # re-import against the fake
+    yield browser
+    sys.modules.pop("capture.run", None)  # never leak a fake-bound module
+
+
+def _run_job(tmp_path, raw):
+    jobs, claimed, results = _mk(tmp_path)
+    path = os.path.join(claimed, f"{ID}.json")
+    open(path, "wb").write(raw)
+    worker.process(ID, path, results)
+    return json.loads(open(os.path.join(results, ID, "result.json")).read())
+
+
+def test_worker_identifying_mode_hands_the_job_ua_to_the_context(tmp_path, fake_playwright):
+    ua = "ExampleScanner/1.0 (+https://scanner.example.test/about)"
+    r = _run_job(tmp_path, job(user_agent_mode="identifying", user_agent=ua))
+    assert r["error"] is None  # the fake capture really ran end to end
+    assert [kw["user_agent"] for kw in fake_playwright.context_kwargs] == [ua]
+    # No stock probe context in this mode: the only context is the capture one.
+    assert r["user_agent"] == ua
+
+
+def test_worker_stock_mode_uses_the_browser_ua_without_headless_marker(tmp_path, fake_playwright):
+    r = _run_job(tmp_path, job())
+    stock = "Mozilla/5.0 (X11; Linux) Chrome/999.0 Safari/537.36"
+    assert r["error"] is None
+    kws = fake_playwright.context_kwargs
+    assert len(kws) == 2 and "user_agent" not in kws[0]  # probe context, then capture context
+    assert kws[1]["user_agent"] == stock
+    assert r["user_agent"] == stock

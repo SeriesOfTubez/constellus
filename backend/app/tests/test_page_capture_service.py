@@ -80,7 +80,7 @@ def _queued(w, domain=None) -> PageCapture:
     obs = w.db.query(Observer).filter(Observer.name == "page_capture").one()
     row = PageCapture(
         candidate_id=c.id, domain=c.value, observer_id=obs.id, requested_url=f"https://{c.value}/",
-        requested_by_id=w.user().id,
+        requested_by_id=w.user().id, user_agent_mode="stock", image_max_bytes=pc.DEFAULT_MAX_IMAGE_BYTES,
     )
     w.db.add(row)
     w.db.commit()
@@ -268,7 +268,7 @@ def test_bad_magic_keeps_the_capture_but_omits_the_image(w, env):
 
 def test_oversize_image_keeps_the_capture_but_omits_the_image(w, env):
     row = _queued(w)
-    _drop_result(env, row, image=WEBP + b"\x00" * pc.MAX_IMAGE_BYTES)
+    _drop_result(env, row, image=WEBP + b"\x00" * pc.DEFAULT_MAX_IMAGE_BYTES)
     assert _ingest(w) == 1
     r = _fresh(row.id)
     assert r.status == "done" and r.image_omitted_reason == "invalid_image"
@@ -420,7 +420,7 @@ def test_an_exception_in_ingest_fails_that_row_only(w, env, monkeypatch):
 
 def test_timeout_sweep_fails_old_queued_rows_and_removes_job_and_claim(w, env):
     old, fresh = _queued(w), _queued(w)
-    old.requested_at = datetime.now(timezone.utc) - timedelta(seconds=pc.QUEUE_TIMEOUT_S + 60)
+    old.requested_at = datetime.now(timezone.utc) - timedelta(seconds=pc.DEFAULT_QUEUE_TIMEOUT_S + 60)
     w.db.commit()
     for sub in ("jobs", "claimed"):
         (env["spool"] / sub / f"{old.id}.json").write_text("{}")
@@ -436,7 +436,7 @@ def test_timeout_sweep_fails_old_queued_rows_and_removes_job_and_claim(w, env):
 def test_timeout_sweep_leaves_a_recent_row_alone(w, env):
     row = _queued(w)
     (env["spool"] / "jobs" / f"{row.id}.json").write_text("{}")
-    assert pc.sweep_timeouts(w.db, now=datetime.now(timezone.utc) + timedelta(seconds=pc.QUEUE_TIMEOUT_S - 60)) == 0
+    assert pc.sweep_timeouts(w.db, now=datetime.now(timezone.utc) + timedelta(seconds=pc.DEFAULT_QUEUE_TIMEOUT_S - 60)) == 0
     assert _fresh(row.id).status == "queued" and (env["spool"] / "jobs" / f"{row.id}.json").exists()
 
 
@@ -473,13 +473,13 @@ def test_request_capture_commits_the_row_before_the_job_exists_and_writes_the_co
         return real_rename(src, dst)
 
     monkeypatch.setattr(pc.os, "rename", spy)
-    row = pc.request_capture(w.db, candidate_id=c.id, user=user)
+    row = pc.request_capture(w.db, candidate_id=c.id, user=user, manual=True)
 
     assert seen["row_visible"] is True and seen["status"] == "queued" and seen["tmp_name"] == f".{row.id}.tmp"
     assert seen["mode"] & 0o117 == 0  # owner/group read-write at most, nothing for others, no execute
     job_path = env["spool"] / "jobs" / f"{row.id}.json"
     assert json.loads(job_path.read_text()) == {
-        "v": 1, "capture_id": str(row.id), "url": f"https://{c.value}/",
+        "v": 2, "capture_id": str(row.id), "url": f"https://{c.value}/", "user_agent_mode": "stock",
         "viewport": {"width": 1280, "height": 800}, "max_image_bytes": 2097152, "webp_qualities": [80, 60, 40],
     }
     assert len(job_path.read_bytes()) <= pc.JOB_MAX_BYTES
@@ -497,16 +497,16 @@ def test_refused_while_a_restricting_posture_applies_archive_first_not_built(w, 
     w.db.refresh(root)
     c = _candidate(w, root)
     with pytest.raises(pc.CaptureRefused) as e:
-        pc.request_capture(w.db, candidate_id=c.id, user=w.user())
+        pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
     assert e.value.rule == "archive_first:not_built"
     assert _rows_for(c.id) == 0 and _no_job_files(env) == []
 
 
 def test_a_second_request_while_one_is_queued_is_refused(w, env):
     c = _candidate(w)
-    first = pc.request_capture(w.db, candidate_id=c.id, user=w.user())
+    first = pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
     with pytest.raises(pc.CaptureRefused) as e:
-        pc.request_capture(w.db, candidate_id=c.id, user=w.user())
+        pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
     assert e.value.rule == "capture:already_queued"
     assert _rows_for(c.id) == 1 and [p.name for p in _no_job_files(env)] == [f"{first.id}.json"]
 
@@ -522,7 +522,7 @@ def test_an_overlong_domain_is_refused_before_any_write(w, env):
     w.db.commit()
     w.cap_candidates.append(c.id)
     with pytest.raises(pc.CaptureRefused) as e:
-        pc.request_capture(w.db, candidate_id=c.id, user=w.user())
+        pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
     assert e.value.rule == "candidate:invalid_domain"
     assert _rows_for(c.id) == 0 and _no_job_files(env) == []
 
@@ -543,7 +543,7 @@ def test_a_gate_denial_queues_nothing_and_is_logged(w, env):
     w.db.commit()
     try:
         with pytest.raises(pc.CaptureRefused) as e:
-            pc.request_capture(w.db, candidate_id=c.id, user=w.user())
+            pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
     finally:
         w.db.rollback()
         w.db.query(Observer).filter(Observer.name == "page_capture").update({"noise_class": "browse"})
@@ -564,7 +564,7 @@ def test_an_unwritable_spool_marks_the_row_failed(w, env, monkeypatch):
     (env["spool"] / "jobs").rmdir()
     (env["spool"] / "jobs").write_text("a file where the jobs directory should be")
     with pytest.raises(pc.CaptureRefused) as e:
-        pc.request_capture(w.db, candidate_id=c.id, user=w.user())
+        pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
     assert e.value.rule == "spool_unavailable"
     db = SessionLocal()
     try:
@@ -583,7 +583,7 @@ def test_a_missing_spool_directory_marks_the_row_failed(w, env):
     c = _candidate(w)
     (env["spool"] / "claimed").rmdir()
     with pytest.raises(pc.CaptureRefused) as e:
-        pc.request_capture(w.db, candidate_id=c.id, user=w.user())
+        pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
     assert e.value.rule == "spool_unavailable"
     assert _rows_for(c.id) == 1 and _no_job_files(env) == []
 
@@ -593,7 +593,7 @@ def test_a_symlinked_spool_directory_is_refused(w, env):
     (env["spool"] / "results").rmdir()
     (env["spool"] / "results").symlink_to(env["images"])
     with pytest.raises(pc.CaptureRefused) as e:
-        pc.request_capture(w.db, candidate_id=c.id, user=w.user())
+        pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
     assert e.value.rule == "spool_unavailable"
 
 
@@ -605,7 +605,7 @@ def test_the_unique_index_closes_the_race_between_the_precheck_and_the_insert(w,
     def a_concurrent_request_lands_first(value):
         db2 = SessionLocal()
         try:
-            db2.add(PageCapture(candidate_id=c.id, domain=c.value, observer_id=obs.id, requested_url="https://x.fabrikam.com/"))
+            db2.add(PageCapture(candidate_id=c.id, domain=c.value, observer_id=obs.id, requested_url="https://x.fabrikam.com/", user_agent_mode="stock", image_max_bytes=pc.DEFAULT_MAX_IMAGE_BYTES))
             db2.commit()
         finally:
             db2.close()
@@ -613,7 +613,7 @@ def test_the_unique_index_closes_the_race_between_the_precheck_and_the_insert(w,
 
     monkeypatch.setattr(pc, "_valid_hostname", a_concurrent_request_lands_first)
     with pytest.raises(pc.CaptureRefused) as e:
-        pc.request_capture(w.db, candidate_id=c.id, user=w.user())
+        pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
     assert e.value.rule == "capture:already_queued"  # reached via the index, not the pre-check
     db = SessionLocal()
     try:
@@ -720,3 +720,319 @@ def test_open_regular_refuses_a_fifo_without_blocking(tmp_path):
     regular.write_bytes(b"{}")
     fd = pc._open_regular(str(regular))
     os.close(fd)
+
+
+# ── S5b-2b: settings, revisit budget, user-agent mode, v2 job ────────────────
+
+from app.models.app_settings import AppSetting  # noqa: E402
+from app.services import app_settings  # noqa: E402
+
+_CAPTURE_KEYS = (
+    pc.REVISIT_DAYS_KEY, pc.USER_AGENT_MODE_KEY, pc.IDENTIFYING_UA_KEY, pc.MAX_IMAGE_BYTES_KEY, pc.QUEUE_TIMEOUT_KEY,
+)
+
+
+@pytest.fixture
+def cap_settings():
+    """Override capture.* settings for one test; AppSetting rows are global, so
+    every key is restored (or deleted if it had no row) afterwards."""
+    db = SessionLocal()
+    try:
+        snaps = {k: (db.get(AppSetting, k).value if db.get(AppSetting, k) else None) for k in _CAPTURE_KEYS}
+    finally:
+        db.close()
+
+    def set_(**kv):
+        s = SessionLocal()
+        try:
+            for k, v in kv.items():
+                app_settings.set_value(s, getattr(pc, k), str(v))
+        finally:
+            s.close()
+
+    yield set_
+    s = SessionLocal()
+    try:
+        for k, v in snaps.items():
+            row = s.get(AppSetting, k)
+            if v is None and row is not None:
+                s.delete(row)
+            elif v is not None:
+                app_settings.set_value(s, k, v)
+        s.commit()
+    finally:
+        s.close()
+
+
+def _row_for(w, candidate, status, *, finished_ago_days=None, domain=None):
+    obs = w.db.query(Observer).filter(Observer.name == "page_capture").one()
+    now = datetime.now(timezone.utc)
+    row = PageCapture(
+        candidate_id=candidate.id, domain=domain or candidate.value, observer_id=obs.id,
+        requested_url=f"https://{candidate.value}/", status=status, user_agent_mode="stock",
+        image_max_bytes=pc.DEFAULT_MAX_IMAGE_BYTES,
+        finished_at=None if finished_ago_days is None else now - timedelta(days=finished_ago_days),
+        failure_reason="timeout" if status == "failed" else None,
+    )
+    w.db.add(row)
+    w.db.commit()
+    return row
+
+
+def _auto(w, c):
+    return pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=False)
+
+
+def _assert_refused_clean(w, env, c, rule):
+    """The gate allowed (a decision was logged for this candidate's request path
+    is not needed): the refusal is the budget/UA rule, with no new row and no job."""
+    before = _rows_for(c.id)
+    with pytest.raises(pc.CaptureRefused) as e:
+        _auto(w, c)
+    assert e.value.rule == rule
+    assert _rows_for(c.id) == before and _no_job_files(env) == []
+
+
+def test_budget_refuses_an_automatic_request_after_a_recent_done_row_under_another_candidate(w, env):
+    shared = _dom()
+    other = _candidate(w, value=shared)
+    _row_for(w, other, "done", finished_ago_days=1)
+    # a second candidate with the same domain value under another root
+    c = _candidate(w, root=w.ours(), value=shared)
+    _assert_refused_clean(w, env, c, "capture:revisit_budget")
+
+
+def test_budget_refuses_when_the_same_domain_is_queued_under_another_candidate(w, env):
+    shared = _dom()
+    other = _candidate(w, value=shared)
+    _row_for(w, other, "queued")
+    c = _candidate(w, root=w.ours(), value=shared)
+    _assert_refused_clean(w, env, c, "capture:revisit_budget")
+
+
+def test_budget_allows_when_the_done_row_is_older_than_the_window_and_ignores_failed(w, env, cap_settings):
+    cap_settings(REVISIT_DAYS_KEY=2)
+    shared = _dom()
+    other = _candidate(w, value=shared)
+    _row_for(w, other, "done", finished_ago_days=3)
+    _row_for(w, other, "failed", finished_ago_days=0)
+    c = _candidate(w, root=w.ours(), value=shared)
+    row = _auto(w, c)  # the path past the budget was reached: a row and a job exist
+    assert row.status == "queued" and (env["spool"] / "jobs" / f"{row.id}.json").exists()
+
+
+def test_budget_boundary_a_done_row_inside_the_window_refuses(w, env, cap_settings):
+    cap_settings(REVISIT_DAYS_KEY=2)
+    shared = _dom()
+    other = _candidate(w, value=shared)
+    _row_for(w, other, "done", finished_ago_days=1)
+    _assert_refused_clean(w, env, _candidate(w, root=w.ours(), value=shared), "capture:revisit_budget")
+
+
+def test_manual_bypasses_the_budget(w, env):
+    shared = _dom()
+    other = _candidate(w, value=shared)
+    _row_for(w, other, "done", finished_ago_days=0)
+    c = _candidate(w, root=w.ours(), value=shared)
+    row = pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
+    assert row.status == "queued" and (env["spool"] / "jobs" / f"{row.id}.json").exists()
+
+
+def test_manual_bypasses_a_queued_row_on_the_same_domain_under_another_candidate(w, env):
+    shared = _dom()
+    other = _candidate(w, value=shared)
+    _row_for(w, other, "queued")
+    c = _candidate(w, root=w.ours(), value=shared)
+    row = pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
+    assert row.status == "queued"
+
+
+def test_manual_is_a_required_keyword(w, env):
+    c = _candidate(w)
+    with pytest.raises(TypeError):
+        pc.request_capture(w.db, candidate_id=c.id, user=w.user())  # type: ignore[call-arg]
+
+
+def test_identifying_mode_with_no_string_is_refused_before_any_write(w, env, cap_settings):
+    cap_settings(USER_AGENT_MODE_KEY="identifying", IDENTIFYING_UA_KEY="")
+    c = _candidate(w)
+    before = _rows_for(c.id)
+    with pytest.raises(pc.CaptureRefused) as e:
+        pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
+    assert e.value.rule == "capture:identifying_user_agent_unset"
+    assert _rows_for(c.id) == before == 0 and _no_job_files(env) == []
+
+
+def test_identifying_mode_writes_the_user_agent_into_the_v2_job_and_the_row(w, env, cap_settings):
+    cap_settings(USER_AGENT_MODE_KEY="identifying", IDENTIFYING_UA_KEY="FabrikamScan/1.0 (+https://fabrikam.com/scan)",
+                 MAX_IMAGE_BYTES_KEY=1048576)
+    c = _candidate(w)
+    row = pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
+    job = json.loads((env["spool"] / "jobs" / f"{row.id}.json").read_text())
+    assert job["v"] == 2 and job["user_agent_mode"] == "identifying"
+    assert job["user_agent"] == "FabrikamScan/1.0 (+https://fabrikam.com/scan)"
+    assert job["max_image_bytes"] == 1048576
+    r = _fresh(row.id)
+    assert (r.user_agent_mode, r.image_max_bytes) == ("identifying", 1048576)
+
+
+def test_stock_mode_job_has_no_user_agent_key_even_if_a_string_is_stored(w, env, cap_settings):
+    cap_settings(USER_AGENT_MODE_KEY="stock", IDENTIFYING_UA_KEY="FabrikamScan/1.0")
+    c = _candidate(w)
+    row = pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
+    job = json.loads((env["spool"] / "jobs" / f"{row.id}.json").read_text())
+    assert job["v"] == 2 and job["user_agent_mode"] == "stock" and "user_agent" not in job
+
+
+@pytest.mark.parametrize("key,value,expect", [
+    ("REVISIT_DAYS_KEY", "0", pc.DEFAULT_REVISIT_DAYS), ("REVISIT_DAYS_KEY", "366", pc.DEFAULT_REVISIT_DAYS),
+    ("REVISIT_DAYS_KEY", "soon", pc.DEFAULT_REVISIT_DAYS), ("REVISIT_DAYS_KEY", "7", 7),
+    ("MAX_IMAGE_BYTES_KEY", "100", pc.DEFAULT_MAX_IMAGE_BYTES),
+    ("MAX_IMAGE_BYTES_KEY", str(pc.IMAGE_BYTES_CEILING + 1), pc.DEFAULT_MAX_IMAGE_BYTES),
+    ("MAX_IMAGE_BYTES_KEY", "x", pc.DEFAULT_MAX_IMAGE_BYTES), ("MAX_IMAGE_BYTES_KEY", "131072", 131072),
+    ("QUEUE_TIMEOUT_KEY", "59", pc.DEFAULT_QUEUE_TIMEOUT_S), ("QUEUE_TIMEOUT_KEY", "3601", pc.DEFAULT_QUEUE_TIMEOUT_S),
+    ("QUEUE_TIMEOUT_KEY", "", pc.DEFAULT_QUEUE_TIMEOUT_S), ("QUEUE_TIMEOUT_KEY", "120", 120),
+])
+def test_numeric_accessors_clamp_to_the_default(w, cap_settings, key, value, expect):
+    cap_settings(**{key: value})
+    fn = {"REVISIT_DAYS_KEY": pc.revisit_days, "MAX_IMAGE_BYTES_KEY": pc.max_image_bytes,
+          "QUEUE_TIMEOUT_KEY": pc.queue_timeout_seconds}[key]
+    assert fn(w.db) == expect
+
+
+def test_mode_and_user_agent_accessors_fall_back(w, cap_settings):
+    cap_settings(USER_AGENT_MODE_KEY="aggressive")
+    assert pc.user_agent_mode(w.db) == "stock"
+    cap_settings(USER_AGENT_MODE_KEY="identifying")
+    assert pc.user_agent_mode(w.db) == "identifying"
+    for bad in ("", "Agent\r\nX-Evil: 1", "Agént/1.0", "a" * (pc.USER_AGENT_MAX + 1), "tab\there"):
+        cap_settings(IDENTIFYING_UA_KEY=bad)
+        assert pc.identifying_user_agent(w.db) is None, repr(bad)
+    cap_settings(IDENTIFYING_UA_KEY="a" * pc.USER_AGENT_MAX)
+    assert pc.identifying_user_agent(w.db) == "a" * pc.USER_AGENT_MAX
+
+
+def test_valid_user_agent_rejects_non_strings():
+    assert not pc.valid_user_agent(None) and not pc.valid_user_agent(5) and not pc.valid_user_agent("")
+    assert pc.valid_user_agent("Mozilla/5.0 (X11)")
+
+
+def test_ingest_enforces_the_cap_the_job_asked_for_not_the_current_setting(w, env, cap_settings):
+    row = _queued(w)
+    row.image_max_bytes = pc.IMAGE_BYTES_MIN  # the row's cap, smaller than the file
+    w.db.commit()
+    _drop_result(env, row, image=WEBP + b"\x00" * pc.IMAGE_BYTES_MIN)
+    assert _ingest(w) == 1
+    r = _fresh(row.id)
+    assert r.status == "done" and r.image_path is None and r.image_omitted_reason == "invalid_image"
+
+
+def test_ingest_accepts_a_file_within_a_row_cap_larger_than_the_current_setting(w, env, cap_settings):
+    cap_settings(MAX_IMAGE_BYTES_KEY=pc.IMAGE_BYTES_MIN)  # the setting shrank after the job was queued
+    row = _queued(w)
+    row.image_max_bytes = 1024 * 1024
+    w.db.commit()
+    img = WEBP + b"\x00" * (pc.IMAGE_BYTES_MIN + 10)
+    _drop_result(env, row, image=img)
+    assert _ingest(w) == 1
+    r = _fresh(row.id)
+    assert r.image_path == f"{row.id}.webp" and r.image_bytes == len(img)
+
+
+def test_ingest_never_exceeds_the_ceiling_even_if_the_row_says_so(w, env):
+    row = _queued(w)
+    row.image_max_bytes = pc.IMAGE_BYTES_CEILING * 2
+    w.db.commit()
+    _drop_result(env, row, image=WEBP + b"\x00" * pc.IMAGE_BYTES_CEILING)
+    assert _ingest(w) == 1
+    assert _fresh(row.id).image_omitted_reason == "invalid_image"
+
+
+def test_sweep_honours_the_queue_timeout_setting(w, env, cap_settings):
+    cap_settings(QUEUE_TIMEOUT_KEY=120)
+    row = _queued(w)
+    row.requested_at = datetime.now(timezone.utc) - timedelta(seconds=300)  # fresh at the 600s default
+    w.db.commit()
+    (env["spool"] / "jobs" / f"{row.id}.json").write_text("{}")
+    assert pc.sweep_timeouts(w.db) == 1
+    _assert_failed(row, "timeout")
+    assert not (env["spool"] / "jobs" / f"{row.id}.json").exists()
+
+
+def test_sweep_with_a_longer_setting_leaves_a_row_that_the_default_would_sweep(w, env, cap_settings):
+    cap_settings(QUEUE_TIMEOUT_KEY=3600)
+    row = _queued(w)
+    row.requested_at = datetime.now(timezone.utc) - timedelta(seconds=700)
+    w.db.commit()
+    assert pc.sweep_timeouts(w.db) == 0
+    assert _fresh(row.id).status == "queued"
+
+
+# ── read_stored_image ────────────────────────────────────────────────────────
+
+
+def _stored(w, env, data=WEBP, **over):
+    """A done row with a real stored image written the way _store_image does."""
+    row = _queued(w)
+    pc._store_image(row, str(row.id), data, 80)
+    for k, v in over.items():
+        setattr(row, k, v)
+    row.status, row.finished_at = "done", datetime.now(timezone.utc)
+    w.db.commit()
+    return row
+
+
+def test_read_stored_image_returns_the_exact_bytes(w, env):
+    assert pc.read_stored_image(_stored(w, env)) == WEBP
+
+
+@pytest.mark.parametrize("tamper", ["../x.webp", "{other}.webp", "x.webp"])
+def test_read_stored_image_refuses_a_tampered_name(w, env, tamper):
+    # A valid image with the row's own sha256 is planted at the tampered name,
+    # so only the name pin can refuse it (without the plant the read would fail
+    # on a missing file and the test would pass vacuously).
+    row = _stored(w, env)
+    row.image_path = tamper.format(other=uuid.uuid4())
+    planted = env["images"] / row.image_path
+    planted.write_bytes(WEBP)
+    assert planted.resolve().read_bytes() == WEBP
+    assert pc.read_stored_image(row) is None
+
+
+def test_read_stored_image_refuses_an_absolute_name(w, env):
+    row = _stored(w, env)
+    row.image_path = "/etc/passwd"
+    assert pc.read_stored_image(row) is None
+
+
+def test_read_stored_image_refuses_a_symlink(w, env, tmp_path):
+    row = _stored(w, env)
+    p = env["images"] / f"{row.id}.webp"
+    p.unlink()
+    target = tmp_path / "elsewhere.webp"
+    target.write_bytes(WEBP)
+    p.symlink_to(target)
+    assert pc.read_stored_image(row) is None
+
+
+def test_read_stored_image_refuses_a_sha_mismatch_bad_magic_and_oversize(w, env):
+    row = _stored(w, env)
+    (env["images"] / f"{row.id}.webp").write_bytes(WEBP[:-1] + b"\x01")
+    assert pc.read_stored_image(row) is None  # sha
+    bad = b"RIFF\x00\x00\x00\x00WAVEjunk" + b"\x00" * 20
+    (env["images"] / f"{row.id}.webp").write_bytes(bad)
+    row.image_sha256 = __import__("hashlib").sha256(bad).hexdigest()
+    assert pc.read_stored_image(row) is None  # magic, with a matching sha
+    big = WEBP + b"\x00" * 200
+    (env["images"] / f"{row.id}.webp").write_bytes(big)
+    row.image_sha256 = __import__("hashlib").sha256(big).hexdigest()
+    row.image_max_bytes = 100
+    assert pc.read_stored_image(row) is None  # oversize vs the row cap
+    row.image_max_bytes = 4096
+    assert pc.read_stored_image(row) == big  # the same file passes once the cap allows (path reached)
+
+
+def test_read_stored_image_missing_file_is_none(w, env):
+    row = _stored(w, env)
+    (env["images"] / f"{row.id}.webp").unlink()
+    assert pc.read_stored_image(row) is None

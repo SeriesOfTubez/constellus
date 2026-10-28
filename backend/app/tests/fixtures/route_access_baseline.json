@@ -408,6 +408,12 @@
   "report_admin",
   "viewer"
  ],
+ "GET /api/organizations/candidates/{candidate_id}/captures/{capture_id}/image": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
  "GET /api/organizations/filer-search": [
   "admin"
  ],
@@ -508,6 +514,9 @@
   "admin"
  ],
  "GET /api/settings/branding": "public",
+ "GET /api/settings/capture": [
+  "admin"
+ ],
  "GET /api/system/monitoring-status": [
   "admin",
   "integration_admin",
@@ -840,6 +849,9 @@
   "integration_admin"
  ],
  "PUT /api/settings/": [
+  "admin"
+ ],
+ "PUT /api/settings/capture": [
   "admin"
  ]
 }

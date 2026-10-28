@@ -940,6 +940,14 @@ export type AppSettings = {
   org_name_color: string | null
 }
 
+export type CaptureSettings = {
+  browse_revisit_days: number
+  user_agent_mode: "stock" | "identifying"
+  identifying_user_agent: string
+  max_image_bytes: number
+  queue_timeout_seconds: number
+}
+
 export type EpssHistoryPoint = {
   week_start: string
   epss_score: number

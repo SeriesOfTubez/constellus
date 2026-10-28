@@ -1,4 +1,4 @@
-# Page-capture spool contract (planning#280 S5b-2a)
+# Page-capture spool contract (planning#280 S5b-2a, job v2 in S5b-2b)
 
 How the backend asks for a page capture and gets the results back, given one
 hard rule: **the capture browser must never have a network route to the
@@ -49,13 +49,30 @@ place. Readers ignore any name that starts with `.`.
     screenshot.webp                (only when a screenshot was kept)
 ```
 
-## Job (backend → worker), at most 16 KiB
+## Job v2 (backend → worker), at most 16 KiB
 
 ```json
-{"v": 1, "capture_id": "<uuid>", "url": "https://example.com/",
+{"v": 2, "capture_id": "<uuid>", "url": "https://example.com/",
  "viewport": {"width": 1280, "height": 800},
- "max_image_bytes": 2097152, "webp_qualities": [80, 60, 40]}
+ "max_image_bytes": 2097152, "webp_qualities": [80, 60, 40],
+ "user_agent_mode": "identifying",
+ "user_agent": "ExampleScanner/1.0 (+https://scanner.example.test/about)"}
 ```
+
+- `v` must be `2`. Every other value, including `1` and a boolean, is rejected.
+- `user_agent_mode` is required and is `"stock"` or `"identifying"`. Anything
+  else is rejected.
+- `"identifying"` requires `user_agent`: a string of 1 to 256 characters, each
+  in `0x20`..`0x7e` (printable ASCII). CR, LF, tab, other controls and
+  non-ASCII are rejected.
+- `"stock"` forbids `user_agent`: the key must be absent, even as `null`. A
+  stock job that carries a UA means the two sides disagree, so the worker
+  refuses it rather than guessing.
+- `max_image_bytes` is at most 8 MiB.
+
+The job and result versions are independent: the job is v2 and the result is
+v1. The backend records `user_agent_mode` and `image_max_bytes` on the
+`page_captures` row (migration 0092), and the ingest enforces the row's cap.
 
 The backend writes `jobs/.<id>.tmp` and renames it to `jobs/<id>.json`. It
 does this only AFTER the `page_captures` row (status `queued`) has been
@@ -67,7 +84,8 @@ committed.
 2. Claim a job with `rename(jobs/<id>.json, claimed/<id>.json)`. If that
    raises `FileNotFoundError`, another worker won, so move on to the next job.
 3. Validate the job:
-   - `v == 1`
+   - `v == 2`
+   - `user_agent_mode` and `user_agent` follow the job rules above
    - `capture_id` equals the file name
    - the URL scheme is `http` or `https`
    - the job is no larger than its size cap

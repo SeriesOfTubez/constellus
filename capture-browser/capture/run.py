@@ -178,14 +178,18 @@ def capture_page(
     viewport: dict | None = None,
     webp_qualities: list[int] | None = None,
     max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
+    user_agent: str | None = None,
 ) -> tuple[dict, tuple[bytes | None, int | None, str | None], str]:
     """ONE navigation. Returns (result dict, (image, quality, omitted_reason), user_agent).
 
     The screenshot is taken in the SAME page load, after the idle wait and the
-    title, over the existing CDP session. Nothing else is read from the page."""
+    title, over the existing CDP session. Nothing else is read from the page.
+
+    `user_agent` is the identifying UA from a v2 job; None means stock mode (the
+    browser's own UA with the headless marker removed)."""
     browser = launch_browser(p, capture_id, proxy_url, token)
     shot: tuple[bytes | None, int | None, str | None] = (None, None, None)
-    user_agent = ""
+    used_ua = ""
     result: dict = {
         "capture_id": capture_id,
         "requested_url": url,
@@ -198,8 +202,8 @@ def capture_page(
         "error": None,
     }
     try:
-        user_agent = stock_user_agent(browser)
-        context = new_context(browser, viewport, user_agent)
+        used_ua = user_agent if user_agent is not None else stock_user_agent(browser)
+        context = new_context(browser, viewport, used_ua)
         page = context.new_page()
         cdp = context.new_cdp_session(page)
         cdp.send("Network.enable")
@@ -255,7 +259,7 @@ def capture_page(
         ]
     finally:
         browser.close()
-    return result, shot, user_agent
+    return result, shot, used_ua
 
 
 def main(argv: list[str] | None = None) -> int:

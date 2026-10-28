@@ -146,7 +146,7 @@ def test_get_lists_newest_first_with_request_counts_and_no_paths(w, env):
         row = PageCapture(
             candidate_id=candidate.id, domain=candidate.value, observer_id=obs.id,
             requested_url=f"https://{candidate.value}/", requested_at=now - timedelta(minutes=age),
-            status=status, **kw,
+            status=status, user_agent_mode="stock", image_max_bytes=2097152, **kw,
         )
         w.db.add(row)
         w.db.flush()
@@ -183,3 +183,232 @@ def test_503_when_the_spool_is_unavailable(w, env):
     with SessionLocal() as s:
         rows = s.query(PageCapture).filter(PageCapture.candidate_id == c.id).all()
         assert [(x.status, x.failure_reason) for x in rows] == [("failed", "spool_unavailable")]
+
+
+# ── S5b-2b: image route, settings API ────────────────────────────────────────
+
+import hashlib  # noqa: E402
+
+from app.models.app_settings import AppSetting  # noqa: E402
+from app.models.audit import AuditLog  # noqa: E402
+from app.models.page_capture import USER_AGENT_MODES  # noqa: E402
+from app.services import app_settings  # noqa: E402
+from app.services import page_capture as pc  # noqa: E402
+
+WEBP = b"RIFF" + b"\x10\x00\x00\x00" + b"WEBP" + b"VP8 " + b"\x00" * 32
+_KEYS = (pc.REVISIT_DAYS_KEY, pc.USER_AGENT_MODE_KEY, pc.IDENTIFYING_UA_KEY, pc.MAX_IMAGE_BYTES_KEY,
+         pc.QUEUE_TIMEOUT_KEY)
+
+
+@pytest.fixture
+def cap_settings():
+    db = SessionLocal()
+    try:
+        snaps = {k: (db.get(AppSetting, k).value if db.get(AppSetting, k) else None) for k in _KEYS}
+    finally:
+        db.close()
+    yield
+    s = SessionLocal()
+    try:
+        for k, v in snaps.items():
+            row = s.get(AppSetting, k)
+            if v is None and row is not None:
+                s.delete(row)
+            elif v is not None:
+                app_settings.set_value(s, k, v)
+        s.commit()
+    finally:
+        s.close()
+
+
+def _image_row(w, env, candidate, data=WEBP, write=True):
+    obs = w.db.query(Observer).filter(Observer.name == "page_capture").one()
+    row = PageCapture(
+        candidate_id=candidate.id, domain=candidate.value, observer_id=obs.id,
+        requested_url=f"https://{candidate.value}/", status="done", finished_at=datetime.now(timezone.utc),
+        user_agent_mode="stock", image_max_bytes=2097152,
+    )
+    w.db.add(row)
+    w.db.flush()
+    row.image_path = f"{row.id}.webp"
+    row.image_bytes = len(data)
+    row.image_sha256 = hashlib.sha256(data).hexdigest()
+    w.db.commit()
+    if write:
+        (env["images"] / f"{row.id}.webp").write_bytes(data)
+    return row
+
+
+def _img(candidate_id, capture_id, headers):
+    return client.get(f"/api/organizations/candidates/{candidate_id}/captures/{capture_id}/image", headers=headers)
+
+
+def test_image_200_serves_exact_bytes_with_inert_headers(w, env):
+    c = _candidate(w)
+    row = _image_row(w, env, c)
+    r = _img(c.id, row.id, w.headers(role=VIEWER))
+    assert r.status_code == 200, r.text
+    assert r.content == WEBP and r.headers["content-type"] == "image/webp"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["cache-control"] == "private, no-store"
+    assert r.headers["content-security-policy"] == "default-src 'none'; sandbox"
+    assert r.headers["content-disposition"] == f'inline; filename="{row.id}.webp"'
+
+
+def test_image_404_for_another_candidates_capture(w, env):
+    c, other = _candidate(w), _candidate(w)
+    row = _image_row(w, env, other)
+    assert _img(other.id, row.id, w.headers()).status_code == 200  # the file and row are servable
+    assert _img(c.id, row.id, w.headers()).status_code == 404
+
+
+def test_image_404_when_the_candidate_is_not_visible(w, env, monkeypatch):
+    c = _candidate(w)
+    row = _image_row(w, env, c)
+    h = w.headers()
+    assert _img(c.id, row.id, h).status_code == 200
+    monkeypatch.setattr(read_scope, "domain_clause", lambda user, sc: sc.id != c.id)
+    assert _img(c.id, row.id, h).status_code == 404
+
+
+def test_image_404_when_image_path_is_none_or_row_missing(w, env):
+    c = _candidate(w)
+    row = _image_row(w, env, c)
+    assert _img(c.id, row.id, w.headers()).status_code == 200
+    row.image_path = None
+    w.db.commit()
+    assert _img(c.id, row.id, w.headers()).status_code == 404
+    assert _img(c.id, uuid.uuid4(), w.headers()).status_code == 404
+
+
+@pytest.mark.parametrize("tamper", ["../x.webp", "other"])
+def test_image_404_when_image_path_is_tampered(w, env, tamper):
+    c = _candidate(w)
+    row = _image_row(w, env, c)
+    assert _img(c.id, row.id, w.headers()).status_code == 200
+    row.image_path = "../x.webp" if tamper == "../x.webp" else f"{uuid.uuid4()}.webp"
+    w.db.commit()
+    assert _img(c.id, row.id, w.headers()).status_code == 404
+
+
+def test_image_404_for_a_symlink_a_sha_mismatch_and_an_oversize_file(w, env, tmp_path):
+    c = _candidate(w)
+    row = _image_row(w, env, c)
+    h = w.headers()
+    p = env["images"] / f"{row.id}.webp"
+    assert _img(c.id, row.id, h).status_code == 200
+    # sha mismatch
+    p.write_bytes(WEBP[:-1] + b"\x01")
+    assert _img(c.id, row.id, h).status_code == 404
+    # symlink to a file whose sha matches
+    p.unlink()
+    elsewhere = tmp_path / "elsewhere.webp"
+    elsewhere.write_bytes(WEBP)
+    p.symlink_to(elsewhere)
+    assert _img(c.id, row.id, h).status_code == 404
+    # oversize vs the row cap, with a matching sha
+    p.unlink()
+    p.write_bytes(WEBP)
+    assert _img(c.id, row.id, h).status_code == 200
+    row.image_max_bytes = 8
+    w.db.commit()
+    assert _img(c.id, row.id, h).status_code == 404
+
+
+def test_image_needs_a_login(w, env):
+    c = _candidate(w)
+    row = _image_row(w, env, c)
+    assert client.get(f"/api/organizations/candidates/{c.id}/captures/{row.id}/image").status_code in (401, 403)
+
+
+def test_post_audit_records_manual_and_response_carries_job_params(w, env):
+    c = _candidate(w)
+    r = _post(c.id, w.headers())
+    assert r.status_code == 202, r.text
+    assert r.json()["user_agent_mode"] == "stock" and r.json()["image_max_bytes"] == 2097152
+    with SessionLocal() as s:
+        rows = s.query(AuditLog).order_by(AuditLog.occurred_at.desc()).limit(30).all()
+        changes = [x.detail.get("changes", {}) for x in rows if x.detail]
+        assert any(c.get("capture") == r.json()["id"] and c.get("manual") is True for c in changes)
+
+
+def test_409_message_for_unset_identifying_ua(w, env, cap_settings):
+    h = w.headers()
+    # the mode cannot be set to identifying through the API without a string: seed it directly
+    with SessionLocal() as s:
+        app_settings.set_value(s, pc.USER_AGENT_MODE_KEY, "identifying")
+        app_settings.set_value(s, pc.IDENTIFYING_UA_KEY, "")
+    c = _candidate(w)
+    r = _post(c.id, h)
+    assert r.status_code == 409
+    assert r.json()["detail"]["rule"] == "capture:identifying_user_agent_unset" and r.json()["detail"]["message"]
+    assert _counts(c.id)[0] == 0 and list((env["spool"] / "jobs").iterdir()) == []
+
+
+# settings API
+
+S = "/api/settings/capture"
+
+
+def test_modes_literal_matches_the_model():
+    from app.api.settings import CaptureSettingsUpdate
+    from typing import get_args
+    lit = CaptureSettingsUpdate.model_fields["user_agent_mode"].annotation
+    assert {a for arg in get_args(lit) for a in get_args(arg)} - {None} == set(USER_AGENT_MODES)
+
+
+def test_settings_get_defaults_and_permissions(w, cap_settings):
+    r = client.get(S, headers=w.headers(role=VIEWER))
+    assert r.status_code in (200, 403)
+    ok = client.get(S, headers=w.headers())
+    assert ok.status_code == 200
+    assert set(ok.json()) == {"browse_revisit_days", "user_agent_mode", "identifying_user_agent",
+                              "max_image_bytes", "queue_timeout_seconds"}
+    assert client.get(S).status_code in (401, 403)
+    assert client.put(S, headers=w.headers(role=VIEWER), json={"browse_revisit_days": 5}).status_code == 403
+    assert client.put(S, json={"browse_revisit_days": 5}).status_code in (401, 403)
+
+
+@pytest.mark.parametrize("bad", [
+    {"browse_revisit_days": 0}, {"browse_revisit_days": 366}, {"max_image_bytes": 1000},
+    {"max_image_bytes": pc.IMAGE_BYTES_CEILING + 1}, {"queue_timeout_seconds": 59},
+    {"queue_timeout_seconds": 3601}, {"user_agent_mode": "sneaky"}, {"identifying_user_agent": "a\r\nb"},
+    {"identifying_user_agent": "café"}, {"identifying_user_agent": "a" * 257}, {"browse_revisit_days": "x"},
+])
+def test_settings_put_bounds_are_422_and_write_nothing(w, cap_settings, bad):
+    before = client.get(S, headers=w.headers()).json()
+    assert client.put(S, headers=w.headers(), json=bad).status_code == 422
+    assert client.get(S, headers=w.headers()).json() == before
+
+
+def test_settings_cross_field_rule(w, cap_settings):
+    h = w.headers()
+    assert client.put(S, headers=h, json={"user_agent_mode": "stock", "identifying_user_agent": ""}).status_code == 200
+    r = client.put(S, headers=h, json={"user_agent_mode": "identifying"})
+    assert r.status_code == 422 and "identifying User-Agent" in r.json()["detail"]
+    assert client.put(S, headers=h, json={"user_agent_mode": "identifying", "identifying_user_agent": ""}).status_code == 422
+    assert client.get(S, headers=h).json()["user_agent_mode"] == "stock"
+    # a string in the same request makes it valid
+    ok = client.put(S, headers=h, json={"user_agent_mode": "identifying", "identifying_user_agent": "FabrikamScan/1.0"})
+    assert ok.status_code == 200 and ok.json()["user_agent_mode"] == "identifying"
+    # clearing the string while identifying is refused
+    assert client.put(S, headers=h, json={"identifying_user_agent": ""}).status_code == 422
+    assert client.get(S, headers=h).json()["identifying_user_agent"] == "FabrikamScan/1.0"
+
+
+def test_settings_put_round_trips_and_audits_from_to(w, cap_settings):
+    h = w.headers()
+    base = client.put(S, headers=h, json={"browse_revisit_days": 30, "max_image_bytes": 2097152}).json()
+    r = client.put(S, headers=h, json={"browse_revisit_days": 7, "queue_timeout_seconds": 900,
+                                       "max_image_bytes": 2097152})
+    assert r.status_code == 200, r.text
+    assert r.json() == client.get(S, headers=h).json()
+    assert r.json()["browse_revisit_days"] == 7 and r.json()["queue_timeout_seconds"] == 900
+    assert r.json()["max_image_bytes"] == base["max_image_bytes"]
+    with SessionLocal() as s:
+        changes = [x.detail.get("changes", {}) for x in
+                   s.query(AuditLog).order_by(AuditLog.occurred_at.desc()).limit(30).all() if x.detail]
+        assert pc.revisit_days(s) == 7 and pc.queue_timeout_seconds(s) == 900
+    hit = [c for c in changes if c.get("capture_browse_revisit_days") == {"from": 30, "to": 7}]
+    assert hit and hit[0]["capture_queue_timeout_seconds"] == {"from": base["queue_timeout_seconds"], "to": 900}
+    assert "capture_max_image_bytes" not in hit[0]  # only changed keys are audited
