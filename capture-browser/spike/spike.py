@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import secrets
 import socket
 import sys
@@ -23,12 +24,15 @@ HERE = Path(__file__).resolve().parent
 SPIKE_HOSTS = ("http://spike.invalid/**", "https://spike.invalid/**")
 
 
-def browser_mode(capture_id: str) -> dict:
+def browser_mode(capture_id: str, exp: int) -> dict:
     from playwright.sync_api import sync_playwright
 
     from capture.run import launch_browser, new_context, require_env
 
-    proxy_url, token = require_env()
+    proxy_url = require_env()
+    token = os.environ.get("CAPTURE_PROXY_JOB_TOKEN", "").strip()
+    if not token:
+        raise SystemExit("CAPTURE_PROXY_JOB_TOKEN is required")
     rand = secrets.token_hex(4)
     html = (HERE / "spike.html").read_text().replace("__RAND__", rand)
     out: dict = {"rand": rand, "main": None, "sw": None, "requests": [], "responses": []}
@@ -41,7 +45,7 @@ def browser_mode(capture_id: str) -> dict:
             route.fulfill(status=200, content_type="text/html", body=html)
 
     with sync_playwright() as p:
-        browser = launch_browser(p, capture_id, proxy_url, token)
+        browser = launch_browser(p, capture_id, "live", proxy_url, token, exp)
         try:
             ctx = new_context(browser)
             for pat in SPIKE_HOSTS:
@@ -119,8 +123,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["browser", "net"])
     ap.add_argument("--capture-id")
+    ap.add_argument("--expires", type=int)
     a = ap.parse_args()
-    out = browser_mode(a.capture_id) if a.mode == "browser" else net_mode()
+    out = browser_mode(a.capture_id, a.expires) if a.mode == "browser" else net_mode()
     print("SPIKE_JSON=" + json.dumps(out))
     return 0
 

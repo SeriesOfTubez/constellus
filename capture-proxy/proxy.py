@@ -7,7 +7,10 @@ with NO route out) can reach the world only through this proxy. This process is
 therefore the boundary, and it does four things the browser must never be
 trusted to do:
 
-  1. Authenticate every request (`Proxy-Authorization: Basic capture_id:token`).
+  1. Authenticate every request (`Proxy-Authorization: Basic <capture_id>|<mode>|<exp>:<token>`):
+     token = HMAC-SHA256(CAPTURE_PROXY_KEY, "v3|<capture_id>|<mode>|<exp>") as hex: an
+     expiring per-capture, per-mode credential (now <= exp <= now + 3900), so a live token cannot act as an archive
+     one. Archive mode may CONNECT only to ARCHIVE_HOSTS:443 (reason archive_host).
   2. Resolve every requested host ITSELF and refuse blocked / private /
      link-local / metadata addresses, using the repo's `ip_blocklist` (the third
      byte-identical copy; `tests/test_blocklist_parity.py` is the drift alarm).
@@ -30,6 +33,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -69,8 +73,18 @@ LIMITS_FILE_NAME = "proxy_limits.json"
 MAX_HEAD_BYTES = 16 * 1024  # request head cap (h11 max_incomplete_event_size)
 
 ALLOWED_PORTS = frozenset({80, 443})
+MIN_KEY_LEN = 32
 
-_CAPTURE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# Plain literals: a backend drift test reads these with ast (and capture-browser
+# defines the same ARCHIVE_HOSTS; contract v3).
+MODES = ("live", "archive")
+ARCHIVE_HOSTS = frozenset({"web.archive.org"})
+ARCHIVE_PORT = 443
+# Credential expiry window (contract v3): backend QUEUE_TIMEOUT_MAX (3600) +
+# CREDENTIAL_RUN_MARGIN_S (300); a backend drift test asserts the sum.
+MAX_CREDENTIAL_TTL_S = 3900
+
+_EXP_RE = re.compile(r"[1-9][0-9]{0,11}")
 _LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _HOP_BY_HOP = frozenset(
     {b"connection", b"keep-alive", b"te", b"trailer", b"upgrade", b"proxy-connection"}
@@ -342,6 +356,7 @@ class _Rec:
     def __init__(self) -> None:
         self.start = time.monotonic()
         self.capture_id: str | None = None
+        self.mode: str | None = None
         self.method: str | None = None
         self.scheme: str | None = None
         self.host: str | None = None
@@ -358,6 +373,7 @@ class _Rec:
         return {
             "ts": datetime.now(timezone.utc).isoformat(),
             "capture_id": self.capture_id,
+            "mode": self.mode,
             "method": self.method,
             "scheme": self.scheme,
             "host": self.host,
@@ -383,6 +399,21 @@ class _Target:
     port: int
     origin: bytes = b"/"  # origin-form request target (http only)
     authority: bytes = b""  # Host header value (http only)
+
+
+def derive_token(key: bytes, capture_id: str, mode: str, exp: int | str) -> str:
+    """The per-capture, per-mode, expiring proxy credential (contract v3).
+    Hex, lowercase."""
+    return hmac.new(
+        key, f"v3|{capture_id}|{mode}|{exp}".encode("ascii"), hashlib.sha256
+    ).hexdigest()
+
+
+def archive_allowed(scheme: str, host: str, port: int) -> bool:
+    """Archive mode may only CONNECT to an ARCHIVE_HOSTS host on ARCHIVE_PORT.
+    Exact match on the lowercased host: no trailing-dot stripping, no suffix
+    match; IP literals (bracketed or not) are never in the set."""
+    return scheme == "connect" and port == ARCHIVE_PORT and host.lower() in ARCHIVE_HOSTS
 
 
 def _split_authority(text: str) -> tuple[str, int]:
@@ -436,7 +467,7 @@ class Proxy:
     def __init__(
         self,
         *,
-        token: str,
+        key: str,
         # Production defaults. Tests override these; tests/test_proxy.py asserts
         # that what ships is literally ip_blocklist.is_blocked / ALLOWED_PORTS.
         is_blocked=ip_blocklist.is_blocked,
@@ -447,10 +478,11 @@ class Proxy:
         connect_timeout_s: float = CONNECT_TIMEOUT_S,
         limits: LimitsSource | None = None,
         log: Callable[[dict], None] = emit_stdout,
+        clock: Callable[[], float] = time.time,
     ) -> None:
-        if not token:
-            raise ValueError("token must be non-empty")
-        self._token = token.encode()
+        if not isinstance(key, str) or len(key) < MIN_KEY_LEN:
+            raise ValueError(f"key must be a str of at least {MIN_KEY_LEN} characters")
+        self._key = key.encode("utf-8")
         self.is_blocked = is_blocked
         self.resolver = resolver
         self.allowed_ports = allowed_ports
@@ -458,6 +490,7 @@ class Proxy:
         self._static_limits = Limits(connect_timeout_s, idle_timeout_s, max_connections)
         self._limits_source = limits
         self._log = log
+        self._clock = clock
         self._active = 0
 
     def _current_limits(self) -> Limits:
@@ -483,28 +516,49 @@ class Proxy:
 
     # -- auth ------------------------------------------------------------------
 
-    def _authenticate(self, request: h11.Request) -> str | None:
-        """Return the capture_id if the request is authenticated, else None."""
+    def _authenticate(self, request: h11.Request) -> tuple[str, str] | None:
+        """Return (capture_id, mode) if the request is authenticated, else None.
+
+        A constant-time compare runs on EVERY path (against a dummy when parsing
+        failed) so timing does not reveal which step failed."""
         header = None
         for name, value in request.headers:
             if name == b"proxy-authorization":
                 header = value
                 break
-        capture_id, token = "", b""
-        ok = False
+        cid = mode = exp_s = ""
+        token = b""
+        parsed = False
         if header is not None:
             scheme, _, b64 = header.decode("latin-1").partition(" ")
             if scheme.lower() == "basic":
                 try:
                     raw = base64.b64decode(b64.strip(), validate=True)
-                    cid, sep, tok = raw.partition(b":")
-                    capture_id, token = cid.decode("ascii"), tok
-                    ok = bool(sep)
+                    user_b, sep, tok = raw.partition(b":")
+                    user = user_b.decode("ascii")
+                    tok.decode("ascii")
+                    parts = user.split("|")
+                    if (
+                        sep
+                        and len(parts) == 3
+                        and parts[1] in MODES
+                        and _canonical_uuid(parts[0])
+                        and _EXP_RE.fullmatch(parts[2])
+                    ):
+                        cid, mode, exp_s = parts
+                        token, parsed = tok, True
                 except (binascii.Error, UnicodeDecodeError):
-                    ok = False
-        token_ok = hmac.compare_digest(token, self._token)
-        if ok and token_ok and _CAPTURE_ID_RE.match(capture_id):
-            return capture_id
+                    parsed = False
+        expected = (
+            derive_token(self._key, cid, mode, exp_s).encode("ascii")
+            if parsed
+            else b"\x00" * 64
+        )
+        ok = hmac.compare_digest(token if parsed else b"", expected)
+        if parsed and ok:
+            now = int(self._clock())
+            if now <= int(exp_s) <= now + MAX_CREDENTIAL_TTL_S:
+                return cid, mode
         return None
 
     # -- connection handler ------------------------------------------------------
@@ -586,8 +640,8 @@ class Proxy:
         if target is not None:
             rec.scheme, rec.host, rec.port = target.scheme, target.host.strip("[]"), target.port
 
-        capture_id = self._authenticate(request)
-        if capture_id is None:
+        authed = self._authenticate(request)
+        if authed is None:
             rec.reason = "auth"
             await self._respond(
                 reader,
@@ -598,11 +652,21 @@ class Proxy:
                 [(b"Proxy-Authenticate", b'Basic realm="capture"')],
             )
             return
-        rec.capture_id = capture_id
+        rec.capture_id, rec.mode = authed
+        mode = authed[1]
 
         if target is None:
             rec.reason = "bad_request"
             await self._respond(reader, writer, 400, "Bad Request", rec.reason)
+            return
+
+        # Deny by default: only a mode with a policy here gets past this point.
+        mode_ok = mode == "live" or (
+            mode == "archive" and archive_allowed(target.scheme, target.host, target.port)
+        )
+        if not mode_ok:
+            rec.reason = "archive_host" if mode == "archive" else "mode"
+            await self._respond(reader, writer, 403, "Forbidden", rec.reason)
             return
 
         decision = await self.decide(target.host, target.port, limits.connect_timeout_s)
@@ -810,17 +874,18 @@ async def _close(writer: asyncio.StreamWriter) -> None:
 
 
 def build_proxy_from_env(env=os.environ) -> Proxy:
-    """Fail closed: no token, no proxy."""
-    token = env.get("CAPTURE_PROXY_TOKEN", "")
-    if not token:
+    """Fail closed: no (or short) key, no proxy."""
+    key = env.get("CAPTURE_PROXY_KEY", "").strip()
+    if len(key) < MIN_KEY_LEN:
         raise SystemExit(
-            "capture-proxy: CAPTURE_PROXY_TOKEN is unset or empty; refusing to start"
+            f"capture-proxy: CAPTURE_PROXY_KEY is unset or shorter than {MIN_KEY_LEN} "
+            "characters; refusing to start"
         )
     limits = LimitsSource(
         env.get("CAPTURE_LIMITS_FILE", "/capture_config/" + LIMITS_FILE_NAME),
         defaults=Limits(CONNECT_TIMEOUT_S, IDLE_TIMEOUT_S, MAX_CONNECTIONS),
     )
-    return Proxy(token=token, limits=limits, log=make_log(env.get("CAPTURE_PROXY_LOG_DIR")))
+    return Proxy(key=key, limits=limits, log=make_log(env.get("CAPTURE_PROXY_LOG_DIR")))
 
 
 async def serve(proxy: Proxy, host: str, port: int) -> asyncio.Server:

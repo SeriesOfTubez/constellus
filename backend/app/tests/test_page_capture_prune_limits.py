@@ -365,3 +365,52 @@ def test_proxy_constants_match_the_backend():
     missing = [k for k in expected if k not in proxy]
     assert not missing, f"capture-proxy/proxy.py does not define {missing}"
     assert {k: proxy[k] for k in expected} == expected
+
+
+# ── drift: job contract v3 literals across proxy, browser and backend ───────
+
+
+def _literal_constants(path: Path) -> dict:
+    """Module-level NAME = <literal> or NAME = frozenset(<literal>) (ast only)."""
+    out = {}
+    for node in ast.parse(path.read_text()).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            value = node.value
+            wrap = None
+            if (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id == "frozenset"
+                and len(value.args) == 1
+                and not value.keywords
+            ):
+                wrap, value = frozenset, value.args[0]
+            try:
+                lit = ast.literal_eval(value)
+            except ValueError:
+                continue
+            out[node.targets[0].id] = wrap(lit) if wrap else lit
+    return out
+
+
+def test_archive_hosts_and_modes_match_across_proxy_browser_and_backend():
+    root = Path(__file__).resolve().parents[3]
+    proxy = _literal_constants(root / "capture-proxy" / "proxy.py")
+    spool = _literal_constants(root / "capture-browser" / "capture" / "spool.py")
+    for name, src in (("proxy", proxy), ("browser spool", spool)):
+        missing = [k for k in ("ARCHIVE_HOSTS", "MODES") if k not in src]
+        assert not missing, f"{name} does not define {missing} as ast-readable literals"
+    assert spool["ARCHIVE_HOSTS"] == proxy["ARCHIVE_HOSTS"] == frozenset({"web.archive.org"})
+    assert tuple(spool["MODES"]) == tuple(proxy["MODES"]) == pc.CAPTURE_MODES == ("live", "archive")
+
+
+def test_job_version_matches_the_browser_spool():
+    root = Path(__file__).resolve().parents[3]
+    spool = _literal_constants(root / "capture-browser" / "capture" / "spool.py")
+    assert spool["JOB_VERSION"] == pc.JOB_VERSION == 3
+
+
+def test_proxy_credential_ttl_matches_the_backend():
+    root = Path(__file__).resolve().parents[3]
+    proxy = _literal_constants(root / "capture-proxy" / "proxy.py")
+    assert proxy["MAX_CREDENTIAL_TTL_S"] == pc.QUEUE_TIMEOUT_MAX + pc.CREDENTIAL_RUN_MARGIN_S

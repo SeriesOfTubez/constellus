@@ -1,4 +1,4 @@
-# Page-capture spool contract (planning#280 S5b-2a, job v2 in S5b-2b)
+# Page-capture spool contract (planning#280 S5b-2a, job v2 in S5b-2b, v3 in S5c-b1)
 
 How the backend asks for a page capture and gets the results back, given one
 hard rule: **the capture browser must never have a network route to the
@@ -49,17 +49,28 @@ place. Readers ignore any name that starts with `.`.
     screenshot.webp                (only when a screenshot was kept)
 ```
 
-## Job v2 (backend → worker), at most 16 KiB
+## Job v3 (backend → worker), at most 16 KiB
 
 ```json
-{"v": 2, "capture_id": "<uuid>", "url": "https://example.com/",
+{"v": 3, "capture_id": "<uuid>", "url": "https://example.com/",
+ "mode": "live", "proxy_token": "<64 lowercase hex>",
+ "proxy_expires": 1900000000,
  "viewport": {"width": 1280, "height": 800},
  "max_image_bytes": 2097152, "webp_qualities": [80, 60, 40],
  "user_agent_mode": "identifying",
  "user_agent": "ExampleScanner/1.0 (+https://scanner.example.test/about)"}
 ```
 
-- `v` must be `2`. Every other value, including `1` and a boolean, is rejected.
+- `v` must be `3`. Every other value, including `1`, `2` and a boolean, is rejected.
+- `mode` is required and is exactly `"live"` or `"archive"`.
+- `proxy_token` is required: a string that fully matches `[0-9a-f]{64}` (see
+  "Proxy credential" below).
+- `proxy_expires` is required: an integer (not a boolean) with
+  `1 <= x < 10**12`, unix seconds. The browser does not compare it with the
+  clock; the proxy does.
+- In `"archive"` mode the `url` must also be `https`, with a host that is
+  exactly in `ARCHIVE_HOSTS` (`web.archive.org`), port absent or `443`, no
+  userinfo, and a Wayback playback path, `/web/<digits>…` (never `/save/` or any other endpoint). Anything else is rejected.
 - `user_agent_mode` is required and is `"stock"` or `"identifying"`. Anything
   else is rejected.
 - `"identifying"` requires `user_agent`: a string of 1 to 256 characters, each
@@ -70,7 +81,7 @@ place. Readers ignore any name that starts with `.`.
   refuses it rather than guessing.
 - `max_image_bytes` is at most 8 MiB.
 
-The job and result versions are independent: the job is v2 and the result is
+The job and result versions are independent: the job is v3 and the result is
 v1. The backend records `user_agent_mode` and `image_max_bytes` on the
 `page_captures` row (migration 0092), and the ingest enforces the row's cap.
 
@@ -84,7 +95,8 @@ committed.
 2. Claim a job with `rename(jobs/<id>.json, claimed/<id>.json)`. If that
    raises `FileNotFoundError`, another worker won, so move on to the next job.
 3. Validate the job:
-   - `v == 2`
+   - `v == 3`
+   - `mode`, `proxy_token`, `proxy_expires` and (in archive mode) the archive URL rules
    - `user_agent_mode` and `user_agent` follow the job rules above
    - `capture_id` equals the file name
    - the URL scheme is `http` or `https`
@@ -126,8 +138,10 @@ while idle.
 When `CAPTURE_PROXY_LOG_DIR` is set, the proxy appends each request record (the
 same JSON object it prints to stdout) to `<dir>/<capture_id>.jsonl`.
 
-- It does this only when the `capture_id` from `Proxy-Authorization` is a
-  canonical UUID. Anything else is logged to stdout only.
+- The `capture_id` and `mode` come from the per-job credential in
+  `Proxy-Authorization`, and are trusted only after the token has verified.
+  It writes the file only when that `capture_id` is a canonical UUID. Anything
+  else is logged to stdout only.
 - The file is opened with `O_WRONLY|O_APPEND|O_CREAT|O_NOFOLLOW` and mode
   `0660`.
 - Each file is capped at 4 MiB. Past the cap, the proxy logs to stdout only.
@@ -160,15 +174,74 @@ a warning logged).
 A row still `queued` after the timeout becomes `failed` with
 `failure_reason = 'timeout'`, and its job and claim files are removed.
 
+## Proxy credential
+
+The browser authenticates to capture-proxy with a per-job credential, not a
+shared secret.
+
+- **Key:** `CAPTURE_PROXY_KEY`, stripped of whitespace, valid only if it is at
+  least 32 characters. Only the backend and capture-proxy hold it;
+  capture-browser never receives it. The backend refuses to queue a capture
+  without it (`capture:not_configured`, no row written).
+- **Modes:** `("live", "archive")`, exact strings.
+- **Expiry `exp`:** integer unix seconds, wire form plain ASCII digits with no
+  sign and no leading zero, 1 to 12 digits (`[1-9][0-9]{0,11}`). The backend
+  mints `exp = now + queue_timeout_seconds + CREDENTIAL_RUN_MARGIN_S` (margin
+  300 s). The proxy accepts a credential only if
+  `now <= exp <= now + MAX_CREDENTIAL_TTL_S` (3900 = `QUEUE_TIMEOUT_MAX` 3600
+  + 300; a backend drift test asserts the sum). The check runs per new
+  connection; an established tunnel is not cut at `exp`.
+- **Token:** `HMAC-SHA256(key, "v3|<capture_id>|<mode>|<exp>")` as 64
+  lowercase hex characters. `capture_id` must be a canonical lowercase UUID.
+- **Header:** `Proxy-Authorization: Basic base64("<capture_id>|<mode>|<exp>:<token>")`.
+  The username is `<capture_id>|<mode>|<exp>` and must split on `|` into
+  exactly three parts; the password is the token. The backend writes the token
+  and `proxy_expires` into the job; the worker passes them to Chromium's proxy
+  setting.
+- **Proxy check:** the proxy re-derives the token for the claimed
+  `capture_id`, `mode` and `exp` and compares in constant time, then checks the
+  time window. A malformed, expired or too-far-future `exp` fails exactly like
+  a bad MAC: 407, log reason `auth`.
+- **Archive policy:** an archive-mode request is allowed only as `CONNECT` to
+  port 443 with a host that is exactly in `ARCHIVE_HOSTS`
+  (`web.archive.org`): no trailing-dot stripping, no suffix match, never an IP
+  literal. Otherwise the proxy answers 403 with reason `archive_host`. Live
+  mode keeps its existing policy. The browser also aborts non-archive requests
+  in archive mode, and its `archive_request_allowed` additionally requires the
+  path to be a playback path, `/web/<digits>…`. That path check is the only layer that can see
+  paths (the proxy sees opaque TLS); it is what stops page JS requesting Save
+  Page Now (`/save/...`) on `web.archive.org`. The host check is the proxy's.
+- **Drift:** `ARCHIVE_HOSTS`, `MODES` and `JOB_VERSION` are plain literals
+  kept identical in `capture-proxy/proxy.py`, `capture-browser/capture/spool.py`
+  and the backend, and a test compares them by `ast`.
+- **Rotation:** changing the key invalidates every queued job, which then fails
+  proxy authentication.
+- **Test vectors** (key = 32 times `k`, capture_id
+  `00000000-0000-4000-8000-000000000001`, exp `2000000000`):
+  - live: `fd4cc753d722f5681637818178f5319706eb2b66b6c19cc182666f4d6e9e1382`
+  - archive: `ec9eb6417283118f7de8b8013f57c6b86582311497a3921e31bca75ca696ea9a`
+
 ### Residual risk, stated
 
-If an attacker escapes both the Chromium renderer and its sandbox during one
-capture, it holds the worker's write access to `/spool`. That lets it forge
-the result of another capture that is still `queued`. It cannot:
+Per-job tokens close impersonation: a compromised browser cannot present a
+`capture_id` or `mode` it was not given, because it cannot compute a token for
+them (it never holds the key).
+
+What remains: if an attacker escapes both the Chromium renderer and its
+sandbox during one capture, it holds the worker's read/write access to
+`/spool`. It can read another job's token and use it, within that job's mode,
+only until that token's `exp`; it can also forge the result of that capture.
+A failed job's token stays valid until its `exp`: there is no revocation. It
+cannot:
 
 - forge the proxy log (the browser never mounts that volume);
 - reach the backend or the database;
 - change the result of a capture that has already been ingested.
+
+The proxy cannot see paths inside TLS, so the Save-Page-Now guard is the
+browser's route layer, which page JS cannot reach without escaping the
+sandbox. Playwright does not route WebSockets, but the proxy still enforces the
+host policy on their CONNECT.
 
 Capture rows are evidence that a person reads, never an authorisation.
 

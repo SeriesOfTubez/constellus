@@ -11,6 +11,9 @@ import pytest
 from capture import spool, worker
 
 ID = "0190a1b2-c3d4-7e5f-8a6b-1234567890ab"
+TOKEN = "ab" * 32  # 64 lowercase hex
+EXP = 2000000000
+ARCHIVE_URL = "https://web.archive.org/web/2020/https://example.com/"
 
 
 def _mk(root):
@@ -27,9 +30,12 @@ _ABSENT = object()
 
 def job(**over):
     j = {
-        "v": 2,
+        "v": 3,
         "capture_id": ID,
         "url": "https://example.com/",
+        "mode": "live",
+        "proxy_token": TOKEN,
+        "proxy_expires": EXP,
         "viewport": {"width": 1280, "height": 800},
         "max_image_bytes": 2097152,
         "webp_qualities": [80, 60, 40],
@@ -54,7 +60,38 @@ def test_valid_job_roundtrips():
     "raw",
     [
         job(v=1),
-        job(v=3),
+        job(v=2),
+        job(mode=_ABSENT),
+        job(mode="Live"),
+        job(mode="admin"),
+        job(mode=None),
+        job(mode=["live"]),
+        job(proxy_token=_ABSENT),
+        job(proxy_token="a" * 63),
+        job(proxy_token="a" * 65),
+        job(proxy_token="A" * 64),
+        job(proxy_token=TOKEN[:-1] + "g"),
+        job(proxy_token=12345),
+        job(proxy_token=None),
+        job(proxy_expires=_ABSENT),
+        job(proxy_expires=True),
+        job(proxy_expires=0),
+        job(proxy_expires=-1),
+        job(proxy_expires=10**12),
+        job(proxy_expires="2000000000"),
+        job(proxy_expires=1.5),
+        job(proxy_expires=None),
+        job(mode="archive", url="http://web.archive.org/web/2020/https://example.com/"),
+        job(mode="archive", url="https://example.com/web/2020/x"),
+        job(mode="archive", url="https://web.archive.org.evil.test/web/2020/x"),
+        job(mode="archive", url="https://web.archive.org:8443/web/2020/x"),
+        job(mode="archive", url="https://user@web.archive.org/web/2020/x"),
+        job(mode="archive", url="https://user:pw@web.archive.org/web/2020/x"),
+        job(mode="archive", url="https://web.archive.org/save/https://example.com/"),
+        job(mode="archive", url="https://web.archive.org/"),
+        job(mode="archive", url="https://web.archive.org/web/save/https://example.com/"),
+        job(mode="archive", url="https://1.2.3.4/web/2020/x"),
+        job(mode="archive", url="https://[::1]/web/2020/x"),
         job(v=True),
         job(user_agent_mode=_ABSENT),
         job(user_agent_mode="Stock"),
@@ -99,6 +136,48 @@ def test_invalid_jobs_are_rejected(raw):
         spool.validate_job(raw, ID)
 
 
+def test_valid_archive_job_passes_and_carries_mode_and_token():
+    for url in (ARCHIVE_URL, "https://WEB.ARCHIVE.ORG:443/web/2020/x"):
+        j = spool.validate_job(job(mode="archive", url=url), ID)
+        assert j["mode"] == "archive" and j["proxy_token"] == TOKEN and j["url"] == url
+
+
+def test_valid_live_job_carries_mode_and_token():
+    j = spool.validate_job(job(), ID)
+    assert j["mode"] == "live" and j["proxy_token"] == TOKEN
+
+
+@pytest.mark.parametrize(
+    "url,ok",
+    [
+        ("https://web.archive.org/web/2020/https://example.com/", True),
+        ("https://web.archive.org/web/2026/http://x.example/", True),
+        ("https://web.archive.org/", False),
+        ("https://web.archive.org/save/https://x.example/", False),
+        ("https://web.archive.org/images/x.png", False),
+        ("https://web.archive.org/web/save/https://x.example/", False),
+        ("https://web.archive.org/web/", False),
+        ("https://web.archive.org/web/20261005000556cs_/https://x.example/a.css", True),
+        ("https://WEB.Archive.ORG/web/1/x", True),
+        ("https://web.archive.org:443/web/1/x", True),
+        ("http://web.archive.org/web/1/x", False),
+        ("https://example.com/web/1/x", False),
+        ("https://web.archive.org.evil.test/", False),
+        ("https://evil-web.archive.org/", False),
+        ("https://web.archive.org:80/web/1/x", False),  # valid path: only the port fails
+        ("https://web.archive.org:8443/web/1/x", False),  # valid path: only the port fails
+        ("https://web.archive.org:99999/web/1/x", False),  # valid path: only the port fails
+        ("data:text/html,hi", False),
+        ("about:blank", False),
+        ("", False),
+        ("::::", False),
+        ("https://[::1/", False),
+    ],
+)
+def test_archive_request_allowed(url, ok):
+    assert spool.archive_request_allowed(url) is ok
+
+
 def test_stock_job_returns_no_user_agent():
     j = spool.validate_job(job(), ID)
     assert j["user_agent_mode"] == "stock" and j["user_agent"] is None
@@ -123,7 +202,7 @@ def test_max_image_bytes_boundary_is_8_mib():
 
 
 def test_result_version_is_independent_of_job_version():
-    assert spool.JOB_VERSION == 2
+    assert spool.JOB_VERSION == 3
     r, _ = spool.build_result(ID, error="x")
     assert r["v"] == 1
 
@@ -327,6 +406,12 @@ class _FakePage:
 
 
 class _FakeCtx:
+    def __init__(self):
+        self.routes = []
+
+    def route(self, pattern, handler):
+        self.routes.append((pattern, handler))
+
     def new_page(self):
         return _FakePage()
 
@@ -340,10 +425,14 @@ class _FakeCtx:
 class _FakeBrowser:
     def __init__(self):
         self.context_kwargs = []
+        self.contexts = []
+        self.launch_kwargs = []
 
     def new_context(self, **kw):
         self.context_kwargs.append(kw)
-        return _FakeCtx()
+        ctx = _FakeCtx()
+        self.contexts.append(ctx)
+        return ctx
 
     def close(self):
         pass
@@ -358,7 +447,9 @@ def fake_playwright(monkeypatch):
     browser = _FakeBrowser()
 
     class _P:
-        chromium = types.SimpleNamespace(launch=lambda **kw: browser)
+        chromium = types.SimpleNamespace(
+            launch=lambda **kw: (browser.launch_kwargs.append(kw), browser)[1]
+        )
 
     class _CM:
         def __enter__(self):
@@ -374,7 +465,6 @@ def fake_playwright(monkeypatch):
     monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
     monkeypatch.setitem(sys.modules, "playwright.sync_api", mod)
     monkeypatch.setenv("CAPTURE_PROXY_URL", "http://proxy.example.test:3128")
-    monkeypatch.setenv("CAPTURE_PROXY_TOKEN", "t")
     sys.modules.pop("capture.run", None)  # re-import against the fake
     yield browser
     sys.modules.pop("capture.run", None)  # never leak a fake-bound module
@@ -405,3 +495,47 @@ def test_worker_stock_mode_uses_the_browser_ua_without_headless_marker(tmp_path,
     assert len(kws) == 2 and "user_agent" not in kws[0]  # probe context, then capture context
     assert kws[1]["user_agent"] == stock
     assert r["user_agent"] == stock
+
+
+class _FakeRoute:
+    def __init__(self, url):
+        self.request = type("Req", (), {"url": url})()
+        self.calls = []
+
+    def abort(self, reason=None):
+        self.calls.append(("abort", reason))
+
+    def continue_(self):
+        self.calls.append(("continue",))
+
+
+def test_worker_passes_per_job_credential_to_the_proxy_setting(tmp_path, fake_playwright):
+    r = _run_job(tmp_path, job())
+    assert r["error"] is None
+    (kw,) = fake_playwright.launch_kwargs
+    assert kw["proxy"]["username"] == f"{ID}|live|{EXP}"
+    assert kw["proxy"]["password"] == TOKEN
+
+
+def test_worker_live_job_installs_no_route(tmp_path, fake_playwright):
+    r = _run_job(tmp_path, job())
+    assert r["error"] is None
+    assert len(fake_playwright.contexts) == 2  # precondition: the capture context was made
+    assert all(c.routes == [] for c in fake_playwright.contexts)
+
+
+def test_worker_archive_job_installs_archive_only_route(tmp_path, fake_playwright):
+    other = "cd" * 32
+    r = _run_job(tmp_path, job(mode="archive", url=ARCHIVE_URL, proxy_token=other))
+    assert r["error"] is None
+    (kw,) = fake_playwright.launch_kwargs
+    assert kw["proxy"]["username"] == f"{ID}|archive|{EXP}" and kw["proxy"]["password"] == other
+    routed = [c for c in fake_playwright.contexts if c.routes]
+    assert len(routed) == 1 and len(routed[0].routes) == 1
+    pattern, handler = routed[0].routes[0]
+    assert pattern == "**/*"
+    bad, good = _FakeRoute("https://example.com/x"), _FakeRoute("https://web.archive.org/web/1/x")
+    handler(bad)
+    handler(good)
+    assert bad.calls == [("abort", "blockedbyclient")]
+    assert good.calls == [("continue",)]

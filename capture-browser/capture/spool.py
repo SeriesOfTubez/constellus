@@ -8,13 +8,22 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import uuid
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
 
-JOB_VERSION = 2  # job contract version; result.json is versioned independently (v1)
+JOB_VERSION = 3  # job contract version; result.json is versioned independently (v1)
+# Plain literals: an ast-based drift test compares them with capture-proxy/proxy.py
+# and the backend (backend/app/tests/test_page_capture_prune_limits.py).
+MODES = ("live", "archive")
+ARCHIVE_HOSTS = frozenset({"web.archive.org"})
+_TOKEN_RE = re.compile(r"[0-9a-f]{64}")
+# A Wayback playback path: /web/<timestamp>[flags]/... Never /save/ (Save Page Now)
+# or any other archive endpoint. The proxy cannot see paths inside TLS; this can.
+_ARCHIVE_PATH_RE = re.compile(r"/web/[0-9]+")
 JOB_MAX_BYTES = 16 * 1024
 RESULT_MAX_BYTES = 1024 * 1024
 MAX_REQUESTS = 500
@@ -59,6 +68,22 @@ def job_id_from_name(name: str) -> str | None:
     return cid if is_canonical_uuid(cid) else None
 
 
+def archive_request_allowed(url: str) -> bool:
+    """https + exact archive host + port 443/default. Anything unparseable -> False."""
+    try:
+        parts = urlsplit(url)
+        return (
+            parts.scheme == "https"
+            and parts.hostname in ARCHIVE_HOSTS
+            and parts.port in (None, 443)
+            # The proxy cannot see paths inside TLS; this is the layer that
+            # stops page JS requesting Save Page Now (/save/...) etc.
+            and _ARCHIVE_PATH_RE.match(parts.path) is not None
+        )
+    except ValueError:
+        return False
+
+
 def _int_in(value: object, lo: int, hi: int, what: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
         raise InvalidJob(f"bad {what}")
@@ -90,6 +115,25 @@ def validate_job(raw: bytes, file_id: str) -> dict:
         raise InvalidJob("bad url") from None
     if parts.scheme not in ("http", "https") or not host:
         raise InvalidJob("bad url scheme")
+    run_mode = job.get("mode")
+    if not isinstance(run_mode, str) or run_mode not in MODES:
+        raise InvalidJob("bad mode")
+    token = job.get("proxy_token")
+    if not isinstance(token, str) or not _TOKEN_RE.fullmatch(token):
+        raise InvalidJob("bad proxy_token")
+    expires = job.get("proxy_expires")
+    # Not checked against the clock here: the proxy enforces the window.
+    if isinstance(expires, bool) or not isinstance(expires, int) or not 1 <= expires < 10**12:
+        raise InvalidJob("bad proxy_expires")
+    if run_mode == "archive":
+        if (
+            parts.scheme != "https"
+            or host not in ARCHIVE_HOSTS
+            or parts.port not in (None, 443)
+            or "@" in parts.netloc
+            or _ARCHIVE_PATH_RE.match(parts.path) is None
+        ):
+            raise InvalidJob("bad archive url")
     vp = job.get("viewport")
     if not isinstance(vp, dict):
         raise InvalidJob("bad viewport")
@@ -118,6 +162,9 @@ def validate_job(raw: bytes, file_id: str) -> dict:
     return {
         "capture_id": file_id,
         "url": url,
+        "mode": run_mode,
+        "proxy_token": token,
+        "proxy_expires": expires,
         "viewport": {"width": width, "height": height},
         "max_image_bytes": max_bytes,
         "webp_qualities": qualities,

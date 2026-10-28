@@ -14,6 +14,7 @@ A capture row is evidence a person reads, never an authorisation.
 """
 
 import hashlib
+import hmac
 import ipaddress
 import json
 import logging
@@ -21,6 +22,7 @@ import os
 import re
 import shutil
 import stat
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
@@ -57,6 +59,12 @@ PROXY_CONNECT_TIMEOUT_KEY = "capture.proxy_connect_timeout_seconds"
 PROXY_IDLE_TIMEOUT_KEY = "capture.proxy_idle_timeout_seconds"
 PROXY_MAX_CONNECTIONS_KEY = "capture.proxy_max_connections"
 
+# Job contract v3 (docs/architecture/capture-spool.md). A plain literal: a drift
+# test compares it with capture-browser's spool.py by ast.
+JOB_VERSION = 3
+CAPTURE_MODES = ("live", "archive")
+PROXY_KEY_MIN_LEN = 32
+
 DEFAULT_REVISIT_DAYS = 30
 DEFAULT_USER_AGENT_MODE = "stock"
 DEFAULT_MAX_IMAGE_BYTES = 2 * 1024 * 1024
@@ -72,6 +80,9 @@ IMAGE_BYTES_MIN = 64 * 1024
 IMAGE_BYTES_CEILING = 8 * 1024 * 1024  # a guard: no setting or row can exceed it
 QUEUE_TIMEOUT_MIN = 60
 QUEUE_TIMEOUT_MAX = 3600
+# Slack on top of the queue timeout for a run to finish; the proxy bounds the
+# credential lifetime by QUEUE_TIMEOUT_MAX + this (a drift test asserts it).
+CREDENTIAL_RUN_MARGIN_S = 300
 USER_AGENT_MAX = 256
 IMAGE_KEEP_MIN = 1
 IMAGE_KEEP_MAX = 50
@@ -175,6 +186,37 @@ def images_dir() -> str:
 
 def config_dir() -> str:
     return os.environ.get("CAPTURE_CONFIG_DIR", "/capture_config")
+
+
+def _proxy_key() -> str | None:
+    """CAPTURE_PROXY_KEY read at CALL time; None when absent or too short."""
+    key = os.environ.get("CAPTURE_PROXY_KEY", "").strip()
+    return key if len(key) >= PROXY_KEY_MIN_LEN else None
+
+
+def proxy_token(capture_id: str, mode: str, exp: int) -> str | None:
+    """Per-job proxy credential: HMAC-SHA256 over `v3|<capture_id>|<mode>|<exp>`.
+
+    None when the key is not configured. The browser gets only this token, never
+    the key. Never log the result."""
+    if mode not in CAPTURE_MODES:
+        raise ValueError(f"unknown capture mode: {mode!r}")
+    if not _is_canonical_uuid(capture_id):
+        raise ValueError("capture_id is not a canonical uuid")
+    key = _proxy_key()
+    if key is None:
+        return None
+    if isinstance(exp, bool) or not isinstance(exp, int) or not 1 <= exp < 10**12:
+        raise ValueError("exp out of range")
+    msg = f"v3|{capture_id}|{mode}|{exp}".encode("ascii")
+    return hmac.new(key.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def _is_canonical_uuid(value: str) -> bool:
+    try:
+        return str(uuid.UUID(value)) == value
+    except (ValueError, AttributeError, TypeError):
+        return False
 
 
 class CaptureRefused(Exception):
@@ -397,6 +439,9 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual:
     ua = identifying_user_agent(db)
     if mode == "identifying" and ua is None:
         raise CaptureRefused("capture:identifying_user_agent_unset")
+    if _proxy_key() is None:
+        # No key, no credential the proxy would accept: refuse before any row exists.
+        raise CaptureRefused("capture:not_configured")
 
     row = PageCapture(
         candidate_id=candidate.id,
@@ -416,11 +461,15 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual:
             raise CaptureRefused("capture:already_queued")
         raise
     capture_id = str(row.id)
+    exp = int(time.time()) + queue_timeout_seconds(db) + CREDENTIAL_RUN_MARGIN_S
 
     job = {
-        "v": 2,
+        "v": JOB_VERSION,
         "capture_id": capture_id,
         "url": row.requested_url,
+        "mode": "live",
+        "proxy_token": proxy_token(capture_id, "live", exp),
+        "proxy_expires": exp,
         "viewport": {"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
         "user_agent_mode": mode,
         "max_image_bytes": row.image_max_bytes,

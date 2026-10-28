@@ -382,6 +382,7 @@ _CAPTURE_REFUSAL_MESSAGES = {
         "(only our own or an M&A target's domains can be visited)."
     ),
     "posture:passive_only": "A live visit is not allowed under this organization's current posture.",
+    "capture:not_configured": "Page capture is not configured: the capture proxy key is missing.",
     "spool_unavailable": "The capture browser could not be reached; try again shortly.",
 }
 _CAPTURE_REFUSAL_GENERIC = "A live visit to this candidate is not allowed."
@@ -1323,7 +1324,7 @@ def request_candidate_capture(
         audit.record_detail(request, candidate=str(candidate_id), capture_refused=exc.rule)
         # A spool fault is ours, not a conflict with the candidate's state.
         raise HTTPException(
-            status_code=503 if exc.rule == "spool_unavailable" else 409,
+            status_code=503 if exc.rule in ("spool_unavailable", "capture:not_configured") else 409,
             detail={"rule": exc.rule, "message": _CAPTURE_REFUSAL_MESSAGES.get(exc.rule, _CAPTURE_REFUSAL_GENERIC)},
         )
     audit.record_detail(request, candidate=str(candidate_id), capture=str(row.id), domain=row.domain, manual=True)
