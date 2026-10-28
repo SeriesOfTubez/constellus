@@ -18,6 +18,7 @@ import { AddOrganizationDialog } from "@/components/AddOrganizationFlow"
 import { AcquisitionTimeline, AcquisitionsTable } from "@/components/OrgAcquisitionParts"
 import { filterByDeal } from "@/lib/acquisitionTimeline"
 import { IpSpaceTable, RecheckButton, RegistryObservations } from "@/components/OrgIpSpaceParts"
+import { CandidateCaptures } from "@/components/CandidateCaptureParts"
 import { WorkspaceShell } from "@/components/WorkspaceShell"
 import { EntityDetailContent } from "@/components/EntityDetailContent"
 import {
@@ -695,7 +696,10 @@ function OrgWorkspace({
                 <CandidateFlyoutContent
                   detail={detailQ.data} org={org} labelOf={labelOf} nodes={confirmed}
                   extra={detailQ.data.kind === "cidr" && detailQ.data.status === "claimed"
-                    ? <RegistryObservations orgId={org.id} candidateId={detailQ.data.id} /> : undefined}
+                    ? <RegistryObservations orgId={org.id} candidateId={detailQ.data.id} />
+                    : detailQ.data.kind === "domain"
+                      ? <CandidateCaptures candidateId={detailQ.data.id} candidateStatus={detailQ.data.status} />
+                      : undefined}
                   onClaim={async aff => {
                     await api.post(`/organizations/candidates/${detailQ.data!.id}/claim`, aff ? { affiliated_entity_id: aff } : {})
                     invalidate()

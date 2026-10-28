@@ -459,3 +459,13 @@ def test_capture_response_carries_image_pruned_at(w, env):
         f"/api/organizations/candidates/{c.id}/captures", headers=w.headers()).json()}
     assert rows[str(row.id)]["image_pruned_at"] is not None and rows[str(row.id)]["has_image"] is False
     assert rows[str(live.id)]["image_pruned_at"] is None and rows[str(live.id)]["has_image"] is True
+
+
+def test_refusal_messages_for_gate_rules_are_specific_not_generic():
+    from app.api import organizations as orgs_api
+
+    rules = ("posture:passive_only", "candidate:root_mismatch", "candidate:no_relationship")
+    msgs = [orgs_api._CAPTURE_REFUSAL_MESSAGES.get(r) for r in rules]
+    assert all(msgs), msgs
+    assert orgs_api._CAPTURE_REFUSAL_GENERIC not in msgs
+    assert len(set(msgs)) == 3
