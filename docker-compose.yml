@@ -29,6 +29,7 @@ services:
       - CAPTURE_SPOOL_DIR=/spool
       - CAPTURE_PROXYLOG_DIR=/proxylog
       - CAPTURE_IMAGES_DIR=/captures
+      - CAPTURE_CONFIG_DIR=/capture_config
     env_file:
       - .env
     # Shared capture group (gid 10050): read/write the spool + proxy log volumes.
@@ -38,6 +39,7 @@ services:
       - capture_spool:/spool
       - capture_proxylog:/proxylog
       - capture_images:/captures
+      - capture_config:/capture_config
     depends_on:
       db:
         condition: service_healthy
@@ -123,6 +125,7 @@ services:
   #   capture_proxylog  backend rw, capture-proxy rw     (/proxylog) - the browser
   #                     never mounts this, so it cannot forge the proxy's record
   #   capture_images    backend only                     (/captures)
+  #   capture_config    backend rw, capture-proxy ro     (/capture_config)
   # Access is via the shared group gid 10050 (`group_add`), dirs 2770. Both images
   # pre-create /spool/{jobs,claimed,results} so either seeds an empty volume alike.
   # One-off runs (the egress spike): `docker compose --profile capture run --rm capture-browser <cmd>`
@@ -133,8 +136,10 @@ services:
     environment:
       - CAPTURE_PROXY_TOKEN=${CAPTURE_PROXY_TOKEN:-}
       - CAPTURE_PROXY_LOG_DIR=/proxylog
+      - CAPTURE_LIMITS_FILE=/capture_config/proxy_limits.json
     volumes:
       - capture_proxylog:/proxylog
+      - capture_config:/capture_config:ro
     group_add:
       - "10050"
     networks:
@@ -193,3 +198,4 @@ volumes:
   capture_spool:
   capture_proxylog:
   capture_images:
+  capture_config:

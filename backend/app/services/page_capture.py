@@ -25,7 +25,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -52,11 +52,19 @@ USER_AGENT_MODE_KEY = "capture.user_agent_mode"
 IDENTIFYING_UA_KEY = "capture.identifying_user_agent"
 MAX_IMAGE_BYTES_KEY = "capture.max_image_bytes"
 QUEUE_TIMEOUT_KEY = "capture.queue_timeout_seconds"
+IMAGE_KEEP_COUNT_KEY = "capture.image_keep_count"
+PROXY_CONNECT_TIMEOUT_KEY = "capture.proxy_connect_timeout_seconds"
+PROXY_IDLE_TIMEOUT_KEY = "capture.proxy_idle_timeout_seconds"
+PROXY_MAX_CONNECTIONS_KEY = "capture.proxy_max_connections"
 
 DEFAULT_REVISIT_DAYS = 30
 DEFAULT_USER_AGENT_MODE = "stock"
 DEFAULT_MAX_IMAGE_BYTES = 2 * 1024 * 1024
 DEFAULT_QUEUE_TIMEOUT_S = 600
+DEFAULT_IMAGE_KEEP_COUNT = 3
+PROXY_CONNECT_TIMEOUT_DEFAULT = 10
+PROXY_IDLE_TIMEOUT_DEFAULT = 30
+PROXY_MAX_CONNECTIONS_DEFAULT = 256
 
 REVISIT_DAYS_MIN = 1
 REVISIT_DAYS_MAX = 365
@@ -65,6 +73,18 @@ IMAGE_BYTES_CEILING = 8 * 1024 * 1024  # a guard: no setting or row can exceed i
 QUEUE_TIMEOUT_MIN = 60
 QUEUE_TIMEOUT_MAX = 3600
 USER_AGENT_MAX = 256
+IMAGE_KEEP_MIN = 1
+IMAGE_KEEP_MAX = 50
+PRUNE_BATCH = 500
+PROXY_CONNECT_TIMEOUT_MIN = 1
+PROXY_CONNECT_TIMEOUT_MAX = 60
+PROXY_IDLE_TIMEOUT_MIN = 5
+PROXY_IDLE_TIMEOUT_MAX = 600
+PROXY_MAX_CONNECTIONS_MIN = 1
+PROXY_MAX_CONNECTIONS_MAX = 1024
+PROXY_LIMITS_FILE = "proxy_limits.json"
+PROXY_LIMITS_VERSION = 1
+PROXY_LIMITS_MAX_BYTES = 4096
 
 WEBP_QUALITIES = (80, 60, 40)
 VIEWPORT_WIDTH = 1280
@@ -117,6 +137,30 @@ def queue_timeout_seconds(db: Session) -> int:
     return _bounded_int(db, QUEUE_TIMEOUT_KEY, DEFAULT_QUEUE_TIMEOUT_S, QUEUE_TIMEOUT_MIN, QUEUE_TIMEOUT_MAX)
 
 
+def image_keep_count(db: Session) -> int:
+    return _bounded_int(db, IMAGE_KEEP_COUNT_KEY, DEFAULT_IMAGE_KEEP_COUNT, IMAGE_KEEP_MIN, IMAGE_KEEP_MAX)
+
+
+def proxy_connect_timeout_seconds(db: Session) -> int:
+    return _bounded_int(
+        db, PROXY_CONNECT_TIMEOUT_KEY, PROXY_CONNECT_TIMEOUT_DEFAULT,
+        PROXY_CONNECT_TIMEOUT_MIN, PROXY_CONNECT_TIMEOUT_MAX,
+    )
+
+
+def proxy_idle_timeout_seconds(db: Session) -> int:
+    return _bounded_int(
+        db, PROXY_IDLE_TIMEOUT_KEY, PROXY_IDLE_TIMEOUT_DEFAULT, PROXY_IDLE_TIMEOUT_MIN, PROXY_IDLE_TIMEOUT_MAX
+    )
+
+
+def proxy_max_connections(db: Session) -> int:
+    return _bounded_int(
+        db, PROXY_MAX_CONNECTIONS_KEY, PROXY_MAX_CONNECTIONS_DEFAULT,
+        PROXY_MAX_CONNECTIONS_MIN, PROXY_MAX_CONNECTIONS_MAX,
+    )
+
+
 def spool_dir() -> str:
     return os.environ.get("CAPTURE_SPOOL_DIR", "/spool")
 
@@ -127,6 +171,10 @@ def proxylog_dir() -> str:
 
 def images_dir() -> str:
     return os.environ.get("CAPTURE_IMAGES_DIR", "/captures")
+
+
+def config_dir() -> str:
+    return os.environ.get("CAPTURE_CONFIG_DIR", "/capture_config")
 
 
 class CaptureRefused(Exception):
@@ -715,6 +763,118 @@ def _ts(value: object) -> datetime | None:
     return ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
 
 
+# ── image pruning ────────────────────────────────────────────────────────────
+
+
+def prune_images(db: Session, now: datetime | None = None) -> int:
+    """Keep the latest `image_keep_count` image FILES per domain; remove the rest.
+    Rows are never deleted: a pruned row gets `image_path = NULL` and
+    `image_pruned_at = now` (migration 0093). Returns the number pruned; at most
+    PRUNE_BATCH per call. Flushes, never commits (`tick` owns the commit).
+
+    Unlink-then-record, on purpose. If the commit fails, the row still points at
+    a missing file: the image route already returns None for that, and the next
+    tick's unlink gets FileNotFoundError and records it, so it self-heals. The
+    reverse order (record, then unlink) would leak the file forever once the row
+    no longer pointed at it.
+
+    The path is built from the row id, never from the row's string, and
+    `os.unlink` never follows a symlink. A row whose recorded name is not
+    exactly `<id>.webp` is NULLed without touching any file."""
+    now = now or datetime.now(timezone.utc)
+    root = images_dir()
+    try:
+        if not stat.S_ISDIR(os.lstat(root).st_mode):
+            raise NotADirectoryError(root)
+    except OSError:
+        log.error("page_capture: images directory is missing or not a real directory; skipping prune", exc_info=True)
+        return 0
+
+    ranked = (
+        select(
+            PageCapture.id.label("id"),
+            func.row_number().over(
+                partition_by=PageCapture.domain,
+                order_by=(PageCapture.finished_at.desc(), PageCapture.id.desc()),
+            ).label("rnk"),
+        )
+        .where(PageCapture.image_path.is_not(None))
+        .subquery()
+    )
+    ids = db.execute(
+        select(ranked.c.id).where(ranked.c.rnk > image_keep_count(db)).limit(PRUNE_BATCH)
+    ).scalars().all()
+    if not ids:
+        return 0
+    rows = db.query(PageCapture).filter(PageCapture.id.in_(ids)).all()
+
+    pruned = 0
+    for row in rows:
+        if row.image_path != f"{row.id}.webp":
+            log.warning("page_capture: pruning %s with a mismatched image name; no file touched", row.id)
+        else:
+            try:
+                os.unlink(os.path.join(root, f"{row.id}.webp"))
+            except FileNotFoundError:
+                pass
+            except OSError:
+                log.warning("page_capture: could not remove the image for %s; will retry", row.id, exc_info=True)
+                continue
+        row.image_path = None
+        row.image_pruned_at = now
+        pruned += 1
+    db.flush()
+    return pruned
+
+
+# ── proxy limits ─────────────────────────────────────────────────────────────
+
+
+def proxy_limits_bytes(db: Session) -> bytes:
+    return json.dumps(
+        {
+            "version": PROXY_LIMITS_VERSION,
+            "connect_timeout_s": proxy_connect_timeout_seconds(db),
+            "idle_timeout_s": proxy_idle_timeout_seconds(db),
+            "max_connections": proxy_max_connections(db),
+        },
+        sort_keys=True, separators=(",", ":"),
+    ).encode() + b"\n"
+
+
+def write_proxy_limits(db: Session) -> bool:
+    """Write the proxy's limits file when its content differs from the settings
+    (so a fresh volume or a restart heals itself). True if it wrote. The proxy
+    has no DB and no route here; it mounts the directory read-only."""
+    want = proxy_limits_bytes(db)
+    root = config_dir()
+    try:
+        if not stat.S_ISDIR(os.lstat(root).st_mode):
+            raise NotADirectoryError(root)
+    except OSError:
+        log.error("page_capture: config directory is missing or not a real directory; limits not written", exc_info=True)
+        return False
+    target = os.path.join(root, PROXY_LIMITS_FILE)
+    try:
+        fd = _open_regular(target)
+        with os.fdopen(fd, "rb") as f:
+            if f.read(PROXY_LIMITS_MAX_BYTES + 1) == want:
+                return False
+    except OSError:
+        pass
+    tmp = os.path.join(root, f".{PROXY_LIMITS_FILE}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(want)
+        os.rename(tmp, target)
+    except OSError:
+        _unlink_quiet(tmp)
+        raise
+    log.info("page_capture: wrote proxy limits %s", want.decode().strip())
+    return True
+
+
 # ── timeout sweep and tick ───────────────────────────────────────────────────
 
 
@@ -740,6 +900,11 @@ def tick() -> None:
     db = SessionLocal()
     try:
         try:
+            write_proxy_limits(db)
+        except Exception:
+            db.rollback()
+            log.exception("page_capture: writing the proxy limits failed")
+        try:
             _check_spool_dirs()
         except OSError:
             log.error("page_capture: spool directories are missing; skipping ingest", exc_info=True)
@@ -754,6 +919,12 @@ def tick() -> None:
         except Exception:
             db.rollback()
             log.exception("page_capture: timeout sweep failed")
+        try:
+            prune_images(db)
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception("page_capture: image prune failed")
     except Exception:
         log.exception("page_capture: tick failed")
     finally:

@@ -8,6 +8,14 @@ export const MAX_IMAGE_BYTES_MIN = 65536
 export const MAX_IMAGE_BYTES_MAX = 8388608
 export const QUEUE_TIMEOUT_MIN = 60
 export const QUEUE_TIMEOUT_MAX = 3600
+export const IMAGE_KEEP_MIN = 1
+export const IMAGE_KEEP_MAX = 50
+export const PROXY_CONNECT_TIMEOUT_MIN = 1
+export const PROXY_CONNECT_TIMEOUT_MAX = 60
+export const PROXY_IDLE_TIMEOUT_MIN = 5
+export const PROXY_IDLE_TIMEOUT_MAX = 600
+export const PROXY_MAX_CONN_MIN = 1
+export const PROXY_MAX_CONN_MAX = 1024
 export const UA_MAX_LEN = 256
 export const IMAGE_KIB_MIN = MAX_IMAGE_BYTES_MIN / 1024 // 64
 export const IMAGE_KIB_MAX = MAX_IMAGE_BYTES_MAX / 1024 // 8192
@@ -39,5 +47,13 @@ export function validateCaptureSettings(d: CaptureSettings): string | null {
     return `Max screenshot size must be a whole number of KiB from ${IMAGE_KIB_MIN} to ${IMAGE_KIB_MAX}.`
   if (!inRange(d.queue_timeout_seconds, QUEUE_TIMEOUT_MIN, QUEUE_TIMEOUT_MAX))
     return `Queue timeout must be a whole number from ${QUEUE_TIMEOUT_MIN} to ${QUEUE_TIMEOUT_MAX} seconds.`
+  if (!inRange(d.image_keep_count, IMAGE_KEEP_MIN, IMAGE_KEEP_MAX))
+    return `Screenshots kept per domain must be a whole number from ${IMAGE_KEEP_MIN} to ${IMAGE_KEEP_MAX}.`
+  if (!inRange(d.proxy_connect_timeout_seconds, PROXY_CONNECT_TIMEOUT_MIN, PROXY_CONNECT_TIMEOUT_MAX))
+    return `Proxy connect timeout must be a whole number from ${PROXY_CONNECT_TIMEOUT_MIN} to ${PROXY_CONNECT_TIMEOUT_MAX} seconds.`
+  if (!inRange(d.proxy_idle_timeout_seconds, PROXY_IDLE_TIMEOUT_MIN, PROXY_IDLE_TIMEOUT_MAX))
+    return `Proxy idle timeout must be a whole number from ${PROXY_IDLE_TIMEOUT_MIN} to ${PROXY_IDLE_TIMEOUT_MAX} seconds.`
+  if (!inRange(d.proxy_max_connections, PROXY_MAX_CONN_MIN, PROXY_MAX_CONN_MAX))
+    return `Proxy max connections must be a whole number from ${PROXY_MAX_CONN_MIN} to ${PROXY_MAX_CONN_MAX}.`
   return null
 }

@@ -16,7 +16,10 @@ RUN groupadd --gid 10050 capture-spool \
     && useradd --uid 10001 --create-home --shell /bin/false --groups capture-spool capture-proxy \
     && mkdir /proxylog \
     && chown 10001:10050 /proxylog \
-    && chmod 2770 /proxylog
+    && chmod 2770 /proxylog \
+    && mkdir /capture_config \
+    && chown 10001:10050 /capture_config \
+    && chmod 2770 /capture_config
 
 COPY --from=py-builder /install /usr/local
 # ip_blocklist.py is byte-identical to backend/app/core/ip_blocklist.py and

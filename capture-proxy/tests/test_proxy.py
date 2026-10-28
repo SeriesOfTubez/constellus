@@ -15,6 +15,7 @@ import contextlib
 import inspect
 import ipaddress
 import json
+import os
 import socket
 
 import pytest
@@ -679,3 +680,263 @@ def test_build_proxy_from_env_uses_file_log_only_when_dir_set(tmp_path, capsys):
     p._log(_rec(GOOD_ID))
     assert (tmp_path / f"{GOOD_ID}.jsonl").exists()
     assert _stdout_hosts(capsys) == ["example.com"]
+
+
+# ── limits file (planning#317) ────────────────────────────────────────────────
+
+DEFAULTS = proxy_mod.Limits(10, 30, 256)
+
+
+def _doc(**kw) -> bytes:
+    base = {"connect_timeout_s": 10, "idle_timeout_s": 30, "max_connections": 256, "version": 1}
+    base.update(kw)
+    return json.dumps(base).encode()
+
+
+def _write_limits(path, **kw):
+    """tmp + rename, as the backend does, so each write is a new inode."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(_doc(**kw) + b"\n")
+    os.replace(tmp, path)
+
+
+def test_parse_limits_valid():
+    got = proxy_mod.parse_limits(_doc(connect_timeout_s=7, idle_timeout_s=99, max_connections=5), DEFAULTS)
+    assert got == proxy_mod.Limits(7, 99, 5)
+
+
+@pytest.mark.parametrize(
+    "field,value,expected",
+    [
+        ("connect_timeout_s", 0, 1),
+        ("connect_timeout_s", 61, 60),
+        ("idle_timeout_s", 1, 5),
+        ("idle_timeout_s", 601, 600),
+        ("max_connections", -3, 1),
+        ("max_connections", 5000, 1024),
+    ],
+)
+def test_parse_limits_clamps_each_field(field, value, expected):
+    got = proxy_mod.parse_limits(_doc(**{field: value}), DEFAULTS)
+    assert getattr(got, field) == expected
+    for other in ("connect_timeout_s", "idle_timeout_s", "max_connections"):
+        if other != field:
+            assert getattr(got, other) == getattr(DEFAULTS, other)
+
+
+@pytest.mark.parametrize("bad", [True, 1.5, "7", None, [1]])
+@pytest.mark.parametrize("field", ["connect_timeout_s", "idle_timeout_s", "max_connections"])
+def test_parse_limits_wrong_type_falls_back_per_field(field, bad):
+    other = proxy_mod.Limits(10, 30, 256)
+    doc = {"connect_timeout_s": 3, "idle_timeout_s": 40, "max_connections": 9, "version": 1}
+    doc[field] = bad
+    got = proxy_mod.parse_limits(json.dumps(doc).encode(), other)
+    assert getattr(got, field) == getattr(other, field)
+    for name, v in (("connect_timeout_s", 3), ("idle_timeout_s", 40), ("max_connections", 9)):
+        if name != field:
+            assert getattr(got, name) == v
+
+
+def test_parse_limits_missing_field_uses_default():
+    got = proxy_mod.parse_limits(b'{"version":1,"max_connections":4}', DEFAULTS)
+    assert got == proxy_mod.Limits(10, 30, 4)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [b"not json", b"[1,2]", b"3", b'"x"', b"null", _doc(version=2), b'{"max_connections":4}',
+     _doc(version=True), b"\xff\xfe{}", b""],
+)
+def test_parse_limits_bad_document_is_defaults(data):
+    assert proxy_mod.parse_limits(data, DEFAULTS) == DEFAULTS
+
+
+def test_limits_source_missing_file_is_defaults(tmp_path):
+    src = proxy_mod.LimitsSource(str(tmp_path / "nope.json"), DEFAULTS)
+    assert src.current() == DEFAULTS
+    assert src.current() == DEFAULTS
+
+
+def test_limits_source_picks_up_write_and_rename_replace(tmp_path):
+    path = tmp_path / "proxy_limits.json"
+    src = proxy_mod.LimitsSource(str(path), DEFAULTS)
+    assert src.current() == DEFAULTS
+    _write_limits(path, max_connections=3)
+    assert src.current().max_connections == 3
+    _write_limits(path, max_connections=4)  # same size, new inode
+    assert src.current().max_connections == 4
+
+
+def test_limits_source_does_not_reread_an_unchanged_file(tmp_path, monkeypatch):
+    path = tmp_path / "proxy_limits.json"
+    _write_limits(path, max_connections=3)
+    opened = []
+    real_open = os.open
+
+    def spy(p, *a, **kw):
+        opened.append(p)
+        return real_open(p, *a, **kw)
+
+    monkeypatch.setattr(proxy_mod.os, "open", spy)
+    src = proxy_mod.LimitsSource(str(path), DEFAULTS)
+    assert src.current().max_connections == 3
+    assert len(opened) == 1  # the first call DID read (non-vacuous)
+    for _ in range(5):
+        assert src.current().max_connections == 3
+    assert len(opened) == 1  # unchanged key: no read
+    _write_limits(path, max_connections=4)
+    assert src.current().max_connections == 4
+    assert len(opened) == 2
+
+
+def test_limits_source_retries_a_file_that_failed_to_read(tmp_path, monkeypatch):
+    """A transient read failure (stat key unchanged) must not pin the defaults."""
+    path = tmp_path / "proxy_limits.json"
+    _write_limits(path, max_connections=3)
+    real_open = os.open
+    attempts = []
+
+    def flaky(p, *a, **kw):
+        attempts.append(p)
+        if len(attempts) == 1:
+            raise PermissionError(13, "transient")
+        return real_open(p, *a, **kw)
+
+    monkeypatch.setattr(proxy_mod.os, "open", flaky)
+    src = proxy_mod.LimitsSource(str(path), DEFAULTS)
+    assert src.current() == DEFAULTS
+    assert len(attempts) == 1  # the read WAS attempted (non-vacuous)
+    assert src.current().max_connections == 3  # same stat key, retried
+
+
+def test_limits_source_symlink_is_defaults(tmp_path):
+    real = tmp_path / "real.json"
+    real.write_bytes(_doc(max_connections=3))
+    link = tmp_path / "proxy_limits.json"
+    link.symlink_to(real)
+    assert proxy_mod.LimitsSource(str(link), DEFAULTS).current() == DEFAULTS
+
+
+def test_limits_source_oversize_file_is_defaults(tmp_path):
+    path = tmp_path / "proxy_limits.json"
+    pad = " " * proxy_mod.LIMITS_FILE_MAX_BYTES
+    path.write_bytes(_doc(max_connections=3) + pad.encode())
+    assert proxy_mod.LimitsSource(str(path), DEFAULTS).current() == DEFAULTS
+
+
+def test_limits_source_fifo_is_defaults_without_hanging(tmp_path):
+    path = tmp_path / "proxy_limits.json"
+    os.mkfifo(path)
+    assert run(asyncio.to_thread(proxy_mod.LimitsSource(str(path), DEFAULTS).current)) == DEFAULTS
+
+
+def test_limits_source_directory_never_raises(tmp_path):
+    assert proxy_mod.LimitsSource(str(tmp_path), DEFAULTS).current() == DEFAULTS
+
+
+def test_limits_source_logs_a_change_once_to_stderr(tmp_path, capsys):
+    path = tmp_path / "proxy_limits.json"
+    src = proxy_mod.LimitsSource(str(path), DEFAULTS)
+    src.current()
+    src.current()
+    first = capsys.readouterr()
+    assert first.out == ""
+    assert first.err.count("limits source=default") == 1
+    _write_limits(path, max_connections=3)
+    src.current()
+    src.current()
+    second = capsys.readouterr()
+    assert second.out == ""
+    assert second.err.count("source=file") == 1 and "max_connections=3" in second.err
+    # same effective values from a rewritten file: not a change, no line
+    _write_limits(path, max_connections=3)
+    src.current()
+    assert capsys.readouterr().err == ""
+
+
+async def _wait_active(proxy, n):
+    for _ in range(200):
+        if proxy._active == n:
+            return
+        await asyncio.sleep(0.025)
+    assert proxy._active == n
+
+
+def test_handle_capacity_follows_the_limits_file_without_restart(tmp_path):
+    path = tmp_path / "proxy_limits.json"
+    _write_limits(path, max_connections=1)
+    src = proxy_mod.LimitsSource(str(path), DEFAULTS)
+
+    async def go():
+        async with Upstream("echo") as up:
+            async with running(allowed_ports=frozenset({up.port}), limits=src) as (proxy, port, logs):
+                r1, w1 = await asyncio.open_connection("127.0.0.1", port)
+                await _wait_active(proxy, 1)
+                resp = await exchange(port, connect_req("allowed.example", up.port, auth()))
+                assert status(resp) == 503
+                await wait_for_logs(logs)
+                assert logs[0]["reason"] == "capacity"
+                _write_limits(path, max_connections=2)
+                r2, w2 = await asyncio.open_connection("127.0.0.1", port)
+                w2.write(connect_req("allowed.example", up.port, auth()))
+                head = await asyncio.wait_for(r2.readuntil(b"\r\n\r\n"), 5)
+                assert head.startswith(b"HTTP/1.1 200")
+                assert up.connections == 1
+                w1.close()
+                w2.close()
+
+    run(go())
+
+
+def test_handle_idle_timeout_comes_from_the_limits_file(tmp_path):
+    path = tmp_path / "proxy_limits.json"
+    # idle_timeout_s is clamped to >= 5 by parse_limits, so use the floor.
+    _write_limits(path, idle_timeout_s=5)
+    src = proxy_mod.LimitsSource(str(path), proxy_mod.Limits(10, 600, 256))
+
+    async def go():
+        async with Upstream("echo") as up:
+            async with running(allowed_ports=frozenset({up.port}), limits=src) as (_p, port, logs):
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(connect_req("allowed.example", up.port, auth()))
+                await reader.readuntil(b"\r\n\r\n")
+                t0 = asyncio.get_running_loop().time()
+                rest = await asyncio.wait_for(reader.read(), 15)
+                assert rest == b""
+                assert 4 <= asyncio.get_running_loop().time() - t0 < 12
+                writer.close()
+
+    run(go())
+
+
+def test_in_flight_connection_keeps_its_starting_limits(tmp_path):
+    path = tmp_path / "proxy_limits.json"
+    _write_limits(path, idle_timeout_s=5)
+    src = proxy_mod.LimitsSource(str(path), proxy_mod.Limits(10, 600, 256))
+
+    async def go():
+        async with Upstream("echo") as up:
+            async with running(allowed_ports=frozenset({up.port}), limits=src) as (_p, port, logs):
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(connect_req("allowed.example", up.port, auth()))
+                await reader.readuntil(b"\r\n\r\n")  # admitted under idle=5
+                _write_limits(path, idle_timeout_s=600)  # raised after it started
+                t0 = asyncio.get_running_loop().time()
+                rest = await asyncio.wait_for(reader.read(), 15)
+                assert rest == b""  # still closed at ~5s, not 600s
+                assert asyncio.get_running_loop().time() - t0 < 12
+                writer.close()
+
+    run(go())
+
+
+def test_build_proxy_from_env_wires_a_limits_source(tmp_path):
+    p = tmp_path / "x.json"
+    shipped = build_proxy_from_env({"CAPTURE_PROXY_TOKEN": "t", "CAPTURE_LIMITS_FILE": str(p)})
+    assert isinstance(shipped._limits_source, proxy_mod.LimitsSource)
+    assert shipped._limits_source.path == str(p)
+    assert shipped._limits_source.defaults == proxy_mod.Limits(
+        proxy_mod.CONNECT_TIMEOUT_S, proxy_mod.IDLE_TIMEOUT_S, proxy_mod.MAX_CONNECTIONS
+    )
+    default = build_proxy_from_env({"CAPTURE_PROXY_TOKEN": "t"})
+    assert default._limits_source.path == "/capture_config/proxy_limits.json"

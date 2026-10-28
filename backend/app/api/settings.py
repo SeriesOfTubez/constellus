@@ -161,6 +161,10 @@ class CaptureSettings(BaseModel):
     identifying_user_agent: str  # "" when unset or invalid
     max_image_bytes: int
     queue_timeout_seconds: int
+    image_keep_count: int
+    proxy_connect_timeout_seconds: int
+    proxy_idle_timeout_seconds: int
+    proxy_max_connections: int
 
 
 class CaptureSettingsUpdate(BaseModel):
@@ -175,6 +179,18 @@ class CaptureSettingsUpdate(BaseModel):
     )
     queue_timeout_seconds: int | None = Field(
         default=None, ge=page_capture.QUEUE_TIMEOUT_MIN, le=page_capture.QUEUE_TIMEOUT_MAX
+    )
+    image_keep_count: int | None = Field(
+        default=None, ge=page_capture.IMAGE_KEEP_MIN, le=page_capture.IMAGE_KEEP_MAX
+    )
+    proxy_connect_timeout_seconds: int | None = Field(
+        default=None, ge=page_capture.PROXY_CONNECT_TIMEOUT_MIN, le=page_capture.PROXY_CONNECT_TIMEOUT_MAX
+    )
+    proxy_idle_timeout_seconds: int | None = Field(
+        default=None, ge=page_capture.PROXY_IDLE_TIMEOUT_MIN, le=page_capture.PROXY_IDLE_TIMEOUT_MAX
+    )
+    proxy_max_connections: int | None = Field(
+        default=None, ge=page_capture.PROXY_MAX_CONNECTIONS_MIN, le=page_capture.PROXY_MAX_CONNECTIONS_MAX
     )
 
     @field_validator("identifying_user_agent")
@@ -194,6 +210,10 @@ def _capture_current(db: Session) -> CaptureSettings:
         identifying_user_agent=page_capture.identifying_user_agent(db) or "",
         max_image_bytes=page_capture.max_image_bytes(db),
         queue_timeout_seconds=page_capture.queue_timeout_seconds(db),
+        image_keep_count=page_capture.image_keep_count(db),
+        proxy_connect_timeout_seconds=page_capture.proxy_connect_timeout_seconds(db),
+        proxy_idle_timeout_seconds=page_capture.proxy_idle_timeout_seconds(db),
+        proxy_max_connections=page_capture.proxy_max_connections(db),
     )
 
 
@@ -225,6 +245,10 @@ def put_capture_settings(
         "identifying_user_agent": page_capture.IDENTIFYING_UA_KEY,
         "max_image_bytes": page_capture.MAX_IMAGE_BYTES_KEY,
         "queue_timeout_seconds": page_capture.QUEUE_TIMEOUT_KEY,
+        "image_keep_count": page_capture.IMAGE_KEEP_COUNT_KEY,
+        "proxy_connect_timeout_seconds": page_capture.PROXY_CONNECT_TIMEOUT_KEY,
+        "proxy_idle_timeout_seconds": page_capture.PROXY_IDLE_TIMEOUT_KEY,
+        "proxy_max_connections": page_capture.PROXY_MAX_CONNECTIONS_KEY,
     }
     changes = {}
     for field, key in keys.items():

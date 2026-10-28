@@ -946,6 +946,10 @@ export type CaptureSettings = {
   identifying_user_agent: string
   max_image_bytes: number
   queue_timeout_seconds: number
+  image_keep_count: number
+  proxy_connect_timeout_seconds: number
+  proxy_idle_timeout_seconds: number
+  proxy_max_connections: number
 }
 
 export type EpssHistoryPoint = {
