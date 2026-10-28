@@ -69,6 +69,8 @@ class PageCapture(Base):
     # the current setting.
     user_agent_mode: Mapped[str] = mapped_column(Text, nullable=False)
     image_max_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Migration 0093: set when the image FILE was pruned; the row stays (see its docstring).
+    image_pruned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PageCaptureRequest(Base):

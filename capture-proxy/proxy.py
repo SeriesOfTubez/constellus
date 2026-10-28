@@ -36,6 +36,7 @@ import json
 import os
 import re
 import signal
+import stat
 import socket
 import sys
 import time
@@ -50,12 +51,21 @@ import h11
 import ip_blocklist
 
 # ── Limits ────────────────────────────────────────────────────────────────────
-# First slice: module constants, pending promotion to admin settings
-# (planning#317). ALLOWED_PORTS is deliberately NOT in that list: it is
-# a guard, not a tunable, and stays a constant.
+# The three tunables below are DEFAULTS. Admin settings reach the proxy through
+# a JSON limits file the backend writes onto a volume mounted read-only here
+# (planning#317); see LimitsSource. ALLOWED_PORTS, the blocklist, auth and
+# resolve-once pinning are guards, never tunables, and never read that file.
 CONNECT_TIMEOUT_S = 10
 IDLE_TIMEOUT_S = 30  # no bytes in either direction for this long -> close
 MAX_CONNECTIONS = 256  # concurrent client connections; beyond -> 503
+# Bounds, mirrored by the backend settings validation (a drift test parses these
+# with ast, so they must stay plain module-level literals).
+CONNECT_TIMEOUT_BOUNDS = (1, 60)
+IDLE_TIMEOUT_BOUNDS = (5, 600)
+MAX_CONNECTIONS_BOUNDS = (1, 1024)
+LIMITS_FILE_VERSION = 1
+LIMITS_FILE_MAX_BYTES = 4096
+LIMITS_FILE_NAME = "proxy_limits.json"
 MAX_HEAD_BYTES = 16 * 1024  # request head cap (h11 max_incomplete_event_size)
 
 ALLOWED_PORTS = frozenset({80, 443})
@@ -67,6 +77,117 @@ _HOP_BY_HOP = frozenset(
 )
 
 Resolver = Callable[[str, int], Awaitable[list[str]]]
+
+
+# ── Limits file ───────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Limits:
+    connect_timeout_s: float
+    idle_timeout_s: float
+    max_connections: int
+
+
+def _clamp(value: int, bounds: tuple[int, int]) -> int:
+    return max(bounds[0], min(bounds[1], value))
+
+
+def parse_limits(data: bytes, defaults: Limits) -> Limits:
+    """Pure. Bad document -> defaults; per field, a non-int (bool included) or
+    missing value -> that field's default; an int is clamped into its bounds."""
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return defaults
+    if not isinstance(doc, dict):
+        return defaults
+    version = doc.get("version")
+    if type(version) is not int or version != LIMITS_FILE_VERSION:
+        return defaults
+
+    def field_value(name: str, bounds: tuple[int, int], default):
+        v = doc.get(name)
+        if type(v) is not int:  # excludes bool, float, str, None
+            return default
+        return _clamp(v, bounds)
+
+    return Limits(
+        connect_timeout_s=field_value(
+            "connect_timeout_s", CONNECT_TIMEOUT_BOUNDS, defaults.connect_timeout_s
+        ),
+        idle_timeout_s=field_value(
+            "idle_timeout_s", IDLE_TIMEOUT_BOUNDS, defaults.idle_timeout_s
+        ),
+        max_connections=field_value(
+            "max_connections", MAX_CONNECTIONS_BOUNDS, defaults.max_connections
+        ),
+    )
+
+
+class LimitsSource:
+    """Reads the limits file lazily, once per new connection, never raising.
+
+    The file is re-read only when (inode, mtime_ns, size) changes; the backend
+    writes tmp + rename so every write has a new inode. It still stats on every
+    call (intended, including for a missing file)."""
+
+    def __init__(self, path: str, defaults: Limits) -> None:
+        self.path = path
+        self.defaults = defaults
+        self._key: tuple | None = None
+        self._have_cache = False
+        self._cached = defaults
+        self._announced: tuple[str, Limits] | None = None
+
+    def current(self) -> Limits:
+        try:
+            st = os.stat(self.path)
+            key: tuple | None = (st.st_ino, st.st_mtime_ns, st.st_size)
+        except OSError:
+            key = None
+        if self._have_cache and key == self._key:
+            return self._cached
+        if key is None:
+            value, origin = self.defaults, "default"
+        else:
+            value, origin = self._read()
+        # A file that exists but could not be read is not cached: the backend
+        # rewrites only when content differs, so a cached transient failure
+        # would pin the defaults until the next settings change.
+        cacheable = key is None or origin == "file"
+        self._key, self._cached, self._have_cache = key, value, cacheable
+        if self._announced != (origin, value):
+            self._announced = (origin, value)
+            print(
+                f"capture-proxy: limits source={origin} "
+                f"connect_timeout_s={value.connect_timeout_s} "
+                f"idle_timeout_s={value.idle_timeout_s} "
+                f"max_connections={value.max_connections}",
+                file=sys.stderr,
+                flush=True,
+            )
+        return value
+
+    def _read(self) -> tuple[Limits, str]:
+        fd = -1
+        try:
+            fd = os.open(
+                self.path,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            )
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return self.defaults, "default"
+            data = os.read(fd, LIMITS_FILE_MAX_BYTES + 1)
+            if len(data) > LIMITS_FILE_MAX_BYTES:
+                return self.defaults, "default"
+        except OSError:
+            return self.defaults, "default"
+        finally:
+            if fd >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+        return parse_limits(data, self.defaults), "file"
 
 
 # ── Decision ──────────────────────────────────────────────────────────────────
@@ -324,6 +445,7 @@ class Proxy:
         max_connections: int = MAX_CONNECTIONS,
         idle_timeout_s: float = IDLE_TIMEOUT_S,
         connect_timeout_s: float = CONNECT_TIMEOUT_S,
+        limits: LimitsSource | None = None,
         log: Callable[[dict], None] = emit_stdout,
     ) -> None:
         if not token:
@@ -332,20 +454,31 @@ class Proxy:
         self.is_blocked = is_blocked
         self.resolver = resolver
         self.allowed_ports = allowed_ports
-        self.max_connections = max_connections
-        self.idle_timeout_s = idle_timeout_s
-        self.connect_timeout_s = connect_timeout_s
+        # Static limits (tests); a LimitsSource, when given, supersedes them.
+        self._static_limits = Limits(connect_timeout_s, idle_timeout_s, max_connections)
+        self._limits_source = limits
         self._log = log
         self._active = 0
 
-    async def decide(self, host: str, port: int) -> Decision:
+    def _current_limits(self) -> Limits:
+        if self._limits_source is None:
+            return self._static_limits
+        return self._limits_source.current()
+
+    async def decide(
+        self, host: str, port: int, connect_timeout_s: float | None = None
+    ) -> Decision:
         return await decide(
             host,
             port,
             is_blocked=self.is_blocked,
             resolver=self.resolver,
             allowed_ports=self.allowed_ports,
-            resolve_timeout_s=self.connect_timeout_s,
+            resolve_timeout_s=(
+                self._static_limits.connect_timeout_s
+                if connect_timeout_s is None
+                else connect_timeout_s
+            ),
         )
 
     # -- auth ------------------------------------------------------------------
@@ -380,7 +513,8 @@ class Proxy:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         rec = _Rec()
-        if self._active >= self.max_connections:
+        limits = self._current_limits()  # one snapshot; kept for the whole connection
+        if self._active >= limits.max_connections:
             rec.reason = "capacity"
             await self._respond(reader, writer, 503, "Service Unavailable", rec.reason)
             self._log(rec.as_dict())
@@ -388,7 +522,7 @@ class Proxy:
             return
         self._active += 1
         try:
-            await self._serve(reader, writer, rec)
+            await self._serve(reader, writer, rec, limits)
         except Exception as exc:
             print(f"capture-proxy: internal error: {exc!r}", file=sys.stderr, flush=True)
             if rec.decision == "deny" and rec.reason is None:
@@ -400,7 +534,11 @@ class Proxy:
             await _close(writer)
 
     async def _read_head(
-        self, reader: asyncio.StreamReader, conn: h11.Connection, rec: _Rec
+        self,
+        reader: asyncio.StreamReader,
+        conn: h11.Connection,
+        rec: _Rec,
+        limits: Limits,
     ) -> h11.Request:
         got_bytes = False
         while True:
@@ -410,7 +548,7 @@ class Proxy:
                 raise _BadRequest("protocol") from None
             if event is h11.NEED_DATA:
                 try:
-                    data = await asyncio.wait_for(reader.read(65536), self.idle_timeout_s)
+                    data = await asyncio.wait_for(reader.read(65536), limits.idle_timeout_s)
                 except asyncio.TimeoutError:
                     data = b""
                 if not data:
@@ -425,11 +563,15 @@ class Proxy:
                 raise _BadRequest("unexpected event")
 
     async def _serve(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, rec: _Rec
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        rec: _Rec,
+        limits: Limits,
     ) -> None:
         conn = h11.Connection(h11.SERVER, max_incomplete_event_size=MAX_HEAD_BYTES)
         try:
-            request = await self._read_head(reader, conn, rec)
+            request = await self._read_head(reader, conn, rec, limits)
         except _BadRequest:
             rec.reason = "bad_request"
             if rec.emit:
@@ -463,7 +605,7 @@ class Proxy:
             await self._respond(reader, writer, 400, "Bad Request", rec.reason)
             return
 
-        decision = await self.decide(target.host, target.port)
+        decision = await self.decide(target.host, target.port, limits.connect_timeout_s)
         rec.resolved = decision.resolved
         if not decision.allowed:
             rec.reason = decision.reason
@@ -475,7 +617,7 @@ class Proxy:
         for ip in decision.candidates:
             try:
                 upstream = await asyncio.wait_for(
-                    asyncio.open_connection(ip, target.port), self.connect_timeout_s
+                    asyncio.open_connection(ip, target.port), limits.connect_timeout_s
                 )
             except (OSError, asyncio.TimeoutError):
                 continue
@@ -490,9 +632,9 @@ class Proxy:
         rec.decision = "allow"
         try:
             if target.scheme == "connect":
-                await self._tunnel(reader, writer, up_reader, up_writer, conn, rec)
+                await self._tunnel(reader, writer, up_reader, up_writer, conn, rec, limits)
             else:
-                await self._forward(reader, writer, up_reader, up_writer, conn, request, target, rec)
+                await self._forward(reader, writer, up_reader, up_writer, conn, request, target, rec, limits)
         except (OSError, h11.ProtocolError):
             pass  # peer reset mid-flight: the request was allowed; bytes are logged
         finally:
@@ -500,7 +642,9 @@ class Proxy:
 
     # -- CONNECT -----------------------------------------------------------------
 
-    async def _tunnel(self, reader, writer, up_reader, up_writer, conn, rec: _Rec) -> None:
+    async def _tunnel(
+        self, reader, writer, up_reader, up_writer, conn, rec: _Rec, limits: Limits
+    ) -> None:
         writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         await writer.drain()
         leftover, _closed = conn.trailing_data
@@ -531,7 +675,7 @@ class Proxy:
         }
         try:
             while True:
-                remaining = last + self.idle_timeout_s - time.monotonic()
+                remaining = last + limits.idle_timeout_s - time.monotonic()
                 if remaining <= 0:
                     break
                 done, _pending = await asyncio.wait(
@@ -547,7 +691,16 @@ class Proxy:
     # -- absolute-form HTTP --------------------------------------------------------
 
     async def _forward(
-        self, reader, writer, up_reader, up_writer, conn, request, target: _Target, rec: _Rec
+        self,
+        reader,
+        writer,
+        up_reader,
+        up_writer,
+        conn,
+        request,
+        target: _Target,
+        rec: _Rec,
+        limits: Limits,
     ) -> None:
         listed = set()
         for name, value in request.headers:
@@ -576,7 +729,7 @@ class Proxy:
             event = conn.next_event()
             if event is h11.NEED_DATA:
                 try:
-                    data = await asyncio.wait_for(reader.read(65536), self.idle_timeout_s)
+                    data = await asyncio.wait_for(reader.read(65536), limits.idle_timeout_s)
                 except asyncio.TimeoutError:
                     return
                 if not data:
@@ -599,7 +752,7 @@ class Proxy:
 
         while True:
             try:
-                data = await asyncio.wait_for(up_reader.read(65536), self.idle_timeout_s)
+                data = await asyncio.wait_for(up_reader.read(65536), limits.idle_timeout_s)
             except asyncio.TimeoutError:
                 return
             if not data:
@@ -663,7 +816,11 @@ def build_proxy_from_env(env=os.environ) -> Proxy:
         raise SystemExit(
             "capture-proxy: CAPTURE_PROXY_TOKEN is unset or empty; refusing to start"
         )
-    return Proxy(token=token, log=make_log(env.get("CAPTURE_PROXY_LOG_DIR")))
+    limits = LimitsSource(
+        env.get("CAPTURE_LIMITS_FILE", "/capture_config/" + LIMITS_FILE_NAME),
+        defaults=Limits(CONNECT_TIMEOUT_S, IDLE_TIMEOUT_S, MAX_CONNECTIONS),
+    )
+    return Proxy(token=token, limits=limits, log=make_log(env.get("CAPTURE_PROXY_LOG_DIR")))
 
 
 async def serve(proxy: Proxy, host: str, port: int) -> asyncio.Server:

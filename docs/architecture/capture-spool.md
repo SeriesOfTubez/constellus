@@ -171,3 +171,28 @@ the result of another capture that is still `queued`. It cannot:
 - change the result of a capture that has already been ingested.
 
 Capture rows are evidence that a person reads, never an authorisation.
+
+## Proxy limits
+
+The proxy has no database and no route to the backend, so its tunable limits
+travel through a volume: `capture_config`, mounted read-write on the backend at
+`/capture_config` and read-only on capture-proxy.
+
+- **File:** `/capture_config/proxy_limits.json`, one line of canonical JSON
+  (sorted keys, no spaces): `{"connect_timeout_s":10,"idle_timeout_s":30,"max_connections":256,"version":1}`.
+- **Writer:** the backend's `page_capture.tick()`, as its first step every
+  pass. It rewrites the file whenever its content differs from the current
+  settings (`capture.proxy_connect_timeout_seconds`,
+  `capture.proxy_idle_timeout_seconds`, `capture.proxy_max_connections`), so a
+  fresh volume or a restart heals itself. The settings PUT does not write it.
+  The write is a temp file plus rename; a symlink at the target is replaced, not
+  followed, and a config directory that is a symlink is refused.
+- **Reader:** the proxy checks `(st_ino, st_mtime_ns, st_size)` of the file on
+  each new connection and re-reads it only when that key changes.
+- **Clamping:** the proxy clamps every value to its own bounds (connect 1-60 s,
+  idle 5-600 s, connections 1-1024). A missing, oversize (over 4096 bytes),
+  malformed or wrong-version file means the defaults (10 s, 30 s, 256).
+- **In flight:** connections already open keep the limits they started with.
+- **Guards are not settings.** `ALLOWED_PORTS`, the address blocklist, proxy
+  authentication and resolve-once pinning are constants and are never read from
+  this file or from any setting.

@@ -197,7 +197,8 @@ from app.services import page_capture as pc  # noqa: E402
 
 WEBP = b"RIFF" + b"\x10\x00\x00\x00" + b"WEBP" + b"VP8 " + b"\x00" * 32
 _KEYS = (pc.REVISIT_DAYS_KEY, pc.USER_AGENT_MODE_KEY, pc.IDENTIFYING_UA_KEY, pc.MAX_IMAGE_BYTES_KEY,
-         pc.QUEUE_TIMEOUT_KEY)
+         pc.QUEUE_TIMEOUT_KEY, pc.IMAGE_KEEP_COUNT_KEY, pc.PROXY_CONNECT_TIMEOUT_KEY,
+         pc.PROXY_IDLE_TIMEOUT_KEY, pc.PROXY_MAX_CONNECTIONS_KEY)
 
 
 @pytest.fixture
@@ -363,7 +364,9 @@ def test_settings_get_defaults_and_permissions(w, cap_settings):
     ok = client.get(S, headers=w.headers())
     assert ok.status_code == 200
     assert set(ok.json()) == {"browse_revisit_days", "user_agent_mode", "identifying_user_agent",
-                              "max_image_bytes", "queue_timeout_seconds"}
+                              "max_image_bytes", "queue_timeout_seconds", "image_keep_count",
+                              "proxy_connect_timeout_seconds", "proxy_idle_timeout_seconds",
+                              "proxy_max_connections"}
     assert client.get(S).status_code in (401, 403)
     assert client.put(S, headers=w.headers(role=VIEWER), json={"browse_revisit_days": 5}).status_code == 403
     assert client.put(S, json={"browse_revisit_days": 5}).status_code in (401, 403)
@@ -373,6 +376,9 @@ def test_settings_get_defaults_and_permissions(w, cap_settings):
     {"browse_revisit_days": 0}, {"browse_revisit_days": 366}, {"max_image_bytes": 1000},
     {"max_image_bytes": pc.IMAGE_BYTES_CEILING + 1}, {"queue_timeout_seconds": 59},
     {"queue_timeout_seconds": 3601}, {"user_agent_mode": "sneaky"}, {"identifying_user_agent": "a\r\nb"},
+    {"image_keep_count": 0}, {"image_keep_count": 51}, {"proxy_connect_timeout_seconds": 0},
+    {"proxy_connect_timeout_seconds": 61}, {"proxy_idle_timeout_seconds": 4}, {"proxy_idle_timeout_seconds": 601},
+    {"proxy_max_connections": 0}, {"proxy_max_connections": 1025},
     {"identifying_user_agent": "café"}, {"identifying_user_agent": "a" * 257}, {"browse_revisit_days": "x"},
 ])
 def test_settings_put_bounds_are_422_and_write_nothing(w, cap_settings, bad):
@@ -412,3 +418,44 @@ def test_settings_put_round_trips_and_audits_from_to(w, cap_settings):
     hit = [c for c in changes if c.get("capture_browse_revisit_days") == {"from": 30, "to": 7}]
     assert hit and hit[0]["capture_queue_timeout_seconds"] == {"from": base["queue_timeout_seconds"], "to": 900}
     assert "capture_max_image_bytes" not in hit[0]  # only changed keys are audited
+
+
+def test_settings_new_fields_round_trip_default_and_audit(w, cap_settings):
+    h = w.headers()
+    with SessionLocal() as s:
+        for k in _KEYS[5:]:
+            row = s.get(AppSetting, k)
+            if row is not None:
+                s.delete(row)
+        s.commit()
+    d = client.get(S, headers=h).json()
+    assert (d["image_keep_count"], d["proxy_connect_timeout_seconds"], d["proxy_idle_timeout_seconds"],
+            d["proxy_max_connections"]) == (3, 10, 30, 256)
+    r = client.put(S, headers=h, json={"image_keep_count": 7, "proxy_connect_timeout_seconds": 20,
+                                       "proxy_idle_timeout_seconds": 60, "proxy_max_connections": 100})
+    assert r.status_code == 200, r.text
+    assert r.json() == client.get(S, headers=h).json()
+    assert (r.json()["image_keep_count"], r.json()["proxy_connect_timeout_seconds"],
+            r.json()["proxy_idle_timeout_seconds"], r.json()["proxy_max_connections"]) == (7, 20, 60, 100)
+    with SessionLocal() as s:
+        assert pc.image_keep_count(s) == 7 and pc.proxy_max_connections(s) == 100
+        changes = [x.detail.get("changes", {}) for x in
+                   s.query(AuditLog).order_by(AuditLog.occurred_at.desc()).limit(30).all() if x.detail]
+    hit = [c for c in changes if c.get("capture_image_keep_count") == {"from": 3, "to": 7}]
+    assert hit
+    assert hit[0]["capture_proxy_connect_timeout_seconds"] == {"from": 10, "to": 20}
+    assert hit[0]["capture_proxy_idle_timeout_seconds"] == {"from": 30, "to": 60}
+    assert hit[0]["capture_proxy_max_connections"] == {"from": 256, "to": 100}
+
+
+def test_capture_response_carries_image_pruned_at(w, env):
+    c = _candidate(w)
+    row = _image_row(w, env, c)
+    row.image_path = None
+    row.image_pruned_at = datetime.now(timezone.utc)
+    w.db.commit()
+    live = _image_row(w, env, c)
+    rows = {x["id"]: x for x in client.get(
+        f"/api/organizations/candidates/{c.id}/captures", headers=w.headers()).json()}
+    assert rows[str(row.id)]["image_pruned_at"] is not None and rows[str(row.id)]["has_image"] is False
+    assert rows[str(live.id)]["image_pruned_at"] is None and rows[str(live.id)]["has_image"] is True

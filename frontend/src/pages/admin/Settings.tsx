@@ -19,7 +19,9 @@ import { BASE_URL_MAX, digestHourWarning, validBaseUrl, validDigestHour } from "
 import { Switch } from "@/components/ui/switch"
 import {
   IMAGE_KIB_MAX, IMAGE_KIB_MIN, QUEUE_TIMEOUT_MAX, QUEUE_TIMEOUT_MIN, REVISIT_DAYS_MAX,
-  REVISIT_DAYS_MIN, UA_MAX_LEN, bytesToKiB, kibToBytes, validateCaptureSettings,
+  REVISIT_DAYS_MIN, UA_MAX_LEN, IMAGE_KEEP_MAX, IMAGE_KEEP_MIN, PROXY_CONNECT_TIMEOUT_MAX,
+  PROXY_CONNECT_TIMEOUT_MIN, PROXY_IDLE_TIMEOUT_MAX, PROXY_IDLE_TIMEOUT_MIN, PROXY_MAX_CONN_MAX,
+  PROXY_MAX_CONN_MIN, bytesToKiB, kibToBytes, validateCaptureSettings,
 } from "@/lib/captureSettings"
 import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type CaptureSettings, type DigestSettings, type DigestSummary, type SystemStatus } from "@/lib/api"
 
@@ -850,6 +852,10 @@ export function CaptureSettingsCard() {
   const [ua, setUa] = useState("")
   const [kib, setKib] = useState("")
   const [timeout, setTimeoutS] = useState("")
+  const [keep, setKeep] = useState("")
+  const [connT, setConnT] = useState("")
+  const [idleT, setIdleT] = useState("")
+  const [maxConn, setMaxConn] = useState("")
   useEffect(() => {
     if (!data) return
     setDays(String(data.browse_revisit_days))
@@ -857,6 +863,10 @@ export function CaptureSettingsCard() {
     setUa(data.identifying_user_agent)
     setKib(String(bytesToKiB(data.max_image_bytes)))
     setTimeoutS(String(data.queue_timeout_seconds))
+    setKeep(String(data.image_keep_count))
+    setConnT(String(data.proxy_connect_timeout_seconds))
+    setIdleT(String(data.proxy_idle_timeout_seconds))
+    setMaxConn(String(data.proxy_max_connections))
   }, [data])
 
   const num = (s: string) => (s.trim() === "" ? NaN : Number(s))
@@ -866,6 +876,10 @@ export function CaptureSettingsCard() {
     identifying_user_agent: ua,
     max_image_bytes: kibToBytes(num(kib)),
     queue_timeout_seconds: num(timeout),
+    image_keep_count: num(keep),
+    proxy_connect_timeout_seconds: num(connT),
+    proxy_idle_timeout_seconds: num(idleT),
+    proxy_max_connections: num(maxConn),
   }
   const error = data ? validateCaptureSettings(draft) : null
   const dirty = data !== undefined && (
@@ -873,7 +887,11 @@ export function CaptureSettingsCard() {
     draft.user_agent_mode !== data.user_agent_mode ||
     draft.identifying_user_agent !== data.identifying_user_agent ||
     draft.max_image_bytes !== data.max_image_bytes ||
-    draft.queue_timeout_seconds !== data.queue_timeout_seconds
+    draft.queue_timeout_seconds !== data.queue_timeout_seconds ||
+    draft.image_keep_count !== data.image_keep_count ||
+    draft.proxy_connect_timeout_seconds !== data.proxy_connect_timeout_seconds ||
+    draft.proxy_idle_timeout_seconds !== data.proxy_idle_timeout_seconds ||
+    draft.proxy_max_connections !== data.proxy_max_connections
   )
   const save = useMutation({
     mutationFn: () => api.put<CaptureSettings>("/settings/capture", draft),
@@ -929,6 +947,31 @@ export function CaptureSettingsCard() {
               <Input id="capture-queue-timeout" type="number" min={QUEUE_TIMEOUT_MIN} max={QUEUE_TIMEOUT_MAX} step={1}
                 className="h-8 w-28 text-xs" value={timeout} onChange={(e) => setTimeoutS(e.target.value)} />
               <p className="text-xs text-muted-foreground">A capture not finished in this time is marked timed out.</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="capture-image-keep" className="text-xs text-muted-foreground">Screenshots kept per domain</Label>
+              <Input id="capture-image-keep" type="number" min={IMAGE_KEEP_MIN} max={IMAGE_KEEP_MAX} step={1}
+                className="h-8 w-24 text-xs" value={keep} onChange={(e) => setKeep(e.target.value)} />
+              <p className="text-xs text-muted-foreground">Older screenshot files are deleted; the capture record stays.</p>
+            </div>
+            <div className="space-y-3 border-t pt-3">
+              <h4 className="text-xs font-medium">Capture proxy</h4>
+              <div className="space-y-1">
+                <Label htmlFor="capture-proxy-connect" className="text-xs text-muted-foreground">Proxy connect timeout (s)</Label>
+                <Input id="capture-proxy-connect" type="number" min={PROXY_CONNECT_TIMEOUT_MIN} max={PROXY_CONNECT_TIMEOUT_MAX} step={1}
+                  className="h-8 w-24 text-xs" value={connT} onChange={(e) => setConnT(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="capture-proxy-idle" className="text-xs text-muted-foreground">Proxy idle timeout (s)</Label>
+                <Input id="capture-proxy-idle" type="number" min={PROXY_IDLE_TIMEOUT_MIN} max={PROXY_IDLE_TIMEOUT_MAX} step={1}
+                  className="h-8 w-24 text-xs" value={idleT} onChange={(e) => setIdleT(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="capture-proxy-maxconn" className="text-xs text-muted-foreground">Proxy max connections</Label>
+                <Input id="capture-proxy-maxconn" type="number" min={PROXY_MAX_CONN_MIN} max={PROXY_MAX_CONN_MAX} step={1}
+                  className="h-8 w-28 text-xs" value={maxConn} onChange={(e) => setMaxConn(e.target.value)} />
+              </div>
+              <p className="text-xs text-muted-foreground">Applied by the capture proxy to new connections within about 10 seconds; connections already open keep their limits.</p>
             </div>
             {error && <p className="text-xs text-destructive">{error}</p>}
             <Button size="sm" className="h-8" aria-label="Save page capture settings"
