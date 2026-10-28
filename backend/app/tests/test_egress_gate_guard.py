@@ -119,6 +119,10 @@ _EGRESS: dict[str, tuple[str, str, str | None]] = {
         "THIRD_PARTY", "ARIN / RIPE registry lookups on fixed base URLs, about a candidate organisation; "
         "never a host we are pointed at (planning#278 S3b2). Imports urllib.parse only, to build the cache key", None,
     ),
+    "wayback.py": (
+        "THIRD_PARTY", "Wayback CDX index lookup on one fixed web.archive.org URL, through the SSRF-guarded "
+        "client, about a candidate domain; the target never sees the packet (planning#280 S5c-b2a)", None,
+    ),
     "cloud_ranges.py": (
         "THIRD_PARTY", "provider range dataset mirror", None,
     ),

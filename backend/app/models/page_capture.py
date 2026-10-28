@@ -71,6 +71,10 @@ class PageCapture(Base):
     image_max_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     # Migration 0093: set when the image FILE was pruned; the row stays (see its docstring).
     image_pruned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Migration 0094: 'live' or 'archive'; archive rows carry the snapshot's time and host.
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="live", server_default=text("'live'"))
+    archive_snapshot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archive_host: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class PageCaptureRequest(Base):

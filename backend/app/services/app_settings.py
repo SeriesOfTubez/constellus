@@ -73,6 +73,7 @@ DEFAULTS = {
     # the identifying string, image size cap, queue timeout. Typed, clamped
     # reads live in app.services.page_capture.
     "capture.browse_revisit_days": "30",
+    "capture.archive_freshness_days": "7",
     "capture.user_agent_mode": "stock",
     "capture.identifying_user_agent": "",
     "capture.max_image_bytes": "2097152",

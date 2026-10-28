@@ -499,7 +499,10 @@ def test_request_capture_commits_the_row_before_the_job_exists_and_writes_the_co
     assert r.observer_id == obs.id
 
 
-def test_refused_while_a_restricting_posture_applies_archive_first_not_built(w, env):
+def test_a_restricting_posture_with_an_unavailable_archive_refuses_and_writes_nothing(w, env, monkeypatch):
+    from app.tests.test_page_capture_archive import mock_wayback
+
+    seen = mock_wayback(monkeypatch, status=429)
     root = w.entity()
     eng = make_engagement(w.db, "pre_close", subject_entity_id=root.id)
     w.engagements.append(eng.id)
@@ -507,7 +510,8 @@ def test_refused_while_a_restricting_posture_applies_archive_first_not_built(w, 
     c = _candidate(w, root)
     with pytest.raises(pc.CaptureRefused) as e:
         pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
-    assert e.value.rule == "archive_first:not_built"
+    assert e.value.rule == "archive:lookup_unavailable"
+    assert len(seen) == 1  # the lookup was reached
     assert _rows_for(c.id) == 0 and _no_job_files(env) == []
 
 
@@ -738,6 +742,7 @@ from app.services import app_settings  # noqa: E402
 
 _CAPTURE_KEYS = (
     pc.REVISIT_DAYS_KEY, pc.USER_AGENT_MODE_KEY, pc.IDENTIFYING_UA_KEY, pc.MAX_IMAGE_BYTES_KEY, pc.QUEUE_TIMEOUT_KEY,
+    pc.ARCHIVE_FRESHNESS_DAYS_KEY,
 )
 
 

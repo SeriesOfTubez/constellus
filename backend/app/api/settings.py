@@ -157,6 +157,7 @@ def update_settings(
 
 class CaptureSettings(BaseModel):
     browse_revisit_days: int
+    archive_freshness_days: int
     user_agent_mode: str
     identifying_user_agent: str  # "" when unset or invalid
     max_image_bytes: int
@@ -170,6 +171,9 @@ class CaptureSettings(BaseModel):
 class CaptureSettingsUpdate(BaseModel):
     browse_revisit_days: int | None = Field(
         default=None, ge=page_capture.REVISIT_DAYS_MIN, le=page_capture.REVISIT_DAYS_MAX
+    )
+    archive_freshness_days: int | None = Field(
+        default=None, ge=page_capture.ARCHIVE_FRESHNESS_DAYS_MIN, le=page_capture.ARCHIVE_FRESHNESS_DAYS_MAX
     )
     # Must equal `models.page_capture.USER_AGENT_MODES` (a test asserts it).
     user_agent_mode: Literal["stock", "identifying"] | None = None
@@ -206,6 +210,7 @@ class CaptureSettingsUpdate(BaseModel):
 def _capture_current(db: Session) -> CaptureSettings:
     return CaptureSettings(
         browse_revisit_days=page_capture.revisit_days(db),
+        archive_freshness_days=page_capture.archive_freshness_days(db),
         user_agent_mode=page_capture.user_agent_mode(db),
         identifying_user_agent=page_capture.identifying_user_agent(db) or "",
         max_image_bytes=page_capture.max_image_bytes(db),
@@ -241,6 +246,7 @@ def put_capture_settings(
         )
     keys = {
         "browse_revisit_days": page_capture.REVISIT_DAYS_KEY,
+        "archive_freshness_days": page_capture.ARCHIVE_FRESHNESS_DAYS_KEY,
         "user_agent_mode": page_capture.USER_AGENT_MODE_KEY,
         "identifying_user_agent": page_capture.IDENTIFYING_UA_KEY,
         "max_image_bytes": page_capture.MAX_IMAGE_BYTES_KEY,

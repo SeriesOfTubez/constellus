@@ -91,14 +91,19 @@ def test_202_queues_a_job_and_hides_filesystem_paths(w, env):
     assert [p.name for p in (env["spool"] / "jobs").iterdir()] == [f"{body['id']}.json"]
 
 
-def test_409_archive_first_not_built_for_a_pre_close_target(w, env):
+def test_503_when_the_archive_lookup_fails_for_a_pre_close_target(w, env, monkeypatch):
+    from app.tests.test_page_capture_archive import mock_wayback
+
+    seen = mock_wayback(monkeypatch, status=429)
     root, _eng = w.deal()
     c = _candidate(w, root)
     r = _post(c.id, w.headers())
-    assert r.status_code == 409
+    assert r.status_code == 503, r.text
     d = r.json()["detail"]
-    assert d["rule"] == "archive_first:not_built" and d["message"]
-    assert list((env["spool"] / "jobs").iterdir()) == []
+    assert d["rule"] == "archive:lookup_unavailable"
+    assert d["message"] == "The web archive could not be checked for a recent snapshot; try again shortly."
+    assert len(seen) == 1
+    assert list((env["spool"] / "jobs").iterdir()) == [] and _counts(c.id)[0] == 0
 
 
 def test_409_for_an_asn_candidate(w, env):
@@ -214,7 +219,7 @@ from app.services import page_capture as pc  # noqa: E402
 WEBP = b"RIFF" + b"\x10\x00\x00\x00" + b"WEBP" + b"VP8 " + b"\x00" * 32
 _KEYS = (pc.REVISIT_DAYS_KEY, pc.USER_AGENT_MODE_KEY, pc.IDENTIFYING_UA_KEY, pc.MAX_IMAGE_BYTES_KEY,
          pc.QUEUE_TIMEOUT_KEY, pc.IMAGE_KEEP_COUNT_KEY, pc.PROXY_CONNECT_TIMEOUT_KEY,
-         pc.PROXY_IDLE_TIMEOUT_KEY, pc.PROXY_MAX_CONNECTIONS_KEY)
+         pc.PROXY_IDLE_TIMEOUT_KEY, pc.PROXY_MAX_CONNECTIONS_KEY, pc.ARCHIVE_FRESHNESS_DAYS_KEY)
 
 
 @pytest.fixture
@@ -382,7 +387,8 @@ def test_settings_get_defaults_and_permissions(w, cap_settings):
     assert set(ok.json()) == {"browse_revisit_days", "user_agent_mode", "identifying_user_agent",
                               "max_image_bytes", "queue_timeout_seconds", "image_keep_count",
                               "proxy_connect_timeout_seconds", "proxy_idle_timeout_seconds",
-                              "proxy_max_connections"}
+                              "proxy_max_connections", "archive_freshness_days"}
+    assert ok.json()["archive_freshness_days"] == 7
     assert client.get(S).status_code in (401, 403)
     assert client.put(S, headers=w.headers(role=VIEWER), json={"browse_revisit_days": 5}).status_code == 403
     assert client.put(S, json={"browse_revisit_days": 5}).status_code in (401, 403)
@@ -395,6 +401,7 @@ def test_settings_get_defaults_and_permissions(w, cap_settings):
     {"image_keep_count": 0}, {"image_keep_count": 51}, {"proxy_connect_timeout_seconds": 0},
     {"proxy_connect_timeout_seconds": 61}, {"proxy_idle_timeout_seconds": 4}, {"proxy_idle_timeout_seconds": 601},
     {"proxy_max_connections": 0}, {"proxy_max_connections": 1025},
+    {"archive_freshness_days": 0}, {"archive_freshness_days": 91},
     {"identifying_user_agent": "café"}, {"identifying_user_agent": "a" * 257}, {"browse_revisit_days": "x"},
 ])
 def test_settings_put_bounds_are_422_and_write_nothing(w, cap_settings, bad):
@@ -485,3 +492,21 @@ def test_refusal_messages_for_gate_rules_are_specific_not_generic():
     assert all(msgs), msgs
     assert orgs_api._CAPTURE_REFUSAL_GENERIC not in msgs
     assert len(set(msgs)) == 3
+
+
+def test_settings_archive_freshness_days_persists_and_audits(w, cap_settings):
+    h = w.headers()
+    with SessionLocal() as s:
+        row = s.get(AppSetting, pc.ARCHIVE_FRESHNESS_DAYS_KEY)
+        if row is not None:
+            s.delete(row)
+        s.commit()
+    assert client.get(S, headers=h).json()["archive_freshness_days"] == 7
+    r = client.put(S, headers=h, json={"archive_freshness_days": 30})
+    assert r.status_code == 200, r.text
+    assert r.json()["archive_freshness_days"] == 30 == client.get(S, headers=h).json()["archive_freshness_days"]
+    with SessionLocal() as s:
+        assert pc.archive_freshness_days(s) == 30
+        changes = [x.detail.get("changes", {}) for x in
+                   s.query(AuditLog).order_by(AuditLog.occurred_at.desc()).limit(30).all() if x.detail]
+    assert any(c.get("capture_archive_freshness_days") == {"from": 7, "to": 30} for c in changes)
