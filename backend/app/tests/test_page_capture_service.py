@@ -7,6 +7,7 @@ Run with:  backend/scripts/test.sh app/tests/test_page_capture_service.py
 """
 
 import json
+import re
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -38,6 +39,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_SPOOL_DIR", str(d["spool"]))
     monkeypatch.setenv("CAPTURE_PROXYLOG_DIR", str(d["proxylog"]))
     monkeypatch.setenv("CAPTURE_IMAGES_DIR", str(d["images"]))
+    monkeypatch.setenv("CAPTURE_PROXY_KEY", "k" * 32)  # jobs carry a per-job proxy token (v3)
     return d
 
 
@@ -473,15 +475,22 @@ def test_request_capture_commits_the_row_before_the_job_exists_and_writes_the_co
         return real_rename(src, dst)
 
     monkeypatch.setattr(pc.os, "rename", spy)
+    before = int(pc.time.time())
     row = pc.request_capture(w.db, candidate_id=c.id, user=user, manual=True)
 
     assert seen["row_visible"] is True and seen["status"] == "queued" and seen["tmp_name"] == f".{row.id}.tmp"
     assert seen["mode"] & 0o117 == 0  # owner/group read-write at most, nothing for others, no execute
     job_path = env["spool"] / "jobs" / f"{row.id}.json"
-    assert json.loads(job_path.read_text()) == {
-        "v": 2, "capture_id": str(row.id), "url": f"https://{c.value}/", "user_agent_mode": "stock",
+    written = json.loads(job_path.read_text())
+    exp = written["proxy_expires"]
+    lo = before + pc.queue_timeout_seconds(w.db) + pc.CREDENTIAL_RUN_MARGIN_S
+    assert lo <= exp <= lo + 10  # minted at request time, not a constant
+    assert written == {
+        "v": 3, "capture_id": str(row.id), "url": f"https://{c.value}/", "user_agent_mode": "stock",
+        "mode": "live", "proxy_token": pc.proxy_token(str(row.id), "live", exp), "proxy_expires": exp,
         "viewport": {"width": 1280, "height": 800}, "max_image_bytes": 2097152, "webp_qualities": [80, 60, 40],
     }
+    assert re.fullmatch(r"[0-9a-f]{64}", written["proxy_token"])
     assert len(job_path.read_bytes()) <= pc.JOB_MAX_BYTES
     assert [p.name for p in _no_job_files(env)] == [job_path.name]  # the tmp name is gone
     r = _fresh(row.id)
@@ -869,7 +878,7 @@ def test_identifying_mode_writes_the_user_agent_into_the_v2_job_and_the_row(w, e
     c = _candidate(w)
     row = pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
     job = json.loads((env["spool"] / "jobs" / f"{row.id}.json").read_text())
-    assert job["v"] == 2 and job["user_agent_mode"] == "identifying"
+    assert job["v"] == 3 and job["user_agent_mode"] == "identifying"
     assert job["user_agent"] == "FabrikamScan/1.0 (+https://fabrikam.com/scan)"
     assert job["max_image_bytes"] == 1048576
     r = _fresh(row.id)
@@ -881,7 +890,7 @@ def test_stock_mode_job_has_no_user_agent_key_even_if_a_string_is_stored(w, env,
     c = _candidate(w)
     row = pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
     job = json.loads((env["spool"] / "jobs" / f"{row.id}.json").read_text())
-    assert job["v"] == 2 and job["user_agent_mode"] == "stock" and "user_agent" not in job
+    assert job["v"] == 3 and job["user_agent_mode"] == "stock" and "user_agent" not in job
 
 
 @pytest.mark.parametrize("key,value,expect", [
@@ -1036,3 +1045,62 @@ def test_read_stored_image_missing_file_is_none(w, env):
     row = _stored(w, env)
     (env["images"] / f"{row.id}.webp").unlink()
     assert pc.read_stored_image(row) is None
+
+
+# ── S5c-b1: per-job proxy credential (job v3) ────────────────────────────────
+
+CID = "00000000-0000-4000-8000-000000000001"
+LIVE_VEC = "fd4cc753d722f5681637818178f5319706eb2b66b6c19cc182666f4d6e9e1382"
+
+
+def test_proxy_token_contract_vectors(monkeypatch):
+    monkeypatch.setenv("CAPTURE_PROXY_KEY", "k" * 32)
+    # Same vectors as docs/architecture/capture-spool.md and capture-proxy's tests.
+    assert pc.proxy_token(CID, "live", 2000000000) == LIVE_VEC
+    assert pc.proxy_token(CID, "archive", 2000000000) == (
+        "ec9eb6417283118f7de8b8013f57c6b86582311497a3921e31bca75ca696ea9a"
+    )
+
+
+def test_proxy_token_unknown_mode_and_non_canonical_id_raise(env):
+    with pytest.raises(ValueError):
+        pc.proxy_token(CID, "admin", 2000000000)
+    with pytest.raises(ValueError):
+        pc.proxy_token(CID.replace("-", ""), "live", 2000000000)  # valid UUID, not canonical
+
+
+@pytest.mark.parametrize("key", ["", "k" * 31, "   " + "k" * 31 + "  "])
+def test_proxy_token_is_none_without_a_usable_key(env, monkeypatch, key):
+    monkeypatch.setenv("CAPTURE_PROXY_KEY", key)
+    assert pc.proxy_token(CID, "live", 2000000000) is None
+    monkeypatch.delenv("CAPTURE_PROXY_KEY")
+    assert pc.proxy_token(CID, "live", 2000000000) is None
+
+
+def test_proxy_key_is_stripped_before_use(env, monkeypatch):
+    monkeypatch.setenv("CAPTURE_PROXY_KEY", "  " + "k" * 32 + "\n")
+    assert pc.proxy_token(CID, "live", 2000000000) == LIVE_VEC
+
+
+@pytest.mark.parametrize("exp", [0, -1, 10**12, True, "2000000000", 1.5])
+def test_proxy_token_rejects_a_bad_exp(env, exp):
+    with pytest.raises(ValueError):
+        pc.proxy_token(CID, "live", exp)
+
+
+@pytest.mark.parametrize("key", [None, "k" * 31])
+def test_request_refused_when_the_proxy_key_is_missing_or_short(w, env, monkeypatch, key):
+    c = _candidate(w)
+    user = w.user()
+    if key is None:
+        monkeypatch.delenv("CAPTURE_PROXY_KEY")
+    else:
+        monkeypatch.setenv("CAPTURE_PROXY_KEY", key)
+    with pytest.raises(pc.CaptureRefused) as e:
+        pc.request_capture(w.db, candidate_id=c.id, user=user, manual=True)
+    assert e.value.rule == "capture:not_configured"
+    assert _rows_for(c.id) == 0 and _no_job_files(env) == []
+    # Precondition: the very same call with the key set gets past every gate and queues.
+    monkeypatch.setenv("CAPTURE_PROXY_KEY", "k" * 32)
+    row = pc.request_capture(w.db, candidate_id=c.id, user=user, manual=True)
+    assert _rows_for(c.id) == 1 and (env["spool"] / "jobs" / f"{row.id}.json").exists()

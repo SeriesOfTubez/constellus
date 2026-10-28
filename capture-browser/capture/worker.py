@@ -75,7 +75,7 @@ def process(cid: str, claimed_path: str, results_dir: str) -> None:
 
     from capture import run
 
-    proxy_url, token = run.require_env()
+    proxy_url = run.require_env()
     try:
         with sync_playwright() as p:
             captured, shot, ua = run.capture_page(
@@ -83,7 +83,9 @@ def process(cid: str, claimed_path: str, results_dir: str) -> None:
                 cid,
                 job["url"],
                 proxy_url,
-                token,
+                job["proxy_token"],
+                job["proxy_expires"],
+                mode=job["mode"],
                 viewport=job["viewport"],
                 webp_qualities=job["webp_qualities"],
                 max_image_bytes=job["max_image_bytes"],
@@ -100,9 +102,8 @@ def process(cid: str, claimed_path: str, results_dir: str) -> None:
 
 
 def main() -> int:
-    run_env_ok = os.environ.get("CAPTURE_PROXY_URL") and os.environ.get("CAPTURE_PROXY_TOKEN")
-    if not run_env_ok:
-        raise SystemExit("CAPTURE_PROXY_URL and CAPTURE_PROXY_TOKEN are required")
+    if not os.environ.get("CAPTURE_PROXY_URL"):
+        raise SystemExit("CAPTURE_PROXY_URL is required")
     os.umask(spool.WORKER_UMASK)  # dedicated process: files 0660, dirs 0770, never world
     jobs_dir, claimed_dir, results_dir = check_dirs(SPOOL_DIR)
     while True:

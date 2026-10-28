@@ -32,6 +32,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_SPOOL_DIR", str(d["spool"]))
     monkeypatch.setenv("CAPTURE_PROXYLOG_DIR", str(d["proxylog"]))
     monkeypatch.setenv("CAPTURE_IMAGES_DIR", str(d["images"]))
+    monkeypatch.setenv("CAPTURE_PROXY_KEY", "k" * 32)  # jobs carry a per-job proxy token (v3)
     return d
 
 
@@ -183,6 +184,21 @@ def test_503_when_the_spool_is_unavailable(w, env):
     with SessionLocal() as s:
         rows = s.query(PageCapture).filter(PageCapture.candidate_id == c.id).all()
         assert [(x.status, x.failure_reason) for x in rows] == [("failed", "spool_unavailable")]
+
+
+def test_503_when_the_proxy_key_is_not_configured(w, env, monkeypatch):
+    monkeypatch.delenv("CAPTURE_PROXY_KEY")
+    c = _candidate(w)
+    r = _post(c.id, w.headers())
+    assert r.status_code == 503, r.text
+    d = r.json()["detail"]
+    assert d["rule"] == "capture:not_configured" and "proxy key" in d["message"]
+    assert _counts_rows(c.id) == 0
+
+
+def _counts_rows(candidate_id):
+    with SessionLocal() as s:
+        return s.query(PageCapture).filter(PageCapture.candidate_id == candidate_id).count()
 
 
 # ── S5b-2b: image route, settings API ────────────────────────────────────────

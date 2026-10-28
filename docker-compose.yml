@@ -28,6 +28,7 @@ services:
       - SCANNER_INTERNAL_TOKEN=${SCANNER_INTERNAL_TOKEN}
       - CAPTURE_SPOOL_DIR=/spool
       - CAPTURE_PROXYLOG_DIR=/proxylog
+      - CAPTURE_PROXY_KEY=${CAPTURE_PROXY_KEY:-}
       - CAPTURE_IMAGES_DIR=/captures
       - CAPTURE_CONFIG_DIR=/capture_config
     env_file:
@@ -112,10 +113,13 @@ services:
   # security boundary (authenticates, resolves + validates + pins every host,
   # logs every request). Neither service is on `app` or `data`: the browser must
   # never be able to reach the backend or the database.
-  # CAPTURE_PROXY_TOKEN uses `:-` rather than `:?` on purpose: Compose interpolates
-  # EVERY service, profile-gated or not, so `:?` would break plain `docker compose
-  # up -d` for anyone without the token in .env. An empty token still fails closed:
-  # capture-proxy refuses to start and capture.run refuses to run.
+  # CAPTURE_PROXY_KEY (held by backend + capture-proxy ONLY) uses `:-` rather than
+  # `:?` on purpose: Compose interpolates EVERY service, profile-gated or not, so
+  # `:?` would break plain `docker compose up -d` for anyone without the key in
+  # .env. An empty or short key still fails closed: capture-proxy refuses to start
+  # and the backend refuses to queue a capture (capture:not_configured).
+  # capture-browser deliberately NEVER receives the key: the backend derives a
+  # per-job token (HMAC of capture id + mode) and writes only that into the job.
   # Profile-gated: plain `docker compose up -d` does not start them yet.
   # capture-browser runs the spool worker (`python -m capture.worker`): it pulls a
   # job from /spool, captures ONE page, writes the result and exits; the restart
@@ -134,7 +138,7 @@ services:
       context: ./capture-proxy
       dockerfile: Dockerfile
     environment:
-      - CAPTURE_PROXY_TOKEN=${CAPTURE_PROXY_TOKEN:-}
+      - CAPTURE_PROXY_KEY=${CAPTURE_PROXY_KEY:-}
       - CAPTURE_PROXY_LOG_DIR=/proxylog
       - CAPTURE_LIMITS_FILE=/capture_config/proxy_limits.json
     volumes:
@@ -160,7 +164,6 @@ services:
       dockerfile: Dockerfile
     environment:
       - CAPTURE_PROXY_URL=http://capture-proxy:3128
-      - CAPTURE_PROXY_TOKEN=${CAPTURE_PROXY_TOKEN:-}
       - CAPTURE_SPOOL_DIR=/spool
     volumes:
       - capture_spool:/spool

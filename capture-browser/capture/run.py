@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import Browser, BrowserContext, Playwright, sync_playwright
 
+from capture import spool
 from capture.spool import pick_screenshot
 
 NAV_TIMEOUT_MS = 30_000
@@ -58,16 +59,18 @@ CHROMIUM_ARGS = [
 ]
 
 
-def require_env() -> tuple[str, str]:
-    """Fail closed: no proxy configuration, no browser."""
+def require_env() -> str:
+    """Fail closed: no proxy configuration, no browser. The per-job token comes
+    from the job file, never from the environment."""
     url = os.environ.get("CAPTURE_PROXY_URL", "").strip()
-    token = os.environ.get("CAPTURE_PROXY_TOKEN", "").strip()
-    if not url or not token:
-        raise SystemExit("CAPTURE_PROXY_URL and CAPTURE_PROXY_TOKEN are required")
-    return url, token
+    if not url:
+        raise SystemExit("CAPTURE_PROXY_URL is required")
+    return url
 
 
-def launch_browser(p: Playwright, capture_id: str, proxy_url: str, token: str) -> Browser:
+def launch_browser(
+    p: Playwright, capture_id: str, mode: str, proxy_url: str, token: str, exp: int
+) -> Browser:
     """Fresh Chromium per run; temp profile (Playwright's, under /tmp -> tmpfs)."""
     return p.chromium.launch(
         headless=True,
@@ -75,7 +78,7 @@ def launch_browser(p: Playwright, capture_id: str, proxy_url: str, token: str) -
         args=CHROMIUM_ARGS,
         proxy={
             "server": proxy_url,
-            "username": capture_id,
+            "username": f"{capture_id}|{mode}|{exp}",
             "password": token,
             "bypass": "",
         },
@@ -162,9 +165,17 @@ def take_screenshot(cdp, quality: int) -> bytes:
     return base64.b64decode(res["data"])
 
 
-def capture(p: Playwright, capture_id: str, url: str, proxy_url: str, token: str) -> dict:
+def capture(
+    p: Playwright,
+    capture_id: str,
+    url: str,
+    proxy_url: str,
+    token: str,
+    exp: int,
+    mode: str = "live",
+) -> dict:
     """CLI/spike entry point: the result dict only (screenshot is not returned)."""
-    result, _shot, _ua = capture_page(p, capture_id, url, proxy_url, token)
+    result, _shot, _ua = capture_page(p, capture_id, url, proxy_url, token, exp, mode=mode)
     return result
 
 
@@ -174,7 +185,9 @@ def capture_page(
     url: str,
     proxy_url: str,
     token: str,
+    exp: int,
     *,
+    mode: str = "live",
     viewport: dict | None = None,
     webp_qualities: list[int] | None = None,
     max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
@@ -187,7 +200,7 @@ def capture_page(
 
     `user_agent` is the identifying UA from a v2 job; None means stock mode (the
     browser's own UA with the headless marker removed)."""
-    browser = launch_browser(p, capture_id, proxy_url, token)
+    browser = launch_browser(p, capture_id, mode, proxy_url, token, exp)
     shot: tuple[bytes | None, int | None, str | None] = (None, None, None)
     used_ua = ""
     result: dict = {
@@ -204,6 +217,15 @@ def capture_page(
     try:
         used_ua = user_agent if user_agent is not None else stock_user_agent(browser)
         context = new_context(browser, viewport, used_ua)
+        if mode == "archive":
+            # Second layer only: the capture-proxy is the guard.
+            def _archive_only(route) -> None:
+                if spool.archive_request_allowed(route.request.url):
+                    route.continue_()
+                else:
+                    route.abort("blockedbyclient")
+
+            context.route("**/*", _archive_only)
         page = context.new_page()
         cdp = context.new_cdp_session(page)
         cdp.send("Network.enable")
@@ -267,11 +289,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--capture-id", required=True)
     ap.add_argument("--url", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--mode", choices=spool.MODES, default="live")
+    ap.add_argument("--expires", type=int, required=True, help="credential exp (unix s)")
     args = ap.parse_args(argv)
-    proxy_url, token = require_env()
+    proxy_url = require_env()
+    token = os.environ.get("CAPTURE_PROXY_JOB_TOKEN", "").strip()
+    if not token:
+        raise SystemExit("CAPTURE_PROXY_JOB_TOKEN is required")
     with sync_playwright() as p:
         result, (image, quality, reason), _ua = capture_page(
-            p, args.capture_id, args.url, proxy_url, token
+            p, args.capture_id, args.url, proxy_url, token, args.expires, mode=args.mode
         )
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)

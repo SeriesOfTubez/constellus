@@ -24,8 +24,8 @@ import ip_blocklist
 import proxy as proxy_mod
 from proxy import ALLOWED_PORTS, Proxy, build_proxy_from_env, default_resolver, serve
 
-TOKEN = "s3cret-token"
-CID = "cap_1"
+KEY = "k" * 32
+CID = "00000000-0000-4000-8000-000000000001"
 
 
 def _test_blocked(ip) -> bool:
@@ -38,6 +38,8 @@ _NAMES = {
     "mixed.example": ["10.0.0.5", "127.0.0.1"],
     "meta.example": ["169.254.169.254"],
     "v6meta.example": ["64:ff9b::a9fe:a9fe"],
+    "web.archive.org": ["127.0.0.1"],
+    "WEB.ARCHIVE.ORG": ["127.0.0.1"],
 }
 
 
@@ -47,8 +49,24 @@ async def _resolver(host: str, port: int) -> list[str]:
     return list(_NAMES[host])
 
 
-def auth(cid=CID, token=TOKEN) -> bytes:
-    b64 = base64.b64encode(f"{cid}:{token}".encode()).decode()
+NOW = 1_900_000_000  # the fixed clock every Proxy in this file runs on
+EXP = NOW + 600
+MAX_TTL = proxy_mod.MAX_CREDENTIAL_TTL_S
+
+
+def _clock() -> float:
+    return float(NOW)
+
+
+def auth(cid=CID, mode="live", token=None, user=None, exp=EXP) -> bytes:
+    """Proxy-Authorization header. The token is derived from KEY (via the proxy's
+    own derive_token) unless overridden; `user` replaces `<cid>|<mode>|<exp>`
+    wholesale."""
+    if token is None:
+        token = proxy_mod.derive_token(KEY.encode(), cid, mode, exp)
+    if user is None:
+        user = f"{cid}|{mode}|{exp}"
+    b64 = base64.b64encode(f"{user}:{token}".encode()).decode()
     return f"Proxy-Authorization: Basic {b64}\r\n".encode()
 
 
@@ -109,7 +127,8 @@ async def running(**kw):
     logs: list[dict] = []
     kw.setdefault("is_blocked", _test_blocked)
     kw.setdefault("resolver", _resolver)
-    proxy = Proxy(token=TOKEN, log=logs.append, **kw)
+    kw.setdefault("clock", _clock)
+    proxy = Proxy(key=KEY, log=logs.append, **kw)
     server = await serve(proxy, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     try:
@@ -163,18 +182,88 @@ def get_req(url: str, extra: bytes = b"", method: str = "GET", tail: bytes = b""
 # ── auth ──────────────────────────────────────────────────────────────────────
 
 
+_OTHER_CID = "00000000-0000-4000-8000-000000000002"
+_UPPER_CID = "ABCDEF01-AAAA-4AAA-8AAA-AAAAAAAAAAAA"  # contains letters, so .upper() differs
+_LIVE_TOK = proxy_mod.derive_token(KEY.encode(), CID, "live", EXP)
+_ARCH_TOK = proxy_mod.derive_token(KEY.encode(), CID, "archive", EXP)
+
+
+def _tok(cid, mode="live", exp=EXP):
+    return proxy_mod.derive_token(KEY.encode(), cid, mode, exp)
+
+
+def test_token_derivation_matches_contract_v3_vectors():
+    """Hard-coded vectors from the wire contract, against the proxy's own
+    derive_token (the function _authenticate uses)."""
+    key = b"k" * 32
+    cid = "00000000-0000-4000-8000-000000000001"
+    assert proxy_mod.derive_token(key, cid, "live", 2000000000) == (
+        "fd4cc753d722f5681637818178f5319706eb2b66b6c19cc182666f4d6e9e1382"
+    )
+    assert proxy_mod.derive_token(key, cid, "archive", 2000000000) == (
+        "ec9eb6417283118f7de8b8013f57c6b86582311497a3921e31bca75ca696ea9a"
+    )
+
+
+def test_authenticate_accepts_valid_and_returns_cid_and_mode():
+    import h11
+
+    p = Proxy(key=KEY, clock=_clock)
+    for mode in ("live", "archive"):
+        hdr = auth(mode=mode).split(b": ", 1)[1].strip()
+        req = h11.Request(
+            method="CONNECT",
+            target="a.example:443",
+            headers=[("Host", "a.example:443"), ("Proxy-Authorization", hdr)],
+        )
+        assert p._authenticate(req) == (CID, mode)
+
+
 @pytest.mark.parametrize(
     "extra",
     [
         b"",
-        auth(token="wrong"),
-        auth(cid="bad id!"),
-        auth(cid="x" * 65),
-        auth(cid=""),
+        auth(token="wrong" * 13),
+        auth(mode="archive", token=_LIVE_TOK),  # mode swap: live token as archive
+        auth(mode="live", token=_ARCH_TOK),
+        auth(token=_tok(_OTHER_CID)),
+        auth(token=_LIVE_TOK.upper()),
+        auth(token=proxy_mod.derive_token(b"z" * 32, CID, "live", EXP)),  # wrong key
+        auth(token=_LIVE_TOK[:-1]),
+        auth(token=_LIVE_TOK + "0"),
+        auth(token=""),
+        auth(user=CID, token=_LIVE_TOK),  # mode missing
+        auth(user=f"{CID}|admin|{EXP}"),
+        auth(user=f"{CID}||{EXP}"),
+        auth(user=f"{CID}|LIVE|{EXP}"),
+        auth(user=f"|live|{EXP}"),
+        auth(user=f"{_UPPER_CID}|live|{EXP}", token=_tok(_UPPER_CID)),
+        auth(user=f"{CID.replace('-', '')}|live|{EXP}", token=_tok(CID.replace("-", ""))),
+        auth(user="cap_1|live|" + str(EXP), token=_tok("cap_1")),
+        auth(exp=NOW - 1),
+        auth(exp=NOW + MAX_TTL + 1),
+        auth(exp="0123456789"),
+        auth(exp="0"),
+        auth(exp="-5"),
+        auth(exp="+1900000600"),
+        auth(exp="1" * 13),
+        auth(exp="12ab"),
+        auth(exp=""),
+        auth(user=f"{CID}|live", token=_tok(CID)),  # old 2-part form
+        auth(user=f"{CID}|live|{EXP}|x"),
+        auth(token=_tok(CID, "live", EXP + 1)),  # MAC'd for a different exp
         b"Proxy-Authorization: Basic !!!notbase64!!!\r\n",
         b"Proxy-Authorization: Bearer abc\r\n",
     ],
-    ids=["none", "wrong_token", "bad_charset", "too_long", "empty_id", "bad_b64", "bearer"],
+    ids=[
+        "none", "wrong_token", "mode_swap_live_as_archive", "mode_swap_archive_as_live",
+        "other_capture_id", "uppercase_hex", "wrong_key", "truncated", "extended",
+        "empty_token", "mode_missing", "unknown_mode", "empty_mode", "mode_wrong_case",
+        "empty_id", "uppercase_uuid", "dashless_uuid", "cap_1_id",
+        "expired", "too_far_future", "exp_leading_zero", "exp_zero", "exp_negative",
+        "exp_plus_sign", "exp_13_digits", "exp_non_digit", "exp_empty",
+        "two_parts", "four_parts", "exp_tampered", "bad_b64", "bearer",
+    ],
 )
 @pytest.mark.parametrize("shape", ["connect", "http"])
 def test_auth_failure_is_407_and_upstream_untouched(extra, shape):
@@ -191,9 +280,112 @@ def test_auth_failure_is_407_and_upstream_untouched(extra, shape):
                 assert header(resp, "Proxy-Authenticate") == 'Basic realm="capture"'
                 assert len(logs) == 1
                 assert logs[0]["decision"] == "deny" and logs[0]["reason"] == "auth"
-                assert logs[0]["capture_id"] is None
+                assert logs[0]["capture_id"] is None and logs[0]["mode"] is None
                 assert logs[0]["pinned_ip"] is None
                 assert up.connections == 0
+
+    run(go())
+
+
+@pytest.mark.parametrize("exp", [NOW, NOW + MAX_TTL, NOW + 1])
+def test_exp_window_edges_are_allowed(exp):
+    """Positive control for the expiry cases: the inclusive edges authenticate."""
+    import h11
+
+    p = Proxy(key=KEY, clock=_clock)
+    hdr = auth(exp=exp).split(b": ", 1)[1].strip()
+    req = h11.Request(
+        method="CONNECT",
+        target="a.example:443",
+        headers=[("Host", "a.example:443"), ("Proxy-Authorization", hdr)],
+    )
+    assert p._authenticate(req) == (CID, "live")
+
+
+def test_exp_window_follows_the_injected_clock():
+    import h11
+
+    hdr = auth().split(b": ", 1)[1].strip()
+    req = h11.Request(
+        method="CONNECT",
+        target="a.example:443",
+        headers=[("Host", "a.example:443"), ("Proxy-Authorization", hdr)],
+    )
+    assert Proxy(key=KEY, clock=lambda: EXP)._authenticate(req) == (CID, "live")
+    assert Proxy(key=KEY, clock=lambda: EXP + 1)._authenticate(req) is None
+    assert Proxy(key=KEY, clock=lambda: EXP + 0.9)._authenticate(req) == (CID, "live")
+
+
+@pytest.mark.parametrize("exp_s", ["0" + str(EXP), "+" + str(EXP), " " + str(EXP)])
+def test_correctly_macd_noncanonical_exp_is_still_407(exp_s):
+    """The MAC is valid for the presented exp string, and its integer value is
+    inside the window, so only the exp FORM check can refuse it."""
+
+    async def go():
+        async with Upstream("echo") as up:
+            async with running(allowed_ports=frozenset({up.port})) as (_p, port, logs):
+                resp = await exchange(port, connect_req("allowed.example", up.port, auth(exp=exp_s)))
+                await wait_for_logs(logs)
+                assert status(resp) == 407 and logs[0]["reason"] == "auth"
+                assert up.connections == 0
+
+    run(go())
+
+
+def test_correctly_macd_unknown_mode_is_still_407():
+    """A token that IS a valid MAC for a mode outside MODES (the key holder never
+    mints one, but the proxy must not rely on that) fails auth, upstream untouched."""
+
+    async def go():
+        async with Upstream("echo") as up:
+            async with running(allowed_ports=frozenset({up.port})) as (_p, port, logs):
+                resp = await exchange(port, connect_req("allowed.example", up.port, auth(mode="admin")))
+                await wait_for_logs(logs)
+                assert status(resp) == 407 and logs[0]["reason"] == "auth"
+                assert up.connections == 0
+
+    run(go())
+
+
+def test_a_mode_without_a_policy_is_denied_not_treated_as_live(monkeypatch):
+    """Deny by default: if MODES ever grows without a policy in _serve, that mode
+    authenticates but reaches nothing (403 reason mode), never the live policy."""
+    monkeypatch.setattr(proxy_mod, "MODES", ("live", "archive", "future"))
+
+    async def go():
+        async with Upstream("echo") as up:
+            async with running(allowed_ports=frozenset({up.port})) as (_p, port, logs):
+                resp = await exchange(port, connect_req("allowed.example", up.port, auth(mode="future")))
+                await wait_for_logs(logs)
+                assert logs[0]["mode"] == "future"  # precondition: auth passed
+                assert status(resp) == 403 and logs[0]["reason"] == "mode"
+                assert up.connections == 0
+
+    run(go())
+
+
+def test_valid_credentials_authenticate_in_both_modes():
+    """Positive control for the 407 matrix: the same harness with a valid header
+    gets past auth (live reaches the upstream; archive to this non-archive host
+    is 403 archive_host, not 407) and the log carries the mode."""
+
+    async def go():
+        for mode in ("live", "archive"):
+            async with Upstream("echo") as up:
+                async with running(allowed_ports=frozenset({up.port})) as (_p, port, logs):
+                    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                    writer.write(
+                        connect_req("allowed.example", up.port, auth(mode=mode))
+                    )
+                    await writer.drain()
+                    head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
+                    writer.close()
+                    await wait_for_logs(logs)
+                    assert logs[0]["mode"] == mode and logs[0]["capture_id"] == CID
+                    if mode == "live":
+                        assert status(head) == 200 and up.connections == 1
+                    else:
+                        assert status(head) == 403 and up.connections == 0
 
     run(go())
 
@@ -557,7 +749,7 @@ def test_production_defaults_are_the_real_blocklist_and_ports():
     assert params["is_blocked"].default is ip_blocklist.is_blocked
     assert params["allowed_ports"].default is ALLOWED_PORTS
     assert params["resolver"].default is default_resolver
-    shipped = build_proxy_from_env({"CAPTURE_PROXY_TOKEN": "t"})
+    shipped = build_proxy_from_env({"CAPTURE_PROXY_KEY": KEY})
     assert shipped.is_blocked is ip_blocklist.is_blocked
     assert shipped.allowed_ports is ALLOWED_PORTS
     assert shipped.resolver is default_resolver
@@ -569,16 +761,37 @@ def test_ip_blocklist_import_is_the_vendored_module_not_a_shadow():
     assert ip_blocklist.is_blocked(ipaddress.ip_address("169.254.169.254")) is True
 
 
-@pytest.mark.parametrize("env", [{}, {"CAPTURE_PROXY_TOKEN": ""}])
-def test_missing_token_refuses_to_start(env):
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"CAPTURE_PROXY_KEY": ""},
+        {"CAPTURE_PROXY_KEY": "k" * 31},
+        {"CAPTURE_PROXY_KEY": " " * 40},
+        {"CAPTURE_PROXY_KEY": " " + "k" * 30 + " "},  # 32 chars, 30 after strip
+        {"CAPTURE_PROXY_TOKEN": "t" * 40},  # the removed shared token: no fallback
+    ],
+    ids=["missing", "empty", "31_chars", "whitespace_only", "short_after_strip", "old_token_only"],
+)
+def test_missing_or_short_key_refuses_to_start(env):
     with pytest.raises(SystemExit) as exc:
         build_proxy_from_env(env)
-    assert "CAPTURE_PROXY_TOKEN" in str(exc.value)
+    assert "CAPTURE_PROXY_KEY" in str(exc.value)
 
 
-def test_proxy_class_rejects_empty_token():
+def test_key_is_stripped_from_env():
+    shipped = build_proxy_from_env({"CAPTURE_PROXY_KEY": f"  {KEY}\n"})
+    assert shipped._key == KEY.encode()
+
+
+@pytest.mark.parametrize("key", ["", "short", "k" * 31])
+def test_proxy_class_rejects_short_key(key):
     with pytest.raises(ValueError):
-        Proxy(token="")
+        Proxy(key=key)
+
+
+def test_no_reference_to_the_removed_shared_token_in_the_proxy():
+    assert "CAPTURE_PROXY_TOKEN" not in inspect.getsource(proxy_mod)
 
 
 def test_default_log_is_one_json_line_on_stdout(capsys):
@@ -672,10 +885,10 @@ def test_proxy_log_file_write_error_never_raises(tmp_path, monkeypatch, capsys):
 
 
 def test_build_proxy_from_env_uses_file_log_only_when_dir_set(tmp_path, capsys):
-    plain = build_proxy_from_env({"CAPTURE_PROXY_TOKEN": "t"})
+    plain = build_proxy_from_env({"CAPTURE_PROXY_KEY": KEY})
     assert plain._log is proxy_mod.emit_stdout
     p = build_proxy_from_env(
-        {"CAPTURE_PROXY_TOKEN": "t", "CAPTURE_PROXY_LOG_DIR": str(tmp_path)}
+        {"CAPTURE_PROXY_KEY": KEY, "CAPTURE_PROXY_LOG_DIR": str(tmp_path)}
     )
     p._log(_rec(GOOD_ID))
     assert (tmp_path / f"{GOOD_ID}.jsonl").exists()
@@ -932,11 +1145,176 @@ def test_in_flight_connection_keeps_its_starting_limits(tmp_path):
 
 def test_build_proxy_from_env_wires_a_limits_source(tmp_path):
     p = tmp_path / "x.json"
-    shipped = build_proxy_from_env({"CAPTURE_PROXY_TOKEN": "t", "CAPTURE_LIMITS_FILE": str(p)})
+    shipped = build_proxy_from_env({"CAPTURE_PROXY_KEY": KEY, "CAPTURE_LIMITS_FILE": str(p)})
     assert isinstance(shipped._limits_source, proxy_mod.LimitsSource)
     assert shipped._limits_source.path == str(p)
     assert shipped._limits_source.defaults == proxy_mod.Limits(
         proxy_mod.CONNECT_TIMEOUT_S, proxy_mod.IDLE_TIMEOUT_S, proxy_mod.MAX_CONNECTIONS
     )
-    default = build_proxy_from_env({"CAPTURE_PROXY_TOKEN": "t"})
+    default = build_proxy_from_env({"CAPTURE_PROXY_KEY": KEY})
     assert default._limits_source.path == "/capture_config/proxy_limits.json"
+
+
+# ── archive mode ──────────────────────────────────────────────────────────────
+# The real ARCHIVE_PORT is 443, which a test upstream cannot bind. End-to-end
+# tests therefore monkeypatch proxy_mod.ARCHIVE_PORT (read at call time by
+# archive_allowed) and allowed_ports to the upstream's port; the host rules under
+# test are the real ones. archive_allowed is also tested purely at real 443.
+
+
+@pytest.mark.parametrize(
+    "scheme,host,port,expected",
+    [
+        ("connect", "web.archive.org", 443, True),
+        ("connect", "WEB.ARCHIVE.ORG", 443, True),
+        ("http", "web.archive.org", 443, False),
+        ("http", "web.archive.org", 80, False),
+        ("connect", "web.archive.org", 80, False),
+        ("connect", "web.archive.org", 8443, False),
+        ("connect", "web.archive.org.", 443, False),
+        ("connect", "web.archive.org.evil.test", 443, False),
+        ("connect", "xweb.archive.org", 443, False),
+        ("connect", "archive.org", 443, False),
+        ("connect", "example.com", 443, False),
+        ("connect", "1.2.3.4", 443, False),
+        ("connect", "[::1]", 443, False),
+        ("connect", "[2001:db8::1]", 443, False),
+        ("connect", "", 443, False),
+    ],
+)
+def test_archive_allowed_predicate(scheme, host, port, expected):
+    assert proxy_mod.archive_allowed(scheme, host, port) is expected
+
+
+def test_archive_literals_are_the_contract_values():
+    assert proxy_mod.MODES == ("live", "archive")
+    assert proxy_mod.ARCHIVE_HOSTS == frozenset({"web.archive.org"})
+    assert proxy_mod.ARCHIVE_PORT == 443
+
+
+def test_archive_connect_to_the_archive_host_reaches_decide_and_splices(monkeypatch):
+    async def go():
+        async with Upstream("echo") as up:
+            monkeypatch.setattr(proxy_mod, "ARCHIVE_PORT", up.port)
+            async with running(allowed_ports=frozenset({up.port})) as (_p, port, logs):
+                for host in ("web.archive.org", "WEB.ARCHIVE.ORG"):
+                    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                    writer.write(connect_req(host, up.port, auth(mode="archive")))
+                    await writer.drain()
+                    head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
+                    assert head.startswith(b"HTTP/1.1 200 Connection Established")
+                    writer.write(b"hi")
+                    await writer.drain()
+                    assert await asyncio.wait_for(reader.readexactly(2), 5) == b"hi"
+                    writer.close()
+                await wait_for_logs(logs, 2)
+                assert up.connections == 2
+                for line in logs:
+                    assert line["decision"] == "allow" and line["mode"] == "archive"
+                    assert line["capture_id"] == CID and line["pinned_ip"] == "127.0.0.1"
+
+    run(go())
+
+
+_ARCHIVE_DENIED = [
+    ("connect", "allowed.example", "other_host"),
+    ("connect", "web.archive.org.evil.test", "suffix_tail"),
+    ("connect", "xweb.archive.org", "prefix"),
+    ("connect", "web.archive.org.", "trailing_dot"),
+    ("connect", "127.0.0.1", "ip_literal"),
+    ("connect", "[::1]", "ipv6_literal"),
+    ("connect", "[::ffff:127.0.0.1]", "ipv6_mapped_literal"),
+    ("http", "web.archive.org", "plain_http"),
+]
+
+
+@pytest.mark.parametrize(
+    "shape,host", [(a, b) for a, b, _ in _ARCHIVE_DENIED], ids=[c for _, _, c in _ARCHIVE_DENIED]
+)
+def test_archive_mode_denies_everything_but_the_archive_host(shape, host, monkeypatch):
+    async def go():
+        async with Upstream("echo") as up:
+            monkeypatch.setattr(proxy_mod, "ARCHIVE_PORT", up.port)
+            async with running(allowed_ports=frozenset({up.port})) as (_p, port, logs):
+                if shape == "connect":
+                    payload = connect_req(host, up.port, auth(mode="archive"))
+                else:
+                    payload = get_req(f"http://{host}:{up.port}/", auth(mode="archive"))
+                resp = await exchange(port, payload)
+                await wait_for_logs(logs)
+                assert status(resp) == 403
+                assert header(resp, "X-Capture-Proxy-Reason") == "archive_host"
+                (line,) = logs
+                assert line["decision"] == "deny" and line["reason"] == "archive_host"
+                assert line["mode"] == "archive" and line["capture_id"] == CID
+                assert line["pinned_ip"] is None and line["resolved"] == []
+                assert up.connections == 0
+
+    run(go())
+
+
+def test_archive_connect_on_a_non_archive_port_is_denied(monkeypatch):
+    async def go():
+        async with Upstream("echo") as up:
+            monkeypatch.setattr(proxy_mod, "ARCHIVE_PORT", up.port + 1)
+            async with running(allowed_ports=frozenset({up.port})) as (_p, port, logs):
+                resp = await exchange(
+                    port, connect_req("web.archive.org", up.port, auth(mode="archive"))
+                )
+                await wait_for_logs(logs)
+                assert status(resp) == 403
+                assert logs[0]["reason"] == "archive_host" and up.connections == 0
+
+    run(go())
+
+
+@pytest.mark.parametrize("shape", ["connect", "http"])
+def test_live_mode_to_the_same_non_archive_host_is_allowed(shape, monkeypatch):
+    """Precondition for the deny matrix above: identical harness and request,
+    only the mode differs, and live reaches the upstream."""
+
+    async def go():
+        async with Upstream("echo" if shape == "connect" else "http") as up:
+            monkeypatch.setattr(proxy_mod, "ARCHIVE_PORT", up.port)
+            async with running(allowed_ports=frozenset({up.port})) as (_p, port, logs):
+                if shape == "connect":
+                    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                    writer.write(connect_req("allowed.example", up.port, auth(mode="live")))
+                    await writer.drain()
+                    head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
+                    assert head.startswith(b"HTTP/1.1 200")
+                    writer.close()
+                else:
+                    resp = await exchange(
+                        port, get_req(f"http://allowed.example:{up.port}/", auth(mode="live"))
+                    )
+                    assert status(resp) == 200
+                await wait_for_logs(logs)
+                assert logs[0]["decision"] == "allow" and logs[0]["mode"] == "live"
+                assert up.connections == 1
+
+    run(go())
+
+
+def test_archive_allowed_request_still_goes_through_the_blocklist(monkeypatch):
+    """decide() runs after the archive policy: an archive host that resolved to a
+    private address is still refused (DNS pinning + blocklist unchanged)."""
+
+    async def go():
+        async with Upstream("echo") as up:
+            monkeypatch.setattr(proxy_mod, "ARCHIVE_PORT", up.port)
+
+            async def resolver(host, port):
+                return ["10.0.0.5"]
+
+            async with running(
+                allowed_ports=frozenset({up.port}), resolver=resolver
+            ) as (_p, port, logs):
+                resp = await exchange(
+                    port, connect_req("web.archive.org", up.port, auth(mode="archive"))
+                )
+                await wait_for_logs(logs)
+                assert status(resp) == 403
+                assert logs[0]["reason"] == "all_blocked" and up.connections == 0
+
+    run(go())
