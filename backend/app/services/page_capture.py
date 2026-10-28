@@ -387,6 +387,30 @@ def _ip(value: object) -> str | None:
         return None
 
 
+_WAYBACK_FINAL_RE = re.compile(r"/web/([0-9]{14})[a-z_]*/")  # Wayback replay flags like id_, im_
+
+
+def _archive_rendered_at(final_url: str | None) -> datetime | None:
+    """The snapshot time of the page actually shown: the /web/<14 digits>/ of an
+    https web.archive.org final URL. None when it cannot be read."""
+    if not final_url:
+        return None
+    try:
+        parts = urlsplit(final_url)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme != "https" or parts.hostname != wayback.ARCHIVE_HOST or port not in (None, 443):
+        return None
+    m = _WAYBACK_FINAL_RE.match(parts.path)
+    if m is None:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 def _fail(row: PageCapture, reason: str, now: datetime) -> None:
     row.status = "failed"
     row.failure_reason = reason
@@ -470,6 +494,8 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual:
         except wayback.WaybackUnavailable:
             raise CaptureRefused("archive:lookup_unavailable")
         if snap is not None:  # wayback validated captured_at >= since
+            # archive_snapshot_at is PROVISIONAL (the capture requested); ingest replaces it
+            # with the snapshot time the page actually shown carries.
             capture_mode = "archive"
             requested_url = wayback.snapshot_url(snap, domain)
             archive_fields = {"archive_snapshot_at": snap.captured_at, "archive_host": wayback.ARCHIVE_HOST}
@@ -659,6 +685,20 @@ def _ingest_one(db: Session, row: PageCapture, path: str, proxylog: str, now: da
 
     if error is not None:
         _fail(row, "capture_error", now)
+    elif row.source == "archive":
+        # The time goes on the evidence: the page shown, not the capture we
+        # asked for (a redirect capture replays the target's NEAREST capture).
+        rendered = _archive_rendered_at(row.final_url)
+        if rendered is None:
+            _fail(row, "archive_snapshot_unverified", now)
+            return
+        row.archive_snapshot_at = rendered
+        window_start = row.requested_at - timedelta(days=archive_freshness_days(db))
+        if rendered < window_start or rendered - row.requested_at > timedelta(days=1):
+            _fail(row, "archive_snapshot_stale", now)
+        else:
+            row.status = "done"
+            row.finished_at = now
     else:
         row.status = "done"
         row.finished_at = now

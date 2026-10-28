@@ -427,3 +427,113 @@ def cap_settings():
         elif row is not None:
             row.value = before
         s.commit()
+
+
+# ── ingest: the rendered snapshot time is the evidence ───────────────────────
+
+from app.tests.test_page_capture_service import _drop_result, _ingest, _result  # noqa: E402
+
+REQ_AT = datetime(2026, 10, 25, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _arch(w, req_ts=TS, requested_at=REQ_AT, source="archive"):
+    """A queued row; an archive one carries the provisional snapshot time."""
+    over = {}
+    if source == "archive":
+        snap = datetime.strptime(req_ts, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+        over = dict(archive_snapshot_at=snap, archive_host="web.archive.org")
+    row = _insert(w, source=source, requested_at=requested_at, **over)
+    c_value = row.domain
+    row.requested_url = f"https://web.archive.org/web/{req_ts}/https://{c_value}/"
+    w.db.commit()
+    return row
+
+
+def _run(w, env, row, final_url, **over):
+    _drop_result(env, row, result=_result(row, final_url=final_url, **over))
+    assert _ingest(w) == 1
+    return _fresh(row.id)
+
+
+def _wb(row, ts, flag=""):
+    return f"https://web.archive.org/web/{ts}{flag}/https://{row.domain}/"
+
+
+def test_rendered_equals_requested_is_done(w, env):
+    row = _arch(w)
+    r = _run(w, env, row, _wb(row, TS))
+    assert (r.status, r.failure_reason, r.archive_snapshot_at) == ("done", None, SNAP_AT)
+
+
+def test_rendered_differs_inside_window_records_the_rendered_time(w, env):
+    row = _arch(w)
+    rendered = SNAP_AT - timedelta(hours=5)
+    r = _run(w, env, row, _wb(row, _ts(rendered)))
+    assert r.status == "done" and r.archive_snapshot_at == rendered != SNAP_AT
+
+
+def test_replay_flag_is_parsed(w, env):
+    row = _arch(w)
+    r = _run(w, env, row, _wb(row, "20261020123456", "id_"))
+    assert r.status == "done" and r.archive_snapshot_at == SNAP_AT
+
+
+def test_rendered_older_than_window_is_stale_and_still_recorded(w, env):
+    row = _arch(w)
+    rendered = REQ_AT - timedelta(days=30)
+    r = _run(w, env, row, _wb(row, _ts(rendered)))
+    assert (r.status, r.failure_reason) == ("failed", "archive_snapshot_stale")
+    assert r.archive_snapshot_at == rendered  # CHECK safety: not nulled
+
+
+def test_window_boundary_exact_done_one_second_older_stale(w, env):
+    edge = REQ_AT - timedelta(days=7)
+    a = _arch(w)
+    ra = _run(w, env, a, _wb(a, _ts(edge)))
+    assert (ra.status, ra.archive_snapshot_at) == ("done", edge)
+    b = _arch(w)
+    rb = _run(w, env, b, _wb(b, _ts(edge - timedelta(seconds=1))))
+    assert (rb.status, rb.failure_reason) == ("failed", "archive_snapshot_stale")
+
+
+def test_freshness_setting_is_honoured_at_ingest(w, env, cap_settings):
+    cap_settings(ARCHIVE_FRESHNESS_DAYS_KEY=30)
+    row = _arch(w)
+    rendered = REQ_AT - timedelta(days=20)
+    r = _run(w, env, row, _wb(row, _ts(rendered)))
+    assert r.status == "done" and r.archive_snapshot_at == rendered
+
+
+def test_rendered_in_the_future_beyond_a_day_is_stale(w, env):
+    row = _arch(w)
+    rendered = REQ_AT + timedelta(days=1, seconds=1)
+    r = _run(w, env, row, _wb(row, _ts(rendered)))
+    assert (r.status, r.failure_reason) == ("failed", "archive_snapshot_stale")
+    assert r.archive_snapshot_at == rendered
+
+
+@pytest.mark.parametrize("final", [
+    None,
+    "http://web.archive.org/web/20261020123456/https://fabrikam.com/",
+    "https://example.org/web/20261020123456/https://fabrikam.com/",
+    "https://web.archive.org:8443/web/20261020123456/https://fabrikam.com/",
+    "https://web.archive.org/save/https://fabrikam.com/",
+    "https://web.archive.org/web/2026102012345/https://fabrikam.com/",
+])
+def test_unreadable_final_url_is_unverified(w, env, final):
+    row = _arch(w)
+    r = _run(w, env, row, final)
+    assert (r.status, r.failure_reason) == ("failed", "archive_snapshot_unverified")
+    assert r.archive_snapshot_at == SNAP_AT  # untouched, still satisfies the CHECK
+
+
+def test_capture_error_keeps_precedence_on_an_archive_row(w, env):
+    row = _arch(w)
+    r = _run(w, env, row, _wb(row, TS), error="boom")
+    assert (r.status, r.failure_reason) == ("failed", "capture_error")
+
+
+def test_live_row_with_archive_final_url_is_untouched(w, env):
+    row = _arch(w, source="live")
+    r = _run(w, env, row, _wb(row, TS))
+    assert (r.status, r.archive_snapshot_at, r.archive_host) == ("done", None, None)
