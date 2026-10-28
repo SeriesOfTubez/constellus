@@ -26,8 +26,18 @@ services:
       - DATABASE_URL=postgresql://constellus:constellus@db:5432/constellus
       - SCANNER_URL=http://scanner-worker:8001
       - SCANNER_INTERNAL_TOKEN=${SCANNER_INTERNAL_TOKEN}
+      - CAPTURE_SPOOL_DIR=/spool
+      - CAPTURE_PROXYLOG_DIR=/proxylog
+      - CAPTURE_IMAGES_DIR=/captures
     env_file:
       - .env
+    # Shared capture group (gid 10050): read/write the spool + proxy log volumes.
+    group_add:
+      - "10050"
+    volumes:
+      - capture_spool:/spool
+      - capture_proxylog:/proxylog
+      - capture_images:/captures
     depends_on:
       db:
         condition: service_healthy
@@ -105,13 +115,28 @@ services:
   # up -d` for anyone without the token in .env. An empty token still fails closed:
   # capture-proxy refuses to start and capture.run refuses to run.
   # Profile-gated: plain `docker compose up -d` does not start them yet.
-  # Run the browser on demand: `docker compose --profile capture run --rm capture-browser ...`
+  # capture-browser runs the spool worker (`python -m capture.worker`): it pulls a
+  # job from /spool, captures ONE page, writes the result and exits; the restart
+  # policy gives every capture a fresh process + tmpfs. It never connects to the
+  # backend: jobs/results travel through volumes (docs/architecture/capture-spool.md).
+  #   capture_spool     backend rw, capture-browser rw   (/spool)
+  #   capture_proxylog  backend rw, capture-proxy rw     (/proxylog) - the browser
+  #                     never mounts this, so it cannot forge the proxy's record
+  #   capture_images    backend only                     (/captures)
+  # Access is via the shared group gid 10050 (`group_add`), dirs 2770. Both images
+  # pre-create /spool/{jobs,claimed,results} so either seeds an empty volume alike.
+  # One-off runs (the egress spike): `docker compose --profile capture run --rm capture-browser <cmd>`
   capture-proxy:
     build:
       context: ./capture-proxy
       dockerfile: Dockerfile
     environment:
       - CAPTURE_PROXY_TOKEN=${CAPTURE_PROXY_TOKEN:-}
+      - CAPTURE_PROXY_LOG_DIR=/proxylog
+    volumes:
+      - capture_proxylog:/proxylog
+    group_add:
+      - "10050"
     networks:
       - capture_internal
       - capture_egress
@@ -131,6 +156,12 @@ services:
     environment:
       - CAPTURE_PROXY_URL=http://capture-proxy:3128
       - CAPTURE_PROXY_TOKEN=${CAPTURE_PROXY_TOKEN:-}
+      - CAPTURE_SPOOL_DIR=/spool
+    volumes:
+      - capture_spool:/spool
+    group_add:
+      - "10050"
+    restart: unless-stopped
     networks:
       - capture_internal
     read_only: true
@@ -159,3 +190,6 @@ networks:
 
 volumes:
   db_data:
+  capture_spool:
+  capture_proxylog:
+  capture_images:

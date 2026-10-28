@@ -28,7 +28,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from app.core.database import SessionLocal
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.scan_template import ScanTemplate
-from app.services import ct_refresher
+from app.services import ct_refresher, page_capture
 from app.services import tenancy_enricher
 from app.services import tenancy_tls
 
@@ -75,6 +75,7 @@ def start() -> None:
     _register_llm_models_refresher()
     _register_chat_transcript_purger()
     _register_report_purger()
+    _register_page_capture()
 
 
 def _seed_default_connectors() -> None:
@@ -119,6 +120,23 @@ def _register_ct_refresher() -> None:
         max_instances=1,
     )
     log.info("Scheduled ct_refresher (every %ds)", ct_refresher.TICK_INTERVAL_SECONDS)
+
+
+def _register_page_capture() -> None:
+    """Ingest capture-browser results and fail captures that never got one
+    (planning#280 S5b-2a)."""
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        page_capture.tick,
+        trigger=IntervalTrigger(seconds=page_capture.TICK_INTERVAL_SECONDS),
+        id="page_capture",
+        name="Page capture spool ingest",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    log.info("Scheduled page_capture (every %ds)", page_capture.TICK_INTERVAL_SECONDS)
 
 
 def _register_epss_refresher() -> None:

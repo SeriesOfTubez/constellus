@@ -36,6 +36,7 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.engagement import Engagement, EngagementPosture
 from app.models.finding_canonical import FindingCanonical
 from app.models.org_entity import OrgEntity
+from app.models.page_capture import PageCapture, PageCaptureRequest
 from app.models.scope_candidate import (
     ScopeCandidate,
     ScopeCandidateEvent,
@@ -45,7 +46,7 @@ from app.models.scope_candidate import (
 from app.models.target import Target
 from app.models.target_asset_link import TargetAssetLink
 from app.models.user import User
-from app.services import audit, edgar_ingest, entity_relationship, organizations, read_scope, sec_edgar
+from app.services import audit, edgar_ingest, entity_relationship, organizations, page_capture, read_scope, sec_edgar
 from app.services import org_tree as org_tree_sql
 from app.services.org_discovery import candidates, filer_search, rollup, runner
 from app.services.org_discovery import strength as strength_sql
@@ -326,7 +327,51 @@ class RejectRequest(BaseModel):
     reason: str
 
 
+class CaptureResponse(BaseModel):
+    """One page capture. Never carries a filesystem path: image serving is a
+    later slice, and `has_image` is all a client needs until then."""
+
+    id: uuid.UUID
+    status: str
+    failure_reason: str | None
+    error: str | None
+    requested_at: datetime
+    finished_at: datetime | None
+    requested_by_id: uuid.UUID | None
+    domain: str
+    requested_url: str
+    final_url: str | None
+    http_status: int | None
+    redirect_chain: list | None
+    title: str | None
+    user_agent: str | None
+    cert: dict | None
+    cert_san_dns: list[str] | None
+    cert_sha256: str | None
+    pinned_ip: str | None
+    proxy_log_truncated: bool
+    image_bytes: int | None
+    image_sha256: str | None
+    image_quality: int | None
+    image_omitted_reason: str | None
+    has_image: bool
+    request_count: int
+
+
 # ── errors ──────────────────────────────────────────────────────────────────
+
+_CAPTURE_REFUSAL_MESSAGES = {
+    "archive_first:not_built": (
+        "A live visit is not allowed under this organization's current posture, and the "
+        "archive-first alternative is not built yet."
+    ),
+    "candidate:not_domain": "Only a domain candidate can be visited.",
+    "candidate:not_open": "Only an open candidate can be visited.",
+    "capture:already_queued": "A capture of this candidate is already queued.",
+    "candidate:invalid_domain": "This candidate's value is not a name the capture browser can visit.",
+    "spool_unavailable": "The capture browser could not be reached; try again shortly.",
+}
+_CAPTURE_REFUSAL_GENERIC = "A live visit to this candidate is not allowed."
 
 
 def _http_error(exc: Exception) -> HTTPException:
@@ -1227,3 +1272,65 @@ def reject_candidate(
         reason=candidate.rejection_reason,
     )
     return _one_row(db, current_user, candidate_id)[0]
+
+
+def _capture_response(row: PageCapture, request_count: int) -> CaptureResponse:
+    return CaptureResponse(
+        id=row.id, status=row.status, failure_reason=row.failure_reason, error=row.error,
+        requested_at=row.requested_at, finished_at=row.finished_at, requested_by_id=row.requested_by_id,
+        domain=row.domain, requested_url=row.requested_url, final_url=row.final_url,
+        http_status=row.http_status, redirect_chain=row.redirect_chain, title=row.title,
+        user_agent=row.user_agent, cert=row.cert, cert_san_dns=row.cert_san_dns, cert_sha256=row.cert_sha256,
+        pinned_ip=str(row.pinned_ip) if row.pinned_ip is not None else None,
+        proxy_log_truncated=row.proxy_log_truncated, image_bytes=row.image_bytes,
+        image_sha256=row.image_sha256, image_quality=row.image_quality,
+        image_omitted_reason=row.image_omitted_reason, has_image=row.image_path is not None,
+        request_count=request_count,
+    )
+
+
+@router.post("/candidates/{candidate_id}/captures", response_model=CaptureResponse, status_code=202)
+def request_candidate_capture(
+    request: Request,
+    candidate_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_DECIDE_CANDIDATE)),
+):
+    """Queue one live page load of a domain candidate (planning#280 S5b-2a).
+    A live visit is an admin action, so it shares claim's permission. The gate
+    (`authorise_candidate_browse`) runs inside `request_capture`; a refusal is
+    409 with the rule that fired (503 when the spool is unavailable). `request_capture` commits the session, so
+    nothing is written before it."""
+    _require_visible_candidate(db, current_user, candidate_id)
+    try:
+        row = page_capture.request_capture(db, candidate_id=candidate_id, user=current_user)
+    except page_capture.CaptureRefused as exc:
+        audit.record_detail(request, candidate=str(candidate_id), capture_refused=exc.rule)
+        # A spool fault is ours, not a conflict with the candidate's state.
+        raise HTTPException(
+            status_code=503 if exc.rule == "spool_unavailable" else 409,
+            detail={"rule": exc.rule, "message": _CAPTURE_REFUSAL_MESSAGES.get(exc.rule, _CAPTURE_REFUSAL_GENERIC)},
+        )
+    audit.record_detail(request, candidate=str(candidate_id), capture=str(row.id), domain=row.domain)
+    return _capture_response(row, 0)
+
+
+@router.get("/candidates/{candidate_id}/captures", response_model=list[CaptureResponse])
+def list_candidate_captures(
+    candidate_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_READ)),
+):
+    _require_visible_candidate(db, current_user, candidate_id)
+    rows = db.execute(
+        select(PageCapture).where(PageCapture.candidate_id == candidate_id)
+        .order_by(PageCapture.requested_at.desc(), PageCapture.id.desc()).limit(20)
+    ).scalars().all()
+    counts = dict(
+        db.execute(
+            select(PageCaptureRequest.capture_id, func.count()).where(
+                PageCaptureRequest.capture_id.in_([r.id for r in rows])
+            ).group_by(PageCaptureRequest.capture_id)
+        ).all()
+    ) if rows else {}
+    return [_capture_response(r, counts.get(r.id, 0)) for r in rows]

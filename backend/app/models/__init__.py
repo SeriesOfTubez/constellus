@@ -51,6 +51,7 @@ from app.models.entity_relation import (
 from app.models.entity_filing_event import EntityFilingEvent
 from app.models.entity_subsidiary_listing import EntitySubsidiaryListing
 from app.models.entity_filing_section import EntityFilingSection, SECTION_VALUES
+from app.models.page_capture import PageCapture, PageCaptureRequest, CAPTURE_STATUSES
 from app.models.scope_candidate import (
     ScopeCandidate,
     ScopeSignal,
@@ -153,4 +154,6 @@ __all__ = [
     "ChatMessage",
     "Report",
     "HttpRedirectHop",
+    "PageCapture",
+    "PageCaptureRequest",
 ]

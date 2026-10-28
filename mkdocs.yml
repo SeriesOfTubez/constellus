@@ -56,6 +56,7 @@ nav:
     - Risk Scoring: architecture/risk-scoring.md
     - Shared Infrastructure & Dangling DNS: architecture/shared-infra-verification.md
     - Authentication & SSO: architecture/authentication.md
+    - Page Capture Spool: architecture/capture-spool.md
   - Development:
     - Contributing: development/contributing.md
     - Adding a Connector: development/adding-connector.md

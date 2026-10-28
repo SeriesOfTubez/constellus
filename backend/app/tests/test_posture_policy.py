@@ -113,7 +113,8 @@ def test_seeded_observers_reproduce_planning_193s_shipped_denial_set():
     # + 1 (`edgar_10k_website` — migration 0064, planning#216), also silent.
     # + 1 (`llm_acquisition_reader` — migration 0066, planning#218), also silent.
     # + 1 (`redirect` — migration 0077, planning#268), also silent.
-    assert len(rows) == 30, f"expected 30 seeded observers, got {len(rows)}"
+    # + 1 (`page_capture` — migration 0091, planning#280), `browse`: permitted, so the denial set is unchanged.
+    assert len(rows) == 31, f"expected 31 seeded observers, got {len(rows)}"
 
     denied = {name for name, noise_class in rows if not posture.observer_permitted(passive_only=True, noise_class=noise_class)}
     assert denied == _PLANNING_193_DENIAL_SET, (

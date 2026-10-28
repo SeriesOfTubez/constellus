@@ -6,7 +6,9 @@ being achievable at planning#196, which added `authorise_discovery` as a second
 entry point (a domain being enumerated has no canonical identity yet, so an
 asset-shaped gate consulted before any asset exists would deny all first-run
 discovery). planning#205 added a third, `authorise_ownership_probe`, for the
-same class of reason. Three entry points, one policy, each a different shape of
+same class of reason. planning#280 S5b-2a added a fourth,
+`authorise_candidate_browse`, for an unclaimed scope candidate (no target, no
+canonical row). Four entry points, one policy, each a different shape of
 question — that is the design, not drift.
 
 ## Why this file exists rather than a table in the issue
@@ -28,7 +30,7 @@ So the sweep is here, as code, and adding a network transport to
       than being silently absorbed.
 
   R2  Every module classified `TARGET` — it can put packets on a host we are
-      pointed at — either calls one of the three gate entry points itself, or
+      pointed at — either calls one of the four gate entry points itself, or
       declares which caller gates it, and that caller is checked too.
 
 ## What it deliberately does NOT claim
@@ -60,8 +62,11 @@ _SERVICES = os.path.normpath(_SERVICES)
 # `bruteforce` uses.
 _TRANSPORTS = frozenset({"httpx", "requests", "aiohttp", "socket", "ssl", "urllib", "dns", "http"})
 
-# The three entry points onto the one policy (planning#148 / #196 / #205).
-_GATES = frozenset({"authorise_probes", "authorise_discovery", "authorise_ownership_probe"})
+# The four entry points onto the one policy (planning#148 / #196 / #205; planning#280 S5b-2a
+# added the candidate browse gate).
+_GATES = frozenset({
+    "authorise_probes", "authorise_discovery", "authorise_ownership_probe", "authorise_candidate_browse",
+})
 
 # ── the sweep, as code ─────────────────────────────────────────────────────
 #
@@ -75,6 +80,12 @@ _GATES = frozenset({"authorise_probes", "authorise_discovery", "authorise_owners
 # `gated_by` names the module that consults the gate, when it is not this one.
 # "self" means this module calls a gate directly.
 _EGRESS: dict[str, tuple[str, str, str | None]] = {
+    "page_capture.py": (
+        "TARGET",
+        "dispatches one browse page load of a scope candidate's domain to the capture browser via the spool "
+        "(planning#280); imports urllib.parse only to read the final URL",
+        "self",
+    ),
     "domain_affinity.py": (
         "TARGET", "owned/default vhost probes + corroboration candidates", "self",
     ),
@@ -238,8 +249,8 @@ def test_every_target_reaching_module_is_gated():
     assert not failures, "Ungated target-reaching egress:\n  " + "\n  ".join(failures)
 
 
-def test_all_three_entry_points_are_live():
-    """The criterion names three entry points. If one stops being reachable
+def test_all_four_entry_points_are_live():
+    """The criterion names four entry points. If one stops being reachable
     from any egress module, either it was collapsed into another — in which
     case this file's prose and planning#148 both need amending — or a gate was
     quietly dropped."""

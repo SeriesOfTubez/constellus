@@ -1,0 +1,640 @@
+"""Page capture: the backend half of the spool (planning#280 S5b-2a).
+
+Asks the capture browser for one page load of a scope candidate's domain
+(`request_capture`) and takes the results back (`ingest_results`,
+`sweep_timeouts`, driven by `tick`). The contract, including every
+untrusted-input rule implemented below, is `docs/architecture/capture-spool.md`.
+
+**Everything under the spool is untrusted input**: the browser that wrote it
+rendered an arbitrary page. Every read here is `lstat`-checked, size-capped,
+JSON-only, and the screenshot is never decoded. `pinned_ip` comes from the
+proxy log only (the browser never mounts that volume), never from result.json.
+
+A capture row is evidence a person reads, never an authorisation.
+"""
+
+import hashlib
+import ipaddress
+import json
+import logging
+import os
+import re
+import shutil
+import stat
+import uuid
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
+
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.core.database import SessionLocal
+from app.models.org_entity import OrgEntity
+from app.models.page_capture import PageCapture, PageCaptureRequest
+from app.models.scope_candidate import ScopeCandidate
+from app.models.user import User
+from app.services.probe_authorisation import authorise_candidate_browse
+
+log = logging.getLogger(__name__)
+
+# ── limits ───────────────────────────────────────────────────────────────────
+# First slice: module constants. S5b-2b promotes these to admin settings
+# (planning#280). The guards themselves (caps being enforced at all) are not
+# settings.
+MAX_IMAGE_BYTES = 2 * 1024 * 1024
+WEBP_QUALITIES = (80, 60, 40)
+VIEWPORT_WIDTH = 1280
+VIEWPORT_HEIGHT = 800
+QUEUE_TIMEOUT_S = 600
+RESULT_MIN_AGE_S = 5
+JOB_MAX_BYTES = 16 * 1024
+RESULT_MAX_BYTES = 1024 * 1024
+PROXYLOG_MAX_BYTES = 4 * 1024 * 1024
+TICK_INTERVAL_SECONDS = 10
+
+_MAX_URL = 8192
+_MAX_CHAIN = 50
+_MAX_SAN = 1000
+
+
+def spool_dir() -> str:
+    return os.environ.get("CAPTURE_SPOOL_DIR", "/spool")
+
+
+def proxylog_dir() -> str:
+    return os.environ.get("CAPTURE_PROXYLOG_DIR", "/proxylog")
+
+
+def images_dir() -> str:
+    return os.environ.get("CAPTURE_IMAGES_DIR", "/captures")
+
+
+class CaptureRefused(Exception):
+    """The capture was not queued. `.rule` says why (a gate rule such as
+    `candidate:not_open`, or a producer rule such as `capture:already_queued`)."""
+
+    def __init__(self, rule: str):
+        super().__init__(rule)
+        self.rule = rule
+
+
+class _Invalid(Exception):
+    """A result that fails an untrusted-input guard; `.reason` becomes the row's failure_reason."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+# ── small helpers ────────────────────────────────────────────────────────────
+
+_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _valid_hostname(value: object) -> bool:
+    """Strict: lowercase LDH labels of 1-63 chars, <=253 total, at least one
+    dot, no trailing dot, no port/path/userinfo, and not an IP literal (the
+    last label is never all digits)."""
+    if not isinstance(value, str) or not value or len(value) > 253 or value != value.lower():
+        return False
+    labels = value.split(".")
+    if len(labels) < 2:
+        return False
+    if not all(_LABEL_RE.fullmatch(label) for label in labels):
+        return False
+    return not labels[-1].isdigit()
+
+
+def _canonical_uuid(name: str) -> bool:
+    try:
+        return str(uuid.UUID(name)) == name
+    except (ValueError, AttributeError):
+        return False
+
+
+def _check_spool_dirs() -> None:
+    """The backend does not create the spool: the images pre-create jobs/, claimed/
+    and results/ with the shared-group mode. A missing directory, or one that is
+    not a real directory (a symlink is refused), raises OSError."""
+    for sub in ("jobs", "claimed", "results"):
+        path = os.path.join(spool_dir(), sub)
+        if not stat.S_ISDIR(os.lstat(path).st_mode):
+            raise NotADirectoryError(path)
+
+
+def _unlink_quiet(path: str) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        log.warning("page_capture: could not remove %s", path)
+
+
+def _remove_entry(path: str) -> None:
+    """Remove a spool entry without following symlinks (rmtree refuses a
+    symlinked top, and unlinks symlinks inside rather than entering them)."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    try:
+        if stat.S_ISDIR(st.st_mode):
+            shutil.rmtree(path)
+        else:
+            os.unlink(path)
+    except OSError:
+        log.warning("page_capture: could not remove %s", path)
+
+
+def _open_regular(path: str) -> int:
+    """Open a spool file for reading, safely against a swap after the caller's
+    lstat: O_NOFOLLOW refuses a symlink, O_NONBLOCK keeps a FIFO from blocking
+    the scheduler thread on open, and the fstat re-checks the opened object is
+    a regular file. Raises OSError otherwise."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise OSError(f"not a regular file: {path}")
+    return fd
+
+
+def _read_regular(path: str, cap: int) -> bytes:
+    """lstat, require a regular file within `cap`, then open without following
+    symlinks. Raises _Invalid('invalid_result') otherwise."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        raise _Invalid("invalid_result")
+    if not stat.S_ISREG(st.st_mode) or st.st_size > cap:
+        raise _Invalid("invalid_result")
+    try:
+        fd = _open_regular(path)
+    except OSError:
+        raise _Invalid("invalid_result")
+    with os.fdopen(fd, "rb") as f:
+        data = f.read(cap + 1)
+    if len(data) > cap:
+        raise _Invalid("invalid_result")
+    return data
+
+
+def _s(value: object, cap: int, *, truncate: bool = False) -> str | None:
+    """A string within `cap` (or truncated to it), NULs removed (Postgres text
+    and jsonb both refuse them). Anything else is None."""
+    if not isinstance(value, str):
+        return None
+    value = value.replace("\x00", "")
+    if len(value) > cap:
+        return value[:cap] if truncate else None
+    return value
+
+
+def _int(value: object, lo: int, hi: int) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if lo <= value <= hi else None
+
+
+def _parse_http_url(s: str) -> tuple[str, int] | None:
+    """(lowercase host, effective port) of a plain http(s) URL, else None.
+    Userinfo is refused; an IPv6 literal host is allowed; a bad port is None."""
+    try:
+        parts = urlsplit(s)
+        if parts.scheme not in ("http", "https") or "@" in parts.netloc:
+            return None
+        host = parts.hostname
+        if not host:
+            return None
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        return None
+    return host.lower(), port
+
+
+def _http_url(value: object) -> str | None:
+    s = _s(value, _MAX_URL)
+    return s if s is not None and _parse_http_url(s) is not None else None
+
+
+def _ip(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return None
+
+
+def _fail(row: PageCapture, reason: str, now: datetime) -> None:
+    row.status = "failed"
+    row.failure_reason = reason
+    row.finished_at = now
+
+
+# ── request ──────────────────────────────────────────────────────────────────
+
+
+def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User) -> PageCapture:
+    """Queue one capture of a candidate's domain.
+
+    This function OWNS its session's commits (unlike a helper that only
+    flushes): the job file must only exist after the `page_captures` row is
+    durable, or the worker could produce a result for a row the ingest cannot
+    see yet, which the ingest would discard as unknown. The gate also commits
+    (it logs a denial), so nothing earlier in the caller's transaction
+    survives this call uncommitted either: call it first.
+
+    The gate runs before any write. Until S5c builds archive-first, a live
+    visit under a restricting posture is refused here.
+    """
+    candidate = db.get(ScopeCandidate, candidate_id)
+    if candidate is None:
+        raise CaptureRefused("candidate:not_found")
+    root = db.get(OrgEntity, candidate.root_entity_id)
+    auth = authorise_candidate_browse(db, candidate=candidate, root=root)
+    if not auth.allowed:
+        raise CaptureRefused(auth.rule_fired or "candidate:denied")
+    if auth.passive_only:
+        # Safety rule: no live visit under a restricting posture until S5c.
+        raise CaptureRefused("archive_first:not_built")
+    already = (
+        db.query(PageCapture.id)
+        .filter(PageCapture.candidate_id == candidate.id, PageCapture.status == "queued")
+        .first()
+    )
+    if already is not None:
+        raise CaptureRefused("capture:already_queued")
+    domain = candidate.value
+    if not _valid_hostname(domain):
+        raise CaptureRefused("candidate:invalid_domain")
+
+    row = PageCapture(
+        candidate_id=candidate.id,
+        domain=domain,
+        observer_id=auth.observer.id,
+        requested_url=f"https://{domain}/",
+        requested_by_id=user.id,
+    )
+    db.add(row)
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        if "uq_page_captures_one_queued_per_candidate" in str(e.orig):
+            raise CaptureRefused("capture:already_queued")
+        raise
+    capture_id = str(row.id)
+
+    job = {
+        "v": 1,
+        "capture_id": capture_id,
+        "url": row.requested_url,
+        "viewport": {"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
+        "max_image_bytes": MAX_IMAGE_BYTES,
+        "webp_qualities": list(WEBP_QUALITIES),
+    }
+    payload = json.dumps(job).encode()
+    tmp = None
+    try:
+        _check_spool_dirs()
+        jobs = os.path.join(spool_dir(), "jobs")
+        tmp = os.path.join(jobs, f".{capture_id}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
+        with os.fdopen(fd, "wb") as f:
+            f.write(payload)
+        os.rename(tmp, os.path.join(jobs, f"{capture_id}.json"))
+    except OSError:
+        log.exception("page_capture: could not write job %s", capture_id)
+        if tmp is not None:
+            _unlink_quiet(tmp)
+        _fail(row, "spool_unavailable", datetime.now(timezone.utc))
+        db.commit()
+        raise CaptureRefused("spool_unavailable")
+    return row
+
+
+# ── ingest ───────────────────────────────────────────────────────────────────
+
+
+def ingest_results(db: Session, now: datetime | None = None) -> int:
+    """Ingest every `results/<id>/` directory at least RESULT_MIN_AGE_S old.
+    Each capture is its own unit of work. Returns how many queued rows were
+    resolved (done or failed)."""
+    now = now or datetime.now(timezone.utc)
+    results = os.path.join(spool_dir(), "results")
+    try:
+        names = sorted(os.listdir(results))
+    except FileNotFoundError:
+        return 0
+    resolved = 0
+    for name in names:
+        if name.startswith("."):
+            continue
+        path = os.path.join(results, name)
+        if not _canonical_uuid(name):
+            log.warning("page_capture: removing non-UUID spool result %r", name)
+            _remove_entry(path)
+            continue
+        try:
+            st = os.lstat(path)
+        except OSError:
+            continue
+        if now.timestamp() - st.st_mtime < RESULT_MIN_AGE_S:
+            continue
+        capture_id = uuid.UUID(name)
+        proxylog = os.path.join(proxylog_dir(), f"{name}.jsonl")
+        try:
+            row = db.get(PageCapture, capture_id)
+            if row is None or row.status != "queued":
+                log.warning("page_capture: discarding result for %s (not a queued capture)", name)
+                _remove_entry(path)
+                _unlink_quiet(proxylog)
+                continue
+            if not stat.S_ISDIR(st.st_mode):
+                raise _Invalid("invalid_result")
+            _ingest_one(db, row, path, proxylog, now)
+            db.commit()
+        except _Invalid as bad:
+            db.rollback()
+            _unlink_quiet(os.path.join(images_dir(), f"{name}.webp"))
+            if _mark_failed(db, capture_id, bad.reason, now):
+                resolved += 1
+                _remove_entry(path)
+                _unlink_quiet(proxylog)
+            continue
+        except Exception:
+            db.rollback()
+            _unlink_quiet(os.path.join(images_dir(), f"{name}.webp"))
+            log.exception("page_capture: ingest failed for %s", name)
+            if _mark_failed(db, capture_id, "ingest_error", now):
+                resolved += 1
+            continue
+        resolved += 1
+        _remove_entry(path)
+        _unlink_quiet(proxylog)
+    return resolved
+
+
+def _mark_failed(db: Session, capture_id: uuid.UUID, reason: str, now: datetime) -> bool:
+    """Its own small unit of work: fail the row if it is still queued."""
+    try:
+        row = db.get(PageCapture, capture_id)
+        if row is None or row.status != "queued":
+            return False
+        _fail(row, reason, now)
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        log.exception("page_capture: could not mark %s failed (%s)", capture_id, reason)
+        return False
+
+
+def _ingest_one(db: Session, row: PageCapture, path: str, proxylog: str, now: datetime) -> None:
+    name = str(row.id)
+    # lstat every entry: a symlink or anything not a regular file is refused.
+    try:
+        entries = os.listdir(path)
+    except OSError:
+        raise _Invalid("invalid_result")
+    for entry in entries:
+        try:
+            mode = os.lstat(os.path.join(path, entry)).st_mode
+        except OSError:
+            raise _Invalid("invalid_result")
+        if not stat.S_ISREG(mode):
+            raise _Invalid("invalid_result")
+
+    try:
+        result = json.loads(_read_regular(os.path.join(path, "result.json"), RESULT_MAX_BYTES))
+    except (ValueError, RecursionError):
+        raise _Invalid("invalid_result")
+    if not isinstance(result, dict) or result.get("capture_id") != name:
+        raise _Invalid("invalid_result")
+
+    row.final_url = _http_url(result.get("final_url"))
+    row.http_status = _int(result.get("status"), 100, 599)
+    row.redirect_chain = _chain(result.get("redirect_chain"))
+    row.title = _s(result.get("title"), 1024, truncate=True)
+    row.user_agent = _s(result.get("user_agent"), 512, truncate=True)
+    cert, san, sha = _cert(result.get("cert"))
+    row.cert, row.cert_san_dns, row.cert_sha256 = cert, san, sha
+
+    error = result.get("error")
+    if error is not None:
+        row.error = _s(error, 2000, truncate=True) if isinstance(error, str) else _s(str(error), 2000, truncate=True)
+
+    _ingest_proxylog(db, row, proxylog)
+
+    image = None
+    claimed = result.get("screenshot")
+    if claimed is None:
+        row.image_omitted_reason = _s(result.get("screenshot_omitted_reason"), 200, truncate=True)
+    else:
+        image = _read_image(os.path.join(path, "screenshot.webp"))
+        if image is None:
+            row.image_omitted_reason = "invalid_image"
+        else:
+            quality = _int(claimed.get("quality"), 1, 100) if isinstance(claimed, dict) else None
+            _store_image(row, name, image, quality)
+
+    if error is not None:
+        _fail(row, "capture_error", now)
+    else:
+        row.status = "done"
+        row.finished_at = now
+
+
+def _chain(value: object) -> list | None:
+    if not isinstance(value, list) or len(value) > _MAX_CHAIN:
+        return None
+    out = []
+    for hop in value:
+        if not isinstance(hop, dict):
+            continue
+        url = _s(hop.get("url"), _MAX_URL)
+        if url is None:
+            continue
+        out.append({"url": url, "status": _int(hop.get("status"), 100, 599)})
+    return out
+
+
+def _cert(value: object) -> tuple[dict | None, list[str] | None, str | None]:
+    if not isinstance(value, dict):
+        return None, None, None
+    cert: dict = {}
+    for key in ("subject", "issuer", "not_before", "not_after"):
+        s = _s(value.get(key), 1024)
+        if s is not None:
+            cert[key] = s
+    san = None
+    raw = value.get("san_dns")
+    if isinstance(raw, list):
+        san = [s.lower() for s in (_s(x, 253) for x in raw[:_MAX_SAN]) if s is not None]
+        cert["san_dns"] = san
+    sha = _s(value.get("sha256"), 64)
+    if sha is not None and re.fullmatch(r"[0-9a-fA-F]{64}", sha):
+        sha = sha.lower()
+        cert["sha256"] = sha
+    else:
+        sha = None
+    return cert, san, sha
+
+
+def _read_image(path: str) -> bytes | None:
+    """The screenshot bytes if (and only if) a regular file within the cap
+    that starts RIFF....WEBP. Never decoded. A symlink is not 'bad image', it
+    is a refused entry (checked by the caller's lstat sweep)."""
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_IMAGE_BYTES:
+            return None
+        fd = _open_regular(path)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as f:
+        data = f.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES or len(data) < 12:
+        return None
+    if data[0:4] != b"RIFF" or data[8:12] != b"WEBP":
+        return None
+    return data
+
+
+def _store_image(row: PageCapture, name: str, data: bytes, quality: int | None) -> None:
+    dest_dir = images_dir()
+    tmp = os.path.join(dest_dir, f".{name}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.rename(tmp, os.path.join(dest_dir, f"{name}.webp"))
+    except OSError:
+        _unlink_quiet(tmp)
+        raise
+    row.image_path = f"{name}.webp"
+    row.image_bytes = len(data)
+    row.image_sha256 = hashlib.sha256(data).hexdigest()
+    row.image_quality = quality
+
+
+def _ingest_proxylog(db: Session, row: PageCapture, path: str) -> None:
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(st.st_mode):
+        log.warning("page_capture: ignoring non-regular proxy log for %s", row.id)
+        return
+    try:
+        fd = _open_regular(path)
+    except OSError:
+        return
+    with os.fdopen(fd, "rb") as f:
+        data = f.read(PROXYLOG_MAX_BYTES)
+    row.proxy_log_truncated = st.st_size >= PROXYLOG_MAX_BYTES
+
+    final_host, final_port = None, None
+    if row.final_url:
+        target = _parse_http_url(row.final_url)
+        if target is not None:
+            final_host, final_port = target
+
+    cid = str(row.id)
+    seq = 0
+    pinned = None
+    for line in data.decode("utf-8", errors="replace").splitlines():
+        try:
+            rec = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(rec, dict) or rec.get("capture_id") != cid:
+            continue
+        decision = _s(rec.get("decision"), 32)
+        if not decision:
+            continue
+        host = _s(rec.get("host"), 255, truncate=True)
+        host = host.lower() if host else None
+        port = _int(rec.get("port"), 0, 65535)
+        rec_pinned = _ip(rec.get("pinned_ip"))
+        if (
+            pinned is None and decision == "allow" and final_host is not None
+            and host == final_host and port == final_port
+        ):
+            pinned = rec_pinned
+        resolved = rec.get("resolved")
+        db.add(PageCaptureRequest(
+            capture_id=row.id,
+            seq=seq,
+            ts=_ts(rec.get("ts")),
+            method=_s(rec.get("method"), 16, truncate=True),
+            scheme=_s(rec.get("scheme"), 16, truncate=True),
+            host=host,
+            port=port,
+            resolved=[ip for ip in (_ip(x) for x in resolved[:64]) if ip] if isinstance(resolved, list) else None,
+            pinned_ip=rec_pinned,
+            decision=decision,
+            reason=_s(rec.get("reason"), 500, truncate=True),
+            bytes_up=_int(rec.get("bytes_up"), 0, 2**63 - 1),
+            bytes_down=_int(rec.get("bytes_down"), 0, 2**63 - 1),
+            duration_ms=_int(rec.get("duration_ms"), 0, 2**31 - 1),
+        ))
+        seq += 1
+    row.pinned_ip = pinned
+
+
+def _ts(value: object) -> datetime | None:
+    s = _s(value, 64)
+    if s is None:
+        return None
+    try:
+        ts = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
+
+
+# ── timeout sweep and tick ───────────────────────────────────────────────────
+
+
+def sweep_timeouts(db: Session, now: datetime | None = None) -> int:
+    """Queued rows older than QUEUE_TIMEOUT_S fail as 'timeout'; their job and
+    claim files go. Returns the number swept."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=QUEUE_TIMEOUT_S)
+    rows = db.query(PageCapture).filter(PageCapture.status == "queued", PageCapture.requested_at < cutoff).all()
+    ids = [str(r.id) for r in rows]
+    for r in rows:
+        _fail(r, "timeout", now)
+    db.commit()
+    for i in ids:
+        _unlink_quiet(os.path.join(spool_dir(), "jobs", f"{i}.json"))
+        _unlink_quiet(os.path.join(spool_dir(), "claimed", f"{i}.json"))
+    return len(ids)
+
+
+def tick() -> None:
+    """One pass: ingest, then sweep. Never raises (the scheduler must keep
+    firing). Registered in scheduler.py as job `page_capture`."""
+    db = SessionLocal()
+    try:
+        try:
+            _check_spool_dirs()
+        except OSError:
+            log.error("page_capture: spool directories are missing; skipping ingest", exc_info=True)
+        else:
+            try:
+                ingest_results(db)
+            except Exception:
+                db.rollback()
+                log.exception("page_capture: ingest pass failed")
+        try:
+            sweep_timeouts(db)
+        except Exception:
+            db.rollback()
+            log.exception("page_capture: timeout sweep failed")
+    except Exception:
+        log.exception("page_capture: tick failed")
+    finally:
+        db.close()

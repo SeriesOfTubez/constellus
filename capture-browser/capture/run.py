@@ -23,6 +23,8 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import Browser, BrowserContext, Playwright, sync_playwright
 
+from capture.spool import pick_screenshot
+
 NAV_TIMEOUT_MS = 30_000
 IDLE_WAIT_MS = 3_000
 
@@ -91,14 +93,21 @@ def stock_user_agent(browser: Browser) -> str:
     return ua.replace("HeadlessChrome", "Chrome")
 
 
-def new_context(browser: Browser) -> BrowserContext:
+DEFAULT_VIEWPORT = {"width": 1366, "height": 768}
+DEFAULT_WEBP_QUALITIES = [80, 60, 40]
+DEFAULT_MAX_IMAGE_BYTES = 2 * 1024 * 1024
+
+
+def new_context(
+    browser: Browser, viewport: dict | None = None, user_agent: str | None = None
+) -> BrowserContext:
     return browser.new_context(
         service_workers="block",
         accept_downloads=False,
         java_script_enabled=True,
-        viewport={"width": 1366, "height": 768},
+        viewport=viewport or DEFAULT_VIEWPORT,
         ignore_https_errors=False,
-        user_agent=stock_user_agent(browser),
+        user_agent=user_agent or stock_user_agent(browser),
     )
 
 
@@ -147,8 +156,36 @@ def get_cert(cdp, final_url: str) -> dict | None:
         return None
 
 
+def take_screenshot(cdp, quality: int) -> bytes:
+    """One viewport screenshot of the page ALREADY loaded (no second navigation)."""
+    res = cdp.send("Page.captureScreenshot", {"format": "webp", "quality": quality})
+    return base64.b64decode(res["data"])
+
+
 def capture(p: Playwright, capture_id: str, url: str, proxy_url: str, token: str) -> dict:
+    """CLI/spike entry point: the result dict only (screenshot is not returned)."""
+    result, _shot, _ua = capture_page(p, capture_id, url, proxy_url, token)
+    return result
+
+
+def capture_page(
+    p: Playwright,
+    capture_id: str,
+    url: str,
+    proxy_url: str,
+    token: str,
+    *,
+    viewport: dict | None = None,
+    webp_qualities: list[int] | None = None,
+    max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
+) -> tuple[dict, tuple[bytes | None, int | None, str | None], str]:
+    """ONE navigation. Returns (result dict, (image, quality, omitted_reason), user_agent).
+
+    The screenshot is taken in the SAME page load, after the idle wait and the
+    title, over the existing CDP session. Nothing else is read from the page."""
     browser = launch_browser(p, capture_id, proxy_url, token)
+    shot: tuple[bytes | None, int | None, str | None] = (None, None, None)
+    user_agent = ""
     result: dict = {
         "capture_id": capture_id,
         "requested_url": url,
@@ -161,7 +198,8 @@ def capture(p: Playwright, capture_id: str, url: str, proxy_url: str, token: str
         "error": None,
     }
     try:
-        context = new_context(browser)
+        user_agent = stock_user_agent(browser)
+        context = new_context(browser, viewport, user_agent)
         page = context.new_page()
         cdp = context.new_cdp_session(page)
         cdp.send("Network.enable")
@@ -199,6 +237,13 @@ def capture(p: Playwright, capture_id: str, url: str, proxy_url: str, token: str
         if result["error"] is None:
             result["title"] = page.title()
             result["cert"] = get_cert(cdp, page.url)
+            shot = pick_screenshot(
+                lambda q: take_screenshot(cdp, q),
+                webp_qualities or DEFAULT_WEBP_QUALITIES,
+                max_image_bytes,
+            )
+        else:
+            shot = (None, None, "navigation_failed")
         result["requests"] = [
             {
                 "url": r.url,
@@ -210,7 +255,7 @@ def capture(p: Playwright, capture_id: str, url: str, proxy_url: str, token: str
         ]
     finally:
         browser.close()
-    return result
+    return result, shot, user_agent
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -221,9 +266,15 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     proxy_url, token = require_env()
     with sync_playwright() as p:
-        result = capture(p, args.capture_id, args.url, proxy_url, token)
+        result, (image, quality, reason), _ua = capture_page(
+            p, args.capture_id, args.url, proxy_url, token
+        )
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    if image is not None:
+        (out / "screenshot.webp").write_bytes(image)
+        result["screenshot"] = {"file": "screenshot.webp", "bytes": len(image), "quality": quality}
+    result["screenshot_omitted_reason"] = reason
     (out / "result.json").write_text(json.dumps(result, indent=2))
     return 0 if result["error"] is None else 1
 

@@ -39,6 +39,7 @@ import signal
 import socket
 import sys
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -157,6 +158,61 @@ def emit_stdout(record: dict) -> None:
     """One JSON object per line on stdout, flushed. Nothing else is written to
     stdout; diagnostics go to stderr."""
     print(json.dumps(record, separators=(",", ":")), flush=True)
+
+
+LOG_FILE_MAX_BYTES = 4 * 1024 * 1024  # per-capture proxy log cap (capture-spool.md)
+
+
+def _canonical_uuid(value: object) -> bool:
+    if not isinstance(value, str) or len(value) != 36:
+        return False
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
+def append_capture_log(log_dir: str, record: dict) -> bool:
+    """Append `record` to `<log_dir>/<capture_id>.jsonl`. Returns True if written.
+
+    Only for a canonical lowercase-UUID capture_id (it becomes a path component),
+    never follows a symlink at the target (O_NOFOLLOW), skips once the file is
+    at the cap, and swallows every OSError: the stdout log is the fallback and
+    the proxy must never crash because the spool volume misbehaves."""
+    capture_id = record.get("capture_id")
+    if not _canonical_uuid(capture_id):
+        return False
+    path = os.path.join(log_dir, f"{capture_id}.jsonl")
+    line = (json.dumps(record, separators=(",", ":")) + "\n").encode()
+    try:
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o660,
+        )
+    except OSError:
+        return False
+    try:
+        if os.fstat(fd).st_size >= LOG_FILE_MAX_BYTES:
+            return False
+        os.write(fd, line)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def make_log(log_dir: str | None) -> Callable[[dict], None]:
+    """stdout always; additionally the per-capture file when `log_dir` is set."""
+    if not log_dir:
+        return emit_stdout
+
+    def log(record: dict) -> None:
+        emit_stdout(record)
+        append_capture_log(log_dir, record)
+
+    return log
 
 
 class _Rec:
@@ -607,7 +663,7 @@ def build_proxy_from_env(env=os.environ) -> Proxy:
         raise SystemExit(
             "capture-proxy: CAPTURE_PROXY_TOKEN is unset or empty; refusing to start"
         )
-    return Proxy(token=token)
+    return Proxy(token=token, log=make_log(env.get("CAPTURE_PROXY_LOG_DIR")))
 
 
 async def serve(proxy: Proxy, host: str, port: int) -> asyncio.Server:
