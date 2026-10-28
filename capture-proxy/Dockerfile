@@ -10,7 +10,13 @@ WORKDIR /app
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-RUN useradd --uid 10001 --create-home --shell /bin/false capture-proxy
+# Shared spool group (gid 10050): the proxy writes per-capture logs to /proxylog
+# which the backend reads. See docs/architecture/capture-spool.md.
+RUN groupadd --gid 10050 capture-spool \
+    && useradd --uid 10001 --create-home --shell /bin/false --groups capture-spool capture-proxy \
+    && mkdir /proxylog \
+    && chown 10001:10050 /proxylog \
+    && chmod 2770 /proxylog
 
 COPY --from=py-builder /install /usr/local
 # ip_blocklist.py is byte-identical to backend/app/core/ip_blocklist.py and

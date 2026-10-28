@@ -584,3 +584,98 @@ def test_default_log_is_one_json_line_on_stdout(capsys):
     proxy_mod.emit_stdout({"a": 1})
     out = capsys.readouterr().out
     assert out.endswith("\n") and json.loads(out) == {"a": 1}
+
+
+# ── per-capture proxy log file (capture-spool.md "Proxy log") ────────────────
+
+GOOD_ID = "0190a1b2-c3d4-7e5f-8a6b-1234567890ab"
+
+
+def _rec(cid):
+    return {"capture_id": cid, "decision": "allow", "host": "example.com"}
+
+
+def _stdout_hosts(capsys) -> list:
+    """The `host` of every JSON log line printed to stdout (exact, not substring)."""
+    return [json.loads(line)["host"] for line in capsys.readouterr().out.splitlines() if line.strip()]
+
+
+@pytest.mark.parametrize(
+    "cid",
+    [
+        "../x",
+        GOOD_ID.upper(),
+        "a/b",
+        GOOD_ID + "0",  # 37 chars
+        GOOD_ID.replace("-", ""),  # 32 hex, uuid() accepts but not canonical
+        "cap_1",
+        None,
+    ],
+)
+def test_proxy_log_file_refuses_non_canonical_ids(tmp_path, capsys, cid):
+    logdir = tmp_path / "log"
+    logdir.mkdir()
+    proxy_mod.make_log(str(logdir))(_rec(cid))
+    assert list(logdir.iterdir()) == []
+    assert list(tmp_path.iterdir()) == [logdir]  # nothing escaped the dir
+    assert '"decision":"allow"' in capsys.readouterr().out  # path reached; stdout kept
+
+
+def test_proxy_log_file_written_for_canonical_uuid(tmp_path, capsys):
+    log = proxy_mod.make_log(str(tmp_path))
+    log(_rec(GOOD_ID))
+    log(_rec(GOOD_ID))
+    f = tmp_path / f"{GOOD_ID}.jsonl"
+    lines = f.read_text().splitlines()
+    assert [json.loads(x)["host"] for x in lines] == ["example.com"] * 2
+    assert len(capsys.readouterr().out.splitlines()) == 2
+
+
+def test_proxy_log_file_does_not_follow_a_planted_symlink(tmp_path, capsys):
+    logdir = tmp_path / "log"
+    logdir.mkdir()
+    victim = tmp_path / "victim.txt"
+    victim.write_text("untouched")
+    (logdir / f"{GOOD_ID}.jsonl").symlink_to(victim)
+    assert proxy_mod.append_capture_log(str(logdir), _rec(GOOD_ID)) is False
+    proxy_mod.make_log(str(logdir))(_rec(GOOD_ID))
+    assert victim.read_text() == "untouched"
+    assert _stdout_hosts(capsys) == ["example.com"]  # stdout still got the line
+
+
+def test_proxy_log_file_respects_the_size_cap(tmp_path, capsys):
+    f = tmp_path / f"{GOOD_ID}.jsonl"
+    assert proxy_mod.append_capture_log(str(tmp_path), _rec(GOOD_ID)) is True
+    with open(f, "ab") as fh:
+        fh.truncate(proxy_mod.LOG_FILE_MAX_BYTES)
+    before = f.stat().st_size
+    proxy_mod.make_log(str(tmp_path))(_rec(GOOD_ID))
+    assert f.stat().st_size == before
+    assert _stdout_hosts(capsys) == ["example.com"]
+
+
+def test_proxy_log_file_oserror_never_raises(tmp_path, capsys):
+    missing = tmp_path / "nope"  # directory does not exist -> open raises ENOENT
+    proxy_mod.make_log(str(missing))(_rec(GOOD_ID))  # must not raise
+    assert not missing.exists()
+    assert _stdout_hosts(capsys) == ["example.com"]
+
+
+def test_proxy_log_file_write_error_never_raises(tmp_path, monkeypatch, capsys):
+    def boom(fd, data):
+        raise OSError(28, "no space")
+
+    monkeypatch.setattr(proxy_mod.os, "write", boom)
+    proxy_mod.make_log(str(tmp_path))(_rec(GOOD_ID))
+    assert _stdout_hosts(capsys) == ["example.com"]
+
+
+def test_build_proxy_from_env_uses_file_log_only_when_dir_set(tmp_path, capsys):
+    plain = build_proxy_from_env({"CAPTURE_PROXY_TOKEN": "t"})
+    assert plain._log is proxy_mod.emit_stdout
+    p = build_proxy_from_env(
+        {"CAPTURE_PROXY_TOKEN": "t", "CAPTURE_PROXY_LOG_DIR": str(tmp_path)}
+    )
+    p._log(_rec(GOOD_ID))
+    assert (tmp_path / f"{GOOD_ID}.jsonl").exists()
+    assert _stdout_hosts(capsys) == ["example.com"]

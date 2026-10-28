@@ -136,8 +136,10 @@ from sqlalchemy.orm import Session
 
 from app.models.asset_canonical import AssetCanonical
 from app.models.authorisation_decision import AuthorisationDecision
-from app.models.engagement import Engagement
+from app.models.engagement import Engagement, EngagementPosture
 from app.models.observer import Observer
+from app.models.org_entity import RELATIONSHIP_MA_TARGET, RELATIONSHIP_OURS, OrgEntity
+from app.models.scope_candidate import ScopeCandidate
 from app.models.target import Target
 from app.models.target_asset_link import TargetAssetLink
 from app.services import app_settings as settings_svc
@@ -1758,3 +1760,136 @@ def authorise_discovery(
     )
     _write_decisions(db, [_decision_row(None, observer_row, permission)])
     return False
+
+
+# ── the candidate browse gate (planning#280 S5b-2a) ──────────────────────────
+
+# The ONE observer and the ONE noise class this gate can authorise. Neither is
+# a parameter: a caller cannot ask this function about any other observer.
+PAGE_CAPTURE_OBSERVER = "page_capture"
+BROWSE_NOISE = "browse"
+
+
+@dataclass(frozen=True)
+class BrowseAuthorisation:
+    allowed: bool
+    # The posture the decision was made under. The producer needs it: until
+    # S5c's archive-first exists, a passive-only live load is refused there.
+    passive_only: bool
+    rule_fired: str | None
+    observer: Observer | None
+
+
+def _candidate_passive_only(db: Session, root: OrgEntity) -> tuple[bool, list[dict]]:
+    """Posture for an unclaimed candidate, read off its ROOT (a candidate has
+    no target and so no `target.engagement`). Fails closed: an `ma_target`
+    root is passive-only unless it has exactly one engagement that is not
+    abandoned and whose posture does not restrict. No live engagement (all
+    abandoned) or more than one (ambiguous) both restrict."""
+    if root.relationship == RELATIONSHIP_OURS:
+        return False, []
+    engagements = list(
+        db.query(Engagement)
+        .filter(Engagement.subject_entity_id == root.id)
+        .order_by(Engagement.created_at, Engagement.id)
+    )
+    evidence = [{"id": str(e.id), "posture": e.posture} for e in engagements]
+    live = [e for e in engagements if e.posture != EngagementPosture.ABANDONED.value]
+    if len(live) != 1:
+        return True, evidence
+    return posture.posture_restricts(live[0].posture), evidence
+
+
+def authorise_candidate_browse(db: Session, *, candidate: ScopeCandidate, root: OrgEntity) -> BrowseAuthorisation:
+    """Authorise ONE `browse` page load of an unclaimed scope candidate's
+    domain (planning#280 comments 6443895725, 6451180624).
+
+    ## Why this is not `authorise_probes` or `authorise_discovery`
+
+    The asset path (`_compose`) needs a canonical row and authorised names; an
+    unclaimed candidate has neither, and `_scope_cap` denies it as
+    `scope:unresolved_asset` by design. `authorise_discovery` takes an
+    observer slug and a target row; a candidate has no target. This function
+    is domain-shaped like `authorise_discovery`, but takes NO observer slug:
+    it hard-codes `page_capture` / `browse`, so it can never be used to
+    authorise any other noise class. It never calls `_compose`.
+
+    ## The checks, in order (the first that fails is `rule_fired`)
+
+    1. `candidate:not_open` — claimed candidates are targets (the asset path
+       governs them); rejected ones are not ours to visit.
+    2. `candidate:not_domain` — an ASN/CIDR has no page to load.
+    3. `candidate:root_mismatch` — the caller's `root` must be the
+       candidate's own root, or posture is read off the wrong organization.
+    4. `candidate:no_relationship` — a root that is neither `ours` nor
+       `ma_target` has no basis for any visit.
+    5. `observer:unseeded` / `observer:noise_mismatch` — the seeded
+       `page_capture` row must exist and carry `browse`; a missing or
+       reclassified row fails closed rather than trusting this constant.
+    6. `posture:passive_only` — `posture.observer_permitted(passive_only,
+       "browse")`, the same decision function and rule string as the other
+       two gates. `browse` is in `PASSIVE_ONLY_PERMITTED_NOISE`, so today
+       this permits; it fails closed if that membership is ever removed.
+
+    Posture is always enforced, like `authorise_discovery` (an operator
+    assertion, not an inferred verdict); `probe_authorisation_mode` is not
+    consulted.
+
+    ## Denials are logged; permits are not
+
+    A permit is recorded by the `page_captures` row the producer writes next,
+    which carries far more than a decision row could. A denial has no other
+    record, so it is written to `authorisation_decisions` with
+    `decision_scope = "candidate"`. Like `authorise_discovery`, the write
+    commits the session: call this BEFORE writing anything else.
+
+    Archive-first (S5c) is NOT checked here; it is the producer's job.
+    """
+    rule: str | None = None
+    passive_only = False
+    engagements: list[dict] = []
+    observer_row: Observer | None = None
+
+    if candidate.status != "open":
+        rule = "candidate:not_open"
+    elif candidate.kind != "domain":
+        rule = "candidate:not_domain"
+    elif root is None or candidate.root_entity_id != root.id:
+        rule = "candidate:root_mismatch"
+    elif root.relationship not in (RELATIONSHIP_OURS, RELATIONSHIP_MA_TARGET):
+        rule = "candidate:no_relationship"
+    else:
+        passive_only, engagements = _candidate_passive_only(db, root)
+        observer_row = db.query(Observer).filter(Observer.name == PAGE_CAPTURE_OBSERVER).first()
+        if observer_row is None:
+            rule = "observer:unseeded"
+        elif observer_row.noise_class != BROWSE_NOISE:
+            rule = "observer:noise_mismatch"
+        elif not posture.observer_permitted(passive_only=passive_only, noise_class=BROWSE_NOISE):
+            rule = "posture:passive_only"
+
+    if rule is None:
+        return BrowseAuthorisation(allowed=True, passive_only=passive_only, rule_fired=None, observer=observer_row)
+
+    log.info("Candidate browse gate: denied candidate %s (%s)", candidate.id, rule)
+    permission = ProbePermission(
+        allowed=False,
+        modes=frozenset(),
+        names=(),
+        rule_fired=rule,
+        evidence={
+            "observer": PAGE_CAPTURE_OBSERVER,
+            "observer_noise_class": observer_row.noise_class if observer_row is not None else None,
+            "decision_scope": "candidate",
+            "candidate_id": str(candidate.id),
+            "candidate_status": candidate.status,
+            "candidate_kind": candidate.kind,
+            "domain": candidate.value,
+            "root_entity_id": str(root.id) if root is not None else None,
+            "root_relationship": root.relationship if root is not None else None,
+            "passive_only": passive_only,
+            "engagements": engagements,
+        },
+    )
+    _write_decisions(db, [_decision_row(None, observer_row, permission)])
+    return BrowseAuthorisation(allowed=False, passive_only=passive_only, rule_fired=rule, observer=observer_row)

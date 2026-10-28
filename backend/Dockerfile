@@ -24,7 +24,11 @@ RUN apt-get update && apt-get upgrade -y \
     libxmlsec1-openssl \
     curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --shell /bin/false constellus
+    && groupadd --gid 10050 capture-spool \
+    && useradd --create-home --shell /bin/false --groups capture-spool constellus \
+    && mkdir -p /spool/jobs /spool/claimed /spool/results /proxylog /captures \
+    && chown constellus:capture-spool /spool /spool/jobs /spool/claimed /spool/results /proxylog /captures \
+    && chmod 2770 /spool /spool/jobs /spool/claimed /spool/results /proxylog /captures
 
 COPY --from=py-builder /install /usr/local
 COPY backend/app/ app/

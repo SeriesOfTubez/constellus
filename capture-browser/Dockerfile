@@ -19,11 +19,18 @@ RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt \
     && chmod -R a+rX /ms-playwright \
     && python -m pip uninstall -y --root-user-action=ignore pip setuptools wheel
 
-RUN useradd --uid 10001 --create-home --shell /bin/false capture
+# Shared spool group (gid 10050, docs/architecture/capture-spool.md): the backend
+# and this worker both read/write /spool through it. 2770 = setgid, group-rw, no
+# world access. Whoever creates a directory sets its mode explicitly.
+RUN groupadd --gid 10050 capture-spool \
+    && useradd --uid 10001 --create-home --shell /bin/false --groups capture-spool capture \
+    && mkdir /spool /spool/jobs /spool/claimed /spool/results \
+    && chown 10001:10050 /spool /spool/jobs /spool/claimed /spool/results \
+    && chmod 2770 /spool /spool/jobs /spool/claimed /spool/results
 
 COPY capture/ capture/
 
 USER 10001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import playwright"]
-CMD ["python", "-m", "capture.run", "--help"]
+CMD ["python", "-m", "capture.worker"]
