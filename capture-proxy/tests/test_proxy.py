@@ -595,6 +595,11 @@ def _rec(cid):
     return {"capture_id": cid, "decision": "allow", "host": "example.com"}
 
 
+def _stdout_hosts(capsys) -> list:
+    """The `host` of every JSON log line printed to stdout (exact, not substring)."""
+    return [json.loads(line)["host"] for line in capsys.readouterr().out.splitlines() if line.strip()]
+
+
 @pytest.mark.parametrize(
     "cid",
     [
@@ -635,7 +640,7 @@ def test_proxy_log_file_does_not_follow_a_planted_symlink(tmp_path, capsys):
     assert proxy_mod.append_capture_log(str(logdir), _rec(GOOD_ID)) is False
     proxy_mod.make_log(str(logdir))(_rec(GOOD_ID))
     assert victim.read_text() == "untouched"
-    assert "example.com" in capsys.readouterr().out  # stdout still got the line
+    assert _stdout_hosts(capsys) == ["example.com"]  # stdout still got the line
 
 
 def test_proxy_log_file_respects_the_size_cap(tmp_path, capsys):
@@ -646,14 +651,14 @@ def test_proxy_log_file_respects_the_size_cap(tmp_path, capsys):
     before = f.stat().st_size
     proxy_mod.make_log(str(tmp_path))(_rec(GOOD_ID))
     assert f.stat().st_size == before
-    assert "example.com" in capsys.readouterr().out
+    assert _stdout_hosts(capsys) == ["example.com"]
 
 
 def test_proxy_log_file_oserror_never_raises(tmp_path, capsys):
     missing = tmp_path / "nope"  # directory does not exist -> open raises ENOENT
     proxy_mod.make_log(str(missing))(_rec(GOOD_ID))  # must not raise
     assert not missing.exists()
-    assert "example.com" in capsys.readouterr().out
+    assert _stdout_hosts(capsys) == ["example.com"]
 
 
 def test_proxy_log_file_write_error_never_raises(tmp_path, monkeypatch, capsys):
@@ -662,7 +667,7 @@ def test_proxy_log_file_write_error_never_raises(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(proxy_mod.os, "write", boom)
     proxy_mod.make_log(str(tmp_path))(_rec(GOOD_ID))
-    assert "example.com" in capsys.readouterr().out
+    assert _stdout_hosts(capsys) == ["example.com"]
 
 
 def test_build_proxy_from_env_uses_file_log_only_when_dir_set(tmp_path, capsys):
@@ -673,4 +678,4 @@ def test_build_proxy_from_env_uses_file_log_only_when_dir_set(tmp_path, capsys):
     )
     p._log(_rec(GOOD_ID))
     assert (tmp_path / f"{GOOD_ID}.jsonl").exists()
-    assert "example.com" in capsys.readouterr().out
+    assert _stdout_hosts(capsys) == ["example.com"]
