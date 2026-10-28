@@ -364,10 +364,7 @@ class CaptureResponse(BaseModel):
 # ── errors ──────────────────────────────────────────────────────────────────
 
 _CAPTURE_REFUSAL_MESSAGES = {
-    "archive_first:not_built": (
-        "A live visit is not allowed under this organization's current posture, and the "
-        "archive-first alternative is not built yet."
-    ),
+    "archive:lookup_unavailable": "The web archive could not be checked for a recent snapshot; try again shortly.",
     "candidate:not_domain": "Only a domain candidate can be visited.",
     "candidate:not_open": "Only an open candidate can be visited.",
     "capture:already_queued": "A capture of this candidate is already queued.",
@@ -1312,7 +1309,8 @@ def request_candidate_capture(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission(Permission.ENTITIES_DECIDE_CANDIDATE)),
 ):
-    """Queue one live page load of a domain candidate (planning#280 S5b-2a).
+    """Queue one page capture of a domain candidate (planning#280 S5b-2a): a
+    live load, or a Wayback snapshot under a restricting posture (S5c-b2a).
     A live visit is an admin action, so it shares claim's permission. The gate
     (`authorise_candidate_browse`) runs inside `request_capture`; a refusal is
     409 with the rule that fired (503 when the spool is unavailable). `request_capture` commits the session, so
@@ -1324,7 +1322,7 @@ def request_candidate_capture(
         audit.record_detail(request, candidate=str(candidate_id), capture_refused=exc.rule)
         # A spool fault is ours, not a conflict with the candidate's state.
         raise HTTPException(
-            status_code=503 if exc.rule in ("spool_unavailable", "capture:not_configured") else 409,
+            status_code=503 if exc.rule in ("spool_unavailable", "capture:not_configured", "archive:lookup_unavailable") else 409,
             detail={"rule": exc.rule, "message": _CAPTURE_REFUSAL_MESSAGES.get(exc.rule, _CAPTURE_REFUSAL_GENERIC)},
         )
     audit.record_detail(request, candidate=str(candidate_id), capture=str(row.id), domain=row.domain, manual=True)

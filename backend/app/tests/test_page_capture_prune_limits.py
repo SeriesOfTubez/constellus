@@ -6,6 +6,7 @@ Run through backend/scripts/test.sh. Directories are tmp_path.
 import ast
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -402,6 +403,32 @@ def test_archive_hosts_and_modes_match_across_proxy_browser_and_backend():
         assert not missing, f"{name} does not define {missing} as ast-readable literals"
     assert spool["ARCHIVE_HOSTS"] == proxy["ARCHIVE_HOSTS"] == frozenset({"web.archive.org"})
     assert tuple(spool["MODES"]) == tuple(proxy["MODES"]) == pc.CAPTURE_MODES == ("live", "archive")
+
+
+def test_wayback_host_and_snapshot_url_satisfy_the_browser_and_proxy_rules():
+    from datetime import datetime, timezone
+    from urllib.parse import urlsplit
+
+    from app.services import wayback
+
+    root = Path(__file__).resolve().parents[3]
+    proxy = _literal_constants(root / "capture-proxy" / "proxy.py")
+    spool = _literal_constants(root / "capture-browser" / "capture" / "spool.py")
+    assert wayback.ARCHIVE_HOST in proxy["ARCHIVE_HOSTS"]
+    assert wayback.ARCHIVE_HOST in spool["ARCHIVE_HOSTS"]
+    # The browser's `archive_request_allowed` cannot be imported by the backend venv, so its
+    # rule is restated as data. Its path pattern is `_ARCHIVE_PATH_RE = re.compile(...)`, a
+    # call that `_literal_constants` does not read, so the pattern is hard-coded here: keep it
+    # equal to capture-browser/capture/spool.py (checked below by source text).
+    path_re = r"/web/[0-9]+"
+    assert f're.compile(r"{path_re}")' in (root / "capture-browser" / "capture" / "spool.py").read_text()
+    snap = wayback.Snapshot("20261020123456", datetime(2026, 10, 20, 12, 34, 56, tzinfo=timezone.utc))
+    parts = urlsplit(wayback.snapshot_url(snap, "fabrikam.com"))
+    assert parts.scheme == "https"
+    assert parts.hostname in spool["ARCHIVE_HOSTS"]
+    assert parts.port is None
+    assert re.match(path_re, parts.path)
+    assert "@" not in parts.netloc
 
 
 def test_job_version_matches_the_browser_spool():

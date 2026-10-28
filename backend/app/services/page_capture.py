@@ -36,7 +36,7 @@ from app.models.org_entity import OrgEntity
 from app.models.page_capture import USER_AGENT_MODES, PageCapture, PageCaptureRequest
 from app.models.scope_candidate import ScopeCandidate
 from app.models.user import User
-from app.services import app_settings
+from app.services import app_settings, wayback
 from app.services.probe_authorisation import authorise_candidate_browse
 
 log = logging.getLogger(__name__)
@@ -44,12 +44,13 @@ log = logging.getLogger(__name__)
 # ── limits ───────────────────────────────────────────────────────────────────
 # SETTINGS (admin-configurable, planning#280 S5b-2b; read through the typed
 # accessors below, which clamp a stored value back to its default when it is
-# out of bounds): browse revisit days, user-agent mode, identifying
+# out of bounds): browse revisit days, archive freshness days, user-agent mode, identifying
 # user-agent, max image bytes, queue timeout.
 # GUARDS (constants, never settings): IMAGE_BYTES_CEILING and the *_MIN/_MAX
 # bounds, USER_AGENT_MAX, VIEWPORT_*, WEBP_QUALITIES, TICK_INTERVAL_SECONDS and
 # the JOB/RESULT/PROXYLOG byte caps.
 REVISIT_DAYS_KEY = "capture.browse_revisit_days"
+ARCHIVE_FRESHNESS_DAYS_KEY = "capture.archive_freshness_days"
 USER_AGENT_MODE_KEY = "capture.user_agent_mode"
 IDENTIFYING_UA_KEY = "capture.identifying_user_agent"
 MAX_IMAGE_BYTES_KEY = "capture.max_image_bytes"
@@ -66,6 +67,7 @@ CAPTURE_MODES = ("live", "archive")
 PROXY_KEY_MIN_LEN = 32
 
 DEFAULT_REVISIT_DAYS = 30
+DEFAULT_ARCHIVE_FRESHNESS_DAYS = 7
 DEFAULT_USER_AGENT_MODE = "stock"
 DEFAULT_MAX_IMAGE_BYTES = 2 * 1024 * 1024
 DEFAULT_QUEUE_TIMEOUT_S = 600
@@ -76,6 +78,8 @@ PROXY_MAX_CONNECTIONS_DEFAULT = 256
 
 REVISIT_DAYS_MIN = 1
 REVISIT_DAYS_MAX = 365
+ARCHIVE_FRESHNESS_DAYS_MIN = 1
+ARCHIVE_FRESHNESS_DAYS_MAX = 90
 IMAGE_BYTES_MIN = 64 * 1024
 IMAGE_BYTES_CEILING = 8 * 1024 * 1024  # a guard: no setting or row can exceed it
 QUEUE_TIMEOUT_MIN = 60
@@ -128,6 +132,13 @@ def _bounded_int(db: Session, key: str, default: int, lo: int, hi: int) -> int:
 
 def revisit_days(db: Session) -> int:
     return _bounded_int(db, REVISIT_DAYS_KEY, DEFAULT_REVISIT_DAYS, REVISIT_DAYS_MIN, REVISIT_DAYS_MAX)
+
+
+def archive_freshness_days(db: Session) -> int:
+    return _bounded_int(
+        db, ARCHIVE_FRESHNESS_DAYS_KEY, DEFAULT_ARCHIVE_FRESHNESS_DAYS,
+        ARCHIVE_FRESHNESS_DAYS_MIN, ARCHIVE_FRESHNESS_DAYS_MAX,
+    )
 
 
 def user_agent_mode(db: Session) -> str:
@@ -397,8 +408,16 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual:
     (it logs a denial), so nothing earlier in the caller's transaction
     survives this call uncommitted either: call it first.
 
-    The gate runs before any write. Until S5c builds archive-first, a live
-    visit under a restricting posture is refused here.
+    The gate runs before any write. Under a restricting posture
+    (`auth.passive_only`) the capture is archive-first: the newest non-error Wayback
+    CDX capture no older than `capture.archive_freshness_days` is captured instead of the live
+    site (an ARCHIVE job); an explicit "no fresh snapshot" answer falls back to
+    a normal live job (the revisit budget still applies to an automatic
+    request). `manual` bypasses only the revisit budget, never the posture or
+    archive-first. A failed lookup refuses (`archive:lookup_unavailable`) and
+    never falls through to live. The lookup is an outbound fetch, so it runs
+    only after every cheap refusal has passed, and before any DB write. Without
+    a restricting posture there is no lookup at all.
     """
     candidate = db.get(ScopeCandidate, candidate_id)
     if candidate is None:
@@ -407,9 +426,6 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual:
     auth = authorise_candidate_browse(db, candidate=candidate, root=root)
     if not auth.allowed:
         raise CaptureRefused(auth.rule_fired or "candidate:denied")
-    if auth.passive_only:
-        # Safety rule: no live visit under a restricting posture until S5c.
-        raise CaptureRefused("archive_first:not_built")
     already = (
         db.query(PageCapture.id)
         .filter(PageCapture.candidate_id == candidate.id, PageCapture.status == "queued")
@@ -420,8 +436,9 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual:
     domain = candidate.value
     if not _valid_hostname(domain):
         raise CaptureRefused("candidate:invalid_domain")
+    now = datetime.now(timezone.utc)
     if not manual:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=revisit_days(db))
+        cutoff = now - timedelta(days=revisit_days(db))
         recent = (
             db.query(PageCapture.id)
             .filter(
@@ -443,11 +460,27 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual:
         # No key, no credential the proxy would accept: refuse before any row exists.
         raise CaptureRefused("capture:not_configured")
 
+    capture_mode = "live"
+    requested_url = f"https://{domain}/"
+    archive_fields: dict = {}
+    if auth.passive_only:
+        try:
+            since = now - timedelta(days=archive_freshness_days(db))
+            snap = wayback.latest_snapshot(domain, now, since)
+        except wayback.WaybackUnavailable:
+            raise CaptureRefused("archive:lookup_unavailable")
+        if snap is not None:  # wayback validated captured_at >= since
+            capture_mode = "archive"
+            requested_url = wayback.snapshot_url(snap, domain)
+            archive_fields = {"archive_snapshot_at": snap.captured_at, "archive_host": wayback.ARCHIVE_HOST}
+
     row = PageCapture(
         candidate_id=candidate.id,
         domain=domain,
         observer_id=auth.observer.id,
-        requested_url=f"https://{domain}/",
+        requested_url=requested_url,
+        source=capture_mode,
+        **archive_fields,
         requested_by_id=user.id,
         user_agent_mode=mode,
         image_max_bytes=max_image_bytes(db),
@@ -467,8 +500,8 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual:
         "v": JOB_VERSION,
         "capture_id": capture_id,
         "url": row.requested_url,
-        "mode": "live",
-        "proxy_token": proxy_token(capture_id, "live", exp),
+        "mode": capture_mode,
+        "proxy_token": proxy_token(capture_id, capture_mode, exp),
         "proxy_expires": exp,
         "viewport": {"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
         "user_agent_mode": mode,
