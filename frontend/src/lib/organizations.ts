@@ -121,6 +121,39 @@ export interface CandidateDetail extends CandidateRow {
   decided_by_connector_name: string | null
 }
 
+/** One page capture (mirrors the backend CaptureResponse). `redirect_chain` entries are
+ *  `{url, status}` hops from the capture browser; typed loosely because the API sends `list`. */
+export interface PageCapture {
+  id: string
+  status: "queued" | "done" | "failed" | string
+  failure_reason: string | null
+  error: string | null
+  requested_at: string
+  finished_at: string | null
+  requested_by_id: string | null
+  domain: string
+  requested_url: string
+  final_url: string | null
+  http_status: number | null
+  redirect_chain: unknown[] | null
+  title: string | null
+  user_agent: string | null
+  user_agent_mode: string
+  image_max_bytes: number
+  cert: Record<string, unknown> | null
+  cert_san_dns: string[] | null
+  cert_sha256: string | null
+  pinned_ip: string | null
+  proxy_log_truncated: boolean
+  image_bytes: number | null
+  image_sha256: string | null
+  image_quality: number | null
+  image_omitted_reason: string | null
+  image_pruned_at: string | null
+  has_image: boolean
+  request_count: number
+}
+
 // ── registry observations (planning#278 S3d) ───────────────────────────────
 
 export type NewHolderKind = "org" | "customer" | "unknown" | "unregistered"

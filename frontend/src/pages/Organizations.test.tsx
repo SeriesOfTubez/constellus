@@ -73,4 +73,8 @@ describe("Organizations workspace permission gates", () => {
     perms.current = ["entities.read"]
     expect(render("/organizations/o1")).not.toContain('type="checkbox"')
   })
+
+  // NOTE: the flyout is a Radix Sheet (portal); with the detail query seeded,
+  // renderToStaticMarkup still emits no sheet content, so the "Page capture" wiring
+  // is not asserted here.
 })

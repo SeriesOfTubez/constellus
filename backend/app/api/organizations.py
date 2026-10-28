@@ -376,6 +376,12 @@ _CAPTURE_REFUSAL_MESSAGES = {
     "capture:identifying_user_agent_unset": (
         "Identifying User-Agent mode is on but no User-Agent string is set."
     ),
+    "candidate:root_mismatch": "This candidate does not belong to this organization's root.",
+    "candidate:no_relationship": (
+        "This candidate's organization has no relationship that permits a visit "
+        "(only our own or an M&A target's domains can be visited)."
+    ),
+    "posture:passive_only": "A live visit is not allowed under this organization's current posture.",
     "spool_unavailable": "The capture browser could not be reached; try again shortly.",
 }
 _CAPTURE_REFUSAL_GENERIC = "A live visit to this candidate is not allowed."
