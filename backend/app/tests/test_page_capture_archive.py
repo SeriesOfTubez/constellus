@@ -519,6 +519,7 @@ def test_rendered_in_the_future_beyond_a_day_is_stale(w, env):
     "https://web.archive.org:8443/web/20261020123456/https://fabrikam.com/",
     "https://web.archive.org/save/https://fabrikam.com/",
     "https://web.archive.org/web/2026102012345/https://fabrikam.com/",
+    "https://web.archive.org/x/web/20261020123456/https://fabrikam.com/",  # /web/ must start the path
 ])
 def test_unreadable_final_url_is_unverified(w, env, final):
     row = _arch(w)
