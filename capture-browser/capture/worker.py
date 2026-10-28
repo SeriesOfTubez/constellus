@@ -87,6 +87,8 @@ def process(cid: str, claimed_path: str, results_dir: str) -> None:
                 viewport=job["viewport"],
                 webp_qualities=job["webp_qualities"],
                 max_image_bytes=job["max_image_bytes"],
+                # None (stock mode) -> capture_page uses the browser's own UA.
+                user_agent=job["user_agent"],
             )
         result, image = spool.build_result(cid, captured=captured, shot=shot, user_agent=ua)
     except Exception as exc:  # noqa: BLE001 - the job must still get a result

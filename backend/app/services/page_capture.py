@@ -25,27 +25,50 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
+from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.org_entity import OrgEntity
-from app.models.page_capture import PageCapture, PageCaptureRequest
+from app.models.page_capture import USER_AGENT_MODES, PageCapture, PageCaptureRequest
 from app.models.scope_candidate import ScopeCandidate
 from app.models.user import User
+from app.services import app_settings
 from app.services.probe_authorisation import authorise_candidate_browse
 
 log = logging.getLogger(__name__)
 
 # ── limits ───────────────────────────────────────────────────────────────────
-# First slice: module constants. S5b-2b promotes these to admin settings
-# (planning#280). The guards themselves (caps being enforced at all) are not
-# settings.
-MAX_IMAGE_BYTES = 2 * 1024 * 1024
+# SETTINGS (admin-configurable, planning#280 S5b-2b; read through the typed
+# accessors below, which clamp a stored value back to its default when it is
+# out of bounds): browse revisit days, user-agent mode, identifying
+# user-agent, max image bytes, queue timeout.
+# GUARDS (constants, never settings): IMAGE_BYTES_CEILING and the *_MIN/_MAX
+# bounds, USER_AGENT_MAX, VIEWPORT_*, WEBP_QUALITIES, TICK_INTERVAL_SECONDS and
+# the JOB/RESULT/PROXYLOG byte caps.
+REVISIT_DAYS_KEY = "capture.browse_revisit_days"
+USER_AGENT_MODE_KEY = "capture.user_agent_mode"
+IDENTIFYING_UA_KEY = "capture.identifying_user_agent"
+MAX_IMAGE_BYTES_KEY = "capture.max_image_bytes"
+QUEUE_TIMEOUT_KEY = "capture.queue_timeout_seconds"
+
+DEFAULT_REVISIT_DAYS = 30
+DEFAULT_USER_AGENT_MODE = "stock"
+DEFAULT_MAX_IMAGE_BYTES = 2 * 1024 * 1024
+DEFAULT_QUEUE_TIMEOUT_S = 600
+
+REVISIT_DAYS_MIN = 1
+REVISIT_DAYS_MAX = 365
+IMAGE_BYTES_MIN = 64 * 1024
+IMAGE_BYTES_CEILING = 8 * 1024 * 1024  # a guard: no setting or row can exceed it
+QUEUE_TIMEOUT_MIN = 60
+QUEUE_TIMEOUT_MAX = 3600
+USER_AGENT_MAX = 256
+
 WEBP_QUALITIES = (80, 60, 40)
 VIEWPORT_WIDTH = 1280
 VIEWPORT_HEIGHT = 800
-QUEUE_TIMEOUT_S = 600
 RESULT_MIN_AGE_S = 5
 JOB_MAX_BYTES = 16 * 1024
 RESULT_MAX_BYTES = 1024 * 1024
@@ -55,6 +78,43 @@ TICK_INTERVAL_SECONDS = 10
 _MAX_URL = 8192
 _MAX_CHAIN = 50
 _MAX_SAN = 1000
+
+
+def valid_user_agent(value: object) -> bool:
+    """A str of 1..USER_AGENT_MAX printable ASCII chars (0x20..0x7e). CR/LF,
+    other controls and non-ASCII are refused: the string becomes an HTTP header."""
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= USER_AGENT_MAX
+        and all(0x20 <= ord(ch) <= 0x7E for ch in value)
+    )
+
+
+def _bounded_int(db: Session, key: str, default: int, lo: int, hi: int) -> int:
+    value = app_settings.get_int(db, key)
+    return value if value is not None and lo <= value <= hi else default
+
+
+def revisit_days(db: Session) -> int:
+    return _bounded_int(db, REVISIT_DAYS_KEY, DEFAULT_REVISIT_DAYS, REVISIT_DAYS_MIN, REVISIT_DAYS_MAX)
+
+
+def user_agent_mode(db: Session) -> str:
+    value = app_settings.get(db, USER_AGENT_MODE_KEY)
+    return value if value in USER_AGENT_MODES else DEFAULT_USER_AGENT_MODE
+
+
+def identifying_user_agent(db: Session) -> str | None:
+    value = app_settings.get(db, IDENTIFYING_UA_KEY)
+    return value if valid_user_agent(value) else None
+
+
+def max_image_bytes(db: Session) -> int:
+    return _bounded_int(db, MAX_IMAGE_BYTES_KEY, DEFAULT_MAX_IMAGE_BYTES, IMAGE_BYTES_MIN, IMAGE_BYTES_CEILING)
+
+
+def queue_timeout_seconds(db: Session) -> int:
+    return _bounded_int(db, QUEUE_TIMEOUT_KEY, DEFAULT_QUEUE_TIMEOUT_S, QUEUE_TIMEOUT_MIN, QUEUE_TIMEOUT_MAX)
 
 
 def spool_dir() -> str:
@@ -235,8 +295,10 @@ def _fail(row: PageCapture, reason: str, now: datetime) -> None:
 # ── request ──────────────────────────────────────────────────────────────────
 
 
-def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User) -> PageCapture:
-    """Queue one capture of a candidate's domain.
+def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual: bool) -> PageCapture:
+    """Queue one capture of a candidate's domain. An automatic request
+    (`manual=False`) is refused by the revisit budget (a queued or recently
+    finished capture of the same domain); a manual re-capture bypasses it.
 
     This function OWNS its session's commits (unlike a helper that only
     flushes): the job file must only exist after the `page_captures` row is
@@ -268,6 +330,25 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User) -> Page
     domain = candidate.value
     if not _valid_hostname(domain):
         raise CaptureRefused("candidate:invalid_domain")
+    if not manual:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=revisit_days(db))
+        recent = (
+            db.query(PageCapture.id)
+            .filter(
+                PageCapture.domain == domain,
+                or_(
+                    PageCapture.status == "queued",
+                    and_(PageCapture.status == "done", PageCapture.finished_at >= cutoff),
+                ),
+            )
+            .first()
+        )
+        if recent is not None:
+            raise CaptureRefused("capture:revisit_budget")
+    mode = user_agent_mode(db)
+    ua = identifying_user_agent(db)
+    if mode == "identifying" and ua is None:
+        raise CaptureRefused("capture:identifying_user_agent_unset")
 
     row = PageCapture(
         candidate_id=candidate.id,
@@ -275,6 +356,8 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User) -> Page
         observer_id=auth.observer.id,
         requested_url=f"https://{domain}/",
         requested_by_id=user.id,
+        user_agent_mode=mode,
+        image_max_bytes=max_image_bytes(db),
     )
     db.add(row)
     try:
@@ -287,13 +370,16 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User) -> Page
     capture_id = str(row.id)
 
     job = {
-        "v": 1,
+        "v": 2,
         "capture_id": capture_id,
         "url": row.requested_url,
         "viewport": {"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
-        "max_image_bytes": MAX_IMAGE_BYTES,
+        "user_agent_mode": mode,
+        "max_image_bytes": row.image_max_bytes,
         "webp_qualities": list(WEBP_QUALITIES),
     }
+    if mode == "identifying":
+        job["user_agent"] = ua
     payload = json.dumps(job).encode()
     tmp = None
     try:
@@ -432,7 +518,9 @@ def _ingest_one(db: Session, row: PageCapture, path: str, proxylog: str, now: da
     if claimed is None:
         row.image_omitted_reason = _s(result.get("screenshot_omitted_reason"), 200, truncate=True)
     else:
-        image = _read_image(os.path.join(path, "screenshot.webp"))
+        image = _read_image(
+            os.path.join(path, "screenshot.webp"), min(row.image_max_bytes, IMAGE_BYTES_CEILING)
+        )
         if image is None:
             row.image_omitted_reason = "invalid_image"
         else:
@@ -482,22 +570,54 @@ def _cert(value: object) -> tuple[dict | None, list[str] | None, str | None]:
     return cert, san, sha
 
 
-def _read_image(path: str) -> bytes | None:
-    """The screenshot bytes if (and only if) a regular file within the cap
+def _read_image(path: str, cap: int) -> bytes | None:
+    """The screenshot bytes if (and only if) a regular file within `cap`
     that starts RIFF....WEBP. Never decoded. A symlink is not 'bad image', it
     is a refused entry (checked by the caller's lstat sweep)."""
     try:
         st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_IMAGE_BYTES:
+        if not stat.S_ISREG(st.st_mode) or st.st_size > cap:
             return None
         fd = _open_regular(path)
     except OSError:
         return None
     with os.fdopen(fd, "rb") as f:
-        data = f.read(MAX_IMAGE_BYTES + 1)
-    if len(data) > MAX_IMAGE_BYTES or len(data) < 12:
+        data = f.read(cap + 1)
+    if len(data) > cap or len(data) < 12:
         return None
     if data[0:4] != b"RIFF" or data[8:12] != b"WEBP":
+        return None
+    return data
+
+
+def read_stored_image(row: PageCapture) -> bytes | None:
+    """The stored screenshot's bytes, or None unless every check holds: the
+    recorded name is exactly `<capture id>.webp` (never a path from the row),
+    a regular file within the row's cap, opened without following symlinks,
+    RIFF....WEBP magic, and the sha256 recorded at ingest. Never decoded.
+    A mismatch logs a warning (no domain) and returns None."""
+    if row.image_path is None or row.image_path != f"{row.id}.webp":
+        if row.image_path is not None:
+            log.warning("page_capture: stored image name mismatch for %s", row.id)
+        return None
+    cap = min(row.image_max_bytes, IMAGE_BYTES_CEILING)
+    path = os.path.join(images_dir(), row.image_path)
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > cap:
+            log.warning("page_capture: stored image for %s is not a regular file within its cap", row.id)
+            return None
+        fd = _open_regular(path)
+        with os.fdopen(fd, "rb") as f:
+            data = f.read(cap + 1)
+    except OSError:
+        log.warning("page_capture: stored image for %s could not be read", row.id)
+        return None
+    if len(data) > cap or len(data) < 12 or data[0:4] != b"RIFF" or data[8:12] != b"WEBP":
+        log.warning("page_capture: stored image for %s failed the size/magic check", row.id)
+        return None
+    if hashlib.sha256(data).hexdigest() != row.image_sha256:
+        log.warning("page_capture: stored image for %s does not match its recorded sha256", row.id)
         return None
     return data
 
@@ -599,10 +719,10 @@ def _ts(value: object) -> datetime | None:
 
 
 def sweep_timeouts(db: Session, now: datetime | None = None) -> int:
-    """Queued rows older than QUEUE_TIMEOUT_S fail as 'timeout'; their job and
+    """Queued rows older than the queue-timeout setting fail as 'timeout'; their job and
     claim files go. Returns the number swept."""
     now = now or datetime.now(timezone.utc)
-    cutoff = now - timedelta(seconds=QUEUE_TIMEOUT_S)
+    cutoff = now - timedelta(seconds=queue_timeout_seconds(db))
     rows = db.query(PageCapture).filter(PageCapture.status == "queued", PageCapture.requested_at < cutoff).all()
     ids = [str(r.id) for r in rows]
     for r in rows:

@@ -11,6 +11,8 @@ from app.core.database import Base
 
 # Mirrors migration 0091's `ck_page_captures_status` by hand.
 CAPTURE_STATUSES: frozenset[str] = frozenset({"queued", "done", "failed"})
+# Mirrors migration 0092's `ck_page_captures_user_agent_mode` by hand.
+USER_AGENT_MODES: frozenset[str] = frozenset({"stock", "identifying"})
 
 
 class PageCapture(Base):
@@ -63,6 +65,10 @@ class PageCapture(Base):
     image_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_quality: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     image_omitted_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # What the job asked for (migration 0092): the ingest enforces this cap, not
+    # the current setting.
+    user_agent_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    image_max_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class PageCaptureRequest(Base):

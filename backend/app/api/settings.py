@@ -1,7 +1,9 @@
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_permission
@@ -10,6 +12,7 @@ from app.core.database import get_db
 
 from app.services import aggressiveness as aggr
 from app.services import app_settings as svc
+from app.services import audit, page_capture
 
 router = APIRouter()
 
@@ -147,3 +150,88 @@ def update_settings(
         svc.set_value(db, "org.brand_accent", accent)
 
     return _current(db)
+
+
+# ── page capture (planning#280 S5b-2b) ──────────────────────────────────────
+
+
+class CaptureSettings(BaseModel):
+    browse_revisit_days: int
+    user_agent_mode: str
+    identifying_user_agent: str  # "" when unset or invalid
+    max_image_bytes: int
+    queue_timeout_seconds: int
+
+
+class CaptureSettingsUpdate(BaseModel):
+    browse_revisit_days: int | None = Field(
+        default=None, ge=page_capture.REVISIT_DAYS_MIN, le=page_capture.REVISIT_DAYS_MAX
+    )
+    # Must equal `models.page_capture.USER_AGENT_MODES` (a test asserts it).
+    user_agent_mode: Literal["stock", "identifying"] | None = None
+    identifying_user_agent: str | None = None
+    max_image_bytes: int | None = Field(
+        default=None, ge=page_capture.IMAGE_BYTES_MIN, le=page_capture.IMAGE_BYTES_CEILING
+    )
+    queue_timeout_seconds: int | None = Field(
+        default=None, ge=page_capture.QUEUE_TIMEOUT_MIN, le=page_capture.QUEUE_TIMEOUT_MAX
+    )
+
+    @field_validator("identifying_user_agent")
+    @classmethod
+    def _ua(cls, v: str | None) -> str | None:
+        if v is not None and v != "" and not page_capture.valid_user_agent(v):
+            raise ValueError(
+                f"identifying_user_agent must be empty or 1-{page_capture.USER_AGENT_MAX} printable ASCII characters"
+            )
+        return v
+
+
+def _capture_current(db: Session) -> CaptureSettings:
+    return CaptureSettings(
+        browse_revisit_days=page_capture.revisit_days(db),
+        user_agent_mode=page_capture.user_agent_mode(db),
+        identifying_user_agent=page_capture.identifying_user_agent(db) or "",
+        max_image_bytes=page_capture.max_image_bytes(db),
+        queue_timeout_seconds=page_capture.queue_timeout_seconds(db),
+    )
+
+
+@router.get("/capture", response_model=CaptureSettings)
+def get_capture_settings(
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.SETTINGS_READ)),
+):
+    return _capture_current(db)
+
+
+@router.put("/capture", response_model=CaptureSettings)
+def put_capture_settings(
+    data: CaptureSettingsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.SETTINGS_UPDATE)),
+):
+    """Set any of the capture settings, audited old -> new per changed key."""
+    old = _capture_current(db)
+    new = old.model_copy(update=data.model_dump(exclude_none=True))
+    if new.user_agent_mode == "identifying" and not page_capture.valid_user_agent(new.identifying_user_agent):
+        raise HTTPException(
+            status_code=422, detail="Set an identifying User-Agent before choosing identifying mode."
+        )
+    keys = {
+        "browse_revisit_days": page_capture.REVISIT_DAYS_KEY,
+        "user_agent_mode": page_capture.USER_AGENT_MODE_KEY,
+        "identifying_user_agent": page_capture.IDENTIFYING_UA_KEY,
+        "max_image_bytes": page_capture.MAX_IMAGE_BYTES_KEY,
+        "queue_timeout_seconds": page_capture.QUEUE_TIMEOUT_KEY,
+    }
+    changes = {}
+    for field, key in keys.items():
+        before, after = getattr(old, field), getattr(new, field)
+        if before != after:
+            svc.set_value(db, key, str(after))
+            changes[f"capture_{field}"] = {"from": before, "to": after}
+    if changes:
+        audit.record_detail(request, **changes)
+    return _capture_current(db)

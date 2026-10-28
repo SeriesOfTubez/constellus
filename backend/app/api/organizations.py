@@ -22,7 +22,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, aliased
@@ -345,6 +345,8 @@ class CaptureResponse(BaseModel):
     redirect_chain: list | None
     title: str | None
     user_agent: str | None
+    user_agent_mode: str
+    image_max_bytes: int
     cert: dict | None
     cert_san_dns: list[str] | None
     cert_sha256: str | None
@@ -369,6 +371,10 @@ _CAPTURE_REFUSAL_MESSAGES = {
     "candidate:not_open": "Only an open candidate can be visited.",
     "capture:already_queued": "A capture of this candidate is already queued.",
     "candidate:invalid_domain": "This candidate's value is not a name the capture browser can visit.",
+    "capture:revisit_budget": "This domain was captured recently; it can be re-captured manually.",
+    "capture:identifying_user_agent_unset": (
+        "Identifying User-Agent mode is on but no User-Agent string is set."
+    ),
     "spool_unavailable": "The capture browser could not be reached; try again shortly.",
 }
 _CAPTURE_REFUSAL_GENERIC = "A live visit to this candidate is not allowed."
@@ -1280,7 +1286,8 @@ def _capture_response(row: PageCapture, request_count: int) -> CaptureResponse:
         requested_at=row.requested_at, finished_at=row.finished_at, requested_by_id=row.requested_by_id,
         domain=row.domain, requested_url=row.requested_url, final_url=row.final_url,
         http_status=row.http_status, redirect_chain=row.redirect_chain, title=row.title,
-        user_agent=row.user_agent, cert=row.cert, cert_san_dns=row.cert_san_dns, cert_sha256=row.cert_sha256,
+        user_agent=row.user_agent, user_agent_mode=row.user_agent_mode, image_max_bytes=row.image_max_bytes,
+        cert=row.cert, cert_san_dns=row.cert_san_dns, cert_sha256=row.cert_sha256,
         pinned_ip=str(row.pinned_ip) if row.pinned_ip is not None else None,
         proxy_log_truncated=row.proxy_log_truncated, image_bytes=row.image_bytes,
         image_sha256=row.image_sha256, image_quality=row.image_quality,
@@ -1303,7 +1310,7 @@ def request_candidate_capture(
     nothing is written before it."""
     _require_visible_candidate(db, current_user, candidate_id)
     try:
-        row = page_capture.request_capture(db, candidate_id=candidate_id, user=current_user)
+        row = page_capture.request_capture(db, candidate_id=candidate_id, user=current_user, manual=True)
     except page_capture.CaptureRefused as exc:
         audit.record_detail(request, candidate=str(candidate_id), capture_refused=exc.rule)
         # A spool fault is ours, not a conflict with the candidate's state.
@@ -1311,7 +1318,7 @@ def request_candidate_capture(
             status_code=503 if exc.rule == "spool_unavailable" else 409,
             detail={"rule": exc.rule, "message": _CAPTURE_REFUSAL_MESSAGES.get(exc.rule, _CAPTURE_REFUSAL_GENERIC)},
         )
-    audit.record_detail(request, candidate=str(candidate_id), capture=str(row.id), domain=row.domain)
+    audit.record_detail(request, candidate=str(candidate_id), capture=str(row.id), domain=row.domain, manual=True)
     return _capture_response(row, 0)
 
 
@@ -1334,3 +1341,31 @@ def list_candidate_captures(
         ).all()
     ) if rows else {}
     return [_capture_response(r, counts.get(r.id, 0)) for r in rows]
+
+
+@router.get("/candidates/{candidate_id}/captures/{capture_id}/image")
+def get_candidate_capture_image(
+    candidate_id: uuid.UUID,
+    capture_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_READ)),
+):
+    """The stored screenshot of a capture. The bytes are untrusted (a rendered
+    page): re-verified by `read_stored_image`, never decoded, served inert."""
+    _require_visible_candidate(db, current_user, candidate_id)
+    row = db.get(PageCapture, capture_id)
+    if row is None or row.candidate_id != candidate_id or row.image_path is None:
+        raise HTTPException(status_code=404, detail="image unavailable")
+    data = page_capture.read_stored_image(row)
+    if data is None:
+        raise HTTPException(status_code=404, detail="image unavailable")
+    return Response(
+        content=data,
+        media_type="image/webp",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "Content-Disposition": f'inline; filename="{row.id}.webp"',
+        },
+    )

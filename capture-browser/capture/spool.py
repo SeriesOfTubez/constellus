@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
 
+JOB_VERSION = 2  # job contract version; result.json is versioned independently (v1)
 JOB_MAX_BYTES = 16 * 1024
 RESULT_MAX_BYTES = 1024 * 1024
 MAX_REQUESTS = 500
@@ -26,6 +27,8 @@ MAX_SAN = 1000
 MIN_VIEWPORT, MAX_VIEWPORT = 200, 4000
 MAX_IMAGE_BYTES_LIMIT = 8 * 1024 * 1024
 MAX_QUALITIES = 5
+MAX_USER_AGENT_CHARS = 256
+UA_MODES = ("stock", "identifying")
 
 # Created under umask 007 by the worker. No chmod anywhere: the setgid bit comes
 # from the pre-created 2770 parents (Linux inherits it on mkdir), so a new
@@ -72,7 +75,7 @@ def validate_job(raw: bytes, file_id: str) -> dict:
         raise InvalidJob("not json") from None
     if not isinstance(job, dict):
         raise InvalidJob("not an object")
-    if job.get("v") != 1 or isinstance(job.get("v"), bool):
+    if job.get("v") != JOB_VERSION or isinstance(job.get("v"), bool):
         raise InvalidJob("bad version")
     if job.get("capture_id") != file_id:
         raise InvalidJob("capture_id does not match file name")
@@ -97,12 +100,29 @@ def validate_job(raw: bytes, file_id: str) -> dict:
     if not isinstance(qs, list) or not 1 <= len(qs) <= MAX_QUALITIES:
         raise InvalidJob("bad webp_qualities")
     qualities = [_int_in(q, 1, 100, "webp quality") for q in qs]
+    mode = job.get("user_agent_mode")
+    if not isinstance(mode, str) or mode not in UA_MODES:
+        raise InvalidJob("bad user_agent_mode")
+    ua: str | None = None
+    if mode == "identifying":
+        ua = job.get("user_agent")
+        if (
+            not isinstance(ua, str)
+            or not 1 <= len(ua) <= MAX_USER_AGENT_CHARS
+            or any(not 0x20 <= ord(ch) <= 0x7E for ch in ua)
+        ):
+            raise InvalidJob("bad user_agent")
+    elif "user_agent" in job:
+        # The two sides disagree about the mode: refuse rather than guess.
+        raise InvalidJob("user_agent not allowed in stock mode")
     return {
         "capture_id": file_id,
         "url": url,
         "viewport": {"width": width, "height": height},
         "max_image_bytes": max_bytes,
         "webp_qualities": qualities,
+        "user_agent_mode": mode,
+        "user_agent": ua,
     }
 
 

@@ -12,11 +12,16 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import { Skeleton } from "@/components/ui/skeleton"
 import { AlertHistoryList } from "@/components/AlertHistoryList"
 import { DigestHistoryList } from "@/components/DigestHistoryList"
 import { BASE_URL_MAX, digestHourWarning, validBaseUrl, validDigestHour } from "@/lib/digestSettings"
 import { Switch } from "@/components/ui/switch"
-import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type DigestSettings, type DigestSummary, type SystemStatus } from "@/lib/api"
+import {
+  IMAGE_KIB_MAX, IMAGE_KIB_MIN, QUEUE_TIMEOUT_MAX, QUEUE_TIMEOUT_MIN, REVISIT_DAYS_MAX,
+  REVISIT_DAYS_MIN, UA_MAX_LEN, bytesToKiB, kibToBytes, validateCaptureSettings,
+} from "@/lib/captureSettings"
+import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type CaptureSettings, type DigestSettings, type DigestSummary, type SystemStatus } from "@/lib/api"
 
 type MonitoringPolicy = {
   id: string
@@ -828,6 +833,113 @@ function OrgBrandingCard() {
   )
 }
 
+const UA_MODES: { value: CaptureSettings["user_agent_mode"]; label: string; description: string }[] = [
+  { value: "stock", label: "Stock browser", description: "Looks like an ordinary visitor." },
+  { value: "identifying", label: "Identifying", description: "Tells the site who is looking. On a pre-close target this can reveal the deal." },
+]
+
+export function CaptureSettingsCard() {
+  const qc = useQueryClient()
+  const { data, isLoading } = useQuery({
+    queryKey: ["capture-settings"],
+    queryFn: () => api.get<CaptureSettings>("/settings/capture"),
+  })
+  // Numeric fields are held as strings so a half-typed value is not coerced.
+  const [days, setDays] = useState("")
+  const [mode, setMode] = useState<CaptureSettings["user_agent_mode"]>("stock")
+  const [ua, setUa] = useState("")
+  const [kib, setKib] = useState("")
+  const [timeout, setTimeoutS] = useState("")
+  useEffect(() => {
+    if (!data) return
+    setDays(String(data.browse_revisit_days))
+    setMode(data.user_agent_mode)
+    setUa(data.identifying_user_agent)
+    setKib(String(bytesToKiB(data.max_image_bytes)))
+    setTimeoutS(String(data.queue_timeout_seconds))
+  }, [data])
+
+  const num = (s: string) => (s.trim() === "" ? NaN : Number(s))
+  const draft: CaptureSettings = {
+    browse_revisit_days: num(days),
+    user_agent_mode: mode,
+    identifying_user_agent: ua,
+    max_image_bytes: kibToBytes(num(kib)),
+    queue_timeout_seconds: num(timeout),
+  }
+  const error = data ? validateCaptureSettings(draft) : null
+  const dirty = data !== undefined && (
+    draft.browse_revisit_days !== data.browse_revisit_days ||
+    draft.user_agent_mode !== data.user_agent_mode ||
+    draft.identifying_user_agent !== data.identifying_user_agent ||
+    draft.max_image_bytes !== data.max_image_bytes ||
+    draft.queue_timeout_seconds !== data.queue_timeout_seconds
+  )
+  const save = useMutation({
+    mutationFn: () => api.put<CaptureSettings>("/settings/capture", draft),
+    onSuccess: (next) => {
+      qc.setQueryData(["capture-settings"], next)
+      qc.invalidateQueries({ queryKey: ["capture-settings"] })
+      toast.success("Page capture settings saved")
+    },
+    onError: (e: Error) => toast.error(`Save failed: ${e.message}`),
+  })
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">Page capture</CardTitle>
+        <CardDescription className="text-xs">How automatic and manual page captures behave.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {isLoading || !data ? <Skeleton className="h-28" /> : (
+          <>
+            <div className="space-y-1">
+              <Label htmlFor="capture-revisit-days" className="text-xs text-muted-foreground">Revisit budget (days)</Label>
+              <Input id="capture-revisit-days" type="number" min={REVISIT_DAYS_MIN} max={REVISIT_DAYS_MAX} step={1}
+                className="h-8 w-24 text-xs" value={days} onChange={(e) => setDays(e.target.value)} />
+              <p className="text-xs text-muted-foreground">An automatic capture skips a domain captured within this many days. A manual Re-capture is not limited.</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="capture-ua-mode" className="text-xs text-muted-foreground">User-Agent</Label>
+              <Select value={mode} onValueChange={(v) => setMode(v as CaptureSettings["user_agent_mode"])}>
+                <SelectTrigger id="capture-ua-mode" className="h-8 w-80 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {UA_MODES.map(m => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <ul className="space-y-0.5 text-xs text-muted-foreground">
+                {UA_MODES.map(m => <li key={m.value}><span className="font-medium">{m.label}:</span> {m.description}</li>)}
+              </ul>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="capture-ua-string" className="text-xs text-muted-foreground">Identifying User-Agent string</Label>
+              <Input id="capture-ua-string" maxLength={UA_MAX_LEN} className="h-8 text-xs"
+                value={ua} disabled={mode !== "identifying"} onChange={(e) => setUa(e.target.value)} />
+              <p className="text-xs text-muted-foreground">Printable ASCII, up to {UA_MAX_LEN} characters.</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="capture-max-kib" className="text-xs text-muted-foreground">Max screenshot size (KiB)</Label>
+              <Input id="capture-max-kib" type="number" min={IMAGE_KIB_MIN} max={IMAGE_KIB_MAX} step={1}
+                className="h-8 w-28 text-xs" value={kib} onChange={(e) => setKib(e.target.value)} />
+              <p className="text-xs text-muted-foreground">Larger pages are re-encoded at lower quality; if none fits, the capture keeps its record without an image.</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="capture-queue-timeout" className="text-xs text-muted-foreground">Queue timeout (seconds)</Label>
+              <Input id="capture-queue-timeout" type="number" min={QUEUE_TIMEOUT_MIN} max={QUEUE_TIMEOUT_MAX} step={1}
+                className="h-8 w-28 text-xs" value={timeout} onChange={(e) => setTimeoutS(e.target.value)} />
+              <p className="text-xs text-muted-foreground">A capture not finished in this time is marked timed out.</p>
+            </div>
+            {error && <p className="text-xs text-destructive">{error}</p>}
+            <Button size="sm" className="h-8" aria-label="Save page capture settings"
+              disabled={!dirty || error !== null || save.isPending} onClick={() => save.mutate()}>Save</Button>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function Settings() {
   const { data: status } = useQuery({
     queryKey: ["system-status"],
@@ -847,6 +959,8 @@ export default function Settings() {
       <AggressivenessCard />
 
       <MonitoringPoliciesCard />
+
+      <CaptureSettingsCard />
 
       <NotificationRulesCard />
 
