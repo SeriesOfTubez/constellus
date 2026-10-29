@@ -6,8 +6,8 @@ import {
   formatClosed, formatShare, ipSpaceLabel, postureLabel, severityBar,
 } from "@/lib/organizations"
 import {
-  assignLanes, canPan, canZoomIn, canZoomOut, currentWindow, dotKind, dotTitle, extent, offEdges, pan,
-  placementMs, xFraction, yearTicks, zoomIn, zoomOut, type TimelineView, type Window,
+  assignLanes, canPan, canZoomIn, canZoomOut, centreOn, currentWindow, dotKind, dotTitle, extent, jumpTarget,
+  offEdges, pan, placementMs, xFraction, yearTicks, zoomIn, zoomOut, type TimelineView, type Window,
 } from "@/lib/acquisitionTimeline"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -121,6 +121,22 @@ export function AcquisitionTimeline({
   const laneCount = lanes.length ? Math.max(...lanes) + 1 : 1
   const off = w ? offEdges(placed.map(p => p.ms), w) : { before: 0, after: 0 }
   const pick = (id: string) => onSelect(selected === id ? null : id)
+  // planning#316: jump to the nearest off-screen deal, recentre on it and select it (never toggles off).
+  const jump = (dir: -1 | 1) => {
+    if (!w || !ext) return
+    const i = jumpTarget(placed.map(p => p.ms), w, dir)
+    if (i === null) return
+    setWin(centreOn(placed[i].ms, w, ext))
+    onSelect(placed[i].row.entity_id as string)
+  }
+  const offButton = (dir: -1 | 1, n: number) => n > 0 && (
+    <Button variant="ghost" size="sm" className="h-7 px-1.5 text-xs text-muted-foreground"
+      title={dir === -1 ? "Jump to previous deal" : "Jump to next deal"}
+      aria-label={`${dir === -1 ? "Jump to previous deal" : "Jump to next deal"} (${n} ${dir === -1 ? "earlier" : "later"})`}
+      onClick={() => jump(dir)}>
+      +{n}
+    </Button>
+  )
 
   return (
     <div className="space-y-2">
@@ -130,12 +146,12 @@ export function AcquisitionTimeline({
             disabled={!canPan(w, ext, -1)} onClick={() => setWin(pan(w, ext, -1))}>
             <ChevronLeft className="h-4 w-4" />
           </Button>
-          {off.before > 0 && <span className="text-xs text-muted-foreground">+{off.before}</span>}
+          {offButton(-1, off.before)}
           <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Later"
             disabled={!canPan(w, ext, 1)} onClick={() => setWin(pan(w, ext, 1))}>
             <ChevronRight className="h-4 w-4" />
           </Button>
-          {off.after > 0 && <span className="text-xs text-muted-foreground">+{off.after}</span>}
+          {offButton(1, off.after)}
           <span className="ml-2 flex items-center gap-1">
             <Button variant="outline" size="icon" className="h-7 w-7" aria-label="Zoom out"
               disabled={!canZoomOut(w, ext)} onClick={() => setWin(zoomOut(w, ext))}>
