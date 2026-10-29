@@ -20,7 +20,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import stat
 import time
 import uuid
@@ -38,6 +37,7 @@ from app.models.page_capture import USER_AGENT_MODES, PageCapture, PageCaptureRe
 from app.models.scope_candidate import ScopeCandidate
 from app.models.user import User
 from app.services import app_settings, wayback
+from app.services.capture_store import _open_regular, _unlink_quiet, get_store
 from app.services.org_discovery.candidates import refreshable_root_clause
 from app.services.probe_authorisation import authorise_candidate_browse
 
@@ -185,18 +185,6 @@ def proxy_max_connections(db: Session) -> int:
     )
 
 
-def spool_dir() -> str:
-    return os.environ.get("CAPTURE_SPOOL_DIR", "/spool")
-
-
-def proxylog_dir() -> str:
-    return os.environ.get("CAPTURE_PROXYLOG_DIR", "/proxylog")
-
-
-def images_dir() -> str:
-    return os.environ.get("CAPTURE_IMAGES_DIR", "/captures")
-
-
 def config_dir() -> str:
     return os.environ.get("CAPTURE_CONFIG_DIR", "/capture_config")
 
@@ -276,70 +264,8 @@ def _canonical_uuid(name: str) -> bool:
 
 
 def _check_spool_dirs() -> None:
-    """The backend does not create the spool: the images pre-create jobs/, claimed/
-    and results/ with the shared-group mode. A missing directory, or one that is
-    not a real directory (a symlink is refused), raises OSError."""
-    for sub in ("jobs", "claimed", "results"):
-        path = os.path.join(spool_dir(), sub)
-        if not stat.S_ISDIR(os.lstat(path).st_mode):
-            raise NotADirectoryError(path)
-
-
-def _unlink_quiet(path: str) -> None:
-    try:
-        os.unlink(path)
-    except FileNotFoundError:
-        pass
-    except OSError:
-        log.warning("page_capture: could not remove %s", path)
-
-
-def _remove_entry(path: str) -> None:
-    """Remove a spool entry without following symlinks (rmtree refuses a
-    symlinked top, and unlinks symlinks inside rather than entering them)."""
-    try:
-        st = os.lstat(path)
-    except FileNotFoundError:
-        return
-    try:
-        if stat.S_ISDIR(st.st_mode):
-            shutil.rmtree(path)
-        else:
-            os.unlink(path)
-    except OSError:
-        log.warning("page_capture: could not remove %s", path)
-
-
-def _open_regular(path: str) -> int:
-    """Open a spool file for reading, safely against a swap after the caller's
-    lstat: O_NOFOLLOW refuses a symlink, O_NONBLOCK keeps a FIFO from blocking
-    the scheduler thread on open, and the fstat re-checks the opened object is
-    a regular file. Raises OSError otherwise."""
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
-        os.close(fd)
-        raise OSError(f"not a regular file: {path}")
-    return fd
-
-
-def _read_regular(path: str, cap: int) -> bytes:
-    """lstat, require a regular file within `cap`, then open without following
-    symlinks. Raises _Invalid('invalid_result') otherwise."""
-    try:
-        st = os.lstat(path)
-    except OSError:
-        raise _Invalid("invalid_result")
-    if not stat.S_ISREG(st.st_mode) or st.st_size > cap:
-        raise _Invalid("invalid_result")
-    try:
-        fd = _open_regular(path)
-    except OSError:
-        raise _Invalid("invalid_result")
-    with os.fdopen(fd, "rb") as f:
-        data = f.read(cap + 1)
-    if len(data) > cap:
-        raise _Invalid("invalid_result")
-    return data
+    """The backend does not create the spool; a store that is not ready raises OSError."""
+    get_store().check_spool()
 
 
 def _s(value: object, cap: int, *, truncate: bool = False) -> str | None:
@@ -556,19 +482,12 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User | None, 
     if mode == "identifying":
         job["user_agent"] = ua
     payload = json.dumps(job).encode()
-    tmp = None
     try:
-        _check_spool_dirs()
-        jobs = os.path.join(spool_dir(), "jobs")
-        tmp = os.path.join(jobs, f".{capture_id}.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
-        with os.fdopen(fd, "wb") as f:
-            f.write(payload)
-        os.rename(tmp, os.path.join(jobs, f"{capture_id}.json"))
+        store = get_store()
+        store.check_spool()
+        store.put_job(capture_id, payload)
     except OSError:
         log.exception("page_capture: could not write job %s", capture_id)
-        if tmp is not None:
-            _unlink_quiet(tmp)
         _fail(row, "spool_unavailable", datetime.now(timezone.utc))
         db.commit()
         raise CaptureRefused("spool_unavailable")
@@ -752,57 +671,50 @@ def ingest_results(db: Session, now: datetime | None = None) -> int:
     Each capture is its own unit of work. Returns how many queued rows were
     resolved (done or failed)."""
     now = now or datetime.now(timezone.utc)
-    results = os.path.join(spool_dir(), "results")
-    try:
-        names = sorted(os.listdir(results))
-    except FileNotFoundError:
-        return 0
+    store = get_store()
+    names = store.list_results()
     resolved = 0
     for name in names:
-        if name.startswith("."):
-            continue
-        path = os.path.join(results, name)
         if not _canonical_uuid(name):
             log.warning("page_capture: removing non-UUID spool result %r", name)
-            _remove_entry(path)
+            store.remove_result(name)
             continue
-        try:
-            st = os.lstat(path)
-        except OSError:
+        info = store.result_info(name)
+        if info is None:
             continue
-        if now.timestamp() - st.st_mtime < RESULT_MIN_AGE_S:
+        mtime, is_bundle = info
+        if now.timestamp() - mtime < RESULT_MIN_AGE_S:
             continue
         capture_id = uuid.UUID(name)
-        proxylog = os.path.join(proxylog_dir(), f"{name}.jsonl")
         try:
             row = db.get(PageCapture, capture_id)
             if row is None or row.status != "queued":
                 log.warning("page_capture: discarding result for %s (not a queued capture)", name)
-                _remove_entry(path)
-                _unlink_quiet(proxylog)
+                store.remove_result(name)
+                store.delete_proxylog(name)
                 continue
-            if not stat.S_ISDIR(st.st_mode):
+            if not is_bundle:
                 raise _Invalid("invalid_result")
-            _ingest_one(db, row, path, proxylog, now)
+            _ingest_one(db, row, now)
             db.commit()
         except _Invalid as bad:
             db.rollback()
-            _unlink_quiet(os.path.join(images_dir(), f"{name}.webp"))
+            store.delete_image_quiet(name)
             if _mark_failed(db, capture_id, bad.reason, now):
                 resolved += 1
-                _remove_entry(path)
-                _unlink_quiet(proxylog)
+                store.remove_result(name)
+                store.delete_proxylog(name)
             continue
         except Exception:
             db.rollback()
-            _unlink_quiet(os.path.join(images_dir(), f"{name}.webp"))
+            store.delete_image_quiet(name)
             log.exception("page_capture: ingest failed for %s", name)
             if _mark_failed(db, capture_id, "ingest_error", now):
                 resolved += 1
             continue
         resolved += 1
-        _remove_entry(path)
-        _unlink_quiet(proxylog)
+        store.remove_result(name)
+        store.delete_proxylog(name)
     return resolved
 
 
@@ -821,23 +733,18 @@ def _mark_failed(db: Session, capture_id: uuid.UUID, reason: str, now: datetime)
         return False
 
 
-def _ingest_one(db: Session, row: PageCapture, path: str, proxylog: str, now: datetime) -> None:
+def _ingest_one(db: Session, row: PageCapture, now: datetime) -> None:
     name = str(row.id)
-    # lstat every entry: a symlink or anything not a regular file is refused.
-    try:
-        entries = os.listdir(path)
-    except OSError:
+    store = get_store()
+    # every entry must be a regular file: a symlink or anything else is refused.
+    if not store.result_files_ok(name):
         raise _Invalid("invalid_result")
-    for entry in entries:
-        try:
-            mode = os.lstat(os.path.join(path, entry)).st_mode
-        except OSError:
-            raise _Invalid("invalid_result")
-        if not stat.S_ISREG(mode):
-            raise _Invalid("invalid_result")
 
+    raw = store.read_result_file(name, "result.json", RESULT_MAX_BYTES)
+    if raw is None:
+        raise _Invalid("invalid_result")
     try:
-        result = json.loads(_read_regular(os.path.join(path, "result.json"), RESULT_MAX_BYTES))
+        result = json.loads(raw)
     except (ValueError, RecursionError):
         raise _Invalid("invalid_result")
     if not isinstance(result, dict) or result.get("capture_id") != name:
@@ -855,16 +762,16 @@ def _ingest_one(db: Session, row: PageCapture, path: str, proxylog: str, now: da
     if error is not None:
         row.error = _s(error, 2000, truncate=True) if isinstance(error, str) else _s(str(error), 2000, truncate=True)
 
-    _ingest_proxylog(db, row, proxylog)
+    _ingest_proxylog(db, row, name)
 
     image = None
     claimed = result.get("screenshot")
     if claimed is None:
         row.image_omitted_reason = _s(result.get("screenshot_omitted_reason"), 200, truncate=True)
     else:
-        image = _read_image(
-            os.path.join(path, "screenshot.webp"), min(row.image_max_bytes, IMAGE_BYTES_CEILING)
-        )
+        image = store.read_result_file(name, "screenshot.webp", min(row.image_max_bytes, IMAGE_BYTES_CEILING))
+        if image is not None and not _webp_ok(image):
+            image = None
         if image is None:
             row.image_omitted_reason = "invalid_image"
         else:
@@ -929,24 +836,9 @@ def _cert(value: object) -> tuple[dict | None, list[str] | None, str | None]:
     return cert, san, sha
 
 
-def _read_image(path: str, cap: int) -> bytes | None:
-    """The screenshot bytes if (and only if) a regular file within `cap`
-    that starts RIFF....WEBP. Never decoded. A symlink is not 'bad image', it
-    is a refused entry (checked by the caller's lstat sweep)."""
-    try:
-        st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > cap:
-            return None
-        fd = _open_regular(path)
-    except OSError:
-        return None
-    with os.fdopen(fd, "rb") as f:
-        data = f.read(cap + 1)
-    if len(data) > cap or len(data) < 12:
-        return None
-    if data[0:4] != b"RIFF" or data[8:12] != b"WEBP":
-        return None
-    return data
+def _webp_ok(data: bytes) -> bool:
+    """RIFF....WEBP magic. Never decoded."""
+    return len(data) >= 12 and data[0:4] == b"RIFF" and data[8:12] == b"WEBP"
 
 
 def read_stored_image(row: PageCapture) -> bytes | None:
@@ -960,19 +852,11 @@ def read_stored_image(row: PageCapture) -> bytes | None:
             log.warning("page_capture: stored image name mismatch for %s", row.id)
         return None
     cap = min(row.image_max_bytes, IMAGE_BYTES_CEILING)
-    path = os.path.join(images_dir(), row.image_path)
-    try:
-        st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > cap:
-            log.warning("page_capture: stored image for %s is not a regular file within its cap", row.id)
-            return None
-        fd = _open_regular(path)
-        with os.fdopen(fd, "rb") as f:
-            data = f.read(cap + 1)
-    except OSError:
-        log.warning("page_capture: stored image for %s could not be read", row.id)
+    data = get_store().read_image(str(row.id), cap)
+    if data is None:
+        log.warning("page_capture: stored image for %s could not be read or is not a regular file within its cap", row.id)
         return None
-    if len(data) > cap or len(data) < 12 or data[0:4] != b"RIFF" or data[8:12] != b"WEBP":
+    if not _webp_ok(data):
         log.warning("page_capture: stored image for %s failed the size/magic check", row.id)
         return None
     if hashlib.sha256(data).hexdigest() != row.image_sha256:
@@ -982,37 +866,18 @@ def read_stored_image(row: PageCapture) -> bytes | None:
 
 
 def _store_image(row: PageCapture, name: str, data: bytes, quality: int | None) -> None:
-    dest_dir = images_dir()
-    tmp = os.path.join(dest_dir, f".{name}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        os.rename(tmp, os.path.join(dest_dir, f"{name}.webp"))
-    except OSError:
-        _unlink_quiet(tmp)
-        raise
+    get_store().put_image(name, data)
     row.image_path = f"{name}.webp"
     row.image_bytes = len(data)
     row.image_sha256 = hashlib.sha256(data).hexdigest()
     row.image_quality = quality
 
 
-def _ingest_proxylog(db: Session, row: PageCapture, path: str) -> None:
-    try:
-        st = os.lstat(path)
-    except FileNotFoundError:
+def _ingest_proxylog(db: Session, row: PageCapture, capture_id: str) -> None:
+    got = get_store().read_proxylog(capture_id, PROXYLOG_MAX_BYTES)
+    if got is None:
         return
-    if not stat.S_ISREG(st.st_mode):
-        log.warning("page_capture: ignoring non-regular proxy log for %s", row.id)
-        return
-    try:
-        fd = _open_regular(path)
-    except OSError:
-        return
-    with os.fdopen(fd, "rb") as f:
-        data = f.read(PROXYLOG_MAX_BYTES)
-    row.proxy_log_truncated = st.st_size >= PROXYLOG_MAX_BYTES
+    data, row.proxy_log_truncated = got
 
     final_host, final_port = None, None
     if row.final_url:
@@ -1090,13 +955,12 @@ def prune_images(db: Session, now: datetime | None = None) -> int:
     no longer pointed at it.
 
     The path is built from the row id, never from the row's string, and
-    `os.unlink` never follows a symlink. A row whose recorded name is not
+    the store's delete never follows a symlink. A row whose recorded name is not
     exactly `<id>.webp` is NULLed without touching any file."""
     now = now or datetime.now(timezone.utc)
-    root = images_dir()
+    store = get_store()
     try:
-        if not stat.S_ISDIR(os.lstat(root).st_mode):
-            raise NotADirectoryError(root)
+        store.check_images()
     except OSError:
         log.error("page_capture: images directory is missing or not a real directory; skipping prune", exc_info=True)
         return 0
@@ -1125,9 +989,7 @@ def prune_images(db: Session, now: datetime | None = None) -> int:
             log.warning("page_capture: pruning %s with a mismatched image name; no file touched", row.id)
         else:
             try:
-                os.unlink(os.path.join(root, f"{row.id}.webp"))
-            except FileNotFoundError:
-                pass
+                store.delete_image(str(row.id))
             except OSError:
                 log.warning("page_capture: could not remove the image for %s; will retry", row.id, exc_info=True)
                 continue
@@ -1199,9 +1061,9 @@ def sweep_timeouts(db: Session, now: datetime | None = None) -> int:
     for r in rows:
         _fail(r, "timeout", now)
     db.commit()
+    store = get_store()
     for i in ids:
-        _unlink_quiet(os.path.join(spool_dir(), "jobs", f"{i}.json"))
-        _unlink_quiet(os.path.join(spool_dir(), "claimed", f"{i}.json"))
+        store.delete_job(i)
     return len(ids)
 
 
