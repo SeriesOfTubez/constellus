@@ -7,9 +7,9 @@ const perms = vi.hoisted(() => ({ current: [] as string[] }))
 vi.mock("@/lib/permissions", () => ({ useCan: () => (p: string) => perms.current.includes(p) }))
 
 import { api } from "@/lib/api"
-import type { PageCapture } from "@/lib/organizations"
+import type { CaptureSkip, PageCapture } from "@/lib/organizations"
 import {
-  CandidateCaptures, CaptureList, archiveBadge, captureFailureText, captureImageState, captureSource, loadCaptureImage,
+  CandidateCaptures, CaptureList, CaptureSkipNotice, latestRelevantSkip, archiveBadge, captureFailureText, captureImageState, captureSource, loadCaptureImage,
 } from "@/components/CandidateCaptureParts"
 import { formatExactTime } from "@/lib/time"
 
@@ -205,5 +205,49 @@ describe("CandidateCaptures", () => {
   it("hides Re-capture when the candidate is not open", () => {
     perms.current = ["entities.decide_candidate"]
     expect(render("claimed")).not.toContain("Re-capture")
+  })
+})
+
+const skip = (over: Partial<CaptureSkip> = {}): CaptureSkip => ({
+  id: "s1", reason: "archive:lookup_unavailable",
+  message: "The snapshot service could not be reached, so nothing was captured.",
+  skipped_at: "2026-10-29T04:00:00+00:00", ...over,
+})
+
+describe("latestRelevantSkip", () => {
+  it("no skips gives null", () => {
+    expect(latestRelevantSkip([], [capture()])).toBeNull()
+    expect(latestRelevantSkip([], [])).toBeNull()
+  })
+  it("skip newer than the latest capture is returned", () => {
+    const s = skip()
+    expect(latestRelevantSkip([s], [capture()])).toBe(s)
+  })
+  it("skip older than the latest capture is history", () => {
+    expect(latestRelevantSkip([skip({ skipped_at: "2026-10-27T04:00:00+00:00" })], [capture()])).toBeNull()
+  })
+  it("no captures and one skip gives the skip", () => {
+    const s = skip()
+    expect(latestRelevantSkip([s], [])).toBe(s)
+  })
+  it("picks the newest skip regardless of order", () => {
+    const old = skip({ id: "a", skipped_at: "2026-10-29T01:00:00+00:00" })
+    const mid = skip({ id: "b", skipped_at: "2026-10-30T01:00:00+00:00" })
+    const nw = skip({ id: "c", skipped_at: "2026-10-31T01:00:00+00:00" })
+    expect(latestRelevantSkip([mid, nw, old], [capture()])?.id).toBe("c")
+    expect(latestRelevantSkip([nw, old, mid], [capture()])?.id).toBe("c")
+  })
+  it("compares against the newest capture, not the first", () => {
+    const caps = [capture({ id: "x", requested_at: "2026-10-20T10:00:00+00:00" }), capture({ id: "y", requested_at: "2026-11-01T10:00:00+00:00" })]
+    expect(latestRelevantSkip([skip()], caps)).toBeNull()
+  })
+})
+
+describe("CaptureSkipNotice", () => {
+  it("shows the message and never the raw reason", () => {
+    const out = html(<CaptureSkipNotice skip={skip()} />)
+    expect(out).toContain("Automatic capture skipped")
+    expect(out).toContain("The snapshot service could not be reached")
+    expect(out).not.toContain("archive:lookup_unavailable")
   })
 })

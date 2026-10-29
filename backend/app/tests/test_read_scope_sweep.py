@@ -92,6 +92,7 @@ NOT_YET_SCOPED = {
     "/api/organizations/{org_id}/reassignments": "entity",
     "/api/organizations/candidates/{candidate_id}": "entity",
     "/api/organizations/candidates/{candidate_id}/captures": "entity",
+    "/api/organizations/candidates/{candidate_id}/capture-skips": "entity",
     "/api/organizations/candidates/{candidate_id}/captures/{capture_id}/image": "entity",
     "/api/organizations/{org_id}/summary": "entity",
     "/api/organizations/{org_id}/tree": "entity",

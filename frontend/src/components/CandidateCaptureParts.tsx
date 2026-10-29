@@ -7,10 +7,11 @@
 import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
+import { Info } from "lucide-react"
 import { api } from "@/lib/api"
 import { useCan } from "@/lib/permissions"
 import { formatExactTime, relativeTime } from "@/lib/time"
-import type { PageCapture } from "@/lib/organizations"
+import type { CaptureSkip, PageCapture } from "@/lib/organizations"
 import { DECIDE, errorDetail } from "@/components/OrgCandidateParts"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -190,6 +191,28 @@ export function CaptureList({ captures, candidateId }: { captures: PageCapture[]
   )
 }
 
+// The newest skip, shown only if it is newer than the newest capture; an older
+// skip is history. No captures at all means any skip is relevant.
+export function latestRelevantSkip(skips: CaptureSkip[], captures: PageCapture[]): CaptureSkip | null {
+  if (skips.length === 0) return null
+  const t = (s: string) => new Date(s).getTime()
+  const newest = skips.reduce((a, b) => (t(b.skipped_at) > t(a.skipped_at) ? b : a))
+  if (captures.length === 0) return newest
+  const lastCapture = Math.max(...captures.map(c => t(c.requested_at)))
+  return t(newest.skipped_at) > lastCapture ? newest : null
+}
+
+export function CaptureSkipNotice({ skip }: { skip: CaptureSkip }) {
+  return (
+    <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+      <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+      <span>
+        Automatic capture skipped <span title={formatExactTime(skip.skipped_at)}>{relativeTime(skip.skipped_at)}</span>: {skip.message}
+      </span>
+    </p>
+  )
+}
+
 export function CandidateCaptures({ candidateId, candidateStatus }: { candidateId: string; candidateStatus: string }) {
   const can = useCan()
   const qc = useQueryClient()
@@ -199,10 +222,17 @@ export function CandidateCaptures({ candidateId, candidateStatus }: { candidateI
     queryFn: () => api.get<PageCapture[]>(`/organizations/candidates/${candidateId}/captures`),
     refetchInterval: query => (query.state.data?.some(c => c.status === "queued") ? 5000 : false),
   })
+  // Fail-soft: if this request errors the line is simply absent.
+  const skipsKey = ["candidate-capture-skips", candidateId]
+  const skipsQ = useQuery({
+    queryKey: skipsKey,
+    queryFn: () => api.get<CaptureSkip[]>(`/organizations/candidates/${candidateId}/capture-skips`),
+  })
   const m = useMutation({
     mutationFn: () => api.post<PageCapture>(`/organizations/candidates/${candidateId}/captures`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: key })
+      qc.invalidateQueries({ queryKey: skipsKey })
       toast.success("Capture queued")
     },
     onError: e => toast.error(errorDetail(e)),
@@ -225,6 +255,10 @@ export function CandidateCaptures({ candidateId, candidateStatus }: { candidateI
           For organizations limited to passive checks, a recent copy from the web archive is used instead of visiting the site. If there is none, the site is visited once per revisit window.
         </p>
       )}
+      {!q.isLoading && !q.isError && !skipsQ.isError && (() => {
+        const skip = latestRelevantSkip(skipsQ.data ?? [], q.data ?? [])
+        return skip ? <CaptureSkipNotice skip={skip} /> : null
+      })()}
       {q.isLoading ? <Skeleton className="h-16 w-full" />
         : q.isError ? <p className="text-xs text-muted-foreground">{errorDetail(q.error)}</p>
         : <CaptureList captures={q.data ?? []} candidateId={candidateId} />}
