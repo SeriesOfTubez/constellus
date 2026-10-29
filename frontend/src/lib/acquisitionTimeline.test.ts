@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import type { AcquisitionRow } from "@/lib/organizations"
 import {
   assignLanes, canPan, canZoomIn, canZoomOut, clamp, currentWindow, dotKind, dotTitle, extent, filterByDeal,
-  offEdges, pan, placementMs, xFraction, yearTicks, zoomIn, zoomOut,
+  centreOn, jumpTarget, offEdges, pan, placementMs, xFraction, yearTicks, zoomIn, zoomOut,
 } from "@/lib/acquisitionTimeline"
 
 const DAY = 86_400_000
@@ -132,6 +132,45 @@ describe("xFraction / offEdges / yearTicks", () => {
     expect(t40.every(y => y % 5 === 0)).toBe(true)
     expect(t40[1] - t40[0]).toBe(5)
     expect(mk(8).every(t => t.x >= 0 && t.x <= 1)).toBe(true)
+  })
+})
+
+describe("jumpTarget / centreOn", () => {
+  const ext = { start: U(2000, 0, 1), end: U(2020, 0, 1) }
+  const win = { start: U(2009, 0, 1), end: U(2010, 0, 1) }
+  const pts = [U(2001, 5, 1), U(2008, 5, 1), U(2009, 5, 1), U(2012, 5, 1), U(2019, 5, 1), U(2008, 5, 1)]
+  it("picks the nearest deal strictly off each edge, skipping visible ones; ties keep the first", () => {
+    expect(jumpTarget(pts, win, -1)).toBe(1)
+    expect(jumpTarget(pts, win, 1)).toBe(3)
+  })
+  it("treats a deal on the window edge as visible, matching offEdges", () => {
+    const edge = [win.start, win.end, U(2001, 0, 1)]
+    expect(jumpTarget(edge, win, -1)).toBe(2)
+    expect(jumpTarget(edge, win, 1)).toBeNull()
+    expect(offEdges(edge, win)).toEqual({ before: 1, after: 0 })
+  })
+  it("is null with nothing off that edge", () => {
+    expect(jumpTarget([U(2009, 5, 1)], win, -1)).toBeNull()
+    expect(jumpTarget([], win, 1)).toBeNull()
+  })
+  it("recentres at the same zoom, and clamps at the ends while still containing the deal", () => {
+    const mid = U(2012, 5, 1), span = win.end - win.start
+    expect(centreOn(mid, win, ext)).toEqual({ start: mid - span / 2, end: mid + span / 2 })
+    expect(centreOn(U(2019, 11, 1), win, ext)).toEqual({ start: ext.end - span, end: ext.end })
+    expect(centreOn(U(2000, 1, 1), win, ext)).toEqual({ start: ext.start, end: ext.start + span })
+  })
+  it("walks deal by deal in both directions: each jump shows its target, the next goes beyond it", () => {
+    for (const [dir, want] of [[1, [3, 4]], [-1, [1, 0]]] as const) {
+      let w = win
+      const seen: number[] = []
+      for (let i = jumpTarget(pts, w, dir); i !== null; i = jumpTarget(pts, w, dir)) {
+        w = centreOn(pts[i], w, ext)
+        expect(pts[i]).toBeGreaterThanOrEqual(w.start)
+        expect(pts[i]).toBeLessThanOrEqual(w.end)
+        seen.push(i)
+      }
+      expect(seen).toEqual(want)
+    }
   })
 })
 

@@ -102,6 +102,22 @@ export function offEdges(points: number[], win: Window): { before: number; after
   return { before, after }
 }
 
+/** Index of the nearest point strictly off the given edge (the set `offEdges` counts); ties keep the first. */
+export function jumpTarget(points: number[], win: Window, dir: -1 | 1): number | null {
+  let best: number | null = null
+  points.forEach((p, i) => {
+    const off = dir === -1 ? p < win.start : p > win.end
+    if (off && (best === null || (dir === -1 ? p > points[best] : p < points[best]))) best = i
+  })
+  return best
+}
+
+/** The window recentred on `ms` at the same zoom, clamped to the extent (so it still contains `ms`). */
+export function centreOn(ms: number, win: Window, ext: Window): Window {
+  const half = spanOf(win) / 2
+  return clamp({ start: ms - half, end: ms + half }, ext)
+}
+
 export function yearTicks(win: Window): { year: number; x: number }[] {
   const years = spanOf(win) / YEAR
   const step = years <= 10 ? 1 : years <= 20 ? 2 : 5
