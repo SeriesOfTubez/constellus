@@ -1055,6 +1055,16 @@ def test_read_stored_image_returns_the_exact_bytes(w, env):
     assert pc.read_stored_image(_stored(w, env)) == WEBP
 
 
+def test_read_stored_image_returns_none_when_the_store_is_unavailable(w, env, monkeypatch):
+    """A misconfigured store (StoreConfigError is an OSError) must not surface as a 500 from
+    the image route: the wrapper logs and returns None. planning#318 S1b."""
+    row = _stored(w, env)
+    monkeypatch.setenv("CAPTURE_STORE", "bogus")
+    assert pc.read_stored_image(row) is None
+    monkeypatch.setenv("CAPTURE_STORE", "filesystem")
+    assert pc.read_stored_image(row) == WEBP  # the row itself is fine: only the store was unreachable
+
+
 @pytest.mark.parametrize("tamper", ["../x.webp", "{other}.webp", "x.webp"])
 def test_read_stored_image_refuses_a_tampered_name(w, env, tamper):
     # A valid image with the row's own sha256 is planted at the tampered name,

@@ -189,12 +189,56 @@ services:
     profiles:
       - capture
 
+  # ── Test-only S3 store (planning#318 S1b) ────────────────────────────────
+  # RustFS, pinned by digest. TEST ONLY: it backs the S3 conformance tests
+  # (backend/app/tests/test_capture_store.py, param "s3") and nothing else.
+  # Never a production default: production is bring-your-own S3 (CAPTURE_STORE=s3
+  # + CAPTURE_S3_*, see docs/architecture/capture-spool.md); Compose keeps the
+  # filesystem spool. Rails: the root credentials MUST come from .env (no default:
+  # RustFS's pre-1.0 releases shipped hardcoded-credential CVEs; empty values are
+  # allowed at parse time, because a `:?` required-variable would break `docker
+  # compose up` for everyone, but RustFS 1.0.4 exits "must not be empty"), the console is
+  # off, the S3 port binds to 127.0.0.1 only, data is a tmpfs, and the service
+  # sits on `capture_store` (internal) plus the default network solely for the
+  # localhost publish. Host port 9318 (not 9000: other local stacks publish
+  # MinIO's default there). Run:
+  #   docker compose --profile capture-s3-test up -d rustfs
+  #   CAPTURE_S3_TEST_ENDPOINT=http://127.0.0.1:9318 CAPTURE_S3_TEST_ACCESS_KEY=… \
+  #   CAPTURE_S3_TEST_SECRET_KEY=… bash backend/scripts/test.sh app/tests/test_capture_store.py
+  rustfs:
+    image: rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
+    environment:
+      - RUSTFS_ACCESS_KEY=${CAPTURE_S3_TEST_ACCESS_KEY:-}
+      - RUSTFS_SECRET_KEY=${CAPTURE_S3_TEST_SECRET_KEY:-}
+      - RUSTFS_ADDRESS=0.0.0.0:9000
+      - RUSTFS_CONSOLE_ENABLE=false
+    volumes:
+      - type: tmpfs
+        target: /data
+        tmpfs:
+          mode: 01777
+    ports:
+      - "127.0.0.1:${CAPTURE_S3_TEST_PORT:-9318}:9000"
+    networks:
+      - capture_store
+      - default
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    profiles:
+      - capture-s3-test
+
 networks:
   app:
   data:
   capture_internal:
     internal: true
   capture_egress:
+  # store network: the browser joins it in S1c; internal so it leads nowhere else
+  capture_store:
+    internal: true
 
 volumes:
   db_data:

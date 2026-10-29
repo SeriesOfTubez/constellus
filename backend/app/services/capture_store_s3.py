@@ -176,9 +176,14 @@ class S3Store:
 
     # ── spool ────────────────────────────────────────────────────────────
     def check_spool(self) -> None:
+        """The three buckets a capture needs end to end must exist before a job is
+        queued: jobs (the worker reads it), results (presigned PUTs land there) and
+        proxylog (the record of what the browser asked for; a missing bucket would
+        silently drop it). Any failure is an OSError, so capture refuses."""
         try:
             self._c.head_bucket(Bucket=self._b.jobs)
             self._c.head_bucket(Bucket=self._b.results)
+            self._c.head_bucket(Bucket=self._b.proxylog)
         except (ClientError, BotoCoreError) as e:
             raise _oserror(e) from None
 
@@ -195,11 +200,15 @@ class S3Store:
     def job_fields(self, capture_id: str, expires_at: int) -> dict:
         expires_in = max(1, int(expires_at) - int(time.time()))
         res = self._b.results
-        return {"store": {
-            "result_put": self._signer.presign("PUT", res, f"results/{capture_id}/result.json", expires_in),
-            "screenshot_put": self._signer.presign("PUT", res, f"results/{capture_id}/screenshot.webp", expires_in),
-            "expires": int(expires_at),
-        }}
+        try:
+            return {"store": {
+                "result_put": self._signer.presign("PUT", res, f"results/{capture_id}/result.json", expires_in),
+                "screenshot_put": self._signer.presign("PUT", res, f"results/{capture_id}/screenshot.webp", expires_in),
+                "expires": int(expires_at),
+            }}
+        except (ClientError, BotoCoreError) as e:
+            # a presign failure must fail the request closed (spool_unavailable), not leave the row queued
+            raise _oserror(e) from None
 
     def list_results(self) -> list[str]:
         try:

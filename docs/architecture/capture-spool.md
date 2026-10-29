@@ -1,4 +1,4 @@
-# Page-capture spool contract (planning#280 S5b-2a, job v2 in S5b-2b, v3 in S5c-b1)
+# Page-capture spool contract (planning#280 S5b-2a, job v2 in S5b-2b, v3 in S5c-b1; store backends in planning#318: S1a filesystem interface, S1b S3)
 
 How the backend asks for a page capture and gets the results back, given one
 hard rule: **the capture browser must never have a network route to the
@@ -8,8 +8,9 @@ It works like a CI runner with an artifact store. The worker in
 `capture-browser` pulls a job and pushes artifacts. Nothing ever connects to
 it, and it never connects to the backend. Jobs and artifacts go through a
 store that both sides use and neither side serves. Today that store is a
-shared volume. An S3-compatible backend (pre-signed per-capture URLs) is a
-follow-up for K8s and cloud deployments.
+shared volume. An S3-compatible backend (pre-signed per-capture URLs) is
+available for K8s and cloud deployments (planning#318 S1b; the worker and proxy
+S3 modes are S1c).
 
 ## Volumes
 
@@ -48,6 +49,20 @@ place. Readers ignore any name that starts with `.`.
     result.json
     screenshot.webp                (only when a screenshot was kept)
 ```
+
+### Layout on S3
+
+Four buckets, each keyed under its own prefix:
+
+```
+jobs bucket      jobs/<capture_id>.json
+results bucket   results/<capture_id>/result.json
+                 results/<capture_id>/screenshot.webp
+proxylog bucket  proxylog/<capture_id>.jsonl
+images bucket    images/<capture_id>.webp
+```
+
+All four variables may name one bucket: keys are disjoint by prefix.
 
 ## Job v3 (backend → worker), at most 16 KiB
 
@@ -89,6 +104,15 @@ The backend writes `jobs/.<id>.tmp` and renames it to `jobs/<id>.json`. It
 does this only AFTER the `page_captures` row (status `queued`) has been
 committed.
 
+### The optional `store` object (S3 mode only)
+
+When `CAPTURE_STORE=s3` the job also carries
+`"store": {"result_put": "<presigned PUT URL>", "screenshot_put": "<presigned PUT URL>", "expires": <int>}`.
+It is present only in S3 mode, so today's filesystem worker never sees it (it
+reads known keys only). S1c's worker requires it in S3 mode and refuses a
+filesystem-mode job that carries it. `expires` is the proxy credential's `exp`
+(the URLs expire with the job's credential).
+
 ## Worker loop (capture-browser)
 
 1. List `jobs/*.json` and sort by name. A uuidv7 sorts by creation time.
@@ -110,6 +134,8 @@ committed.
    `screenshot_omitted_reason: "over_cap"`.
 5. Write `results/.<id>.tmp/` (`result.json` plus any `screenshot.webp`), then
    rename it to `results/<id>/`.
+   **S3 variant (S1c):** PUT `screenshot.webp` through its presigned URL first,
+   then `result.json`. `result.json` is the commit marker.
 6. Delete `claimed/<id>.json`.
 7. **Exit.** One capture per process: compose restarts the container, so every
    capture starts with fresh tmpfs and a fresh process.
@@ -168,11 +194,15 @@ rendered an arbitrary page.
 - Read `/proxylog/<id>.jsonl`.
 - Then delete `results/<id>/` and the proxy log.
 
+On S3 a result is visible only once `results/<id>/result.json` exists (the
+commit marker); its LastModified is the result's time. A `result.json` whose
+claimed screenshot never arrived ends `invalid_image`.
+
 A result whose `capture_id` is not a `queued` row is discarded (deleted, with
 a warning logged).
 
 A row still `queued` after the timeout becomes `failed` with
-`failure_reason = 'timeout'`, and its job and claim files are removed.
+`failure_reason = 'timeout'`, and its job, any result under its id and its proxy log are removed (on S3 this clears an orphan screenshot).
 
 ## Proxy credential
 
@@ -278,6 +308,46 @@ never paths; file names are built inside the store. `FilesystemStore` is the
 Compose backend and keeps the filesystem-only defences (lstat, no symlinks,
 `O_NOFOLLOW`/`O_NONBLOCK`, fstat re-check, regular files only). Content checks
 (JSON parse, WebP magic, sha256, field validation) stay in `page_capture.py`, so
-every backend shares them. An S3 backend follows (S1b). The proxy limits file
-is not part of the store. A guard test keeps `page_capture.py` free of direct
-file access.
+every backend shares them. The proxy limits file is not part of the store. A
+guard test keeps `page_capture.py` free of direct file access.
+
+### S3 backend (planning#318 S1b)
+
+`backend/app/services/capture_store_s3.py`, selected by `CAPTURE_STORE=s3`.
+
+| Variable | Meaning |
+|---|---|
+| `CAPTURE_STORE` | `filesystem` (default) or `s3`. Anything else is an error. |
+| `CAPTURE_S3_ENDPOINT` | Endpoint URL; unset means AWS default endpoints. |
+| `CAPTURE_S3_REGION` | Region, default `us-east-1`. |
+| `CAPTURE_S3_ACCESS_KEY` / `CAPTURE_S3_SECRET_KEY` | Both or neither; neither means botocore's default credential chain. |
+| `CAPTURE_S3_PATH_STYLE` | `true` (default) or `false`. |
+| `CAPTURE_S3_INSECURE_HTTP` | `1` allows an `http` endpoint. Test profile only. |
+| `CAPTURE_S3_BUCKET_JOBS` / `_RESULTS` / `_PROXYLOG` / `_IMAGES` | The four bucket names. |
+
+- **Fail closed.** An unknown backend or an incomplete S3 environment makes the
+  capture store unavailable (`spool_unavailable`). There is no fallback to the
+  filesystem.
+- **Libraries.** botocore only (no boto3), with SigV4 presigning.
+- **Read-side caps.** The ContentLength is compared with the cap and at most
+  cap+1 bytes are read. A presigned PUT cannot bound the size of an upload, so
+  the read side is the guarantee.
+- **Errors.** Every store error surfaces as an `OSError`, so the callers'
+  fail-closed handlers apply. Error text carries the error code only, never a
+  key, secret or URL.
+- **Buckets.** The backend never creates buckets; the operator provisions them.
+- **Transport.** https is required unless `CAPTURE_S3_INSECURE_HTTP=1`, which
+  is for the test profile only.
+- **IAM shape.** Backend: list/get/put/delete on its four prefixes. Worker
+  (S1c): list and get on the jobs bucket. Proxy (S1c): put on the proxylog
+  bucket. Nobody but the backend reads results or images. Users never receive
+  store URLs; the backend streams images.
+- **RustFS test profile.** The `capture-s3-test` compose profile runs RustFS,
+  pinned by digest, for the S3 conformance tests (and a CI job) only. It is
+  never a production default and is never exposed beyond `127.0.0.1`: the
+  console is off, data is a tmpfs, and its root credentials come from `.env`
+  with no default. The pin matters because of RustFS's pre-1.0 CVE trail and
+  the 1.0.0/1.0.1 advisories fixed in 1.0.2.
+
+S1c: worker and proxy S3 modes; the proxy-limits source on K8s; whether the
+worker needs a separate public endpoint for the presigned host.

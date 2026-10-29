@@ -198,6 +198,21 @@ def test_job_fields_shape_and_expiry(monkeypatch):
     assert [c[3] for c in sig.calls] == [1, 1]
 
 
+def test_job_fields_presign_failure_is_oserror():
+    """A botocore error while presigning must surface as OSError: request_capture only
+    catches OSError, and anything else would leave the row queued until the timeout sweep."""
+    from botocore.exceptions import ParamValidationError
+
+    class _Broken:
+        def presign(self, method, bucket, key, expires_in):
+            raise ParamValidationError(report="bad key")
+
+    store = _store(_client(), _Broken())
+    with pytest.raises(OSError) as info:
+        store.job_fields(ID, int(m.time.time()) + 60)
+    assert str(info.value) == "capture store: ParamValidationError: "
+
+
 # ── jobs ─────────────────────────────────────────────────────────────────────
 
 
@@ -369,6 +384,7 @@ def test_check_spool_and_images_head_buckets():
     with Stubber(client) as stub:
         stub.add_response("head_bucket", {}, {"Bucket": "b-jobs"})
         stub.add_response("head_bucket", {}, {"Bucket": "b-results"})
+        stub.add_response("head_bucket", {}, {"Bucket": "b-proxylog"})
         stub.add_client_error("head_bucket", "404")
         stub.add_response("head_bucket", {}, {"Bucket": "b-images"})
         stub.add_client_error("head_bucket", "404")
