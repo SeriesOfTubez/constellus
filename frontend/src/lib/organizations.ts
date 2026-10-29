@@ -152,6 +152,12 @@ export interface PageCapture {
   image_pruned_at: string | null
   has_image: boolean
   request_count: number
+  source: "live" | "archive"
+  // Verified (the page actually shown) only on done rows and rows failed with
+  // archive_snapshot_stale; otherwise just the requested time -- do not display.
+  archive_snapshot_at: string | null
+  archive_host: string | null
+  archive_freshness_days: number | null
 }
 
 // ── registry observations (planning#278 S3d) ───────────────────────────────

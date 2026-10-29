@@ -75,6 +75,8 @@ class PageCapture(Base):
     source: Mapped[str] = mapped_column(Text, nullable=False, default="live", server_default=text("'live'"))
     archive_snapshot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     archive_host: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Migration 0095: the freshness window (days) an archive capture was chosen from and judged by.
+    archive_freshness_days: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
 
 class PageCaptureRequest(Base):

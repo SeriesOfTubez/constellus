@@ -950,6 +950,7 @@ export type CaptureSettings = {
   proxy_connect_timeout_seconds: number
   proxy_idle_timeout_seconds: number
   proxy_max_connections: number
+  archive_freshness_days: number
 }
 
 export type EpssHistoryPoint = {

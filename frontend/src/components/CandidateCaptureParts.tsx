@@ -1,6 +1,7 @@
-// Page capture section of the scope-candidate flyout (planning#280 S5c slice a).
+// Page capture section of the scope-candidate flyout (planning#280 S5c slices a, b2b).
 //
-// A capture row is a record of a visit, never a finding: statuses use neutral
+// A capture row is a record of a visit (live) or of a retrieved web-archive
+// snapshot (archive), never a finding: statuses use neutral
 // badge variants only. "Pruned" (file removed, row kept) and "omitted" (never
 // stored) are different facts and stay distinct everywhere.
 import { useEffect, useState } from "react"
@@ -8,7 +9,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
 import { useCan } from "@/lib/permissions"
-import { relativeTime } from "@/lib/time"
+import { formatExactTime, relativeTime } from "@/lib/time"
 import type { PageCapture } from "@/lib/organizations"
 import { DECIDE, errorDetail } from "@/components/OrgCandidateParts"
 import { Badge } from "@/components/ui/badge"
@@ -22,9 +23,37 @@ export function captureImageState(c: PageCapture): "available" | "pruned" | "omi
   return "none"
 }
 
-// Slice b adds archived snapshots as a second source.
-export function captureSource(_c: PageCapture): "live" {
-  return "live"
+// Live visit vs archived snapshot (anything not explicitly "archive" is live).
+export function captureSource(c: PageCapture): "live" | "archive" {
+  return c.source === "archive" ? "archive" : "live"
+}
+
+// archive_snapshot_at is the time of the page actually shown ONLY on done rows;
+// on queued/failed-unverified rows it is just the requested time, so it is never
+// put in the label or title there.
+export function archiveBadge(c: PageCapture): { label: string; title?: string } {
+  if (c.status === "done" && c.archive_snapshot_at) {
+    const host = c.archive_host ? ` from ${c.archive_host}` : ""
+    return {
+      label: `Archived · ${relativeTime(c.archive_snapshot_at)}`,
+      title: `Snapshot ${formatExactTime(c.archive_snapshot_at)}${host}`,
+    }
+  }
+  return { label: "Archived", title: c.archive_host ? `From ${c.archive_host}` : undefined }
+}
+
+// Fixed, non-leaky wording: the raw `error` string is deliberately never shown.
+export function captureFailureText(c: PageCapture): string {
+  if (c.failure_reason === "archive_snapshot_stale" && c.archive_snapshot_at) {
+    const exact = formatExactTime(c.archive_snapshot_at)
+    if (new Date(c.archive_snapshot_at).getTime() > new Date(c.requested_at).getTime())
+      return `The retrieved snapshot (${exact}) is dated after the capture was requested, so it was not used.`
+    const win = c.archive_freshness_days != null ? `window of ${c.archive_freshness_days} days` : "window"
+    return `The retrieved snapshot (${exact}) is older than the configured ${win}, so it was not used.`
+  }
+  if (c.failure_reason === "archive_snapshot_unverified")
+    return "The snapshot service was not able to determine the snapshot's date, so it was not used."
+  return "An error was encountered while retrieving the page. Check the logs for details."
 }
 
 export async function loadCaptureImage(candidateId: string, captureId: string): Promise<string> {
@@ -110,12 +139,14 @@ export function CaptureList({ captures, candidateId }: { captures: PageCapture[]
           <li key={c.id} className="rounded-md border p-2.5 space-y-1">
             <div className="flex items-center gap-2">
               <Badge variant={badge.variant}>{badge.label}</Badge>
-              <Badge variant="outline">{captureSource(c) === "live" ? "Live" : ""}</Badge>
+              {captureSource(c) === "live"
+                ? <Badge variant="outline">Live</Badge>
+                : <Badge variant="outline" title={archiveBadge(c).title}>{archiveBadge(c).label}</Badge>}
               <span className="text-xs text-muted-foreground" title={c.requested_at}>{relativeTime(c.requested_at)}</span>
             </div>
             {c.status === "failed" && (
               <p className="text-xs text-muted-foreground">
-                {c.failure_reason}{c.error ? ` · ${c.error}` : ""}
+                {captureFailureText(c)}
               </p>
             )}
             {c.status === "done" && (
@@ -189,7 +220,10 @@ export function CandidateCaptures({ candidateId, candidateStatus }: { candidateI
         )}
       </div>
       {canCapture && (
-        <p className="text-xs text-muted-foreground">Manual re-capture ignores the revisit window; posture rules still apply.</p>
+        <p className="text-xs text-muted-foreground">
+          Manual re-capture ignores the revisit window; posture rules still apply.{" "}
+          For organizations limited to passive checks, a recent copy from the web archive is used instead of visiting the site. If there is none, the site is visited once per revisit window.
+        </p>
       )}
       {q.isLoading ? <Skeleton className="h-16 w-full" />
         : q.isError ? <p className="text-xs text-muted-foreground">{errorDetail(q.error)}</p>

@@ -41,6 +41,14 @@ export function relativeTime(iso: string | null | undefined): string {
   return `${years} year${years !== 1 ? "s" : ""} ago`
 }
 
+/** Exact, human-readable absolute timestamp in the viewer's locale, with the
+ *  time zone named: it is shown as evidence, so it must not be ambiguous. */
+export function formatExactTime(iso: string | null | undefined): string {
+  if (!iso) return "—"
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString(undefined, { timeZoneName: "short" })
+}
+
 export function relativeFuture(iso: string | null | undefined): string {
   if (!iso) return "—"
   const then = new Date(iso).getTime()

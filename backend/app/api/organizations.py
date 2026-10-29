@@ -335,6 +335,10 @@ class CaptureResponse(BaseModel):
     status: str
     failure_reason: str | None
     error: str | None
+    source: str
+    archive_snapshot_at: datetime | None
+    archive_host: str | None
+    archive_freshness_days: int | None
     requested_at: datetime
     finished_at: datetime | None
     requested_by_id: uuid.UUID | None
@@ -364,7 +368,7 @@ class CaptureResponse(BaseModel):
 # ── errors ──────────────────────────────────────────────────────────────────
 
 _CAPTURE_REFUSAL_MESSAGES = {
-    "archive:lookup_unavailable": "The web archive could not be checked for a recent snapshot; try again shortly.",
+    "archive:lookup_unavailable": "The snapshot service could not be reached, so nothing was captured. Try again shortly.",
     "candidate:not_domain": "Only a domain candidate can be visited.",
     "candidate:not_open": "Only an open candidate can be visited.",
     "capture:already_queued": "A capture of this candidate is already queued.",
@@ -1288,6 +1292,8 @@ def reject_candidate(
 def _capture_response(row: PageCapture, request_count: int) -> CaptureResponse:
     return CaptureResponse(
         id=row.id, status=row.status, failure_reason=row.failure_reason, error=row.error,
+        source=row.source, archive_snapshot_at=row.archive_snapshot_at, archive_host=row.archive_host,
+        archive_freshness_days=row.archive_freshness_days,
         requested_at=row.requested_at, finished_at=row.finished_at, requested_by_id=row.requested_by_id,
         domain=row.domain, requested_url=row.requested_url, final_url=row.final_url,
         http_status=row.http_status, redirect_chain=row.redirect_chain, title=row.title,

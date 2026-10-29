@@ -16,6 +16,8 @@ export const PROXY_IDLE_TIMEOUT_MIN = 5
 export const PROXY_IDLE_TIMEOUT_MAX = 600
 export const PROXY_MAX_CONN_MIN = 1
 export const PROXY_MAX_CONN_MAX = 1024
+export const ARCHIVE_FRESHNESS_MIN = 1
+export const ARCHIVE_FRESHNESS_MAX = 90
 export const UA_MAX_LEN = 256
 export const IMAGE_KIB_MIN = MAX_IMAGE_BYTES_MIN / 1024 // 64
 export const IMAGE_KIB_MAX = MAX_IMAGE_BYTES_MAX / 1024 // 8192
@@ -55,5 +57,7 @@ export function validateCaptureSettings(d: CaptureSettings): string | null {
     return `Proxy idle timeout must be a whole number from ${PROXY_IDLE_TIMEOUT_MIN} to ${PROXY_IDLE_TIMEOUT_MAX} seconds.`
   if (!inRange(d.proxy_max_connections, PROXY_MAX_CONN_MIN, PROXY_MAX_CONN_MAX))
     return `Proxy max connections must be a whole number from ${PROXY_MAX_CONN_MIN} to ${PROXY_MAX_CONN_MAX}.`
+  if (!inRange(d.archive_freshness_days, ARCHIVE_FRESHNESS_MIN, ARCHIVE_FRESHNESS_MAX))
+    return `Archive snapshot freshness must be a whole number from ${ARCHIVE_FRESHNESS_MIN} to ${ARCHIVE_FRESHNESS_MAX} days.`
   return null
 }

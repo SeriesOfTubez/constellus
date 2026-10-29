@@ -9,8 +9,9 @@ vi.mock("@/lib/permissions", () => ({ useCan: () => (p: string) => perms.current
 import { api } from "@/lib/api"
 import type { PageCapture } from "@/lib/organizations"
 import {
-  CandidateCaptures, CaptureList, captureImageState, captureSource, loadCaptureImage,
+  CandidateCaptures, CaptureList, archiveBadge, captureFailureText, captureImageState, captureSource, loadCaptureImage,
 } from "@/components/CandidateCaptureParts"
+import { formatExactTime } from "@/lib/time"
 
 const capture = (over: Partial<PageCapture> = {}): PageCapture => ({
   id: "cap1", status: "done", failure_reason: null, error: null,
@@ -19,7 +20,8 @@ const capture = (over: Partial<PageCapture> = {}): PageCapture => ({
   http_status: 200, redirect_chain: [], title: "Fabrikam Home", user_agent: null, user_agent_mode: "stock",
   image_max_bytes: 1048576, cert: null, cert_san_dns: null, cert_sha256: null, pinned_ip: "192.0.2.10",
   proxy_log_truncated: false, image_bytes: null, image_sha256: null, image_quality: null,
-  image_omitted_reason: null, image_pruned_at: null, has_image: false, request_count: 3, ...over,
+  image_omitted_reason: null, image_pruned_at: null, has_image: false, request_count: 3,
+  source: "live", archive_snapshot_at: null, archive_host: null, archive_freshness_days: null, ...over,
 })
 const html = (n: React.ReactNode) => renderToStaticMarkup(<MemoryRouter>{n}</MemoryRouter>)
 const list = (cs: PageCapture[]) => html(<CaptureList captures={cs} candidateId="c1" />)
@@ -34,7 +36,10 @@ describe("captureImageState", () => {
   it("has_image wins over pruned/omitted markers", () => {
     expect(captureImageState(capture({ has_image: true, image_pruned_at: "2026-10-28T11:00:00+00:00", image_omitted_reason: "x" }))).toBe("available")
   })
-  it("source is live", () => { expect(captureSource(capture())).toBe("live") })
+  it("source is live or archive", () => {
+    expect(captureSource(capture())).toBe("live")
+    expect(captureSource(capture({ source: "archive" }))).toBe("archive")
+  })
 })
 
 describe("CaptureList", () => {
@@ -84,8 +89,77 @@ describe("CaptureList", () => {
   it("failed row shows the reason and no destructive styling", () => {
     const out = list([capture({ status: "failed", failure_reason: "navigation_timeout", error: "boom", title: null })])
     expect(out).toContain("Failed")
-    expect(out).toContain("navigation_timeout")
+    expect(out).toContain("An error was encountered while retrieving the page.")
+    expect(out).not.toContain("navigation_timeout")
+    expect(out).not.toContain("boom")
     expect(out).not.toContain("destructive")
+  })
+  it("mixed live and archive rows", () => {
+    const out = list([
+      capture({ id: "a" }),
+      capture({ id: "b", source: "archive", archive_snapshot_at: "2026-10-27T10:00:00+00:00", archive_host: "web.archive.org" }),
+      capture({ id: "c", source: "archive", status: "failed", failure_reason: "archive_snapshot_stale", error: "SECRET-RAW-ERR",
+        archive_snapshot_at: "2026-09-01T10:00:00+00:00", archive_host: "web.archive.org", archive_freshness_days: 14, title: null }),
+    ])
+    expect(out).toContain(">Live<")
+    expect(out).toContain("Archived ·")
+    expect(out).toContain("older than the configured window of 14 days")
+    expect(out).not.toContain("SECRET-RAW-ERR")
+  })
+})
+
+const arch = (over: Partial<PageCapture> = {}) => capture({
+  source: "archive", archive_host: "web.archive.org", archive_snapshot_at: "2026-10-27T10:00:00+00:00",
+  archive_freshness_days: 7, error: "RAW-ERR-TEXT", ...over,
+})
+const exact = formatExactTime("2026-10-27T10:00:00+00:00")
+
+describe("archiveBadge", () => {
+  it("done shows relative time in the label and exact time + host in the title", () => {
+    const b = archiveBadge(arch())
+    expect(b.label).toContain("Archived ·")
+    expect(b.title).toBe(`Snapshot ${exact} from web.archive.org`)
+  })
+  it("queued and unverified-failed never expose the time", () => {
+    for (const c of [
+      arch({ status: "queued" }),
+      arch({ status: "failed", failure_reason: "archive_snapshot_unverified" }),
+    ]) {
+      const b = archiveBadge(c)
+      expect(b.label).toBe("Archived")
+      expect(b.title ?? "").not.toContain(exact)
+      expect(b.title).toBe("From web.archive.org")
+    }
+  })
+})
+
+describe("captureFailureText", () => {
+  const failed = (reason: string | null, over: Partial<PageCapture> = {}) =>
+    arch({ status: "failed", failure_reason: reason, ...over })
+  const generic = "An error was encountered while retrieving the page. Check the logs for details."
+  const all = [
+    failed("archive_snapshot_stale", { archive_snapshot_at: "2026-09-01T10:00:00+00:00" }),
+    failed("archive_snapshot_stale", { archive_snapshot_at: "2026-09-01T10:00:00+00:00", archive_freshness_days: null }),
+    failed("archive_snapshot_stale", { archive_snapshot_at: "2026-10-29T10:00:00+00:00" }),
+    failed("archive_snapshot_unverified"),
+    failed("capture_error"), failed("timeout"), failed("something_new"), failed(null),
+  ]
+  it("stale older, with and without the window", () => {
+    const old = formatExactTime("2026-09-01T10:00:00+00:00")
+    expect(captureFailureText(all[0])).toBe(`The retrieved snapshot (${old}) is older than the configured window of 7 days, so it was not used.`)
+    expect(captureFailureText(all[1])).toBe(`The retrieved snapshot (${old}) is older than the configured window, so it was not used.`)
+  })
+  it("stale future", () => {
+    expect(captureFailureText(all[2])).toBe(`The retrieved snapshot (${formatExactTime("2026-10-29T10:00:00+00:00")}) is dated after the capture was requested, so it was not used.`)
+  })
+  it("unverified", () => {
+    expect(captureFailureText(all[3])).toBe("The snapshot service was not able to determine the snapshot's date, so it was not used.")
+  })
+  it("everything else is the generic sentence", () => {
+    for (const c of all.slice(4)) expect(captureFailureText(c)).toBe(generic)
+  })
+  it("never includes the raw error", () => {
+    for (const c of all) expect(captureFailureText(c)).not.toContain("RAW-ERR-TEXT")
   })
 })
 
@@ -119,12 +193,14 @@ describe("CandidateCaptures", () => {
     expect(out).toContain("Fabrikam Home")
     expect(out).toContain("Re-capture")
     expect(out).toContain("ignores the revisit window")
+    expect(out).toContain("recent copy from the web archive")
   })
   it("hides Re-capture without DECIDE", () => {
     perms.current = ["entities.read"]
     const out = render("open")
     expect(out).toContain("Fabrikam Home")
     expect(out).not.toContain("Re-capture")
+    expect(out).not.toContain("web archive")
   })
   it("hides Re-capture when the candidate is not open", () => {
     perms.current = ["entities.decide_candidate"]

@@ -333,7 +333,7 @@ def test_budget_counts_an_archive_capture_and_refuses_before_the_lookup(w, env, 
     other = _candidate(w, _restricted(w), value=shared)
     prior = _row_for(w, other, "done", finished_ago_days=1)
     prior.source, prior.archive_snapshot_at = "archive", SNAP_AT
-    prior.archive_host = "web.archive.org"
+    prior.archive_host, prior.archive_freshness_days = "web.archive.org", 7
     w.db.commit()
     c = _candidate(w, _restricted(w), value=shared)
     seen = mock_wayback(monkeypatch, body=wire())
@@ -386,7 +386,9 @@ def test_archive_row_needs_its_fields(w):
     with pytest.raises(IntegrityError):
         w.db.commit()
     w.db.rollback()
-    ok = _insert(w, source="archive", archive_snapshot_at=SNAP_AT, archive_host="web.archive.org")
+    ok = _insert(
+        w, source="archive", archive_snapshot_at=SNAP_AT, archive_host="web.archive.org", archive_freshness_days=7
+    )
     w.db.commit()
     assert _fresh(ok.id).source == "archive"
 
@@ -436,12 +438,12 @@ from app.tests.test_page_capture_service import _drop_result, _ingest, _result  
 REQ_AT = datetime(2026, 10, 25, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _arch(w, req_ts=TS, requested_at=REQ_AT, source="archive"):
+def _arch(w, req_ts=TS, requested_at=REQ_AT, source="archive", window=7):
     """A queued row; an archive one carries the provisional snapshot time."""
     over = {}
     if source == "archive":
         snap = datetime.strptime(req_ts, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
-        over = dict(archive_snapshot_at=snap, archive_host="web.archive.org")
+        over = dict(archive_snapshot_at=snap, archive_host="web.archive.org", archive_freshness_days=window)
     row = _insert(w, source=source, requested_at=requested_at, **over)
     c_value = row.domain
     row.requested_url = f"https://web.archive.org/web/{req_ts}/https://{c_value}/"
@@ -496,12 +498,87 @@ def test_window_boundary_exact_done_one_second_older_stale(w, env):
     assert (rb.status, rb.failure_reason) == ("failed", "archive_snapshot_stale")
 
 
-def test_freshness_setting_is_honoured_at_ingest(w, env, cap_settings):
-    cap_settings(ARCHIVE_FRESHNESS_DAYS_KEY=30)
-    row = _arch(w)
+def test_row_window_is_honoured_at_ingest(w, env):
+    row = _arch(w, window=30)
     rendered = REQ_AT - timedelta(days=20)
     r = _run(w, env, row, _wb(row, _ts(rendered)))
     assert r.status == "done" and r.archive_snapshot_at == rendered
+
+
+def test_ingest_judges_by_the_row_window_not_the_current_setting(w, env, cap_settings):
+    # Setting widened AFTER the request: a 20-day-old snapshot on a 7-day row must still be stale.
+    cap_settings(ARCHIVE_FRESHNESS_DAYS_KEY=30)
+    wide = _arch(w, window=7)
+    rw = _run(w, env, wide, _wb(wide, _ts(REQ_AT - timedelta(days=20))))
+    assert (rw.status, rw.failure_reason) == ("failed", "archive_snapshot_stale")
+    # Setting narrowed AFTER the request: a 5-day-old snapshot on a 7-day row must still be done.
+    cap_settings(ARCHIVE_FRESHNESS_DAYS_KEY=1)
+    narrow = _arch(w, window=7)
+    rn = _run(w, env, narrow, _wb(narrow, _ts(REQ_AT - timedelta(days=5))))
+    assert (rn.status, rn.failure_reason) == ("done", None)
+
+
+def test_archive_request_stores_the_setting_at_request_time_and_live_stores_null(w, env, monkeypatch, cap_settings):
+    cap_settings(ARCHIVE_FRESHNESS_DAYS_KEY=11)
+    c = _candidate(w, _restricted(w))
+    ts = _ts(datetime.now(timezone.utc) - timedelta(days=2))
+    mock_wayback(monkeypatch, body=wire(ts))
+    arch = pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
+    r = _fresh(arch.id)
+    assert r.source == "archive" and r.archive_freshness_days == 11
+    cap_settings(ARCHIVE_FRESHNESS_DAYS_KEY=3)  # a later change does not rewrite the row
+    assert _fresh(arch.id).archive_freshness_days == 11
+    live = pc.request_capture(w.db, candidate_id=_candidate(w).id, user=w.user(), manual=True)
+    assert _fresh(live.id).source == "live" and _fresh(live.id).archive_freshness_days is None
+
+
+@pytest.mark.parametrize("over", [
+    dict(source="archive", archive_snapshot_at=SNAP_AT, archive_host="web.archive.org"),  # NULL window
+    dict(archive_freshness_days=7),  # live row with a window
+    dict(source="archive", archive_snapshot_at=SNAP_AT, archive_host="web.archive.org", archive_freshness_days=0),
+    dict(source="archive", archive_snapshot_at=SNAP_AT, archive_host="web.archive.org", archive_freshness_days=91),
+])
+def test_window_check_rejects(w, over):
+    _insert(w, **over)
+    with pytest.raises(IntegrityError):
+        w.db.commit()
+    w.db.rollback()
+
+
+@pytest.mark.parametrize("days", [1, 90])
+def test_window_check_accepts_the_bounds(w, days):
+    row = _insert(
+        w, source="archive", archive_snapshot_at=SNAP_AT, archive_host="web.archive.org", archive_freshness_days=days
+    )
+    w.db.commit()
+    assert _fresh(row.id).archive_freshness_days == days
+
+
+def test_ingest_capture_error_logs_the_failure(w, env, caplog):
+    import logging
+
+    row = _arch(w)
+    with caplog.at_level(logging.WARNING, logger="app.services.page_capture"):
+        r = _run(w, env, row, _wb(row, TS), error="boom\nforged line")
+    assert (r.status, r.failure_reason) == ("failed", "capture_error")
+    hits = [m for m in caplog.messages if str(row.id) in m]
+    assert len(hits) == 1
+    assert "capture_error" in hits[0] and "'boom\\nforged line'" in hits[0] and "\n" not in hits[0]
+
+
+def test_timeout_sweep_logs_the_failure(w, env, caplog):
+    import logging
+
+    from app.tests.test_page_capture_service import _queued
+
+    row = _queued(w)
+    row.requested_at = datetime.now(timezone.utc) - timedelta(seconds=pc.DEFAULT_QUEUE_TIMEOUT_S + 60)
+    w.db.commit()
+    with caplog.at_level(logging.WARNING, logger="app.services.page_capture"):
+        assert pc.sweep_timeouts(w.db) == 1
+    assert _fresh(row.id).failure_reason == "timeout"
+    hits = [m for m in caplog.messages if str(row.id) in m]
+    assert len(hits) == 1 and "timeout" in hits[0]
 
 
 def test_rendered_in_the_future_beyond_a_day_is_stale(w, env):
