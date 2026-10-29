@@ -99,6 +99,10 @@ class ReverseIpResult:
     no_claimed_history: int = 0  # dedicated, but pDNS never saw the claimed domain there
     invalid: int = 0
     created_candidate_ids: list[uuid.UUID] = field(default_factory=list)
+    # Subsets of `no_claim` (planning#277 S6b): why no pDNS data was available.
+    rate_limited: int = 0  # the mnemonic limiter refused the lookup
+    lookup_failed: int = 0  # HTTP error, exception or unusable payload
+    error: bool = False  # an exception in the step (set by the runner)
 
 
 def _parse_seen(value: object) -> datetime | None:
@@ -176,7 +180,11 @@ def record_reverse_ip(
         result.ips_checked += 1
         # May fetch and commit: nothing of ours is pending here, and the ORM
         # rows below are re-read after it.
-        hosting_classifier.reverse_ip_domains(db, ip)
+        lookup = hosting_classifier.reverse_ip_lookup(db, ip)
+        if lookup.outcome == "rate_limited":
+            result.rate_limited += 1
+        elif lookup.outcome == "failed":
+            result.lookup_failed += 1
         claim = hosting_classifier.reverse_ip_claim(db, ip)
         if claim is None:
             result.no_claim += 1
@@ -271,6 +279,7 @@ class RirDedicatedIpResult:
     signals_resighted: int = 0
     invalid: int = 0
     conflict: int = 0
+    error: bool = False  # an exception in the step (set by the runner)
 
 
 def record_rir_dedicated_ip(

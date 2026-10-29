@@ -58,7 +58,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import literal_column, select
+from sqlalchemy import and_, exists, literal_column, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -554,6 +554,23 @@ def _strength_row(db: Session, candidate_id: uuid.UUID):
         select(s.subquery.c.proposable, s.subquery.c.strength, s.subquery.c.strong_types)
         .where(s.candidate_id == candidate_id)
     ).one_or_none()
+
+
+def refreshable_root_clause():
+    """A boolean over `OrgEntity`: the roots the automatic jobs refresh.
+
+    The automatic jobs refresh our roots and live deals only: relationship
+    "ours", or "ma_target" with at least one engagement that is not
+    ABANDONED. An abandoned deal stops (Jason, planning#277 S6b). Manual
+    Re-check is unaffected. Read-only: no FOR UPDATE."""
+    live_deal = exists().where(
+        Engagement.subject_entity_id == OrgEntity.id,
+        Engagement.posture != EngagementPosture.ABANDONED.value,
+    )
+    return or_(
+        OrgEntity.relationship == RELATIONSHIP_OURS,
+        and_(OrgEntity.relationship == RELATIONSHIP_MA_TARGET, live_deal),
+    )
 
 
 def _live_engagements(db: Session, root_entity_id: uuid.UUID) -> list[Engagement]:

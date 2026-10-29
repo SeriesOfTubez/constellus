@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Text, UniqueConstraint, func, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -89,6 +89,12 @@ class ScopeCandidate(Base):
         UUID(as_uuid=True), ForeignKey("targets.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    # Claimed-domain unit (reverse-IP + RIR refresh), planning#277 S6b; stamped by `runner.refresh_claimed_domain`.
+    rediscovered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rediscovery_failed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # Open-domain-candidate unit (re-verified against the root's claimed domains); stamped by `runner.verify_new_candidates`.
+    reverified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reverify_failed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
 
 
 class ScopeSignal(Base):

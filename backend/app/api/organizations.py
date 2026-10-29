@@ -378,7 +378,7 @@ class CaptureResponse(BaseModel):
 # ── errors ──────────────────────────────────────────────────────────────────
 
 _CAPTURE_REFUSAL_MESSAGES = {
-    "archive:lookup_unavailable": "The snapshot service could not be reached, so nothing was captured. It will be tried again automatically at the next scheduled capture.",
+    "archive:lookup_unavailable": "The snapshot service could not be reached, so nothing was captured. It will be tried again automatically within a day.",
     "candidate:not_domain": "Only a domain candidate can be visited.",
     "candidate:not_open": "Only an open candidate can be visited.",
     "capture:already_queued": "A capture of this candidate is already queued.",
@@ -395,10 +395,6 @@ _CAPTURE_REFUSAL_MESSAGES = {
     "posture:passive_only": "A live visit is not allowed under this organization's current posture.",
     "capture:not_configured": "Page capture is not configured: the capture proxy key is missing.",
     "spool_unavailable": "The capture browser could not be reached; try again shortly.",
-    "capture:sweep_stopped": (
-        "Not attempted: the snapshot service kept failing during this run. "
-        "It will be tried again automatically at the next scheduled capture."
-    ),
 }
 _CAPTURE_REFUSAL_GENERIC = "A live visit to this candidate is not allowed."
 
