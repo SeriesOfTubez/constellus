@@ -121,6 +121,15 @@ export interface CandidateDetail extends CandidateRow {
   decided_by_connector_name: string | null
 }
 
+// A recorded reason the scheduled job did not capture a candidate (planning#277 S6a).
+// `message` is plain-language backend text; `reason` is a code and is never rendered.
+export interface CaptureSkip {
+  id: string
+  reason: string
+  message: string
+  skipped_at: string
+}
+
 /** One page capture (mirrors the backend CaptureResponse). `redirect_chain` entries are
  *  `{url, status}` hops from the capture browser; typed loosely because the API sends `list`. */
 export interface PageCapture {

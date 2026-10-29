@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, SmallInteger, Text, UniqueConstraint, func, text,
+    BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, Text, UniqueConstraint, func, text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, INET, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -103,3 +103,24 @@ class PageCaptureRequest(Base):
     bytes_up: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     bytes_down: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class PageCaptureSkip(Base):
+    """A candidate the automatic sweep did not capture, and the rule that said why
+    (a refusal such as `archive:lookup_unavailable`, or `capture:sweep_stopped`
+    when the lookup kept failing). Migration 0096. Evidence for a person, never an
+    authorisation."""
+
+    __tablename__ = "page_capture_skips"
+    __table_args__ = (
+        Index("ix_page_capture_skips_candidate_skipped", "candidate_id", text("skipped_at DESC")),
+        CheckConstraint("length(reason) > 0", name="ck_page_capture_skips_reason_nonempty"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("uuidv7()"))
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scope_candidates.id", ondelete="RESTRICT"), nullable=False
+    )
+    domain: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    skipped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

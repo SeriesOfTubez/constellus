@@ -24,6 +24,7 @@ import shutil
 import stat
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
@@ -33,7 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.org_entity import OrgEntity
-from app.models.page_capture import USER_AGENT_MODES, PageCapture, PageCaptureRequest
+from app.models.page_capture import USER_AGENT_MODES, PageCapture, PageCaptureRequest, PageCaptureSkip
 from app.models.scope_candidate import ScopeCandidate
 from app.models.user import User
 from app.services import app_settings, wayback
@@ -422,10 +423,25 @@ def _fail(row: PageCapture, reason: str, now: datetime) -> None:
 # ── request ──────────────────────────────────────────────────────────────────
 
 
-def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual: bool) -> PageCapture:
+def revisit_budget_clause(now: datetime, days: int):
+    """The one predicate for "this domain is inside its revisit budget": a
+    `queued` capture, or a `done` one finished within `days`. Shared by
+    `request_capture`'s budget check and the automatic sweep's pre-filter so the
+    two cannot drift."""
+    cutoff = now - timedelta(days=days)
+    return or_(
+        PageCapture.status == "queued",
+        and_(PageCapture.status == "done", PageCapture.finished_at >= cutoff),
+    )
+
+
+def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User | None, manual: bool) -> PageCapture:
     """Queue one capture of a candidate's domain. An automatic request
     (`manual=False`) is refused by the revisit budget (a queued or recently
     finished capture of the same domain); a manual re-capture bypasses it.
+
+    `user` is None only for the automatic weekly sweep: a NULL
+    `requested_by_id` marks an automatic request. A manual request needs a user.
 
     This function OWNS its session's commits (unlike a helper that only
     flushes): the job file must only exist after the `page_captures` row is
@@ -445,6 +461,8 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual:
     only after every cheap refusal has passed, and before any DB write. Without
     a restricting posture there is no lookup at all.
     """
+    if manual and user is None:
+        raise ValueError("a manual capture request needs a user")
     candidate = db.get(ScopeCandidate, candidate_id)
     if candidate is None:
         raise CaptureRefused("candidate:not_found")
@@ -464,16 +482,9 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual:
         raise CaptureRefused("candidate:invalid_domain")
     now = datetime.now(timezone.utc)
     if not manual:
-        cutoff = now - timedelta(days=revisit_days(db))
         recent = (
             db.query(PageCapture.id)
-            .filter(
-                PageCapture.domain == domain,
-                or_(
-                    PageCapture.status == "queued",
-                    and_(PageCapture.status == "done", PageCapture.finished_at >= cutoff),
-                ),
-            )
+            .filter(PageCapture.domain == domain, revisit_budget_clause(now, revisit_days(db)))
             .first()
         )
         if recent is not None:
@@ -514,7 +525,7 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual:
         requested_url=requested_url,
         source=capture_mode,
         **archive_fields,
-        requested_by_id=user.id,
+        requested_by_id=user.id if user is not None else None,
         user_agent_mode=mode,
         image_max_bytes=max_image_bytes(db),
     )
@@ -561,6 +572,144 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual:
         db.commit()
         raise CaptureRefused("spool_unavailable")
     return row
+
+
+# ── automatic weekly sweep (planning#277 S6a) ────────────────────────────────
+
+# Pacing, all in seconds / counts, module constants so tests can read them.
+# Serial on purpose: one candidate at a time, so the browser queue and the
+# Wayback lookup are never hit in bursts.
+SWEEP_PAUSE_S = 2  # between candidates
+SWEEP_LOOKUP_BACKOFF_S = 60  # instead of the pause after an archive:lookup_unavailable refusal
+# After this many lookup failures in a row the snapshot service is treated as
+# down for this run: the rest are recorded as `capture:sweep_stopped`, never
+# tried, and never sent live.
+SWEEP_MAX_CONSECUTIVE_LOOKUP_FAILURES = 3
+_LOOKUP_RULE = "archive:lookup_unavailable"
+_STOPPED_RULE = "capture:sweep_stopped"
+_BUDGET_RULES = frozenset({"capture:revisit_budget", "capture:already_queued"})
+
+_sleep = time.sleep  # tests patch this to a no-op and assert the pause values
+
+
+@dataclass
+class SweepResult:
+    candidates: int = 0  # open domain candidates considered after the pre-filter
+    queued: int = 0
+    budget: int = 0  # refused by the revisit budget / already queued
+    skipped: int = 0  # refused for another reason; a page_capture_skips row each
+    stopped: int = 0  # not attempted: the lookup kept failing
+    errors: int = 0  # unexpected exceptions
+
+
+def _record_skip(db: Session, candidate_id: uuid.UUID, rule: str) -> bool:
+    """Own unit of work: roll back whatever request_capture left open, then add + commit.
+    False when the candidate no longer exists (nothing recorded)."""
+    db.rollback()
+    candidate = db.get(ScopeCandidate, candidate_id)
+    if candidate is None:
+        return False
+    db.add(PageCaptureSkip(candidate_id=candidate.id, domain=candidate.value, reason=rule))
+    db.commit()
+    return True
+
+
+def _record_stopped(db: Session, rest: list[uuid.UUID]) -> int:
+    """One bulk insert + commit of `capture:sweep_stopped` skips for candidates never tried."""
+    db.rollback()
+    rows = [
+        PageCaptureSkip(candidate_id=c.id, domain=c.value, reason=_STOPPED_RULE)
+        for c in db.execute(
+            select(ScopeCandidate).where(ScopeCandidate.id.in_(rest)).order_by(ScopeCandidate.id)
+        ).scalars()
+    ]
+    db.add_all(rows)
+    db.commit()
+    return len(rows)
+
+
+def run_automatic_sweep() -> SweepResult:
+    """One automatic capture pass over every open domain candidate (called by the
+    weekly scheduler job, never inside a request). Opens its own session.
+
+    Each candidate goes through `request_capture(user=None, manual=False)`, so
+    the gate, the posture, the revisit budget and archive-first all apply
+    unchanged; the sweep never goes live itself and never treats a failed
+    Wayback lookup as permission to. A refusal other than the budget is recorded
+    as a `page_capture_skips` row so a person can see why a candidate was not captured."""
+    result = SweepResult()
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        recent_domains = select(PageCapture.domain).where(revisit_budget_clause(now, revisit_days(db)))
+        ids = list(
+            db.execute(
+                select(ScopeCandidate.id)
+                .where(
+                    ScopeCandidate.kind == "domain",
+                    ScopeCandidate.status == "open",
+                    ScopeCandidate.value.not_in(recent_domains),
+                )
+                .order_by(ScopeCandidate.id)
+            ).scalars()
+        )
+        db.rollback()
+        result.candidates = len(ids)
+        lookup_failures = 0
+        last = len(ids) - 1
+        for pos, cid in enumerate(ids):
+            pause = SWEEP_PAUSE_S
+            refused_rule: str | None = None
+            try:
+                request_capture(db, candidate_id=cid, user=None, manual=False)
+                result.queued += 1
+                lookup_failures = 0
+            except CaptureRefused as exc:
+                refused_rule = exc.rule  # handled below, outside the handler: a failure there must not escape
+            except Exception:
+                db.rollback()
+                log.exception("page_capture: automatic capture of candidate %s failed", cid)
+                result.errors += 1
+                lookup_failures = 0
+            if refused_rule is not None:
+                if refused_rule in _BUDGET_RULES:
+                    result.budget += 1
+                    lookup_failures = 0
+                else:
+                    if refused_rule == _LOOKUP_RULE:
+                        lookup_failures += 1
+                        pause = SWEEP_LOOKUP_BACKOFF_S
+                    else:
+                        lookup_failures = 0
+                    try:
+                        if _record_skip(db, cid, refused_rule):
+                            result.skipped += 1
+                    except Exception:
+                        db.rollback()
+                        log.exception("page_capture: recording the skip for candidate %s failed", cid)
+                        result.errors += 1
+                    if lookup_failures >= SWEEP_MAX_CONSECUTIVE_LOOKUP_FAILURES:
+                        # Whatever happens recording these, the sweep stops: the rest are never tried.
+                        try:
+                            result.stopped = _record_stopped(db, ids[pos + 1:])
+                        except Exception:
+                            db.rollback()
+                            log.exception("page_capture: recording the stopped candidates failed")
+                            result.errors += 1
+                        log.warning(
+                            "page_capture: sweep stopped after %d consecutive lookup failures; %d not attempted",
+                            lookup_failures, result.stopped,
+                        )
+                        break
+            if pos < last:
+                _sleep(pause)
+        log.info(
+            "page_capture: automatic sweep done: candidates=%d queued=%d budget=%d skipped=%d stopped=%d errors=%d",
+            result.candidates, result.queued, result.budget, result.skipped, result.stopped, result.errors,
+        )
+        return result
+    finally:
+        db.close()
 
 
 # ── ingest ───────────────────────────────────────────────────────────────────

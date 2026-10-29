@@ -76,6 +76,7 @@ def start() -> None:
     _register_chat_transcript_purger()
     _register_report_purger()
     _register_page_capture()
+    _register_capture_sweep()
 
 
 def _seed_default_connectors() -> None:
@@ -413,6 +414,34 @@ def _run_nightly_rescore() -> None:
         log.error("Nightly risk re-scoring failed", exc_info=True)
     finally:
         db.close()
+
+
+def _register_capture_sweep() -> None:
+    """Register the weekly automatic page capture (planning#277 S6a). Weekly,
+    not daily: one run a week per Jason (planning#277 S6), which also keeps the
+    snapshot-service lookups and the capture browser's queue light. A fixed
+    hour (Sunday 04:00 UTC, after the 03:00 nightly re-score) so an operator can
+    reason about "did it run" and so the sweep never competes with that job."""
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        _run_capture_sweep,
+        trigger=CronTrigger(day_of_week="sun", hour=4, minute=0, timezone="UTC"),
+        id="capture_sweep",
+        name="Weekly automatic page capture",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    log.info("Scheduled capture_sweep (weekly, Sunday 04:00 UTC)")
+
+
+def _run_capture_sweep() -> None:
+    try:
+        stats = page_capture.run_automatic_sweep()
+        log.info("Weekly automatic page capture complete — %s", stats)
+    except Exception:
+        log.error("Weekly automatic page capture failed", exc_info=True)
 
 
 def _register_alert_digests() -> None:

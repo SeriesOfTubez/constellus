@@ -402,6 +402,12 @@
   "report_admin",
   "viewer"
  ],
+ "GET /api/organizations/candidates/{candidate_id}/capture-skips": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
  "GET /api/organizations/candidates/{candidate_id}/captures": [
   "admin",
   "integration_admin",

@@ -36,7 +36,7 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.engagement import Engagement, EngagementPosture
 from app.models.finding_canonical import FindingCanonical
 from app.models.org_entity import OrgEntity
-from app.models.page_capture import PageCapture, PageCaptureRequest
+from app.models.page_capture import PageCapture, PageCaptureRequest, PageCaptureSkip
 from app.models.scope_candidate import (
     ScopeCandidate,
     ScopeCandidateEvent,
@@ -327,6 +327,16 @@ class RejectRequest(BaseModel):
     reason: str
 
 
+class CaptureSkipResponse(BaseModel):
+    """A time the automatic sweep did not capture this candidate: the plain-language
+    `message` for the rule, never the raw rule string."""
+
+    id: uuid.UUID
+    reason: str
+    message: str
+    skipped_at: datetime
+
+
 class CaptureResponse(BaseModel):
     """One page capture. Never carries a filesystem path: image serving is a
     later slice, and `has_image` is all a client needs until then."""
@@ -368,7 +378,7 @@ class CaptureResponse(BaseModel):
 # ── errors ──────────────────────────────────────────────────────────────────
 
 _CAPTURE_REFUSAL_MESSAGES = {
-    "archive:lookup_unavailable": "The snapshot service could not be reached, so nothing was captured. Try again shortly.",
+    "archive:lookup_unavailable": "The snapshot service could not be reached, so nothing was captured. It will be tried again automatically at the next scheduled capture.",
     "candidate:not_domain": "Only a domain candidate can be visited.",
     "candidate:not_open": "Only an open candidate can be visited.",
     "capture:already_queued": "A capture of this candidate is already queued.",
@@ -385,6 +395,10 @@ _CAPTURE_REFUSAL_MESSAGES = {
     "posture:passive_only": "A live visit is not allowed under this organization's current posture.",
     "capture:not_configured": "Page capture is not configured: the capture proxy key is missing.",
     "spool_unavailable": "The capture browser could not be reached; try again shortly.",
+    "capture:sweep_stopped": (
+        "Not attempted: the snapshot service kept failing during this run. "
+        "It will be tried again automatically at the next scheduled capture."
+    ),
 }
 _CAPTURE_REFUSAL_GENERIC = "A live visit to this candidate is not allowed."
 
@@ -1354,6 +1368,28 @@ def list_candidate_captures(
         ).all()
     ) if rows else {}
     return [_capture_response(r, counts.get(r.id, 0)) for r in rows]
+
+
+@router.get("/candidates/{candidate_id}/capture-skips", response_model=list[CaptureSkipResponse])
+def list_candidate_capture_skips(
+    candidate_id: uuid.UUID,
+    limit: int = Query(5, ge=1, le=50),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.ENTITIES_READ)),
+):
+    """Why the automatic sweep did not capture this candidate, newest first."""
+    _require_visible_candidate(db, current_user, candidate_id)
+    rows = db.execute(
+        select(PageCaptureSkip).where(PageCaptureSkip.candidate_id == candidate_id)
+        .order_by(PageCaptureSkip.skipped_at.desc(), PageCaptureSkip.id.desc()).limit(limit)
+    ).scalars().all()
+    return [
+        CaptureSkipResponse(
+            id=r.id, reason=r.reason,
+            message=_CAPTURE_REFUSAL_MESSAGES.get(r.reason, _CAPTURE_REFUSAL_GENERIC), skipped_at=r.skipped_at,
+        )
+        for r in rows
+    ]
 
 
 @router.get("/candidates/{candidate_id}/captures/{capture_id}/image")
