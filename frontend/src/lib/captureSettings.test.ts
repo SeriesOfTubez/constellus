@@ -8,7 +8,7 @@ const ok: CaptureSettings = {
   browse_revisit_days: 30, user_agent_mode: "stock", identifying_user_agent: "",
   max_image_bytes: 2097152, queue_timeout_seconds: 600,
   image_keep_count: 3, proxy_connect_timeout_seconds: 10,
-  proxy_idle_timeout_seconds: 30, proxy_max_connections: 256,
+  proxy_idle_timeout_seconds: 30, proxy_max_connections: 256, archive_freshness_days: 7,
 }
 const v = (o: Partial<CaptureSettings>) => validateCaptureSettings({ ...ok, ...o })
 
@@ -58,6 +58,14 @@ describe("validateCaptureSettings", () => {
     expect(v({ image_keep_count: 51 })).not.toBeNull()
     expect(v({ image_keep_count: 2.5 })).not.toBeNull()
     expect(v({ image_keep_count: NaN })).not.toBeNull()
+  })
+  it("checks archive_freshness_days bounds", () => {
+    expect(v({ archive_freshness_days: 1 })).toBeNull()
+    expect(v({ archive_freshness_days: 90 })).toBeNull()
+    expect(v({ archive_freshness_days: 0 })).toMatch(/Archive snapshot freshness/)
+    expect(v({ archive_freshness_days: 91 })).not.toBeNull()
+    expect(v({ archive_freshness_days: 1.5 })).not.toBeNull()
+    expect(v({ archive_freshness_days: NaN })).not.toBeNull()
   })
   it("checks proxy limit bounds", () => {
     expect(v({ proxy_connect_timeout_seconds: 1 })).toBeNull()

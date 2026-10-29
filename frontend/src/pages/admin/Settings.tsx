@@ -19,7 +19,7 @@ import { BASE_URL_MAX, digestHourWarning, validBaseUrl, validDigestHour } from "
 import { Switch } from "@/components/ui/switch"
 import {
   IMAGE_KIB_MAX, IMAGE_KIB_MIN, QUEUE_TIMEOUT_MAX, QUEUE_TIMEOUT_MIN, REVISIT_DAYS_MAX,
-  REVISIT_DAYS_MIN, UA_MAX_LEN, IMAGE_KEEP_MAX, IMAGE_KEEP_MIN, PROXY_CONNECT_TIMEOUT_MAX,
+  REVISIT_DAYS_MIN, ARCHIVE_FRESHNESS_MAX, ARCHIVE_FRESHNESS_MIN, UA_MAX_LEN, IMAGE_KEEP_MAX, IMAGE_KEEP_MIN, PROXY_CONNECT_TIMEOUT_MAX,
   PROXY_CONNECT_TIMEOUT_MIN, PROXY_IDLE_TIMEOUT_MAX, PROXY_IDLE_TIMEOUT_MIN, PROXY_MAX_CONN_MAX,
   PROXY_MAX_CONN_MIN, bytesToKiB, kibToBytes, validateCaptureSettings,
 } from "@/lib/captureSettings"
@@ -856,6 +856,7 @@ export function CaptureSettingsCard() {
   const [connT, setConnT] = useState("")
   const [idleT, setIdleT] = useState("")
   const [maxConn, setMaxConn] = useState("")
+  const [archiveDays, setArchiveDays] = useState("")
   useEffect(() => {
     if (!data) return
     setDays(String(data.browse_revisit_days))
@@ -867,6 +868,7 @@ export function CaptureSettingsCard() {
     setConnT(String(data.proxy_connect_timeout_seconds))
     setIdleT(String(data.proxy_idle_timeout_seconds))
     setMaxConn(String(data.proxy_max_connections))
+    setArchiveDays(String(data.archive_freshness_days))
   }, [data])
 
   const num = (s: string) => (s.trim() === "" ? NaN : Number(s))
@@ -880,6 +882,7 @@ export function CaptureSettingsCard() {
     proxy_connect_timeout_seconds: num(connT),
     proxy_idle_timeout_seconds: num(idleT),
     proxy_max_connections: num(maxConn),
+    archive_freshness_days: num(archiveDays),
   }
   const error = data ? validateCaptureSettings(draft) : null
   const dirty = data !== undefined && (
@@ -891,7 +894,8 @@ export function CaptureSettingsCard() {
     draft.image_keep_count !== data.image_keep_count ||
     draft.proxy_connect_timeout_seconds !== data.proxy_connect_timeout_seconds ||
     draft.proxy_idle_timeout_seconds !== data.proxy_idle_timeout_seconds ||
-    draft.proxy_max_connections !== data.proxy_max_connections
+    draft.proxy_max_connections !== data.proxy_max_connections ||
+    draft.archive_freshness_days !== data.archive_freshness_days
   )
   const save = useMutation({
     mutationFn: () => api.put<CaptureSettings>("/settings/capture", draft),
@@ -917,6 +921,12 @@ export function CaptureSettingsCard() {
               <Input id="capture-revisit-days" type="number" min={REVISIT_DAYS_MIN} max={REVISIT_DAYS_MAX} step={1}
                 className="h-8 w-24 text-xs" value={days} onChange={(e) => setDays(e.target.value)} />
               <p className="text-xs text-muted-foreground">An automatic capture skips a domain captured within this many days. A manual Re-capture is not limited.</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="capture-archive-days" className="text-xs text-muted-foreground">Archive snapshot freshness (days)</Label>
+              <Input id="capture-archive-days" type="number" min={ARCHIVE_FRESHNESS_MIN} max={ARCHIVE_FRESHNESS_MAX} step={1}
+                className="h-8 w-24 text-xs" value={archiveDays} onChange={(e) => setArchiveDays(e.target.value)} />
+              <p className="text-xs text-muted-foreground">How old a web-archive snapshot may be and still be used instead of visiting the site (1–90).</p>
             </div>
             <div className="space-y-1">
               <Label htmlFor="capture-ua-mode" className="text-xs text-muted-foreground">User-Agent</Label>

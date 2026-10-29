@@ -415,6 +415,8 @@ def _fail(row: PageCapture, reason: str, now: datetime) -> None:
     row.status = "failed"
     row.failure_reason = reason
     row.finished_at = now
+    # %r on the error: it comes from the capture browser (untrusted), so no raw newlines in the log.
+    log.warning("page_capture: capture %s failed: %s; error=%r", row.id, reason, row.error)
 
 
 # ── request ──────────────────────────────────────────────────────────────────
@@ -489,7 +491,8 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual:
     archive_fields: dict = {}
     if auth.passive_only:
         try:
-            since = now - timedelta(days=archive_freshness_days(db))
+            window_days = archive_freshness_days(db)
+            since = now - timedelta(days=window_days)
             snap = wayback.latest_snapshot(domain, now, since)
         except wayback.WaybackUnavailable:
             raise CaptureRefused("archive:lookup_unavailable")
@@ -498,7 +501,11 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User, manual:
             # with the snapshot time the page actually shown carries.
             capture_mode = "archive"
             requested_url = wayback.snapshot_url(snap, domain)
-            archive_fields = {"archive_snapshot_at": snap.captured_at, "archive_host": wayback.ARCHIVE_HOST}
+            archive_fields = {
+                "archive_snapshot_at": snap.captured_at,
+                "archive_host": wayback.ARCHIVE_HOST,
+                "archive_freshness_days": window_days,
+            }
 
     row = PageCapture(
         candidate_id=candidate.id,
@@ -693,7 +700,8 @@ def _ingest_one(db: Session, row: PageCapture, path: str, proxylog: str, now: da
             _fail(row, "archive_snapshot_unverified", now)
             return
         row.archive_snapshot_at = rendered
-        window_start = row.requested_at - timedelta(days=archive_freshness_days(db))
+        # The window recorded at request time, not today's setting (migration 0095).
+        window_start = row.requested_at - timedelta(days=row.archive_freshness_days)
         if rendered < window_start or rendered - row.requested_at > timedelta(days=1):
             _fail(row, "archive_snapshot_stale", now)
         else:

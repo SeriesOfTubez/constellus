@@ -101,7 +101,7 @@ def test_503_when_the_archive_lookup_fails_for_a_pre_close_target(w, env, monkey
     assert r.status_code == 503, r.text
     d = r.json()["detail"]
     assert d["rule"] == "archive:lookup_unavailable"
-    assert d["message"] == "The web archive could not be checked for a recent snapshot; try again shortly."
+    assert d["message"] == "The snapshot service could not be reached, so nothing was captured. Try again shortly."
     assert len(seen) == 1
     assert list((env["spool"] / "jobs").iterdir()) == [] and _counts(c.id)[0] == 0
 
@@ -482,6 +482,28 @@ def test_capture_response_carries_image_pruned_at(w, env):
         f"/api/organizations/candidates/{c.id}/captures", headers=w.headers()).json()}
     assert rows[str(row.id)]["image_pruned_at"] is not None and rows[str(row.id)]["has_image"] is False
     assert rows[str(live.id)]["image_pruned_at"] is None and rows[str(live.id)]["has_image"] is True
+
+
+def test_capture_response_carries_source_and_archive_fields(w, env):
+    c = _candidate(w)
+    live = _image_row(w, env, c)
+    obs = w.db.query(Observer).filter(Observer.name == "page_capture").one()
+    snap = datetime(2026, 10, 20, 12, 34, 56, tzinfo=timezone.utc)
+    arch = PageCapture(
+        candidate_id=c.id, domain=c.value, observer_id=obs.id,
+        requested_url=f"https://web.archive.org/web/20261020123456/https://{c.value}/",
+        user_agent_mode="stock", image_max_bytes=2097152, source="archive", archive_snapshot_at=snap,
+        archive_host="web.archive.org", archive_freshness_days=14,
+    )
+    w.db.add(arch)
+    w.db.commit()
+    rows = {x["id"]: x for x in client.get(
+        f"/api/organizations/candidates/{c.id}/captures", headers=w.headers()).json()}
+    a, lv = rows[str(arch.id)], rows[str(live.id)]
+    assert (a["source"], a["archive_host"], a["archive_freshness_days"]) == ("archive", "web.archive.org", 14)
+    assert datetime.fromisoformat(a["archive_snapshot_at"]) == snap
+    assert (lv["source"], lv["archive_snapshot_at"], lv["archive_host"], lv["archive_freshness_days"]) == (
+        "live", None, None, None)
 
 
 def test_refusal_messages_for_gate_rules_are_specific_not_generic():
