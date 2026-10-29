@@ -670,7 +670,10 @@ def run_automatic_sweep() -> SweepResult:
 def ingest_results(db: Session, now: datetime | None = None) -> int:
     """Ingest every `results/<id>/` directory at least RESULT_MIN_AGE_S old.
     Each capture is its own unit of work. Returns how many queued rows were
-    resolved (done or failed)."""
+    resolved (done or failed). A resolved or discarded result also retires its
+    job: on the filesystem the worker already removed its claim, but on S3 there
+    is no claim, so the backend's delete is what stops the job being pulled
+    again (planning#318 S1b)."""
     now = now or datetime.now(timezone.utc)
     store = get_store()
     names = store.list_results()
@@ -693,6 +696,7 @@ def ingest_results(db: Session, now: datetime | None = None) -> int:
                 log.warning("page_capture: discarding result for %s (not a queued capture)", name)
                 store.remove_result(name)
                 store.delete_proxylog(name)
+                store.delete_job(name)
                 continue
             if not is_bundle:
                 raise _Invalid("invalid_result")
@@ -705,6 +709,7 @@ def ingest_results(db: Session, now: datetime | None = None) -> int:
                 resolved += 1
                 store.remove_result(name)
                 store.delete_proxylog(name)
+                store.delete_job(name)
             continue
         except Exception:
             db.rollback()
@@ -716,6 +721,7 @@ def ingest_results(db: Session, now: datetime | None = None) -> int:
         resolved += 1
         store.remove_result(name)
         store.delete_proxylog(name)
+        store.delete_job(name)
     return resolved
 
 

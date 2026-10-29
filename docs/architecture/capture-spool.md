@@ -192,7 +192,9 @@ rendered an arbitrary page.
   8. **Never decode the image.**
 - Copy the screenshot to `/captures/<id>.webp`.
 - Read `/proxylog/<id>.jsonl`.
-- Then delete `results/<id>/` and the proxy log.
+- Then delete `results/<id>/`, the proxy log and the job (`jobs/<id>.json`). On the
+  filesystem the worker already removed its claim; on S3 there is no claim, so this
+  delete is what retires the job.
 
 On S3 a result is visible only once `results/<id>/result.json` exists (the
 commit marker); its LastModified is the result's time. A `result.json` whose

@@ -168,6 +168,31 @@ def _ingest(w, now=None) -> int:
 # ── ingest: happy path ───────────────────────────────────────────────────────
 
 
+def test_ingest_retires_the_job_on_every_resolution(w, env):
+    """Done, invalid and discarded results all delete `jobs/<id>.json` (and a claim if one
+    is left): on S3 there is no claim file for the worker to remove, so the backend's
+    delete is what stops a job being pulled again. An unrelated queued job stays.
+    planning#318 S1b."""
+    done, bad = _queued(w), _queued(w)
+    orphan = uuid.uuid4()  # a result for a row that does not exist: the discard path
+    _drop_result(env, done)
+    _drop_result(env, bad, raw=b"not json")
+    _drop_result(env, done, name=str(orphan))
+    jobs, claimed = env["spool"] / "jobs", env["spool"] / "claimed"
+    for i in (done.id, bad.id, orphan):
+        (jobs / f"{i}.json").write_text("x")
+        (claimed / f"{i}.json").write_text("x")
+    other = uuid.uuid4()
+    (jobs / f"{other}.json").write_text("x")
+
+    assert _ingest(w) == 2  # the orphan is discarded, not resolved
+    assert (_fresh(done.id).status, _fresh(bad.id).status) == ("done", "failed")
+    for i in (done.id, bad.id, orphan):
+        assert not (jobs / f"{i}.json").exists() and not (claimed / f"{i}.json").exists()
+        assert not (env["spool"] / "results" / str(i)).exists()
+    assert (jobs / f"{other}.json").exists()
+
+
 def test_happy_path_ingests_fields_requests_image_and_cleans_up(w, env):
     row = _queued(w)
     d = _drop_result(env, row)
