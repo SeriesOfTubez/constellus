@@ -269,3 +269,15 @@ travel through a volume: `capture_config`, mounted read-write on the backend at
 - **Guards are not settings.** `ALLOWED_PORTS`, the address blocklist, proxy
   authentication and resolve-once pinning are constants and are never read from
   this file or from any setting.
+
+## Store interface (planning#318)
+
+The backend reaches the spool, the proxy log and the stored images only through
+`backend/app/services/capture_store.py`. Callers pass capture ids and names,
+never paths; file names are built inside the store. `FilesystemStore` is the
+Compose backend and keeps the filesystem-only defences (lstat, no symlinks,
+`O_NOFOLLOW`/`O_NONBLOCK`, fstat re-check, regular files only). Content checks
+(JSON parse, WebP magic, sha256, field validation) stay in `page_capture.py`, so
+every backend shares them. An S3 backend follows (S1b). The proxy limits file
+is not part of the store. A guard test keeps `page_capture.py` free of direct
+file access.
