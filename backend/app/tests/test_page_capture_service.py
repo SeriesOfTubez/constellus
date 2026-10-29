@@ -435,6 +435,22 @@ def test_timeout_sweep_fails_old_queued_rows_and_removes_job_and_claim(w, env):
     assert _fresh(fresh.id).status == "queued" and (env["spool"] / "jobs" / f"{fresh.id}.json").exists()
 
 
+def test_timeout_sweep_also_removes_the_result_and_proxylog_of_the_swept_row_only(w, env):
+    old, other = _queued(w), _queued(w)
+    old.requested_at = datetime.now(timezone.utc) - timedelta(seconds=pc.DEFAULT_QUEUE_TIMEOUT_S + 60)
+    w.db.commit()
+    (env["spool"] / "jobs" / f"{old.id}.json").write_text("{}")
+    old_dir = _drop_result(env, old)
+    other_dir = _drop_result(env, other)
+    old_log = _plog(env, old, [])
+    other_log = _plog(env, other, [])
+    assert old_dir.exists() and old_log.exists()  # the plant reached the sweep
+    assert pc.sweep_timeouts(w.db) == 1
+    assert not old_dir.exists() and not old_log.exists()
+    assert not (env["spool"] / "jobs" / f"{old.id}.json").exists()
+    assert (other_dir / "result.json").exists() and other_log.exists()
+
+
 def test_timeout_sweep_leaves_a_recent_row_alone(w, env):
     row = _queued(w)
     (env["spool"] / "jobs" / f"{row.id}.json").write_text("{}")
@@ -587,6 +603,45 @@ def test_an_unwritable_spool_marks_the_row_failed(w, env, monkeypatch):
         db.close()
 
 
+def test_request_capture_fails_closed_on_unknown_store(w, env, monkeypatch):
+    c = _candidate(w)
+    monkeypatch.setenv("CAPTURE_STORE", "bogus")
+    with pytest.raises(pc.CaptureRefused) as e:
+        pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
+    assert e.value.rule == "spool_unavailable"
+    db = SessionLocal()
+    try:
+        (r,) = db.query(PageCapture).filter(PageCapture.candidate_id == c.id).all()
+        assert (r.status, r.failure_reason) == ("failed", "spool_unavailable") and r.finished_at is not None
+    finally:
+        db.close()
+    assert not list(_no_job_files(env))
+
+
+def test_job_carries_store_fields_when_the_store_provides_them(w, env, monkeypatch):
+    c = _candidate(w)
+    calls, written = [], {}
+    fields = {"store": {"result_put": "u1", "screenshot_put": "u2", "expires": 5}}
+
+    class Fake:
+        def check_spool(self):
+            pass
+
+        def job_fields(self, capture_id, expires_at):
+            calls.append((capture_id, expires_at))
+            return fields
+
+        def put_job(self, capture_id, payload):
+            written[capture_id] = payload
+
+    monkeypatch.setattr(pc, "get_store", lambda: Fake())
+    row = pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
+    assert list(written) == [str(row.id)]  # the put was reached
+    job = json.loads(written[str(row.id)])
+    assert job["store"] == fields["store"] and job["v"] == 3
+    assert calls == [(str(row.id), job["proxy_expires"])]
+
+
 def test_hostname_validator_accepts_ordinary_names():
     for ok in ("fabrikam.com", "a-b.c-d.fabrikam.com", "xn--bcher-kva.example.com", "a.b"):
         assert pc._valid_hostname(ok)
@@ -707,7 +762,7 @@ def test_tick_with_a_missing_spool_logs_and_does_not_raise(w, env, caplog):
     (env["spool"] / "jobs").rmdir()
     with caplog.at_level("ERROR"):
         pc.tick()
-    assert "spool directories are missing" in caplog.text
+    assert "the spool is missing; skipping ingest" in caplog.text
 
 
 def test_tick_ingests_a_result(w, env):
