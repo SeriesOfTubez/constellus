@@ -38,6 +38,7 @@ from app.models.page_capture import USER_AGENT_MODES, PageCapture, PageCaptureRe
 from app.models.scope_candidate import ScopeCandidate
 from app.models.user import User
 from app.services import app_settings, wayback
+from app.services.org_discovery.candidates import refreshable_root_clause
 from app.services.probe_authorisation import authorise_candidate_browse
 
 log = logging.getLogger(__name__)
@@ -574,32 +575,39 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User | None, 
     return row
 
 
-# ── automatic weekly sweep (planning#277 S6a) ────────────────────────────────
+# ── automatic rolling capture (planning#277 S6a, hourly since S6b) ───────────
 
 # Pacing, all in seconds / counts, module constants so tests can read them.
 # Serial on purpose: one candidate at a time, so the browser queue and the
-# Wayback lookup are never hit in bursts.
+# Wayback lookup are never hit in bursts. planning#320 makes these settings.
 SWEEP_PAUSE_S = 2  # between candidates
 SWEEP_LOOKUP_BACKOFF_S = 60  # instead of the pause after an archive:lookup_unavailable refusal
+SWEEP_TIME_LIMIT_S = 600  # per run; what is left stays due for the next hourly run
 # After this many lookup failures in a row the snapshot service is treated as
-# down for this run: the rest are recorded as `capture:sweep_stopped`, never
-# tried, and never sent live.
+# down for this run: the run stops, and the candidates not yet tried simply
+# stay due (no rows are written for them).
 SWEEP_MAX_CONSECUTIVE_LOOKUP_FAILURES = 3
+# A recorded refusal keeps the candidate out of the next runs for this long, so
+# a candidate gets at most one skip row per day (lookup) or per week (other).
+SKIP_RETRY_AFTER_LOOKUP = timedelta(days=1)
+SKIP_RETRY_AFTER_OTHER = timedelta(days=7)
 _LOOKUP_RULE = "archive:lookup_unavailable"
-_STOPPED_RULE = "capture:sweep_stopped"
 _BUDGET_RULES = frozenset({"capture:revisit_budget", "capture:already_queued"})
 
 _sleep = time.sleep  # tests patch this to a no-op and assert the pause values
+_monotonic = time.monotonic  # tests patch this to pass the time limit
 
 
 @dataclass
 class SweepResult:
-    candidates: int = 0  # open domain candidates considered after the pre-filter
+    candidates: int = 0  # due open domain candidates selected
     queued: int = 0
     budget: int = 0  # refused by the revisit budget / already queued
     skipped: int = 0  # refused for another reason; a page_capture_skips row each
-    stopped: int = 0  # not attempted: the lookup kept failing
     errors: int = 0  # unexpected exceptions
+    not_configured: bool = False  # no capture proxy key: nothing was done
+    stopped_on_lookup: bool = False  # the lookup kept failing; the rest stay due
+    out_of_time: bool = False  # the time limit was reached; the rest stay due
 
 
 def _record_skip(db: Session, candidate_id: uuid.UUID, rule: str) -> bool:
@@ -614,50 +622,77 @@ def _record_skip(db: Session, candidate_id: uuid.UUID, rule: str) -> bool:
     return True
 
 
-def _record_stopped(db: Session, rest: list[uuid.UUID]) -> int:
-    """One bulk insert + commit of `capture:sweep_stopped` skips for candidates never tried."""
-    db.rollback()
-    rows = [
-        PageCaptureSkip(candidate_id=c.id, domain=c.value, reason=_STOPPED_RULE)
-        for c in db.execute(
-            select(ScopeCandidate).where(ScopeCandidate.id.in_(rest)).order_by(ScopeCandidate.id)
+def _select_due(db: Session, now: datetime) -> list[uuid.UUID]:
+    """Due candidates, never-captured domains first, then oldest last capture."""
+    recent_domains = select(PageCapture.domain).where(revisit_budget_clause(now, revisit_days(db)))
+    recently_refused = (
+        select(PageCaptureSkip.id)
+        .where(
+            PageCaptureSkip.candidate_id == ScopeCandidate.id,
+            or_(
+                and_(PageCaptureSkip.reason == _LOOKUP_RULE, PageCaptureSkip.skipped_at >= now - SKIP_RETRY_AFTER_LOOKUP),
+                and_(PageCaptureSkip.reason != _LOOKUP_RULE, PageCaptureSkip.skipped_at >= now - SKIP_RETRY_AFTER_OTHER),
+            ),
+        )
+        .exists()
+    )
+    last_capture = (
+        select(func.max(PageCapture.finished_at))
+        .where(PageCapture.domain == ScopeCandidate.value)
+        .correlate(ScopeCandidate)
+        .scalar_subquery()
+    )
+    return list(
+        db.execute(
+            select(ScopeCandidate.id)
+            .join(OrgEntity, OrgEntity.id == ScopeCandidate.root_entity_id)
+            .where(
+                ScopeCandidate.kind == "domain",
+                ScopeCandidate.status == "open",
+                refreshable_root_clause(),
+                ScopeCandidate.value.not_in(recent_domains),
+                ~recently_refused,
+            )
+            .order_by(last_capture.asc().nulls_first(), ScopeCandidate.id)
         ).scalars()
-    ]
-    db.add_all(rows)
-    db.commit()
-    return len(rows)
+    )
 
 
 def run_automatic_sweep() -> SweepResult:
-    """One automatic capture pass over every open domain candidate (called by the
-    weekly scheduler job, never inside a request). Opens its own session.
+    """One automatic capture pass (called by the hourly scheduler job, never
+    inside a request). Opens its own session.
+
+    Takes the due open domain candidates oldest first (never-captured first) and
+    stops at SWEEP_TIME_LIMIT_S; whatever is left stays due for the next hourly
+    run. Each candidate is captured at most once per revisit window, and a
+    recorded refusal keeps it out for a day (snapshot lookup unavailable) or a
+    week (any other refusal), so it gets at most one skip row per that period.
+    Only candidates under our roots and live deals are taken (an abandoned deal
+    stops). When capture is not set up (no proxy key) the run does nothing and
+    writes no rows. After SWEEP_MAX_CONSECUTIVE_LOOKUP_FAILURES lookup failures
+    in a row the run stops; the untried candidates write no "not attempted" rows.
 
     Each candidate goes through `request_capture(user=None, manual=False)`, so
     the gate, the posture, the revisit budget and archive-first all apply
     unchanged; the sweep never goes live itself and never treats a failed
     Wayback lookup as permission to. A refusal other than the budget is recorded
     as a `page_capture_skips` row so a person can see why a candidate was not captured."""
+    if _proxy_key() is None:
+        log.info("page_capture: automatic capture is not set up (no capture proxy key); nothing to do")
+        return SweepResult(not_configured=True)
     result = SweepResult()
+    start = _monotonic()
     db = SessionLocal()
     try:
-        now = datetime.now(timezone.utc)
-        recent_domains = select(PageCapture.domain).where(revisit_budget_clause(now, revisit_days(db)))
-        ids = list(
-            db.execute(
-                select(ScopeCandidate.id)
-                .where(
-                    ScopeCandidate.kind == "domain",
-                    ScopeCandidate.status == "open",
-                    ScopeCandidate.value.not_in(recent_domains),
-                )
-                .order_by(ScopeCandidate.id)
-            ).scalars()
-        )
+        ids = _select_due(db, datetime.now(timezone.utc))
         db.rollback()
         result.candidates = len(ids)
         lookup_failures = 0
         last = len(ids) - 1
         for pos, cid in enumerate(ids):
+            if _monotonic() - start >= SWEEP_TIME_LIMIT_S:
+                result.out_of_time = True
+                break
             pause = SWEEP_PAUSE_S
             refused_rule: str | None = None
             try:
@@ -689,23 +724,20 @@ def run_automatic_sweep() -> SweepResult:
                         log.exception("page_capture: recording the skip for candidate %s failed", cid)
                         result.errors += 1
                     if lookup_failures >= SWEEP_MAX_CONSECUTIVE_LOOKUP_FAILURES:
-                        # Whatever happens recording these, the sweep stops: the rest are never tried.
-                        try:
-                            result.stopped = _record_stopped(db, ids[pos + 1:])
-                        except Exception:
-                            db.rollback()
-                            log.exception("page_capture: recording the stopped candidates failed")
-                            result.errors += 1
+                        result.stopped_on_lookup = True
                         log.warning(
-                            "page_capture: sweep stopped after %d consecutive lookup failures; %d not attempted",
-                            lookup_failures, result.stopped,
+                            "page_capture: automatic capture stopped after %d consecutive lookup failures; "
+                            "%d candidates not tried (they stay due)",
+                            lookup_failures, last - pos,
                         )
                         break
             if pos < last:
                 _sleep(pause)
         log.info(
-            "page_capture: automatic sweep done: candidates=%d queued=%d budget=%d skipped=%d stopped=%d errors=%d",
-            result.candidates, result.queued, result.budget, result.skipped, result.stopped, result.errors,
+            "page_capture: automatic capture done: candidates=%d queued=%d budget=%d skipped=%d errors=%d "
+            "stopped_on_lookup=%s out_of_time=%s",
+            result.candidates, result.queued, result.budget, result.skipped, result.errors,
+            result.stopped_on_lookup, result.out_of_time,
         )
         return result
     finally:

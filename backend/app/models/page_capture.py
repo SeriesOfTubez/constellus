@@ -107,8 +107,7 @@ class PageCaptureRequest(Base):
 
 class PageCaptureSkip(Base):
     """A candidate the automatic sweep did not capture, and the rule that said why
-    (a refusal such as `archive:lookup_unavailable`, or `capture:sweep_stopped`
-    when the lookup kept failing). Migration 0096. Evidence for a person, never an
+    (a refusal such as `archive:lookup_unavailable`). Migration 0096. Evidence for a person, never an
     authorisation."""
 
     __tablename__ = "page_capture_skips"

@@ -358,7 +358,7 @@ def test_verify_after_claim_sweeps_the_root_after_the_rir_step_and_swallows_fail
     order.clear()
     still_open = w.candidate(w.ours(), value=_dom("o"))  # its own root: no open pair for the claimed root to verify
     runner.verify_after_claim(still_open.id)  # not a claimed anchor: no root captured, no sweep
-    assert order == ["reverse", "rir"]
+    assert order == []  # S6b: `refresh_claimed_domain` skips a candidate that is not a claimed domain
 
     reached: list = []
 
@@ -383,7 +383,7 @@ def test_a_failure_inside_the_generator_is_rolled_back_and_returns_the_empty_res
 
     result = runner.dedicated_ip_for_root(root.id)
 
-    assert calls and result == generators.RirDedicatedIpResult()
+    assert calls and result == generators.RirDedicatedIpResult(error=True)  # S6b: the failure is reported
 
 
 def test_dedicated_ip_for_root_commits_what_the_generator_flushed(w, no_fetch):

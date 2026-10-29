@@ -255,6 +255,21 @@ def is_active_record(last_seen: str | None, now: datetime) -> bool:
     return _is_active(last_seen, now)
 
 
+REVERSE_IP_OUTCOMES = ("cached", "fetched", "no_asset", "rate_limited", "failed")
+
+
+@dataclass(frozen=True)
+class ReverseIpLookup:
+    """What `reverse_ip_lookup` found and why. `outcome` is one of
+    REVERSE_IP_OUTCOMES: "cached" (a fresh claim answered), "fetched" (one
+    request made and the claim written), "no_asset" (no ip_address asset),
+    "rate_limited" (the mnemonic limiter refused; no request made), "failed"
+    (HTTP error, exception, or an unusable payload)."""
+
+    domains: list[str]
+    outcome: str
+
+
 def reverse_ip_domains(db: Session, ip: str) -> list[str]:
     """Domains observed resolving to `ip` (mnemonic passive DNS, planning#180).
 
@@ -278,9 +293,16 @@ def reverse_ip_domains(db: Session, ip: str) -> list[str]:
 
     `sharing` is the point of the migration: see _sharing_verdict.
     """
+    return reverse_ip_lookup(db, ip).domains
+
+
+def reverse_ip_lookup(db: Session, ip: str) -> ReverseIpLookup:
+    """`reverse_ip_domains`' body, with the reason an empty answer is empty.
+    Same caching, TTL, limiter and claim writing; never raises on a lookup
+    failure."""
     asset = _get_ip_asset(db, ip)
     if asset is None:
-        return []
+        return ReverseIpLookup([], "no_asset")
 
     claim = get_current_claim(db, asset.id, _OBSERVER_NAME, _REVERSE_IP_CLAIM_TYPE)
     if claim is not None:
@@ -288,11 +310,11 @@ def reverse_ip_domains(db: Session, ip: str) -> list[str]:
         if age < _REVERSE_IP_TTL:
             cached = claim.claim_value.get("domains")
             if isinstance(cached, list):
-                return list(cached)
+                return ReverseIpLookup(list(cached), "cached")
 
     if not _spend_reverse_ip_budget():
         log.info("hosting_classifier: mnemonic budget exhausted, skipping %s", ip)
-        return []
+        return ReverseIpLookup([], "rate_limited")
 
     # One request, not two. planning#180 proposes `limit=1` + the top-level
     # `count` as a quota trick, and it is the right call for a consumer that
@@ -309,7 +331,7 @@ def reverse_ip_domains(db: Session, ip: str) -> list[str]:
         payload = resp.json()
     except Exception:
         log.debug("hosting_classifier: mnemonic lookup failed for %s", ip, exc_info=True)
-        return []
+        return ReverseIpLookup([], "failed")
 
     if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
         log.warning(
@@ -317,7 +339,7 @@ def reverse_ip_domains(db: Session, ip: str) -> list[str]:
             "— treating as unattempted, not as 'no domains' (planning#177's lesson)",
             ip, sorted(payload) if isinstance(payload, dict) else type(payload).__name__,
         )
-        return []
+        return ReverseIpLookup([], "failed")
 
     now = datetime.now(timezone.utc)
     records = _parse_pdns_records(payload["data"], ip)
@@ -345,7 +367,7 @@ def reverse_ip_domains(db: Session, ip: str) -> list[str]:
     }
     upsert_single_claim(db, asset.id, _OBSERVER_NAME, _REVERSE_IP_CLAIM_TYPE, claim_value, now)
     db.commit()
-    return domains
+    return ReverseIpLookup(domains, "fetched")
 
 
 def _parse_pdns_records(data: list, ip: str) -> list[dict]:

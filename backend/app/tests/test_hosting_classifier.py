@@ -829,6 +829,113 @@ def test_budget_exhaustion_skips_the_lookup_entirely():
         _cleanup(ip)
 
 
+# ── reverse_ip_lookup outcomes (planning#277 S6b) ───────────────────────────
+
+_lookup_ips = iter(range(1, 1000))
+
+
+def _lookup_ip() -> str:
+    # RFC 3849, from a counter: the IPv4 `_docaddr` pool is nearly spent in a full run.
+    return f"2001:db8:277:5::{next(_lookup_ips):x}"
+
+
+def test_lookup_outcome_vocabulary_is_closed():
+    assert hc.REVERSE_IP_OUTCOMES == ("cached", "fetched", "no_asset", "rate_limited", "failed")
+
+
+def test_lookup_no_asset_outcome():
+    ip = _lookup_ip()
+    calls = {"n": 0}
+
+    def _spy(url, params=None, timeout=None):
+        calls["n"] += 1
+        return _pdns_response(ip, ["a.example.com"])
+    hc.connector_get = _spy
+    db = SessionLocal()
+    try:
+        got = hc.reverse_ip_lookup(db, ip)
+        assert (got.domains, got.outcome) == ([], "no_asset")
+        assert calls["n"] == 0
+    finally:
+        db.close()
+
+
+def test_lookup_fetched_then_cached_outcomes():
+    ip = _lookup_ip()
+    calls = {"n": 0}
+
+    def _spy(url, params=None, timeout=None):
+        calls["n"] += 1
+        return _pdns_response(ip, ["a.example.com"])
+    hc.connector_get = _spy
+    db = SessionLocal()
+    try:
+        _make_ip_asset(db, ip)
+        with _fresh_rate_budget():
+            first = hc.reverse_ip_lookup(db, ip)
+        assert calls["n"] == 1  # the transport WAS reached
+        assert (first.domains, first.outcome) == (["a.example.com"], "fetched")
+        second = hc.reverse_ip_lookup(db, ip)
+        assert calls["n"] == 1
+        assert (second.domains, second.outcome) == (["a.example.com"], "cached")
+    finally:
+        db.close()
+        _cleanup(ip)
+
+
+def test_lookup_rate_limited_outcome_consults_the_limiter_and_makes_no_request():
+    ip = _lookup_ip()
+    asked = {"n": 0}
+    calls = {"n": 0}
+
+    def _refuse():
+        asked["n"] += 1
+        return False
+
+    def _spy(url, params=None, timeout=None):
+        calls["n"] += 1
+        return _pdns_response(ip, ["should.not.be.fetched.example.com"])
+    hc._spend_reverse_ip_budget = _refuse
+    hc.connector_get = _spy
+    db = SessionLocal()
+    try:
+        _make_ip_asset(db, ip)
+        got = hc.reverse_ip_lookup(db, ip)
+        assert (got.domains, got.outcome) == ([], "rate_limited")
+        assert asked["n"] == 1, "the limiter must have been consulted"
+        assert calls["n"] == 0, "a refused limiter must mean no HTTP call"
+    finally:
+        db.close()
+        _cleanup(ip)
+
+
+def test_lookup_failed_outcome_on_transport_error_and_on_bad_schema():
+    ip = _lookup_ip()
+    calls = {"n": 0}
+
+    def _boom(url, params=None, timeout=None):
+        calls["n"] += 1
+        raise RuntimeError("down")
+    hc.connector_get = _boom
+    db = SessionLocal()
+    try:
+        _make_ip_asset(db, ip)
+        with _fresh_rate_budget():
+            got = hc.reverse_ip_lookup(db, ip)
+        assert calls["n"] == 1 and (got.domains, got.outcome) == ([], "failed")
+
+        def _bad(url, params=None, timeout=None):
+            calls["n"] += 1
+            return _fake_response({"count": 5})
+        hc.connector_get = _bad
+        with _fresh_rate_budget():
+            got = hc.reverse_ip_lookup(db, ip)
+        assert calls["n"] == 2 and (got.domains, got.outcome) == ([], "failed")
+    finally:
+        db.close()
+        _cleanup(ip)
+
+
 def _run():
     tests = [
         test_hosting_for_match_any_match_is_a_datacenter_whatever_the_service_class,
@@ -853,6 +960,11 @@ def _run():
         test_minute_limit_blocks_further_calls,
         test_daily_limit_blocks_further_calls,
         test_budget_exhaustion_skips_the_lookup_entirely,
+        test_lookup_outcome_vocabulary_is_closed,
+        test_lookup_no_asset_outcome,
+        test_lookup_fetched_then_cached_outcomes,
+        test_lookup_rate_limited_outcome_consults_the_limiter_and_makes_no_request,
+        test_lookup_failed_outcome_on_transport_error_and_on_bad_schema,
     ]
     for fn in tests:
         try:

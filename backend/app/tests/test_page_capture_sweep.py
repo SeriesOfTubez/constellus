@@ -1,4 +1,4 @@
-"""Automatic weekly page-capture sweep (planning#277 S6a): `request_capture(user=None)`,
+"""Automatic rolling page capture (planning#277 S6a, hourly since S6b): `request_capture(user=None)`,
 `run_automatic_sweep`, the `page_capture_skips` table and its API. Synthetic names
 (fabrikam.com) only. The sweep scans EVERY open domain candidate, so each test relies on
 the suite leaving none behind (the `w` fixture removes everything it makes).
@@ -106,7 +106,7 @@ def test_sweep_queues_each_eligible_open_domain_and_ignores_the_rest(w, env, sle
 
     result = pc.run_automatic_sweep()
 
-    assert (result.candidates, result.queued, result.skipped, result.stopped, result.errors) == (2, 2, 0, 0, 0)
+    assert (result.candidates, result.queued, result.skipped, result.errors) == (2, 2, 0, 0)
     for c in (a, b):
         assert [r.requested_by_id for r in _captures(c.id)] == [None] and _skips(c.id) == []
     for cid in (claimed, rejected, asn):  # they exist, and got nothing
@@ -138,7 +138,7 @@ def test_lookup_failure_is_a_skip_with_no_capture_and_no_live_job(w, env, sleeps
     assert len(seen) == 1  # the lookup was reached
     assert _skips(c.id) == ["archive:lookup_unavailable"]
     assert _rows_for(c.id) == 0 and _no_job_files(env) == []
-    assert (result.queued, result.skipped, result.stopped) == (0, 1, 0)
+    assert (result.queued, result.skipped, result.stopped_on_lookup) == (0, 1, False)
     assert sleeps == []  # the only candidate was the last: no pointless wait after it
     assert pc.SWEEP_LOOKUP_BACKOFF_S == 60
 
@@ -151,9 +151,9 @@ def test_three_consecutive_lookup_failures_stop_the_sweep(w, env, sleeps, monkey
 
     assert len(seen) == 3
     reasons = sorted(r for c in cs for r in _skips(c.id))
-    assert reasons == ["archive:lookup_unavailable"] * 3 + ["capture:sweep_stopped"] * 2
+    assert reasons == ["archive:lookup_unavailable"] * 3  # no "not attempted" rows for the other two
     assert all(_rows_for(c.id) == 0 for c in cs) and _no_job_files(env) == []
-    assert (result.skipped, result.stopped, result.queued) == (3, 2, 0)
+    assert (result.skipped, result.stopped_on_lookup, result.queued) == (3, True, 0)
     assert sleeps == [60, 60]  # no pause after the stopping failure
 
 
@@ -171,7 +171,7 @@ def test_a_non_lookup_outcome_resets_the_consecutive_counter(w, env, sleeps, mon
 
     monkeypatch.setattr(pc, "request_capture", fake)
     result = pc.run_automatic_sweep()
-    assert len(calls) == 5 and result.stopped == 0 and (result.queued, result.skipped) == (1, 4)
+    assert len(calls) == 5 and not result.stopped_on_lookup and (result.queued, result.skipped) == (1, 4)
 
 
 def test_a_non_lookup_refusal_resets_the_consecutive_counter(w, env, sleeps, monkeypatch):
@@ -187,7 +187,7 @@ def test_a_non_lookup_refusal_resets_the_consecutive_counter(w, env, sleeps, mon
 
     monkeypatch.setattr(pc, "request_capture", fake)
     result = pc.run_automatic_sweep()
-    assert len(calls) == 5 and (result.stopped, result.skipped) == (0, 5)
+    assert len(calls) == 5 and (result.stopped_on_lookup, result.skipped) == (False, 5)
     assert sorted(r for c in cs for r in _skips(c.id)) == ["archive:lookup_unavailable"] * 4 + ["candidate:no_relationship"]
 
 
@@ -251,19 +251,111 @@ def test_a_failing_skip_write_does_not_kill_the_sweep(w, env, sleeps, monkeypatc
     assert [r.status for r in _captures(cs[1].id)] == ["queued"] and _skips(cs[0].id) == []
 
 
-def test_a_failing_stop_write_still_stops_the_sweep(w, env, sleeps, monkeypatch):
-    cs = [_candidate(w, _restricted(w)) for _ in range(5)]
-    seen = mock_wayback(monkeypatch, status=429)
+# ── rolling hourly behaviour (planning#277 S6b step c) ───────────────────────
 
-    def broken_stop(db, rest):
-        raise RuntimeError("disk full")
 
-    monkeypatch.setattr(pc, "_record_stopped", broken_stop)
+class Recorder:
+    """request_capture stand-in: records the candidate ids asked for; optional per-call rule."""
+
+    def __init__(self, monkeypatch, rules=None):
+        self.calls: list = []
+        self.rules = rules or {}
+        monkeypatch.setattr(pc, "request_capture", self._fake)
+
+    def _fake(self, db, *, candidate_id, user, manual):
+        self.calls.append(candidate_id)
+        rule = self.rules.get(candidate_id)
+        if rule:
+            raise pc.CaptureRefused(rule)
+        return None
+
+
+def test_not_configured_does_nothing_and_writes_no_rows(w, env, sleeps, monkeypatch, caplog):
+    c = _candidate(w)
+    rec = Recorder(monkeypatch)
+    monkeypatch.delenv("CAPTURE_PROXY_KEY")
+    with caplog.at_level("INFO", logger=pc.log.name):
+        result = pc.run_automatic_sweep()
+    assert rec.calls == [] and result.not_configured is True and result.queued == 0
+    assert _skips(c.id) == [] and _rows_for(c.id) == 0
+    assert [r.getMessage() for r in caplog.records if "not set up" in r.getMessage()] == [
+        "page_capture: automatic capture is not set up (no capture proxy key); nothing to do"
+    ]
+    monkeypatch.setenv("CAPTURE_PROXY_KEY", "k" * 32)  # same fixture, configured: it IS requested
     result = pc.run_automatic_sweep()
+    assert c.id in rec.calls and result.not_configured is False
 
-    assert len(seen) == 3  # reached the third failure, and the other two were never looked up
-    assert (result.errors, result.stopped, result.skipped) == (1, 0, 3)
-    assert all(_rows_for(c.id) == 0 for c in cs) and _no_job_files(env) == []
+
+def test_retry_windows_after_a_recorded_refusal(w, env, sleeps, monkeypatch):
+    lookup_recent, lookup_old, other_recent, other_old = (_candidate(w) for _ in range(4))
+    _add_skip(w, lookup_recent, "archive:lookup_unavailable", 2 * 60)
+    _add_skip(w, lookup_old, "archive:lookup_unavailable", 25 * 60)
+    _add_skip(w, other_recent, "candidate:no_relationship", 6 * 24 * 60)
+    _add_skip(w, other_old, "candidate:no_relationship", 8 * 24 * 60)
+    rec = Recorder(monkeypatch)
+    result = pc.run_automatic_sweep()
+    assert set(rec.calls) == {lookup_old.id, other_old.id}
+    assert result.candidates == 2 and result.queued == 2
+
+
+def test_a_persistent_non_lookup_refusal_writes_one_skip_row_over_two_runs(w, env, sleeps, monkeypatch):
+    c, other = _candidate(w), _candidate(w)
+    rec = Recorder(monkeypatch, {c.id: "candidate:no_relationship"})
+    pc.run_automatic_sweep()
+    assert c.id in rec.calls and other.id in rec.calls  # first run reached both
+    first = len(rec.calls)
+    pc.run_automatic_sweep()
+    assert rec.calls[first:] == [other.id]  # c is no longer selected; the other still is (ran again: fake queues nothing)
+    assert _skips(c.id) == ["candidate:no_relationship"]
+
+
+def test_lookup_stop_leaves_the_untried_due_with_no_rows(w, env, sleeps, monkeypatch):
+    cs = sorted([_candidate(w) for _ in range(4)], key=lambda c: str(c.id))
+    for c in cs:  # equal never-captured ordering falls back to id
+        pass
+    rec = Recorder(monkeypatch, {c.id: "archive:lookup_unavailable" for c in cs[:3]})
+    result = pc.run_automatic_sweep()
+    assert rec.calls == [c.id for c in cs[:3]] and result.stopped_on_lookup is True
+    assert _skips(cs[3].id) == []
+    rec.calls.clear()
+    pc.run_automatic_sweep()  # the three are inside their 1-day window; the fourth is due
+    assert rec.calls == [cs[3].id]
+
+
+def test_time_limit_stops_the_run_and_the_rest_stay_due(w, env, sleeps, monkeypatch):
+    cs = sorted([_candidate(w) for _ in range(3)], key=lambda c: str(c.id))
+    rec = Recorder(monkeypatch)
+    ticks = {"n": 0}
+
+    def fake_clock():
+        ticks["n"] += 1
+        return 0 if ticks["n"] <= 3 else pc.SWEEP_TIME_LIMIT_S + 1  # start, before 1st, before 2nd
+
+    monkeypatch.setattr(pc, "_monotonic", fake_clock)
+    result = pc.run_automatic_sweep()
+    assert rec.calls == [c.id for c in cs[:2]] and result.out_of_time is True
+
+
+def test_never_captured_goes_before_an_old_capture(w, env, sleeps, monkeypatch):
+    # The never-captured one gets the LARGER id, so an id-only order would put it last.
+    old, never = sorted((_candidate(w), _candidate(w)), key=lambda c: str(c.id))
+    _row_for(w, old, "done", finished_ago_days=pc.DEFAULT_REVISIT_DAYS + 10)
+    rec = Recorder(monkeypatch)
+    pc.run_automatic_sweep()
+    assert rec.calls == [never.id, old.id]
+
+
+def test_an_abandoned_deal_is_not_captured_while_our_own_root_is(w, env, sleeps, monkeypatch):
+    ours = _candidate(w)
+    dead_root, eng = w.deal()
+    eng.posture = "abandoned"
+    w.db.commit()
+    dead = _candidate(w, dead_root)
+    live_root, _eng = w.deal()
+    live = _candidate(w, live_root)
+    rec = Recorder(monkeypatch)
+    pc.run_automatic_sweep()
+    assert ours.id in rec.calls and live.id in rec.calls and dead.id not in rec.calls
 
 
 # ── API ──────────────────────────────────────────────────────────────────────
@@ -284,22 +376,19 @@ def _add_skip(w, c, reason, ago_minutes):
 def test_api_lists_skips_newest_first_with_plain_messages(w, env):
     c = _candidate(w)
     _add_skip(w, c, "archive:lookup_unavailable", 30)
-    _add_skip(w, c, "capture:sweep_stopped", 20)
+    _add_skip(w, c, "capture:revisit_budget", 20)
     _add_skip(w, c, "some:future_rule", 10)
 
     r = _skips_get(c.id, w.headers(role=UserRole.VIEWER.value))
 
     assert r.status_code == 200, r.text
     body = r.json()
-    assert [b["reason"] for b in body] == ["some:future_rule", "capture:sweep_stopped", "archive:lookup_unavailable"]
+    assert [b["reason"] for b in body] == ["some:future_rule", "capture:revisit_budget", "archive:lookup_unavailable"]
     assert body[0]["message"] == "A live visit to this candidate is not allowed."
-    assert body[1]["message"] == (
-        "Not attempted: the snapshot service kept failing during this run. "
-        "It will be tried again automatically at the next scheduled capture."
-    )
+    assert body[1]["message"] == "This domain was captured recently; it can be re-captured manually."
     assert body[2]["message"] == (
         "The snapshot service could not be reached, so nothing was captured. "
-        "It will be tried again automatically at the next scheduled capture."
+        "It will be tried again automatically within a day."
     )
     assert all(b["message"] != b["reason"] for b in body)
     assert len(_skips_get(c.id, w.headers(), limit=2).json()) == 2
@@ -308,7 +397,7 @@ def test_api_lists_skips_newest_first_with_plain_messages(w, env):
 
 def test_api_invisible_candidate_gets_the_same_status_as_the_captures_get(w, env, monkeypatch):
     c = _candidate(w)
-    _add_skip(w, c, "capture:sweep_stopped", 1)
+    _add_skip(w, c, "capture:revisit_budget", 1)
     h = w.headers()
     monkeypatch.setattr(read_scope, "domain_clause", lambda user, sc: sc.id != c.id)
     captures = client.get(f"/api/organizations/candidates/{c.id}/captures", headers=h)
@@ -323,7 +412,7 @@ def test_api_manual_post_lookup_failure_uses_the_new_wording(w, env, monkeypatch
     c = _candidate(w, root)
     r = client.post(f"/api/organizations/candidates/{c.id}/captures", headers=w.headers())
     assert r.status_code == 503
-    assert r.json()["detail"]["message"].endswith("It will be tried again automatically at the next scheduled capture.")
+    assert r.json()["detail"]["message"].endswith("It will be tried again automatically within a day.")
 
 
 def test_migration_0096_is_the_chain_head_after_0095():

@@ -101,7 +101,7 @@ def test_503_when_the_archive_lookup_fails_for_a_pre_close_target(w, env, monkey
     assert r.status_code == 503, r.text
     d = r.json()["detail"]
     assert d["rule"] == "archive:lookup_unavailable"
-    assert d["message"] == "The snapshot service could not be reached, so nothing was captured. It will be tried again automatically at the next scheduled capture."
+    assert d["message"] == "The snapshot service could not be reached, so nothing was captured. It will be tried again automatically within a day."
     assert len(seen) == 1
     assert list((env["spool"] / "jobs").iterdir()) == [] and _counts(c.id)[0] == 0
 

@@ -56,14 +56,15 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.evidence import EvidenceBlob, EvidenceFetch
+from app.models.org_entity import OrgEntity
 from app.models.scope_candidate import ScopeCandidate, ScopeSignal
 from app.services import entity_graph
 from app.services.org_discovery import (
@@ -73,6 +74,43 @@ from app.services.org_discovery.generators import ReverseIpResult, RirDedicatedI
 from app.services.org_discovery.domain_facts import DomainFacts
 
 log = logging.getLogger(__name__)
+
+# Outcome of one refresh unit (planning#277 S6b). `rate_limited` and `skipped`
+# are never stamped: the unit stays due.
+UNIT_OK, UNIT_FAILED, UNIT_RATE_LIMITED = "ok", "failed", "rate_limited"
+UNIT_SKIPPED = "skipped"
+REFRESH_INTERVAL = timedelta(days=7)  # a refreshed unit is due again after this
+FAILED_RETRY_AFTER = timedelta(days=1)  # a failed unit is due again after this
+
+
+def due_clause(at_col, failed_col, now: datetime):
+    """A unit is due when its time IS NULL, or it failed and the time is older
+    than FAILED_RETRY_AFTER, or the time is older than REFRESH_INTERVAL. Pure:
+    builds SQL, no session."""
+    return or_(
+        at_col.is_(None),
+        and_(failed_col, at_col < now - FAILED_RETRY_AFTER),
+        at_col < now - REFRESH_INTERVAL,
+    )
+
+
+def _stamp(model, row_id: uuid.UUID, at_attr: str, failed_attr: str, failed: bool) -> None:
+    """Record that a unit was refreshed: its own short session, one UPDATE,
+    commit. A failure is logged and never propagates."""
+    db = SessionLocal()
+    try:
+        try:
+            db.execute(
+                update(model).where(model.id == row_id).values(
+                    {at_attr: datetime.now(timezone.utc), failed_attr: failed}
+                )
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception("org-discovery refresh stamp failed model=%s id=%s", model.__name__, row_id)
+    finally:
+        db.close()
 
 
 @dataclass
@@ -170,6 +208,7 @@ def verify_new_candidates(candidate_ids: list[uuid.UUID]) -> VerifyReport:
     candidate in its root."""
     report = VerifyReport()
     cache: dict[str, DomainFacts] = {}
+    processed: list[tuple[uuid.UUID, bool]] = []  # (candidate id, any of ITS pairs failed)
     db = SessionLocal()
     try:
         for candidate_id in candidate_ids:
@@ -180,10 +219,15 @@ def verify_new_candidates(candidate_ids: list[uuid.UUID]) -> VerifyReport:
             root_id = candidate.root_entity_id
             anchors = _claimed_ids(db, root_id, excluding=candidate_id)
             db.rollback()  # end the read transaction before `collect` commits
+            failed_before = report.pairs_failed
             for anchor_id in anchors:
                 _run_pair(db, cache, report, candidate_id=candidate_id, anchor_id=anchor_id)
+            processed.append((candidate_id, report.pairs_failed > failed_before))
     finally:
         db.close()
+    # Stamps are their own units of work, after the verifier session is closed.
+    for candidate_id, failed in processed:
+        _stamp(ScopeCandidate, candidate_id, "reverified_at", "reverify_failed", failed)
     _summary("verify_new_candidates", report)
     return report
 
@@ -217,16 +261,10 @@ def verify_after_claim(claimed_candidate_id: uuid.UUID) -> VerifyReport:
     _summary("verify_after_claim", report)
     # Reverse IP for the newly claimed domain (part C): after this session is
     # closed, since it opens its own; it must never fail the claim's follow-up.
-    try:
-        reverse_ip_for_claimed(claimed_candidate_id)
-    except Exception:
-        log.exception("org-discovery reverse-IP after claim failed candidate=%s", claimed_candidate_id)
-    # RIR (ARIN) resources for the claimed domain's contacts: likewise its own
-    # session, likewise unable to fail the follow-up.
-    try:
-        rir_for_claimed(claimed_candidate_id)
-    except Exception:
-        log.exception("org-discovery RIR after claim failed candidate=%s", claimed_candidate_id)
+    # Then RIR (ARIN, RIPE) resources for the claimed domain's contacts. Both
+    # are `refresh_claimed_domain`, which stamps the domain, has its own
+    # sessions, and cannot fail the follow-up.
+    refresh_claimed_domain(claimed_candidate_id)
     # Last: the dedicated-IP sweep of the root's open CIDR candidates, which
     # may have just been created by the RIR step. Its own session, likewise
     # unable to fail the follow-up.
@@ -244,6 +282,7 @@ def dedicated_ip_for_root(root_entity_id: uuid.UUID) -> RirDedicatedIpResult:
     it, so this is a session owner. A failure rolls back and yields the empty
     result."""
     result = RirDedicatedIpResult()
+    errored = False
     db = SessionLocal()
     try:
         try:
@@ -251,10 +290,12 @@ def dedicated_ip_for_root(root_entity_id: uuid.UUID) -> RirDedicatedIpResult:
             db.commit()
         except Exception:
             db.rollback()
-            result = RirDedicatedIpResult()
+            errored = True  # the empty result is built after the handler
             log.exception("org-discovery dedicated-IP failed root=%s", root_entity_id)
     finally:
         db.close()
+    if errored:
+        result = RirDedicatedIpResult(error=True)
     log.info(
         "org-discovery dedicated_ip_for_root claimed_domains=%d ips_checked=%d no_claim=%d not_dedicated=%d "
         "outside_candidates=%d signals_recorded=%d signals_resighted=%d invalid=%d conflict=%d",
@@ -271,6 +312,7 @@ def reverse_ip_for_claimed(claimed_candidate_id: uuid.UUID) -> ReverseIpResult:
     inside it, so this is a session owner. Any lead it creates is then
     verified against the root's claimed domains."""
     result = ReverseIpResult()
+    errored = False
     db = SessionLocal()
     try:
         try:
@@ -280,10 +322,12 @@ def reverse_ip_for_claimed(claimed_candidate_id: uuid.UUID) -> ReverseIpResult:
             db.commit()
         except Exception:
             db.rollback()
-            result = ReverseIpResult()
+            errored = True  # the empty result is built after the handler
             log.exception("org-discovery reverse-IP failed candidate=%s", claimed_candidate_id)
     finally:
         db.close()
+    if errored:
+        result = ReverseIpResult(error=True)
     if result.created_candidate_ids:
         verify_new_candidates(result.created_candidate_ids)
     log.info(
@@ -302,36 +346,38 @@ def reverse_ip_for_claimed(claimed_candidate_id: uuid.UUID) -> ReverseIpResult:
 class RirRunResult:
     arin: arin.ArinRecordResult = field(default_factory=arin.ArinRecordResult)
     ripe: ripe.RipeRecordResult = field(default_factory=ripe.RipeRecordResult)
+    errors: int = 0  # registry steps that caught an exception
 
 
 def _rir_step(registry: str, claimed_candidate_id: uuid.UUID, collect: Callable, record: Callable, empty: Callable):
     """One registry as its own session-owned unit: collect (cache committed),
     re-load and re-check the claimed candidate, record, commit. Any failure
-    rolls back and yields the empty result."""
+    rolls back and yields the empty result. Returns `(result, errored)`:
+    `errored` is True only when an exception was caught."""
     result = empty()
     db = SessionLocal()
     try:
         try:
             claimed = db.get(ScopeCandidate, claimed_candidate_id)
             if claimed is None or claimed.status != "claimed" or claimed.kind != "domain":
-                return result
+                return result, False
             domain = claimed.value
             db.rollback()  # end the read before the fetch commits
             collection = collect(db, domain)
             db.commit()  # the cache rows, kept even if the signal step fails
             claimed = db.get(ScopeCandidate, claimed_candidate_id)
             if claimed is None or claimed.status != "claimed":
-                return result
+                return result, False
             result = record(db, claimed=claimed, collection=collection, observer_id=None)
             db.commit()
         except Exception:
             db.rollback()
             result = empty()
             log.exception("org-discovery RIR failed registry=%s candidate=%s", registry, claimed_candidate_id)
-            return result
+            return result, True
     finally:
         db.close()
-    return result
+    return result, False
 
 
 def rir_for_claimed(claimed_candidate_id: uuid.UUID, *, fresh_since: datetime | None = None) -> RirRunResult:
@@ -343,7 +389,7 @@ def rir_for_claimed(claimed_candidate_id: uuid.UUID, *, fresh_since: datetime | 
     Created ASN/CIDR candidates are NOT run through the domain verifiers (they
     are not domains). The collectors are looked up at call time so tests can
     replace the seams."""
-    a = _rir_step(
+    a, a_errored = _rir_step(
         "arin", claimed_candidate_id, lambda db, d: _rir_collect(db, d, fresh_since=fresh_since), arin.record_arin, arin.ArinRecordResult,
     )
     log.info(
@@ -357,7 +403,7 @@ def rir_for_claimed(claimed_candidate_id: uuid.UUID, *, fresh_since: datetime | 
         a.orgs_holding_nothing, a.invalid, a.holder_conflict, a.context_recorded,
         a.context_no_candidate,
     )
-    r = _rir_step(
+    r, r_errored = _rir_step(
         "ripe", claimed_candidate_id, lambda db, d: _ripe_collect(db, d, fresh_since=fresh_since), lambda db, **kw: ripe.record_ripe(db, **kw),
         ripe.RipeRecordResult,
     )
@@ -371,7 +417,52 @@ def rir_for_claimed(claimed_candidate_id: uuid.UUID, *, fresh_since: datetime | 
         r.signals_recorded, r.signals_resighted, len(r.created_candidate_ids), r.holders_holding_nothing,
         r.invalid, r.holder_conflict, r.context_recorded, r.context_no_candidate,
     )
-    return RirRunResult(arin=a, ripe=r)
+    return RirRunResult(arin=a, ripe=r, errors=int(a_errored) + int(r_errored))
+
+
+def refresh_claimed_domain(claimed_candidate_id: uuid.UUID) -> str:
+    """The claimed-domain refresh unit: reverse-IP, then RIR (ARIN, RIPE), the
+    caches honoured (no `fresh_since`). Each step is its own try; this never
+    raises. Returns UNIT_OK / UNIT_FAILED / UNIT_RATE_LIMITED, or UNIT_SKIPPED
+    when the candidate is not a claimed domain. The claimed domain is stamped
+    (`rediscovered_at`) for ok and failed only: a rate-limited or skipped unit
+    is not stamped and stays due."""
+    db = SessionLocal()
+    try:
+        row = db.get(ScopeCandidate, claimed_candidate_id)
+        claimed_domain = row is not None and row.status == "claimed" and row.kind == "domain"
+    finally:
+        db.close()
+    if not claimed_domain:
+        return UNIT_SKIPPED
+    raised = False
+    ip: ReverseIpResult | None = None
+    rir: RirRunResult | None = None
+    try:
+        ip = reverse_ip_for_claimed(claimed_candidate_id)
+    except Exception:
+        raised = True
+        log.exception("org-discovery reverse-IP after claim failed candidate=%s", claimed_candidate_id)
+    try:
+        rir = rir_for_claimed(claimed_candidate_id)
+    except Exception:
+        raised = True
+        log.exception("org-discovery RIR after claim failed candidate=%s", claimed_candidate_id)
+    if (ip is not None and ip.rate_limited > 0) or (
+        rir is not None and (rir.arin.budget_exhausted or rir.ripe.budget_exhausted)
+    ):
+        outcome = UNIT_RATE_LIMITED
+    elif (
+        raised
+        or (ip is not None and (ip.lookup_failed > 0 or ip.error))
+        or (rir is not None and (rir.errors > 0 or rir.arin.fetch_failed > 0 or rir.ripe.fetch_failed > 0))
+    ):
+        outcome = UNIT_FAILED
+    else:
+        outcome = UNIT_OK
+    if outcome != UNIT_RATE_LIMITED:
+        _stamp(ScopeCandidate, claimed_candidate_id, "rediscovered_at", "rediscovery_failed", outcome == UNIT_FAILED)
+    return outcome
 
 
 # In-process Re-check slot: one manual Re-check per root at a time. A guard, not
@@ -560,6 +651,53 @@ def reassignment_for_root(root_entity_id: uuid.UUID, *, fresh_since: datetime) -
     return result
 
 
+# `covering` reasons on an indeterminate reassignment candidate (see
+# `_reassignment_unit`): "budget" = the RIR request budget ran out (rate
+# limited); "fetch_error" = the registry could not be reached or answered with
+# an error (failed). Every other reason (unsupported_rir, contact_held,
+# holder_unknown, detect_indeterminate, bad_prefix, no_covering, truncated,
+# unparseable, escaping, too_many, net_missing) is a deterministic property of
+# the data or the answer, which a retry will not change, so it is neither.
+_REASSIGNMENT_RATE_LIMITED_REASONS = ("budget",)
+_REASSIGNMENT_FETCH_FAILED_REASONS = ("fetch_error",)
+
+
+def refresh_root(
+    root_entity_id: uuid.UUID, *, fresh_since: datetime | None,
+) -> tuple[str, ReassignmentSweepResult, RirDedicatedIpResult]:
+    """The root refresh unit: the reassignment sweep, then the dedicated-IP
+    sweep, each its own try; never raises. `fresh_since=None` is the 7-day RIR
+    cache (`rir_fetch.CACHE_TTL`), passed as now - REFRESH_INTERVAL. The root is
+    stamped (`org_entities.rediscovered_at`) for ok and failed only."""
+    raised = False
+    sweep = ReassignmentSweepResult()
+    dedicated = RirDedicatedIpResult()
+    try:
+        sweep = reassignment_for_root(
+            root_entity_id, fresh_since=fresh_since or datetime.now(timezone.utc) - REFRESH_INTERVAL,
+        )
+    except Exception:
+        raised = True
+        log.exception("org-discovery re-check reassignment sweep failed root=%s", root_entity_id)
+    try:
+        dedicated = dedicated_ip_for_root(root_entity_id)
+    except Exception:
+        raised = True
+        log.exception("org-discovery re-check dedicated-IP failed root=%s", root_entity_id)
+    if any(sweep.indeterminate.get(r, 0) > 0 for r in _REASSIGNMENT_RATE_LIMITED_REASONS):
+        outcome = UNIT_RATE_LIMITED
+    elif (
+        raised or sweep.failed > 0 or dedicated.error
+        or any(sweep.indeterminate.get(r, 0) > 0 for r in _REASSIGNMENT_FETCH_FAILED_REASONS)
+    ):
+        outcome = UNIT_FAILED
+    else:
+        outcome = UNIT_OK
+    if outcome != UNIT_RATE_LIMITED:
+        _stamp(OrgEntity, root_entity_id, "rediscovered_at", "rediscovery_failed", outcome == UNIT_FAILED)
+    return outcome, sweep, dedicated
+
+
 @dataclass
 class RecheckResult:
     claimed_domains: int = 0
@@ -590,14 +728,7 @@ def recheck_root(root_entity_id: uuid.UUID) -> RecheckResult:
             except Exception:
                 result.domains_failed += 1
                 log.exception("org-discovery re-check RIR failed candidate=%s", cid)
-        try:
-            result.reassignment = reassignment_for_root(root_entity_id, fresh_since=fresh_since)
-        except Exception:
-            log.exception("org-discovery re-check reassignment sweep failed root=%s", root_entity_id)
-        try:
-            result.dedicated = dedicated_ip_for_root(root_entity_id)
-        except Exception:
-            log.exception("org-discovery re-check dedicated-IP failed root=%s", root_entity_id)
+        _, result.reassignment, result.dedicated = refresh_root(root_entity_id, fresh_since=fresh_since)
     finally:
         end_recheck(root_entity_id)
     log.info(

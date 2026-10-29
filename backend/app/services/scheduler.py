@@ -77,6 +77,7 @@ def start() -> None:
     _register_report_purger()
     _register_page_capture()
     _register_capture_sweep()
+    _register_rediscovery_tick()
 
 
 def _seed_default_connectors() -> None:
@@ -417,31 +418,62 @@ def _run_nightly_rescore() -> None:
 
 
 def _register_capture_sweep() -> None:
-    """Register the weekly automatic page capture (planning#277 S6a). Weekly,
-    not daily: one run a week per Jason (planning#277 S6), which also keeps the
-    snapshot-service lookups and the capture browser's queue light. A fixed
-    hour (Sunday 04:00 UTC, after the 03:00 nightly re-score) so an operator can
-    reason about "did it run" and so the sweep never competes with that job."""
+    """Register the automatic page capture (planning#277 S6a, hourly since S6b).
+    Hourly with a time limit per run, rather than one weekly sweep: the weekly
+    refresh is spread through the week, a missed hour is caught up by the next
+    (oldest-due first), and a new candidate is captured within about an hour.
+    Each candidate is still captured at most once per revisit window. Hourly at
+    :40 UTC, away from the :20 re-discovery and the :05 digests."""
     if _scheduler is None:
         return
     _scheduler.add_job(
         _run_capture_sweep,
-        trigger=CronTrigger(day_of_week="sun", hour=4, minute=0, timezone="UTC"),
+        trigger=CronTrigger(minute=40, timezone="UTC"),
         id="capture_sweep",
-        name="Weekly automatic page capture",
+        name="Automatic page capture (hourly)",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
     )
-    log.info("Scheduled capture_sweep (weekly, Sunday 04:00 UTC)")
+    log.info("Scheduled capture_sweep (hourly at :40 UTC)")
 
 
 def _run_capture_sweep() -> None:
     try:
         stats = page_capture.run_automatic_sweep()
-        log.info("Weekly automatic page capture complete — %s", stats)
+        log.info("Automatic page capture complete — %s", stats)
     except Exception:
-        log.error("Weekly automatic page capture failed", exc_info=True)
+        log.error("Automatic page capture failed", exc_info=True)
+
+
+def _register_rediscovery_tick() -> None:
+    """Register the rolling org-discovery re-discovery (planning#277 S6b).
+    Hourly, with a time limit per run, rather than one weekly window: each unit
+    is refreshed about weekly but the load is spread across the week, and a
+    missed hour is caught up by the next (the oldest-due units go first).
+    Hourly at :20 UTC, away from the :05 digests and the capture job. The time
+    limit and pacing are constants until planning#320 makes them settings."""
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        _run_rediscovery_tick,
+        trigger=CronTrigger(minute=20, timezone="UTC"),
+        id="rediscovery_tick",
+        name="Org discovery: rolling re-discovery (hourly)",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    log.info("Scheduled rediscovery_tick (hourly at :20 UTC)")
+
+
+def _run_rediscovery_tick() -> None:
+    try:
+        from app.services.org_discovery import rolling
+        result = rolling.run_rediscovery_tick()
+        log.info("Org-discovery rolling re-discovery complete — %s", result)
+    except Exception:
+        log.error("Org-discovery rolling re-discovery failed", exc_info=True)
 
 
 def _register_alert_digests() -> None:

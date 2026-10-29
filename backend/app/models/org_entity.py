@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Text, func, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Text, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -59,3 +59,6 @@ class OrgEntity(Base):
     registrant_linked_by_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # Root unit (reassignment sweep + dedicated-IP sweep), planning#277 S6b; stamped by `runner.refresh_root`.
+    rediscovered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rediscovery_failed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
