@@ -29,6 +29,7 @@ COPY --from=py-builder /install /usr/local
 # trees' copies diverge.
 COPY ip_blocklist.py .
 COPY proxy.py .
+COPY log_s3.py .
 
 RUN python -m pip uninstall -y --root-user-action=ignore pip setuptools wheel
 

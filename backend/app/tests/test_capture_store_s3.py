@@ -7,6 +7,7 @@ Run with:  backend/scripts/test.sh app/tests/test_capture_store_s3.py
 
 import io
 import logging
+import time
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlsplit
 
@@ -75,7 +76,8 @@ _FULL_ENV = {
     "CAPTURE_S3_BUCKET_JOBS": "b-jobs", "CAPTURE_S3_BUCKET_RESULTS": "b-results",
     "CAPTURE_S3_BUCKET_PROXYLOG": "b-proxylog", "CAPTURE_S3_BUCKET_IMAGES": "b-images",
 }
-_ALL_VARS = [*_FULL_ENV, "CAPTURE_S3_REGION", "CAPTURE_S3_PATH_STYLE", "CAPTURE_S3_INSECURE_HTTP"]
+_ALL_VARS = [*_FULL_ENV, "CAPTURE_S3_REGION", "CAPTURE_S3_PATH_STYLE", "CAPTURE_S3_INSECURE_HTTP",
+                                    "CAPTURE_S3_PUBLIC_ENDPOINT"]
 
 
 @pytest.fixture
@@ -158,6 +160,43 @@ def test_client_is_cached_per_config(env):
         assert c1 is c2
         env.setenv("CAPTURE_S3_ENDPOINT", "https://other.example")
         assert m._client(m.s3_config_from_env()) is not c1
+    finally:
+        m._client.cache_clear()
+
+
+def test_config_public_endpoint(env):
+    assert m.s3_config_from_env().public_endpoint is None
+    env.setenv("CAPTURE_S3_PUBLIC_ENDPOINT", "https://store.example.test")
+    assert m.s3_config_from_env().public_endpoint == "https://store.example.test"
+    env.setenv("CAPTURE_S3_PUBLIC_ENDPOINT", "http://store.example.test:9000")
+    with pytest.raises(StoreConfigError, match="CAPTURE_S3_PUBLIC_ENDPOINT"):
+        m.s3_config_from_env()
+    env.setenv("CAPTURE_S3_INSECURE_HTTP", "1")
+    assert m.s3_config_from_env().public_endpoint == "http://store.example.test:9000"
+    env.delenv("CAPTURE_S3_INSECURE_HTTP")
+    env.setenv("CAPTURE_S3_PUBLIC_ENDPOINT", "https://user@store.example.test")
+    with pytest.raises(StoreConfigError, match="CAPTURE_S3_PUBLIC_ENDPOINT"):
+        m.s3_config_from_env()
+
+
+def test_presign_client_selection(env):
+    cfg = m.s3_config_from_env()
+    assert m._presign_client(cfg) is m._client(cfg)
+    env.setenv("CAPTURE_S3_PUBLIC_ENDPOINT", "https://store.example.test")
+    cfg = m.s3_config_from_env()
+    assert m._presign_client(cfg) is not m._client(cfg)
+    assert m._presign_client(cfg).meta.endpoint_url == "https://store.example.test"
+    assert m._client(cfg).meta.endpoint_url == "https://store.example"
+
+
+def test_store_from_env_signs_for_the_public_endpoint(env):
+    env.setenv("CAPTURE_S3_PUBLIC_ENDPOINT", "https://store.example.test")
+    try:
+        store = m.s3_store_from_env()
+        urls = store.job_fields(ID, int(time.time()) + 600)["store"]
+        for k in ("result_put", "screenshot_put"):
+            assert urlsplit(urls[k]).netloc == "store.example.test"
+        assert store._c.meta.endpoint_url == "https://store.example"
     finally:
         m._client.cache_clear()
 

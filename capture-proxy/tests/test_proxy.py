@@ -893,6 +893,42 @@ def test_build_proxy_from_env_uses_file_log_only_when_dir_set(tmp_path, capsys):
     p._log(_rec(GOOD_ID))
     assert (tmp_path / f"{GOOD_ID}.jsonl").exists()
     assert _stdout_hosts(capsys) == ["example.com"]
+    assert p.log_sink is None and plain.log_sink is None
+
+
+S3_ENV = {
+    "CAPTURE_PROXY_KEY": KEY,
+    "CAPTURE_STORE": "s3",
+    "CAPTURE_S3_ENDPOINT": "https://s3.example.test",
+    "CAPTURE_S3_BUCKET_PROXYLOG": "proxylog-test",
+}
+
+
+def test_build_proxy_s3_with_a_log_dir_refuses_to_start(tmp_path):
+    with pytest.raises(SystemExit, match="CAPTURE_PROXY_LOG_DIR"):
+        build_proxy_from_env({**S3_ENV, "CAPTURE_PROXY_LOG_DIR": str(tmp_path)})
+
+
+def test_build_proxy_s3_without_a_bucket_refuses_to_start():
+    env = {k: v for k, v in S3_ENV.items() if k != "CAPTURE_S3_BUCKET_PROXYLOG"}
+    with pytest.raises(SystemExit, match="CAPTURE_S3_BUCKET_PROXYLOG"):
+        build_proxy_from_env(env)
+
+
+def test_build_proxy_s3_wires_the_sink(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import log_s3
+
+    monkeypatch.setattr(log_s3, "make_client", lambda cfg: MagicMock())
+    p = build_proxy_from_env(S3_ENV)
+    assert isinstance(p.log_sink, log_s3.S3LogSink)
+    assert p._log is not proxy_mod.emit_stdout
+
+
+def test_build_proxy_unknown_store_refuses_to_start():
+    with pytest.raises(SystemExit, match="filesystem or s3"):
+        build_proxy_from_env({"CAPTURE_PROXY_KEY": KEY, "CAPTURE_STORE": "minio"})
 
 
 # ── limits file (planning#317) ────────────────────────────────────────────────
