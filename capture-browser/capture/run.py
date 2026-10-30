@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 from playwright.sync_api import Browser, BrowserContext, Playwright, sync_playwright
 
 from capture import spool
+from capture.browser_env import browser_env
 from capture.spool import pick_screenshot
 
 NAV_TIMEOUT_MS = 30_000
@@ -76,6 +77,7 @@ def launch_browser(
         headless=True,
         chromium_sandbox=True,  # Chromium's own sandbox ON; needs capture-browser/seccomp.json
         args=CHROMIUM_ARGS,
+        env=browser_env(),  # allowlisted: the worker's own environment never reaches Chromium
         proxy={
             "server": proxy_url,
             "username": f"{capture_id}|{mode}|{exp}",

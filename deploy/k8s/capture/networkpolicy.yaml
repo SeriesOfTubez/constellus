@@ -1,0 +1,112 @@
+# Kubernetes equivalent of Compose's `capture_internal` + `capture_store` internal
+# networks: the browser can reach only the proxy (and, via the overlay, the store);
+# only the proxy can reach the internet, and not the cluster, the nodes or cloud metadata.
+#
+# The STORE rule is deployment-specific and lives in the overlay. This base alone
+# leaves the browser and the proxy unable to reach any store (fail closed).
+# Production on external S3 adds an `ipBlock` egress rule for the endpoint
+# (NetworkPolicy has no FQDN rules); see docs/deploy/kubernetes.md.
+#
+# Enforcement needs a CNI that implements NetworkPolicy (Calico, Cilium, kindnet in
+# recent kind, ...). On a CNI that does not, these objects are accepted and ignored.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: constellus
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: capture-dns-egress
+  namespace: constellus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: constellus
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [capture-proxy, capture-browser]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: capture-browser-egress-proxy
+  namespace: constellus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: capture-browser
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: capture-proxy
+      ports:
+        - {protocol: TCP, port: 3128}
+---
+# capture-browser gets no ingress rule at all (default-deny applies).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: capture-proxy-ingress-browser
+  namespace: constellus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: capture-proxy
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: capture-browser
+      ports:
+        - {protocol: TCP, port: 3128}
+---
+# Defence in depth: the proxy's own IP blocklist is the primary control. This keeps
+# the proxy off the pod/service networks, the nodes and cloud metadata even if that fails.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: capture-proxy-egress-world
+  namespace: constellus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: capture-proxy
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - fc00::/7
+              - fe80::/10
+              - ::1/128

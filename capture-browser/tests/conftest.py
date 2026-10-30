@@ -9,6 +9,16 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+@pytest.fixture(autouse=True)
+def _restore_environ():
+    """worker._drop_store_env pops CAPTURE_S3_* from the real os.environ, which
+    monkeypatch does not restore for keys it never set (CI's CAPTURE_S3_TEST_*)."""
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+
+
 class _FakeCdp:
     def send(self, method, params=None):
         if method == "Page.captureScreenshot":

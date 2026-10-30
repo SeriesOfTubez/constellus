@@ -25,6 +25,7 @@ Constellus discovers, correlates, and risk-scores your public-facing infrastruct
 - [Risk scoring](architecture/risk-scoring.md)
 - [Shared infrastructure & dangling DNS](architecture/shared-infra-verification.md)
 - [Authentication & SSO](architecture/authentication.md)
+- [Kubernetes deployment (page capture)](deploy/kubernetes.md)
 - [GitHub repository](https://github.com/SeriesOfTubez/constellus)
 
 ---

@@ -1,0 +1,121 @@
+# TEST ONLY. RustFS as an in-cluster S3 store for the kind lab. Never a production
+# default: it is pre-1.0 with a CVE trail that includes hardcoded-credential CVEs.
+# Production is bring-your-own S3 (docs/deploy/kubernetes.md). Mirrors the Compose
+# `rustfs` service: pinned by digest, root credentials from a Secret (RustFS 1.0.4
+# refuses empty ones), console off, data in memory.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rustfs
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: rustfs
+    app.kubernetes.io/part-of: constellus
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rustfs
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: rustfs
+    app.kubernetes.io/part-of: constellus
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rustfs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rustfs
+        app.kubernetes.io/part-of: constellus
+    spec:
+      serviceAccountName: rustfs
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rustfs
+          image: rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
+          ports:
+            - name: s3
+              containerPort: 9000
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rustfs-root
+                  key: RUSTFS_ACCESS_KEY
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rustfs-root
+                  key: RUSTFS_SECRET_KEY
+            - name: RUSTFS_ADDRESS
+              value: 0.0.0.0:9000
+            - name: RUSTFS_CONSOLE_ENABLE
+              value: "false"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            # RustFS writes its own logs to /logs and exits FATAL on a read-only
+            # root filesystem without it, so that path gets its own emptyDir.
+            - name: logs
+              mountPath: /logs
+          # /data is memory-backed, so its contents count against this limit.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+      volumes:
+        - name: data
+          emptyDir:
+            medium: Memory
+        - name: logs
+          emptyDir:
+            medium: Memory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rustfs
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: rustfs
+    app.kubernetes.io/part-of: constellus
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: rustfs
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3

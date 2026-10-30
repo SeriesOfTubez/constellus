@@ -10,6 +10,7 @@ docs/architecture/capture-spool.md.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import sys
 import time
@@ -155,7 +156,27 @@ def process_s3(cid: str, raw: bytes, *, netloc: str, allow_http: bool) -> None:
     _upload_result(cid, store, result, image)
 
 
+def _make_undumpable() -> None:
+    """Same-uid processes (a compromised Chromium) must not read this process's
+    /proc/<pid>/environ or mem, or ptrace it. Fail closed on Linux."""
+    if sys.platform != "linux":
+        return
+    PR_SET_DUMPABLE = 4
+    if ctypes.CDLL(None, use_errno=True).prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+        raise SystemExit(
+            f"capture-worker: prctl(PR_SET_DUMPABLE, 0) failed: {os.strerror(ctypes.get_errno())}"
+        )
+
+
+def _drop_store_env() -> None:
+    """The store key can list/get/delete every queued job; Playwright and Chromium
+    inherit os.environ, so it goes before any browser starts."""
+    for name in [n for n in os.environ if n.startswith("CAPTURE_S3_")]:
+        os.environ.pop(name, None)
+
+
 def main() -> int:
+    _make_undumpable()
     if not os.environ.get("CAPTURE_PROXY_URL"):
         raise SystemExit("CAPTURE_PROXY_URL is required")
     os.umask(spool.WORKER_UMASK)  # dedicated process: files 0660, dirs 0770, never world
@@ -184,6 +205,7 @@ def _main_s3() -> int:
         cfg = store_s3.config_from_env()
     except store_s3.S3ConfigError as exc:
         raise SystemExit(f"capture-worker: {exc}") from None
+    _drop_store_env()  # cfg holds what is still needed
     jobs = store_s3.S3Jobs(store_s3.make_client(cfg), cfg.bucket)
     last_error: str | None = None  # the listing error is printed once per change, not once per poll
     while True:

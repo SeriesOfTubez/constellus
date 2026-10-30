@@ -136,10 +136,17 @@ filesystem-mode job that carries it. Each URL must be `https` (`http` only with 
    **S3 variant (S1c):** PUT `screenshot.webp` through its presigned URL first,
    then `result.json`. `result.json` is the commit marker.
 6. Delete `claimed/<id>.json`.
-7. **Exit.** One capture per process: compose restarts the container, so every
-   capture starts with fresh tmpfs and a fresh process.
+7. **Exit.** One capture per process. The container's PID 1 is
+   `capture.supervisor`: after each worker exit it kills every other process in
+   the container, reaps them, wipes `/tmp`, `/home/capture` and `/dev/shm`, and
+   starts a fresh worker, so every capture gets a fresh process and empty scratch
+   space without a container restart (which Kubernetes back-off would delay). A
+   non-zero worker exit or a failed wipe makes the supervisor exit 1, and the
+   restart policy takes over.
 
 **On S3 (`CAPTURE_STORE=s3`):** the worker holds a key with list, get and delete on the jobs bucket and nothing else; it requires an explicit `CAPTURE_S3_ENDPOINT` and never a spool volume.
+
+That key can read every queued job (each carries a proxy token and presigned PUT URLs), so the worker drops every `CAPTURE_S3_*` variable from its environment right after reading its configuration, before Playwright starts, and marks itself non-dumpable (`prctl(PR_SET_DUMPABLE, 0)`, both modes; it refuses to start if that fails on Linux) so Chromium, which runs as the same uid, cannot read `/proc/<pid>/environ` or ptrace it. Chromium itself is launched with an allowlisted environment (`capture/browser_env.py`), not the worker's.
 
 1. List `jobs/` and sort by name.
 2. GET the job, then DELETE it. **The delete is the claim.** A delete that fails means the job is not ours: log it and move on; the backend's delete on ingest or on timeout is the backstop. A crash after the delete leaves no retry, like a crashed filesystem worker's `claimed/` file: the row times out. There is no `claimed/` on S3 and there is one worker (several workers: planning#323).
