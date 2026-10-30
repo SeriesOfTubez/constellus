@@ -57,6 +57,8 @@ nav:
     - Shared Infrastructure & Dangling DNS: architecture/shared-infra-verification.md
     - Authentication & SSO: architecture/authentication.md
     - Page Capture Spool: architecture/capture-spool.md
+  - Deployment:
+    - Kubernetes: deploy/kubernetes.md
   - Development:
     - Contributing: development/contributing.md
     - Adding a Connector: development/adding-connector.md

@@ -33,4 +33,4 @@ COPY capture/ capture/
 USER 10001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import playwright"]
-CMD ["python", "-m", "capture.worker"]
+CMD ["python", "-m", "capture.supervisor"]

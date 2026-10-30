@@ -1,0 +1,155 @@
+# capture-proxy: the egress proxy the headless browser must go through (S3 mode).
+# Secrets and the store ConfigMap are NOT created here: see docs/deploy/kubernetes.md.
+#   Secret    capture-proxy-key     key CAPTURE_PROXY_KEY
+#   Secret    capture-store-proxy   keys CAPTURE_S3_ACCESS_KEY, CAPTURE_S3_SECRET_KEY (put on proxylog/ only)
+#   ConfigMap capture-store         CAPTURE_S3_* store settings (overlay supplies it)
+#   ConfigMap capture-proxy-limits  optional; the backend writes it (planning#324 slice 2)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: capture-proxy
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: capture-proxy
+    app.kubernetes.io/part-of: constellus
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capture-proxy
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: capture-proxy
+    app.kubernetes.io/part-of: constellus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: capture-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: capture-proxy
+        app.kubernetes.io/part-of: constellus
+    spec:
+      serviceAccountName: capture-proxy
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: capture-proxy
+          image: constellus/capture-proxy
+          ports:
+            - name: proxy
+              containerPort: 3128
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          env:
+            - name: CAPTURE_PROXY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: capture-proxy-key
+                  key: CAPTURE_PROXY_KEY
+            - name: CAPTURE_STORE
+              value: s3
+            # CAPTURE_PROXY_LOG_DIR is deliberately NOT set: in S3 mode the proxy
+            # refuses to start if it is set (no file log), and unset means no file log.
+            - name: CAPTURE_S3_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_ENDPOINT
+            - name: CAPTURE_S3_INSECURE_HTTP
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_INSECURE_HTTP
+                  optional: true
+            - name: CAPTURE_S3_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_REGION
+                  optional: true
+            - name: CAPTURE_S3_PATH_STYLE
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_PATH_STYLE
+                  optional: true
+            - name: CAPTURE_S3_BUCKET_PROXYLOG
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_BUCKET_PROXYLOG
+            - name: CAPTURE_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: capture-store-proxy
+                  key: CAPTURE_S3_ACCESS_KEY
+            - name: CAPTURE_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: capture-store-proxy
+                  key: CAPTURE_S3_SECRET_KEY
+            # Why ..data: a ConfigMap volume file (proxy_limits.json) is a symlink
+            # to ..data/proxy_limits.json, and the proxy opens the limits file with
+            # O_NOFOLLOW, so the plain path would be refused (limits source=default).
+            # `..data` is itself a symlinked DIRECTORY; O_NOFOLLOW applies only to
+            # the final path component, so directories on the way are followed and
+            # the last component is a regular file. An atomic ConfigMap update
+            # swaps the `..data` symlink to a new timestamped directory, so the
+            # file's inode changes and LimitsSource re-reads it. Do NOT use subPath:
+            # a subPath mount never receives ConfigMap updates (it freezes).
+            - name: CAPTURE_LIMITS_FILE
+              value: /capture_config/..data/proxy_limits.json
+          volumeMounts:
+            - name: limits
+              mountPath: /capture_config
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: 3128
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 3128
+            initialDelaySeconds: 10
+            periodSeconds: 20
+      volumes:
+        - name: limits
+          configMap:
+            name: capture-proxy-limits
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: capture-proxy
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: capture-proxy
+    app.kubernetes.io/part-of: constellus
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: capture-proxy
+  ports:
+    - name: proxy
+      port: 3128
+      targetPort: proxy

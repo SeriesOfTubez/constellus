@@ -121,9 +121,11 @@ services:
   # capture-browser deliberately NEVER receives the key: the backend derives a
   # per-job token (HMAC of capture id + mode) and writes only that into the job.
   # Profile-gated: plain `docker compose up -d` does not start them yet.
-  # capture-browser runs the spool worker (`python -m capture.worker`): it pulls a
-  # job from /spool, captures ONE page, writes the result and exits; the restart
-  # policy gives every capture a fresh process + tmpfs. It never connects to the
+  # capture-browser runs a PID-1 supervisor (`python -m capture.supervisor`) that
+  # starts the spool worker (`capture.worker`) once per capture: it pulls a job
+  # from /spool, captures ONE page, writes the result and exits. Between captures
+  # the supervisor kills every other process in the container and wipes /tmp,
+  # /home/capture and /dev/shm; the restart policy covers supervisor exits. It never connects to the
   # backend: jobs/results travel through volumes (docs/architecture/capture-spool.md).
   #   capture_spool     backend rw, capture-browser rw   (/spool)
   #   capture_proxylog  backend rw, capture-proxy rw     (/proxylog) - the browser

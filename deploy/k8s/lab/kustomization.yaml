@@ -1,0 +1,33 @@
+# TEST ONLY lab overlay (planning#324): the base capture stack + an in-cluster RustFS
+# as the S3 store, for the local kind lab (scripts/kind-lab.sh). Never a production
+# overlay: production is bring-your-own S3 (docs/deploy/kubernetes.md).
+#
+# Secrets are NOT in this file; scripts/kind-lab.sh creates them from a 0600 file
+# outside the repo: rustfs-root, capture-proxy-key, capture-store-worker,
+# capture-store-proxy.
+#   LAB ONLY: capture-store-worker and capture-store-proxy both hold the RustFS ROOT
+#   credentials, so one key plays the backend, worker and proxy roles. Production uses
+#   three scoped keys (see docs/deploy/kubernetes.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: constellus
+resources:
+  - ../capture
+  - rustfs.yaml
+  - networkpolicy-store.yaml
+images:
+  - name: constellus/capture-proxy
+    newTag: lab
+  - name: constellus/capture-browser
+    newTag: lab
+# The default content-hash name suffix is kept: kustomize rewrites the keyRefs, and
+# a settings change rolls the pods that read it.
+configMapGenerator:
+  - name: capture-store
+    literals:
+      - CAPTURE_S3_ENDPOINT=http://rustfs:9000
+      - CAPTURE_S3_INSECURE_HTTP=1
+      - CAPTURE_S3_REGION=us-east-1
+      - CAPTURE_S3_PATH_STYLE=true
+      - CAPTURE_S3_BUCKET_JOBS=lab-jobs
+      - CAPTURE_S3_BUCKET_PROXYLOG=lab-proxylog

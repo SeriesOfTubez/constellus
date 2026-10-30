@@ -1,0 +1,45 @@
+# TEST ONLY: store reachability for the lab's in-cluster RustFS. rustfs gets no egress
+# (default-deny applies). Production replaces this with an ipBlock egress rule for the
+# external S3 endpoint.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: capture-egress-store
+  namespace: constellus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: constellus
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [capture-proxy, capture-browser]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rustfs
+      ports:
+        - {protocol: TCP, port: 9000}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rustfs-ingress-capture
+  namespace: constellus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rustfs
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: capture-browser
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: capture-proxy
+      ports:
+        - {protocol: TCP, port: 9000}
