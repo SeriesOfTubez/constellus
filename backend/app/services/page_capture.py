@@ -481,10 +481,11 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User | None, 
     }
     if mode == "identifying":
         job["user_agent"] = ua
-    payload = json.dumps(job).encode()
     try:
         store = get_store()
         store.check_spool()
+        job.update(store.job_fields(capture_id, exp))
+        payload = json.dumps(job).encode()
         store.put_job(capture_id, payload)
     except OSError:
         log.exception("page_capture: could not write job %s", capture_id)
@@ -669,7 +670,10 @@ def run_automatic_sweep() -> SweepResult:
 def ingest_results(db: Session, now: datetime | None = None) -> int:
     """Ingest every `results/<id>/` directory at least RESULT_MIN_AGE_S old.
     Each capture is its own unit of work. Returns how many queued rows were
-    resolved (done or failed)."""
+    resolved (done or failed). A resolved or discarded result also retires its
+    job: on the filesystem the worker already removed its claim, but on S3 there
+    is no claim, so the backend's delete is what stops the job being pulled
+    again (planning#318 S1b)."""
     now = now or datetime.now(timezone.utc)
     store = get_store()
     names = store.list_results()
@@ -692,6 +696,7 @@ def ingest_results(db: Session, now: datetime | None = None) -> int:
                 log.warning("page_capture: discarding result for %s (not a queued capture)", name)
                 store.remove_result(name)
                 store.delete_proxylog(name)
+                store.delete_job(name)
                 continue
             if not is_bundle:
                 raise _Invalid("invalid_result")
@@ -704,6 +709,7 @@ def ingest_results(db: Session, now: datetime | None = None) -> int:
                 resolved += 1
                 store.remove_result(name)
                 store.delete_proxylog(name)
+                store.delete_job(name)
             continue
         except Exception:
             db.rollback()
@@ -715,6 +721,7 @@ def ingest_results(db: Session, now: datetime | None = None) -> int:
         resolved += 1
         store.remove_result(name)
         store.delete_proxylog(name)
+        store.delete_job(name)
     return resolved
 
 
@@ -852,7 +859,11 @@ def read_stored_image(row: PageCapture) -> bytes | None:
             log.warning("page_capture: stored image name mismatch for %s", row.id)
         return None
     cap = min(row.image_max_bytes, IMAGE_BYTES_CEILING)
-    data = get_store().read_image(str(row.id), cap)
+    try:
+        data = get_store().read_image(str(row.id), cap)
+    except OSError:
+        log.warning("page_capture: capture store unavailable while reading the image for %s", row.id)
+        return None
     if data is None:
         log.warning("page_capture: stored image for %s could not be read or is not a regular file within its cap", row.id)
         return None
@@ -958,11 +969,11 @@ def prune_images(db: Session, now: datetime | None = None) -> int:
     the store's delete never follows a symlink. A row whose recorded name is not
     exactly `<id>.webp` is NULLed without touching any file."""
     now = now or datetime.now(timezone.utc)
-    store = get_store()
     try:
+        store = get_store()
         store.check_images()
     except OSError:
-        log.error("page_capture: images directory is missing or not a real directory; skipping prune", exc_info=True)
+        log.error("page_capture: capture store is unavailable or the images location is missing; skipping prune", exc_info=True)
         return 0
 
     ranked = (
@@ -1052,8 +1063,9 @@ def write_proxy_limits(db: Session) -> bool:
 
 
 def sweep_timeouts(db: Session, now: datetime | None = None) -> int:
-    """Queued rows older than the queue-timeout setting fail as 'timeout'; their job and
-    claim files go. Returns the number swept."""
+    """Queued rows older than the queue-timeout setting fail as 'timeout'; their job, any
+    result and their proxy log go (on S3 this is what clears an orphan screenshot whose
+    `result.json` never arrived). Returns the number swept."""
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=queue_timeout_seconds(db))
     rows = db.query(PageCapture).filter(PageCapture.status == "queued", PageCapture.requested_at < cutoff).all()
@@ -1064,6 +1076,8 @@ def sweep_timeouts(db: Session, now: datetime | None = None) -> int:
     store = get_store()
     for i in ids:
         store.delete_job(i)
+        store.remove_result(i)
+        store.delete_proxylog(i)
     return len(ids)
 
 
@@ -1080,7 +1094,7 @@ def tick() -> None:
         try:
             _check_spool_dirs()
         except OSError:
-            log.error("page_capture: spool directories are missing; skipping ingest", exc_info=True)
+            log.error("page_capture: capture store is unavailable or the spool is missing; skipping ingest", exc_info=True)
         else:
             try:
                 ingest_results(db)

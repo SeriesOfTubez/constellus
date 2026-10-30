@@ -27,3 +27,6 @@ starlette>=1.6.0
 # Version-range comparison for native version→CVE matching (#66 chunk B) —
 # purpose-built per-ecosystem version schemes (openssl letter / openssh p / generic).
 univers==32.0.1
+# planning#318 S1b: S3 capture store. botocore only (AWS's own SigV4 signer + S3 client);
+# boto3 adds s3transfer, which the size-capped contract never needs.
+botocore==1.43.122

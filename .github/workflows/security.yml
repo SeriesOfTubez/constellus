@@ -205,6 +205,76 @@ jobs:
           DATABASE_URL: postgresql://constellus:constellus@localhost:5432/constellus_test
         run: python -m pytest app/tests/ -q
 
+  # Deliberately NOT a required check yet (planning#318 S1b decision).
+  capture-store-s3-tests:
+    name: Capture Store S3 Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      db:
+        # Stock PostgreSQL, matching docker-compose. Deliberately NOT the
+        # timescaledb image: Constellus requires no extensions, and running
+        # the test gate on a build where timescaledb is unavailable is what
+        # keeps that true. See app/tests/test_database_requirements.py and
+        # docs/getting-started/database-requirements.md.
+        image: postgres:18
+        env:
+          POSTGRES_USER: constellus
+          POSTGRES_PASSWORD: constellus
+          # Named `_test` deliberately: app/tests/__init__.py refuses to run
+          # against a database whose name does not end in `_test`, so CI and a
+          # developer's local run are held to the same rule by the same check.
+          POSTGRES_DB: constellus_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U constellus"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      # RustFS pinned by digest: the TEST-ONLY S3 store (planning#318 S1b). Never a
+      # production default. Credentials are throwaway values for this container only.
+      rustfs:
+        image: rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
+        env:
+          RUSTFS_ACCESS_KEY: capturetest
+          RUSTFS_SECRET_KEY: capturetestcapturetest
+          RUSTFS_ADDRESS: 0.0.0.0:9000
+          RUSTFS_CONSOLE_ENABLE: "false"
+        ports:
+          - 9000:9000
+        options: >-
+          --tmpfs /data:mode=1777
+          --health-cmd "curl -fsS http://127.0.0.1:9000/health"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt pytest
+
+      - name: Run DB migrations
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://constellus:constellus@localhost:5432/constellus_test
+        run: alembic upgrade head
+
+      - name: Run store conformance tests (filesystem + s3)
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://constellus:constellus@localhost:5432/constellus_test
+          CAPTURE_S3_TEST_ENDPOINT: http://localhost:9000
+          CAPTURE_S3_TEST_ACCESS_KEY: capturetest
+          CAPTURE_S3_TEST_SECRET_KEY: capturetestcapturetest
+        run: python -m pytest app/tests/test_capture_store.py app/tests/test_capture_store_s3.py -q -rs
+
   scanner-worker-tests:
     name: Scanner-Worker Tests
     runs-on: ubuntu-latest

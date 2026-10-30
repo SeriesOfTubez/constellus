@@ -59,8 +59,8 @@ _SERVICES = os.path.normpath(_SERVICES)
 
 # Top-level modules that put bytes on a socket. `dns` is dnspython, whose
 # resolver queries a recursor; `socket` covers the stdlib name resolution
-# `bruteforce` uses.
-_TRANSPORTS = frozenset({"httpx", "requests", "aiohttp", "socket", "ssl", "urllib", "dns", "http"})
+# `bruteforce` uses. `botocore` is the S3 client (planning#318 S1b).
+_TRANSPORTS = frozenset({"httpx", "requests", "aiohttp", "socket", "ssl", "urllib", "dns", "http", "botocore"})
 
 # The four entry points onto the one policy (planning#148 / #196 / #205; planning#280 S5b-2a
 # added the candidate browse gate).
@@ -85,6 +85,10 @@ _EGRESS: dict[str, tuple[str, str, str | None]] = {
         "dispatches one browse page load of a scope candidate's domain to the capture browser via the spool "
         "(planning#280); imports urllib.parse only to read the final URL",
         "self",
+    ),
+    "capture_store_s3.py": (
+        "THIRD_PARTY", "the operator-configured object store (S3 API via botocore) that holds the capture spool, "
+        "proxy log and images; a fixed endpoint from env, never a host we are pointed at (planning#318 S1b)", None,
     ),
     "domain_affinity.py": (
         "TARGET", "owned/default vhost probes + corroboration candidates", "self",

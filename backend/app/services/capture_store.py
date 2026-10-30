@@ -5,7 +5,8 @@ only make sense on a filesystem (lstat, no symlinks, O_NOFOLLOW / O_NONBLOCK,
 an fstat re-check, regular files only). CONTENT checks (JSON parse, magic
 bytes, sha256, field validation) stay in page_capture.py so every backend gets
 them. Callers pass capture ids / names, never paths: file names are built only
-here, only from a capture id. planning#318."""
+here, only from a capture id. planning#318. The S3 backend lives in
+capture_store_s3.py."""
 
 import logging
 import os
@@ -14,6 +15,12 @@ import stat
 from typing import Protocol
 
 log = logging.getLogger(__name__)
+
+
+class StoreConfigError(OSError):
+    """CAPTURE_STORE names an unknown backend, or the chosen backend's env is incomplete.
+    An OSError so every caller's existing fail-closed path (spool_unavailable, skipped
+    ingest/prune) applies. Never a fallback to another backend."""
 
 
 def spool_dir() -> str:
@@ -70,6 +77,8 @@ class CaptureStore(Protocol):
     def check_spool(self) -> None: ...
     def put_job(self, capture_id: str, payload: bytes) -> None: ...
     def delete_job(self, capture_id: str) -> None: ...
+    # extra job keys the worker needs to reach this store (S3: presigned PUTs); {} on the filesystem
+    def job_fields(self, capture_id: str, expires_at: int) -> dict: ...
     def list_results(self) -> list[str]: ...
     def result_info(self, name: str) -> tuple[float, bool] | None: ...
     def remove_result(self, name: str) -> None: ...
@@ -138,6 +147,9 @@ class FilesystemStore:
     def delete_job(self, capture_id: str) -> None:
         _unlink_quiet(os.path.join(self._spool, "jobs", f"{capture_id}.json"))
         _unlink_quiet(os.path.join(self._spool, "claimed", f"{capture_id}.json"))
+
+    def job_fields(self, capture_id: str, expires_at: int) -> dict:
+        return {}
 
     def list_results(self) -> list[str]:
         try:
@@ -224,5 +236,12 @@ class FilesystemStore:
 
 
 def get_store() -> CaptureStore:
-    """Built at CALL time so a test's per-test env applies. No new env var."""
-    return FilesystemStore(spool_dir(), proxylog_dir(), images_dir())
+    """Built at CALL time so a test's per-test env applies. CAPTURE_STORE selects the
+    backend (default filesystem); an unknown value raises StoreConfigError, never falls back."""
+    kind = os.environ.get("CAPTURE_STORE", "filesystem")
+    if kind == "filesystem":
+        return FilesystemStore(spool_dir(), proxylog_dir(), images_dir())
+    if kind == "s3":
+        from app.services.capture_store_s3 import s3_store_from_env  # botocore stays out of this module
+        return s3_store_from_env()
+    raise StoreConfigError(f"CAPTURE_STORE={kind!r} is not a known capture store (filesystem|s3)")
