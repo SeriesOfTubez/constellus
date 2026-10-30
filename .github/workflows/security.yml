@@ -275,6 +275,25 @@ jobs:
           CAPTURE_S3_TEST_SECRET_KEY: capturetestcapturetest
         run: python -m pytest app/tests/test_capture_store.py app/tests/test_capture_store_s3.py -q -rs
 
+      - name: Install capture-browser and capture-proxy test dependencies
+        run: pip install -r capture-browser/requirements-dev.txt -r capture-proxy/requirements.txt -r capture-proxy/requirements-dev.txt
+
+      - name: Run the worker's S3 tests (live against RustFS)
+        working-directory: capture-browser
+        env:
+          CAPTURE_S3_TEST_ENDPOINT: http://localhost:9000
+          CAPTURE_S3_TEST_ACCESS_KEY: capturetest
+          CAPTURE_S3_TEST_SECRET_KEY: capturetestcapturetest
+        run: python -m pytest tests/test_store_s3.py -q -rs
+
+      - name: Run the proxy's S3 tests (live against RustFS)
+        working-directory: capture-proxy
+        env:
+          CAPTURE_S3_TEST_ENDPOINT: http://localhost:9000
+          CAPTURE_S3_TEST_ACCESS_KEY: capturetest
+          CAPTURE_S3_TEST_SECRET_KEY: capturetestcapturetest
+        run: python -m pytest tests/test_log_s3.py -q -rs
+
   scanner-worker-tests:
     name: Scanner-Worker Tests
     runs-on: ubuntu-latest

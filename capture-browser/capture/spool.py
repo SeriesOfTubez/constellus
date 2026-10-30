@@ -37,6 +37,7 @@ MIN_VIEWPORT, MAX_VIEWPORT = 200, 4000
 MAX_IMAGE_BYTES_LIMIT = 8 * 1024 * 1024
 MAX_QUALITIES = 5
 MAX_USER_AGENT_CHARS = 256
+MAX_STORE_URL_CHARS = 4096
 UA_MODES = ("stock", "identifying")
 
 # Created under umask 007 by the worker. No chmod anywhere: the setgid bit comes
@@ -90,8 +91,52 @@ def _int_in(value: object, lo: int, hi: int, what: str) -> int:
     return value
 
 
-def validate_job(raw: bytes, file_id: str) -> dict:
-    """Parse + validate job bytes read from `claimed/<file_id>.json`."""
+def _same_store_host(url_netloc: str, store_netloc: str) -> bool:
+    """The URL's host must be the store's host, or a bucket's virtual-hosted subdomain of it."""
+    got, want = url_netloc.lower(), store_netloc.lower()
+    return got == want or got.endswith("." + want)
+
+
+def validate_store(obj: object, netloc: str | None, allow_http: bool) -> dict:
+    """Validate the optional `store` object of an S3-mode job (presigned PUT URLs).
+
+    When `netloc` is given every URL must point at exactly that host."""
+    if not isinstance(obj, dict):
+        raise InvalidJob("bad store")
+    out: dict[str, Any] = {}
+    for k in ("result_put", "screenshot_put"):
+        url = obj.get(k)
+        if not isinstance(url, str) or not 1 <= len(url) <= MAX_STORE_URL_CHARS:
+            raise InvalidJob(f"bad store.{k}")
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            raise InvalidJob(f"bad store.{k}") from None
+        if parts.scheme != "https" and not (allow_http and parts.scheme == "http"):
+            raise InvalidJob(f"bad store.{k}")
+        if not parts.netloc or "@" in parts.netloc:
+            raise InvalidJob(f"bad store.{k}")
+        if netloc is not None and not _same_store_host(parts.netloc, netloc):
+            raise InvalidJob(f"bad store.{k} host")
+        out[k] = url
+    expires = obj.get("expires")
+    if isinstance(expires, bool) or not isinstance(expires, int) or not 1 <= expires < 10**12:
+        raise InvalidJob("bad store.expires")
+    out["expires"] = expires
+    return out
+
+
+def validate_job(
+    raw: bytes,
+    file_id: str,
+    *,
+    store: str = "filesystem",
+    store_netloc: str | None = None,
+    allow_http: bool = False,
+) -> dict:
+    """Parse + validate job bytes read from `claimed/<file_id>.json` (or the S3 job)."""
+    if store not in ("filesystem", "s3"):
+        raise ValueError("store must be filesystem or s3")
     if len(raw) > JOB_MAX_BYTES:
         raise InvalidJob("too large")
     try:
@@ -159,6 +204,11 @@ def validate_job(raw: bytes, file_id: str) -> dict:
     elif "user_agent" in job:
         # The two sides disagree about the mode: refuse rather than guess.
         raise InvalidJob("user_agent not allowed in stock mode")
+    store_obj: dict | None = None
+    if store == "s3":
+        store_obj = validate_store(job.get("store"), store_netloc, allow_http)
+    elif "store" in job:
+        raise InvalidJob("store not allowed in filesystem mode")
     return {
         "capture_id": file_id,
         "url": url,
@@ -170,6 +220,7 @@ def validate_job(raw: bytes, file_id: str) -> dict:
         "webp_qualities": qualities,
         "user_agent_mode": mode,
         "user_agent": ua,
+        "store": store_obj,
     }
 
 

@@ -1,4 +1,4 @@
-# Page-capture spool contract (planning#280 S5b-2a, job v2 in S5b-2b, v3 in S5c-b1; store backends in planning#318: S1a filesystem interface, S1b S3)
+# Page-capture spool contract (planning#280 S5b-2a, job v2 in S5b-2b, v3 in S5c-b1; store backends in planning#318: S1a filesystem interface, S1b S3; S1c worker + proxy S3 modes)
 
 How the backend asks for a page capture and gets the results back, given one
 hard rule: **the capture browser must never have a network route to the
@@ -9,8 +9,8 @@ It works like a CI runner with an artifact store. The worker in
 it, and it never connects to the backend. Jobs and artifacts go through a
 store that both sides use and neither side serves. Today that store is a
 shared volume. An S3-compatible backend (pre-signed per-capture URLs) is
-available for K8s and cloud deployments (planning#318 S1b; the worker and proxy
-S3 modes are S1c).
+available for K8s and cloud deployments (planning#318 S1b, S1c). The S3 modes
+exist and are selected by `CAPTURE_STORE=s3` on all three services.
 
 ## Volumes
 
@@ -109,9 +109,8 @@ committed.
 When `CAPTURE_STORE=s3` the job also carries
 `"store": {"result_put": "<presigned PUT URL>", "screenshot_put": "<presigned PUT URL>", "expires": <int>}`.
 It is present only in S3 mode, so today's filesystem worker never sees it (it
-reads known keys only). S1c's worker requires it in S3 mode and refuses a
-filesystem-mode job that carries it. `expires` is the proxy credential's `exp`
-(the URLs expire with the job's credential).
+reads known keys only). The worker requires it in S3 mode and refuses a
+filesystem-mode job that carries it. Each URL must be `https` (`http` only with `CAPTURE_S3_INSECURE_HTTP=1`), at most 4096 characters, carry no credentials, and point at the host of the worker's own `CAPTURE_S3_ENDPOINT` (or at a bucket's virtual-hosted subdomain of it). `expires` follows the `proxy_expires` rule and is the proxy credential's `exp`: the URLs expire with the job's credential. A job whose `store` object is invalid gets no result at all (the worker logs it and the row times out), because there is nowhere to upload one.
 
 ## Worker loop (capture-browser)
 
@@ -139,6 +138,15 @@ filesystem-mode job that carries it. `expires` is the proxy credential's `exp`
 6. Delete `claimed/<id>.json`.
 7. **Exit.** One capture per process: compose restarts the container, so every
    capture starts with fresh tmpfs and a fresh process.
+
+**On S3 (`CAPTURE_STORE=s3`):** the worker holds a key with list, get and delete on the jobs bucket and nothing else; it requires an explicit `CAPTURE_S3_ENDPOINT` and never a spool volume.
+
+1. List `jobs/` and sort by name.
+2. GET the job, then DELETE it. **The delete is the claim.** A delete that fails means the job is not ours: log it and move on; the backend's delete on ingest or on timeout is the backstop. A crash after the delete leaves no retry, like a crashed filesystem worker's `claimed/` file: the row times out. There is no `claimed/` on S3 and there is one worker (several workers: planning#323).
+3. Validate as above, plus the `store` object. An invalid job still gets its `invalid_job` result through `store.result_put`.
+4. Run ONE capture, as above.
+5. PUT `screenshot.webp` through `store.screenshot_put` first, then `result.json` through `store.result_put`: `result.json` is the commit marker. The PUTs are plain HTTP with `Content-Type` and `Content-Length` only (no `x-amz-*` headers), never through the capture proxy, with redirects refused. If the screenshot PUT fails the result is still uploaded, with `screenshot: null` and `screenshot_omitted_reason: "upload_failed"`. If the result PUT fails nothing more is tried: the row times out.
+6. Exit, as above.
 
 When there is no job, the worker sleeps and polls again. It does not exit
 while idle.
@@ -174,6 +182,8 @@ same JSON object it prints to stdout) to `<dir>/<capture_id>.jsonl`.
 
 Stdout logging is unchanged.
 
+**On S3 (`CAPTURE_STORE=s3`):** the proxy holds a put-only key on the proxylog bucket (`CAPTURE_S3_BUCKET_PROXYLOG`); `CAPTURE_PROXY_LOG_DIR` must be unset. S3 has no append, so the proxy buffers each capture's records in memory and PUTs the whole `proxylog/<capture_id>.jsonl` object, replacing the previous one, about 1 s after the last record, at once when the 4 MiB cap is reached, and on shutdown. A buffer is dropped once it has been idle for the credential's maximum lifetime (3900 s). At most 16 captures are buffered at a time; past that, and past the cap, records go to stdout only. A failed PUT is logged by its error code and retried at the next record or at shutdown; the proxy never fails a connection because the store misbehaves. The backend's 5 s result min-age is what gives the proxy its time to flush: the browser closes its connections, which produces the last records, before the worker uploads `result.json`. A log that still arrives late is lost without a trace today (planning#325 records that on the row).
+
 ## Ingest (backend)
 
 A scheduler tick runs over `results/<id>/` directories that are at least 5
@@ -193,8 +203,8 @@ rendered an arbitrary page.
 - Copy the screenshot to `/captures/<id>.webp`.
 - Read `/proxylog/<id>.jsonl`.
 - Then delete `results/<id>/`, the proxy log and the job (`jobs/<id>.json`). On the
-  filesystem the worker already removed its claim; on S3 there is no claim, so this
-  delete is what retires the job.
+  filesystem the worker already removed its claim; on S3 the worker already deleted the job when it claimed it, so this
+  delete is the backstop.
 
 On S3 a result is visible only once `results/<id>/result.json` exists (the
 commit marker); its LastModified is the result's time. A `result.json` whose
@@ -301,6 +311,7 @@ travel through a volume: `capture_config`, mounted read-write on the backend at
 - **Guards are not settings.** `ALLOWED_PORTS`, the address blocklist, proxy
   authentication and resolve-once pinning are constants and are never read from
   this file or from any setting.
+- **On Kubernetes** the file travels as a ConfigMap written by the backend (planning#324, with the store NetworkPolicy and a local kind lab). A ConfigMap volume's file is a symlink, which the proxy's `O_NOFOLLOW` open refuses, so `CAPTURE_LIMITS_FILE` must point at `..data/proxy_limits.json` or the mount must use a `subPath`.
 
 ## Store interface (planning#318)
 
@@ -321,11 +332,19 @@ guard test keeps `page_capture.py` free of direct file access.
 |---|---|
 | `CAPTURE_STORE` | `filesystem` (default) or `s3`. Anything else is an error. |
 | `CAPTURE_S3_ENDPOINT` | Endpoint URL; unset means AWS default endpoints. |
+| `CAPTURE_S3_PUBLIC_ENDPOINT` | The endpoint the presigned URLs are signed for, when the worker reaches the store by a different host than the backend (unset = `CAPTURE_S3_ENDPOINT`). Same scheme rules. |
 | `CAPTURE_S3_REGION` | Region, default `us-east-1`. |
 | `CAPTURE_S3_ACCESS_KEY` / `CAPTURE_S3_SECRET_KEY` | Both or neither; neither means botocore's default credential chain. |
 | `CAPTURE_S3_PATH_STYLE` | `true` (default) or `false`. |
 | `CAPTURE_S3_INSECURE_HTTP` | `1` allows an `http` endpoint. Test profile only. |
 | `CAPTURE_S3_BUCKET_JOBS` / `_RESULTS` / `_PROXYLOG` / `_IMAGES` | The four bucket names. |
+
+Worker and proxy (S1c):
+
+- `CAPTURE_STORE=s3` selects the mode in both. Any other `CAPTURE_STORE` value stops the process.
+- Both take `CAPTURE_S3_ENDPOINT` (required, their own path to the store), `CAPTURE_S3_REGION`, `CAPTURE_S3_ACCESS_KEY`/`_SECRET_KEY` (both or neither), `CAPTURE_S3_PATH_STYLE` and `CAPTURE_S3_INSECURE_HTTP`.
+- The worker takes `CAPTURE_S3_BUCKET_JOBS` only; the proxy takes `CAPTURE_S3_BUCKET_PROXYLOG` only.
+- `CAPTURE_SPOOL_DIR` is unused, and `CAPTURE_PROXY_LOG_DIR` must be unset, in S3 mode.
 
 - **Fail closed.** An unknown backend or an incomplete S3 environment makes the
   capture store unavailable (`spool_unavailable`). There is no fallback to the
@@ -340,10 +359,7 @@ guard test keeps `page_capture.py` free of direct file access.
 - **Buckets.** The backend never creates buckets; the operator provisions them.
 - **Transport.** https is required unless `CAPTURE_S3_INSECURE_HTTP=1`, which
   is for the test profile only.
-- **IAM shape.** Backend: list/get/put/delete on its four prefixes. Worker
-  (S1c): list and get on the jobs bucket. Proxy (S1c): put on the proxylog
-  bucket. Nobody but the backend reads results or images. Users never receive
-  store URLs; the backend streams images.
+- **IAM shape.** Backend: list/get/put/delete on its four prefixes. Worker: list, get and delete on the jobs bucket (the delete is its claim). Proxy: put on the proxylog bucket. Nobody but the backend reads results or images. Users never receive store URLs; the backend streams images.
 - **RustFS test profile.** The `capture-s3-test` compose profile runs RustFS,
   pinned by digest, for the S3 conformance tests (and a CI job) only. It is
   never a production default and is never exposed beyond `127.0.0.1`: the
@@ -351,5 +367,4 @@ guard test keeps `page_capture.py` free of direct file access.
   with no default. The pin matters because of RustFS's pre-1.0 CVE trail and
   the 1.0.0/1.0.1 advisories fixed in 1.0.2.
 
-S1c: worker and proxy S3 modes; the proxy-limits source on K8s; whether the
-worker needs a separate public endpoint for the presigned host.
+Not part of the store by design: the proxy-limits file. On Kubernetes it is a ConfigMap written by the backend (planning#324). Compose keeps the filesystem spool; the browser and proxy join the store network only on Kubernetes or in an ad-hoc end-to-end run.

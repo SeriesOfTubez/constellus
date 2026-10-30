@@ -1,1 +1,3 @@
 h11==0.16.0
+# planning#318 S1c, same pin as backend
+botocore==1.43.122

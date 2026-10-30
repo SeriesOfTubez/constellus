@@ -1,6 +1,5 @@
 """Pure-function tests for capture.spool / capture.worker (no browser, no Playwright)."""
 
-import base64
 import json
 import os
 import stat
@@ -8,7 +7,7 @@ import sys
 
 import pytest
 
-from capture import spool, worker
+from capture import spool, store_s3, worker
 
 ID = "0190a1b2-c3d4-7e5f-8a6b-1234567890ab"
 TOKEN = "ab" * 32  # 64 lowercase hex
@@ -48,6 +47,9 @@ def job(**over):
 
 
 def test_playwright_is_not_imported_by_the_pure_modules():
+    assert "playwright" not in sys.modules
+    import capture.store_s3  # noqa: F401 - the S3 module must be as pure as spool
+
     assert "playwright" not in sys.modules
 
 
@@ -319,7 +321,7 @@ def test_write_result_atomic_dir_and_modes(tmp_path):
 def test_no_chmod_in_worker_modules():
     import inspect
 
-    for mod in (spool, worker):
+    for mod in (spool, worker, store_s3):
         assert "chmod" not in inspect.getsource(mod).replace("no chmod", "").replace("No chmod", "")
 
 
@@ -377,97 +379,6 @@ def test_process_invalid_job_writes_invalid_job_result_without_a_browser(tmp_pat
     r = json.loads(open(os.path.join(results, ID, "result.json")).read())
     assert r["error"] == "invalid_job" and r["final_url"] is None
     assert "playwright" not in sys.modules  # the browser path was never reached
-
-
-class _FakeCdp:
-    def send(self, method, params=None):
-        if method == "Page.captureScreenshot":
-            return {"data": base64.b64encode(b"RIFF....WEBP").decode()}
-        return {}  # Network.enable / Network.getCertificate (no tableNames -> cert None)
-
-
-class _FakePage:
-    url = "https://example.com/"
-
-    def evaluate(self, expr):
-        return "Mozilla/5.0 (X11; Linux) HeadlessChrome/999.0 Safari/537.36"
-
-    def on(self, *a):
-        pass
-
-    def goto(self, *a, **kw):
-        return None
-
-    def wait_for_load_state(self, *a, **kw):
-        pass
-
-    def title(self):
-        return "t"
-
-
-class _FakeCtx:
-    def __init__(self):
-        self.routes = []
-
-    def route(self, pattern, handler):
-        self.routes.append((pattern, handler))
-
-    def new_page(self):
-        return _FakePage()
-
-    def close(self):
-        pass
-
-    def new_cdp_session(self, page):
-        return _FakeCdp()
-
-
-class _FakeBrowser:
-    def __init__(self):
-        self.context_kwargs = []
-        self.contexts = []
-        self.launch_kwargs = []
-
-    def new_context(self, **kw):
-        self.context_kwargs.append(kw)
-        ctx = _FakeCtx()
-        self.contexts.append(ctx)
-        return ctx
-
-    def close(self):
-        pass
-
-
-@pytest.fixture
-def fake_playwright(monkeypatch):
-    """Fake only the Playwright transport (sync_playwright -> chromium.launch ->
-    browser.new_context); capture.run, capture_page and new_context are REAL."""
-    import types
-
-    browser = _FakeBrowser()
-
-    class _P:
-        chromium = types.SimpleNamespace(
-            launch=lambda **kw: (browser.launch_kwargs.append(kw), browser)[1]
-        )
-
-    class _CM:
-        def __enter__(self):
-            return _P()
-
-        def __exit__(self, *a):
-            return False
-
-    mod = types.ModuleType("playwright.sync_api")
-    for name in ("Browser", "BrowserContext", "Playwright"):
-        setattr(mod, name, object)
-    mod.sync_playwright = lambda: _CM()
-    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
-    monkeypatch.setitem(sys.modules, "playwright.sync_api", mod)
-    monkeypatch.setenv("CAPTURE_PROXY_URL", "http://proxy.example.test:3128")
-    sys.modules.pop("capture.run", None)  # re-import against the fake
-    yield browser
-    sys.modules.pop("capture.run", None)  # never leak a fake-bound module
 
 
 def _run_job(tmp_path, raw):
@@ -539,3 +450,100 @@ def test_worker_archive_job_installs_archive_only_route(tmp_path, fake_playwrigh
     handler(good)
     assert bad.calls == [("abort", "blockedbyclient")]
     assert good.calls == [("continue",)]
+
+
+# --- the `store` object (S3 job mode) ----------------------------------------
+
+NETLOC = "s3.example.com:9000"
+PUT_R = f"https://{NETLOC}/res/results/{ID}/result.json?X-Amz-Signature=aa"
+PUT_S = f"https://{NETLOC}/res/results/{ID}/screenshot.webp?X-Amz-Signature=bb"
+
+
+def _store(**over):
+    s = {"result_put": PUT_R, "screenshot_put": PUT_S, "expires": EXP}
+    s.update(over)
+    return s
+
+
+def test_filesystem_mode_refuses_a_job_carrying_store():
+    with pytest.raises(spool.InvalidJob, match="store not allowed"):
+        spool.validate_job(job(store=_store()), ID)
+
+
+def test_filesystem_job_result_has_store_none():
+    assert spool.validate_job(job(), ID)["store"] is None
+
+
+def test_validate_store_happy_path_returns_exactly_the_three_keys():
+    out = spool.validate_store({**_store(), "extra": 1}, NETLOC, False)
+    assert out == _store()
+    assert sorted(out) == ["expires", "result_put", "screenshot_put"]
+
+
+def test_validate_store_host_compare_is_case_insensitive():
+    assert spool.validate_store(_store(), NETLOC.upper(), False)["expires"] == EXP
+
+
+def test_validate_store_accepts_a_bucket_subdomain_of_the_store_host_only():
+    virtual = _store(result_put=PUT_R.replace(NETLOC, "res." + NETLOC))  # virtual-hosted style
+    assert spool.validate_store(virtual, NETLOC, False)["result_put"] == virtual["result_put"]
+    with pytest.raises(spool.InvalidJob, match="host"):  # a look-alike host without the dot
+        spool.validate_store(_store(result_put=PUT_R.replace(NETLOC, "evil" + NETLOC)), NETLOC, False)
+
+
+@pytest.mark.parametrize(
+    "obj,allow_http",
+    [
+        (None, False),
+        ([], False),
+        ("x", False),
+        (_store(result_put=_ABSENT), False),
+        (_store(result_put=5), False),
+        (_store(result_put=""), False),
+        (_store(screenshot_put=None), False),
+        (_store(result_put="ftp://" + NETLOC + "/x"), False),
+        (_store(result_put="file:///etc/passwd"), False),
+        (_store(result_put=PUT_R.replace("https", "http")), False),  # http needs the flag
+        (_store(screenshot_put=PUT_S.replace(NETLOC, "evil.example.net")), False),  # host mismatch
+        (_store(result_put=PUT_R.replace(NETLOC, "user@" + NETLOC)), False),
+        (_store(result_put="https:///x"), False),
+        (_store(result_put=PUT_R + "a" * spool.MAX_STORE_URL_CHARS), False),
+        (_store(expires=True), False),
+        (_store(expires=0), False),
+        (_store(expires=10**12), False),
+        (_store(expires="2000000000"), False),
+        (_store(expires=_ABSENT), False),
+    ],
+)
+def test_validate_store_rejects(obj, allow_http):
+    if isinstance(obj, dict):
+        obj = {k: v for k, v in obj.items() if v is not _ABSENT}
+    with pytest.raises(spool.InvalidJob):
+        spool.validate_store(obj, NETLOC, allow_http)
+
+
+def test_validate_store_http_allowed_only_with_the_flag():
+    http = _store(result_put=PUT_R.replace("https", "http"), screenshot_put=PUT_S.replace("https", "http"))
+    with pytest.raises(spool.InvalidJob):
+        spool.validate_store(http, NETLOC, False)
+    assert spool.validate_store(http, NETLOC, True) == http
+
+
+def test_validate_store_without_netloc_skips_the_host_check():
+    other = _store(result_put="https://other.example.org/x")
+    assert spool.validate_store(other, None, False)["result_put"] == "https://other.example.org/x"
+
+
+def test_s3_job_carries_the_store():
+    j = spool.validate_job(job(store=_store()), ID, store="s3", store_netloc=NETLOC)
+    assert j["store"] == _store() and j["url"] == "https://example.com/"
+
+
+def test_s3_job_without_store_is_invalid():
+    with pytest.raises(spool.InvalidJob):
+        spool.validate_job(job(), ID, store="s3", store_netloc=NETLOC)
+
+
+def test_unknown_store_mode_is_a_programming_error():
+    with pytest.raises(ValueError):
+        spool.validate_job(job(), ID, store="other")

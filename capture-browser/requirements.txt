@@ -1,2 +1,4 @@
 playwright==1.63.0
 cryptography==50.0.2
+# planning#318 S1c: S3 job mode (same pin as backend)
+botocore==1.43.122

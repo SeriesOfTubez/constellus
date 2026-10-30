@@ -350,6 +350,16 @@ def make_log(log_dir: str | None) -> Callable[[dict], None]:
     return log
 
 
+def make_s3_log(sink) -> Callable[[dict], None]:
+    """stdout always; additionally the buffered S3 per-capture log."""
+
+    def log(record: dict) -> None:
+        emit_stdout(record)
+        sink.add(record)
+
+    return log
+
+
 class _Rec:
     """Accumulates the fields of one request; emitted once, when it ends."""
 
@@ -464,6 +474,8 @@ def _parse_target(request: h11.Request) -> _Target:
 
 
 class Proxy:
+    log_sink = None  # set by build_proxy_from_env: an S3LogSink in S3 mode, flushed at shutdown
+
     def __init__(
         self,
         *,
@@ -885,7 +897,25 @@ def build_proxy_from_env(env=os.environ) -> Proxy:
         env.get("CAPTURE_LIMITS_FILE", "/capture_config/" + LIMITS_FILE_NAME),
         defaults=Limits(CONNECT_TIMEOUT_S, IDLE_TIMEOUT_S, MAX_CONNECTIONS),
     )
-    return Proxy(key=key, limits=limits, log=make_log(env.get("CAPTURE_PROXY_LOG_DIR")))
+    store = env.get("CAPTURE_STORE", "filesystem")
+    if store == "filesystem":
+        proxy = Proxy(key=key, limits=limits, log=make_log(env.get("CAPTURE_PROXY_LOG_DIR")))
+        proxy.log_sink = None
+        return proxy
+    if store == "s3":
+        if env.get("CAPTURE_PROXY_LOG_DIR"):
+            raise SystemExit("capture-proxy: CAPTURE_PROXY_LOG_DIR must be unset when CAPTURE_STORE=s3")
+        import log_s3  # lazy: filesystem mode never imports botocore
+
+        try:
+            cfg = log_s3.config_from_env(env)
+        except log_s3.S3ConfigError as exc:
+            raise SystemExit(f"capture-proxy: {exc}") from exc
+        sink = log_s3.S3LogSink(log_s3.make_client(cfg), cfg.bucket)
+        proxy = Proxy(key=key, limits=limits, log=make_s3_log(sink))
+        proxy.log_sink = sink
+        return proxy
+    raise SystemExit("capture-proxy: CAPTURE_STORE must be filesystem or s3")
 
 
 async def serve(proxy: Proxy, host: str, port: int) -> asyncio.Server:
@@ -903,6 +933,9 @@ async def _main() -> None:
     print(f"capture-proxy: listening on :{port}", file=sys.stderr, flush=True)
     async with server:
         await stop.wait()
+    sink = getattr(proxy, "log_sink", None)
+    if sink is not None:
+        await sink.close()
 
 
 if __name__ == "__main__":

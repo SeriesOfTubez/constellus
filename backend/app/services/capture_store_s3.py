@@ -19,6 +19,7 @@ This module never logs a key, secret or presigned URL.
 import logging
 import os
 import time
+import dataclasses
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal, Protocol
@@ -48,6 +49,8 @@ class S3Buckets:
 @dataclass(frozen=True)
 class S3Config:
     endpoint: str | None  # None = AWS default endpoints
+    # the endpoint presigned URLs are signed for, when the worker reaches the store by another host
+    public_endpoint: str | None
     region: str
     access_key: str | None  # both or neither; neither = botocore's default chain
     secret_key: str | None
@@ -71,16 +74,23 @@ class SigV4Signer:
             ClientMethod=op, Params={"Bucket": bucket, "Key": key}, ExpiresIn=expires_in, HttpMethod=method)
 
 
+def _checked_url(value: str | None, name: str, insecure: bool) -> str | None:
+    if not value:
+        return None
+    parts = urlsplit(value)
+    allowed = {"https"} | ({"http"} if insecure else set())
+    if parts.scheme not in allowed or not parts.netloc or "@" in parts.netloc:
+        raise StoreConfigError(
+            f"{name} must be an https URL (http only with CAPTURE_S3_INSECURE_HTTP=1) "
+            "with a host and no credentials")
+    return value
+
+
 def s3_config_from_env() -> S3Config:
     env = os.environ
-    endpoint = env.get("CAPTURE_S3_ENDPOINT") or None
-    if endpoint is not None:
-        parts = urlsplit(endpoint)
-        allowed = {"https"} | ({"http"} if env.get("CAPTURE_S3_INSECURE_HTTP") == "1" else set())
-        if parts.scheme not in allowed or not parts.netloc or "@" in parts.netloc:
-            raise StoreConfigError(
-                "CAPTURE_S3_ENDPOINT must be an https URL (http only with CAPTURE_S3_INSECURE_HTTP=1) "
-                "with a host and no credentials")
+    insecure = env.get("CAPTURE_S3_INSECURE_HTTP") == "1"
+    endpoint = _checked_url(env.get("CAPTURE_S3_ENDPOINT"), "CAPTURE_S3_ENDPOINT", insecure)
+    public_endpoint = _checked_url(env.get("CAPTURE_S3_PUBLIC_ENDPOINT"), "CAPTURE_S3_PUBLIC_ENDPOINT", insecure)
     access = env.get("CAPTURE_S3_ACCESS_KEY") or None
     secret = env.get("CAPTURE_S3_SECRET_KEY") or None
     if (access is None) != (secret is None):
@@ -97,11 +107,11 @@ def s3_config_from_env() -> S3Config:
     if missing:
         raise StoreConfigError("capture store S3 config is missing: " + ", ".join(missing))
     return S3Config(
-        endpoint=endpoint, region=env.get("CAPTURE_S3_REGION") or "us-east-1",
+        endpoint=endpoint, public_endpoint=public_endpoint, region=env.get("CAPTURE_S3_REGION") or "us-east-1",
         access_key=access, secret_key=secret, path_style=style == "true", buckets=S3Buckets(**vals))
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=8)  # two clients per config when a public endpoint is set
 def _client(cfg: S3Config):
     session = botocore.session.get_session()
     return session.create_client(
@@ -113,10 +123,16 @@ def _client(cfg: S3Config):
                       retries={"max_attempts": 3, "mode": "standard"}))
 
 
+def _presign_client(cfg: S3Config):
+    """The client that signs URLs for the worker: bound to the public endpoint when one is set."""
+    if cfg.public_endpoint is None:
+        return _client(cfg)
+    return _client(dataclasses.replace(cfg, endpoint=cfg.public_endpoint, public_endpoint=None))
+
+
 def s3_store_from_env() -> "S3Store":
     cfg = s3_config_from_env()
-    client = _client(cfg)
-    return S3Store(client, SigV4Signer(client), cfg.buckets)
+    return S3Store(_client(cfg), SigV4Signer(_presign_client(cfg)), cfg.buckets)
 
 
 def _code(e: Exception) -> str:
