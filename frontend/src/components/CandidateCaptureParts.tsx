@@ -90,6 +90,9 @@ export function CaptureImage({ candidateId, captureId, domain }: { candidateId: 
   return <img src={url} alt={`Screenshot of ${domain}`} className="w-full rounded border" />
 }
 
+// About the record, not the page: the proxy log may have landed later (planning#325).
+const NO_PROXY_RECORD = "No proxy record was found when this capture was processed"
+
 const STATUS_BADGE: Record<string, { variant: "secondary" | "success" | "outline"; label: string }> = {
   queued: { variant: "secondary", label: "Queued" },
   done: { variant: "success", label: "Done" },
@@ -150,6 +153,9 @@ export function CaptureList({ captures, candidateId }: { captures: PageCapture[]
                 {captureFailureText(c)}
               </p>
             )}
+            {c.status === "failed" && c.proxy_log_missing && (
+              <p className="text-xs text-muted-foreground">{NO_PROXY_RECORD}</p>
+            )}
             {c.status === "done" && (
               <div className="space-y-1 text-xs">
                 {c.title && <p className="text-sm">{c.title}</p>}
@@ -163,7 +169,9 @@ export function CaptureList({ captures, candidateId }: { captures: PageCapture[]
                   {c.pinned_ip && <> · pinned {c.pinned_ip}</>}
                 </p>
                 <p className="text-muted-foreground">
-                  {c.request_count} requests via proxy{c.proxy_log_truncated && " (log truncated)"}
+                  {c.proxy_log_missing
+                    ? NO_PROXY_RECORD
+                    : <>{c.request_count} requests via proxy{c.proxy_log_truncated && " (log truncated)"}</>}
                 </p>
                 {chain.length > 0 && (
                   <details className="text-xs">

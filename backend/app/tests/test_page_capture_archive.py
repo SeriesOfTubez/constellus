@@ -561,7 +561,10 @@ def test_ingest_capture_error_logs_the_failure(w, env, caplog):
     with caplog.at_level(logging.WARNING, logger="app.services.page_capture"):
         r = _run(w, env, row, _wb(row, TS), error="boom\nforged line")
     assert (r.status, r.failure_reason) == ("failed", "capture_error")
-    hits = [m for m in caplog.messages if str(row.id) in m]
+    # archive captures go through the proxy too; this fixture writes no proxy log,
+    # so ingest's "no proxy log" warning (planning#325) is expected alongside.
+    assert r.proxy_log_missing is True
+    hits = [m for m in caplog.messages if str(row.id) in m and "no proxy log" not in m]
     assert len(hits) == 1
     assert "capture_error" in hits[0] and "'boom\\nforged line'" in hits[0] and "\n" not in hits[0]
 

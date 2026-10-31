@@ -1199,3 +1199,64 @@ def test_request_refused_when_the_proxy_key_is_missing_or_short(w, env, monkeypa
     monkeypatch.setenv("CAPTURE_PROXY_KEY", "k" * 32)
     row = pc.request_capture(w.db, candidate_id=c.id, user=user, manual=True)
     assert _rows_for(c.id) == 1 and (env["spool"] / "jobs" / f"{row.id}.json").exists()
+
+
+# ── proxy_log_missing (planning#325) ─────────────────────────────────────────
+
+
+def test_done_capture_without_a_proxylog_is_flagged_missing(w, env, caplog):
+    row = _queued(w)
+    _drop_result(env, row)  # no _plog: the store holds nothing for this capture
+    with caplog.at_level("WARNING"):
+        assert _ingest(w) == 1
+    r = _fresh(row.id)
+    assert r.status == "done" and r.title == "Fabrikam Home" and r.final_url  # the read path was reached
+    assert r.proxy_log_missing is True and r.proxy_log_truncated is False
+    assert _requests(row.id) == []
+    assert any(str(row.id) in m and "no proxy log" in m for m in caplog.messages)
+
+
+def test_done_capture_with_a_proxylog_is_not_flagged_missing(w, env, caplog):
+    row = _queued(w)
+    _drop_result(env, row)
+    _plog(env, row, [_rec(row)])
+    with caplog.at_level("WARNING"):
+        assert _ingest(w) == 1
+    r = _fresh(row.id)
+    assert r.status == "done" and r.proxy_log_missing is False
+    assert len(_requests(row.id)) == 1
+    assert not any("no proxy log" in m for m in caplog.messages)
+
+
+@pytest.mark.parametrize("with_log, expected", [(False, True), (True, False)])
+def test_capture_error_records_whether_the_proxylog_was_there(w, env, with_log, expected):
+    row = _queued(w)
+    _drop_result(env, row, _result(row, error="net::ERR_NAME_NOT_RESOLVED", status=None, cert=None), image=None)
+    if with_log:
+        _plog(env, row, [_rec(row)])
+    assert _ingest(w) == 1
+    r = _assert_failed(row, "capture_error")
+    assert r.proxy_log_missing is expected
+
+
+def test_paths_that_never_read_the_log_leave_proxy_log_missing_null(w, env):
+    bad, old = _queued(w), _queued(w)
+    _drop_result(env, bad, raw=b"not json")
+    assert _ingest(w) == 1
+    assert _assert_failed(bad, "invalid_result").proxy_log_missing is None
+
+    old.requested_at = datetime.now(timezone.utc) - timedelta(seconds=pc.DEFAULT_QUEUE_TIMEOUT_S + 60)
+    w.db.commit()
+    assert pc.sweep_timeouts(w.db) == 1
+    assert _assert_failed(old, "timeout").proxy_log_missing is None
+
+
+def test_check_refuses_missing_and_truncated_together(w, env):
+    from sqlalchemy.exc import IntegrityError
+
+    row = _queued(w)
+    row.proxy_log_missing = True
+    row.proxy_log_truncated = True
+    with pytest.raises(IntegrityError):
+        w.db.flush()
+    w.db.rollback()
