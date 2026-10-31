@@ -1,5 +1,6 @@
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 # Imported for its side effect: populates os.environ from the repo-root
@@ -39,6 +40,17 @@ class Settings(BaseSettings):
     # `app.services.edgar_ingest.require_user_agent` enforces validity
     # before ingest makes its first HTTP request, not before.
     sec_user_agent: str | None = None
+    # planning#326 — level of the stderr log handler (container logs). The DB
+    # handler (`system_logs`) stays at INFO regardless. Env, not an admin
+    # setting: logging starts before the DB is reachable and must keep
+    # working while it is down. Case-insensitive; a bad value fails at
+    # `Settings()` construction.
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _upper_log_level(cls, v: object) -> object:
+        return v.upper() if isinstance(v, str) else v
 
 
 settings = Settings()

@@ -59,11 +59,12 @@ ingested it and the store is clean), `down --purge`.
   (403 once any user exists is accepted) and logs in; its credentials are in the
   secrets file. The email uses `example.com` because the backend's validator rejects
   `.invalid`.
-- **`kubectl logs deploy/backend` shows only uvicorn's access lines.** The application
-  logs (including `page_capture: wrote proxy limits to ConfigMap ...` and any
-  `writing the proxy limits failed` traceback) go to the `system_logs` table through
-  the DB log handler, not to stdout. Check the ConfigMap's content, the Logs page or
-  `system_logs` in the lab's Postgres; the lab's `limits-check` watches the ConfigMap.
+- **`kubectl logs deploy/backend` shows the application logs** at `LOG_LEVEL`
+  (default INFO; planning#326), e.g. `page_capture: wrote proxy limits to ConfigMap ...`
+  or a `writing the proxy limits failed` traceback, alongside uvicorn's access lines.
+  The same records (INFO and above) also go to `system_logs`, which the Logs page reads.
+  Library loggers (httpx, sqlalchemy, ...) are filtered from both: httpx logs request
+  URLs, and some connectors carry their API key in the query string.
 - **The API-server egress rule is generated per cluster.** `up` reads the
   `kubernetes` EndpointSlice and applies `backend-egress-apiserver` with the endpoint
   addresses (`$STATE/backend-egress-apiserver.yaml`); see Production deltas.
