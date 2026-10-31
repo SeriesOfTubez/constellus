@@ -259,9 +259,6 @@ def _spy(monkeypatch):
 
 
 def test_claiming_schedules_the_verifier_for_that_candidate_and_a_failed_claim_does_not(w, monkeypatch):
-    import app.api.targets as targets_api
-
-    monkeypatch.setattr(targets_api, "_prime_ct_and_launch", lambda *a: None)
     calls = _spy(monkeypatch)
     root = w.ours()
     c = w.candidate(root, value=_dom("c"))
@@ -281,9 +278,6 @@ def test_claiming_schedules_the_verifier_for_that_candidate_and_a_failed_claim_d
 
 
 def test_adding_an_organization_schedules_the_verifier_for_the_seed(w, monkeypatch):
-    import app.api.targets as targets_api
-
-    monkeypatch.setattr(targets_api, "_prime_ct_and_launch", lambda *a: None)
     calls = _spy(monkeypatch)
     name, seed = f"Example Holdings {hexid()}", _dom("s")
     w.entity_names.append(name)
