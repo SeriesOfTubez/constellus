@@ -597,11 +597,8 @@ def test_candidate_detail_has_every_signal_with_its_anchor_and_the_events(w):
     assert anchors["redirect_to_claimed"]["candidate_value"] == "d-claimed.example.com"
 
 
-def test_add_claim_and_reject_over_http(w, monkeypatch):
-    import app.api.targets as targets_api
-
-    launched: list[tuple] = []
-    monkeypatch.setattr(targets_api, "_prime_ct_and_launch", lambda v, run_id, scope: launched.append((v, run_id, scope)))
+def test_add_claim_and_reject_over_http(w, scan_launches):
+    launched = scan_launches
     root, eng = w.deal()
     admin = w.user()
     admin_h, viewer_h = w.headers(admin), w.headers(role=UserRole.VIEWER.value)

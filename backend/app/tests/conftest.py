@@ -76,6 +76,80 @@ def _no_connector_autosync(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def scan_launches(request, monkeypatch):
+    """planning#321: claiming a candidate or adding a target queues
+    `targets._prime_ct_and_launch`, which under `TestClient` runs inline and
+    makes a real Certspotter call and then `docker run`s subfinder. It is
+    replaced by a recorder unless the test module sets `REAL_SCAN_LAUNCH = True`.
+    A test that asserts a launch happened requests this fixture by name and
+    reads the list of `(target_value, run_id, scope)` it was called with."""
+    launched: list[tuple] = []
+    if getattr(request.module, "REAL_SCAN_LAUNCH", False):
+        return launched
+    from app.api import targets
+
+    monkeypatch.setattr(
+        targets, "_prime_ct_and_launch",
+        lambda target_value, run_id, scope: launched.append((target_value, run_id, scope)),
+    )
+    return launched
+
+
+_BLOCKED_SPAWNS = frozenset({
+    "docker", "subfinder", "dnsrecon", "nuclei", "naabu", "nmap", "httpx", "podman", "kubectl", "kind",
+})
+
+
+def _argv0_basename(args, shell) -> str:
+    import os
+    import shlex
+
+    if isinstance(args, (str, bytes, os.PathLike)):
+        first = os.fsdecode(args)
+        if shell:
+            try:
+                parts = shlex.split(first)
+            except ValueError:
+                parts = first.split()
+            first = parts[0] if parts else ""
+        else:
+            first = first.split()[0] if first.split() else ""
+    else:
+        seq = list(args)
+        first = os.fsdecode(seq[0]) if seq else ""
+    return os.path.basename(first)
+
+
+@pytest.fixture(autouse=True)
+def subprocess_violations(monkeypatch):
+    """planning#321: suite-wide tripwire. A test must never start a scanner or a
+    container runtime. `scan_executor.launch` swallows every exception, so
+    raising from `Popen` alone would leave the test green; the attempt is also
+    recorded and this fixture fails the test at teardown. There is no opt-out:
+    stub the launch seam instead. Everything not in the blocked set runs for real."""
+    import os
+    import subprocess
+
+    violations: list = []
+    real_popen = subprocess.Popen
+
+    class _GuardedPopen(real_popen):
+        def __init__(self, args, *a, **kw):
+            name = _argv0_basename(args, kw.get("shell", False))
+            if kw.get("executable"):  # `executable=` runs that binary whatever argv[0] says
+                name = os.path.basename(os.fsdecode(kw["executable"]))
+            if name in _BLOCKED_SPAWNS:
+                violations.append(args)
+                raise RuntimeError(f"planning#321: test tried to spawn {name} ({args!r}); stub the launch seam instead")
+            super().__init__(args, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", _GuardedPopen)
+    yield violations
+    if violations:
+        pytest.fail(f"planning#321: test spawned blocked process(es): {violations!r}")
+
+
+@pytest.fixture(autouse=True)
 def _offline_org_verifier_facts(monkeypatch):
     """planning#277 S1b: claiming / adding through the API schedules the
     verifier run, and under `TestClient` a background task runs inline. Left

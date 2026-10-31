@@ -654,9 +654,6 @@ def test_the_org_summary_and_list_count_domains_only(w):
 
 
 def test_the_claim_route_reports_claimed_prefixes(w, monkeypatch):
-    import app.api.targets as targets_api
-
-    monkeypatch.setattr(targets_api, "_prime_ct_and_launch", lambda *a: None)
     after_claim = []
     monkeypatch.setattr(runner, "verify_after_claim", lambda *a: after_claim.append(a))
     root = w.ours()
@@ -690,9 +687,6 @@ def test_the_claim_route_reports_claimed_prefixes(w, monkeypatch):
 
 
 def test_the_claim_route_answers_409_for_cloud_space(w, cloud, monkeypatch):
-    import app.api.targets as targets_api
-
-    monkeypatch.setattr(targets_api, "_prime_ct_and_launch", lambda *a: None)
     root = w.ours()
     c = _cidr(w, root, 6)
     cloud(c.value)
