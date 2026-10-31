@@ -1,0 +1,126 @@
+name: Kind Lab
+
+# Runs the Kubernetes lab (scripts/kind-lab.sh, planning#324) on a kind cluster:
+# up, verify (NetworkPolicy + RBAC), a real capture through proxy + RustFS, and
+# the backend -> limits ConfigMap -> proxy round trip. TEST ONLY.
+# Informational: NOT a required status check, and must never become one (it is
+# path-filtered, so it would sit pending on unrelated PRs).
+on:
+  pull_request:
+    paths:
+      - "deploy/k8s/**"
+      - "scripts/kind-lab.sh"
+      - "scripts/kind_lab_e2e.py"
+      - "capture-browser/**"
+      - "capture-proxy/**"
+      - "backend/Dockerfile"
+      - "backend/requirements.txt"
+      - "backend/app/services/capture_limits_configmap.py"
+      - "backend/app/services/page_capture.py"
+      - ".github/workflows/kind-lab.yml"
+  push:
+    branches: [dev, main]
+    paths:
+      - "deploy/k8s/**"
+      - "scripts/kind-lab.sh"
+      - "scripts/kind_lab_e2e.py"
+      - "capture-browser/**"
+      - "capture-proxy/**"
+      - "backend/Dockerfile"
+      - "backend/requirements.txt"
+      - "backend/app/services/capture_limits_configmap.py"
+      - "backend/app/services/page_capture.py"
+      - ".github/workflows/kind-lab.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Must match the node image pinned in scripts/kind-lab.sh (kind v0.33.0's default).
+  KIND_VERSION: v0.33.0
+  KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+  # Outside the workspace, so nothing in it can be swept into an artifact by a glob.
+  CONSTELLUS_LAB_STATE: ${{ github.workspace }}/../kind-lab-state
+
+jobs:
+  kind-lab:
+    name: Kind Lab
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # kind-lab.sh calls backend/.venv/bin/python (free_port, ensure_buckets, e2e,
+      # api_login); botocore is the e2e script's only non-stdlib import.
+      - name: Create backend/.venv for the lab script
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/pip install --quiet botocore
+
+      - name: Install kind (checksum-verified)
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/kind" "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  $RUNNER_TEMP/kind" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/kind" /usr/local/bin/kind
+          kind version
+          kubectl version --client
+
+      # Ubuntu 23.10+ forbids unconfined processes from creating user namespaces, and a
+      # pod on a kind node runs AppArmor-unconfined, so Chromium's own sandbox dies with
+      # "No usable sandbox!". Lift the restriction on this throwaway runner VM; the
+      # browser keeps its sandbox (never --no-sandbox). Same node requirement as
+      # production: see docs/deploy/kubernetes.md.
+      - name: Allow user namespaces for Chromium's sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Lab up
+        run: bash scripts/kind-lab.sh up
+
+      - name: Verify NetworkPolicy and RBAC
+        run: bash scripts/kind-lab.sh verify
+
+      - name: Capture end to end (x2)
+        run: bash scripts/kind-lab.sh e2e --count 2
+
+      - name: Limits round trip (backend API -> ConfigMap -> proxy)
+        run: bash scripts/kind-lab.sh limits-check
+
+      # Diagnostics only on failure. An explicit allowlist: pod logs, events, describe,
+      # and the two generated YAML files. secrets.env, .secret-*.env and .api-* in the
+      # state dir are never copied.
+      - name: Collect diagnostics
+        if: failure()
+        run: |
+          out="$RUNNER_TEMP/kind-lab-diag"
+          mkdir -p "$out/logs"
+          kc() { kubectl --context kind-constellus-lab "$@"; }
+          kc get pods -A -o wide > "$out/pods.txt" 2>&1 || true
+          kc get events -A --sort-by=.lastTimestamp > "$out/events.txt" 2>&1 || true
+          kc -n constellus describe pods > "$out/describe-pods.txt" 2>&1 || true
+          kc -n constellus get networkpolicy,deploy,configmap -o wide > "$out/resources.txt" 2>&1 || true
+          for pod in $(kc -n constellus get pods -o name 2>/dev/null); do
+            name=${pod#pod/}
+            kc -n constellus logs "$pod" --all-containers --prefix > "$out/logs/$name.log" 2>&1 || true
+            kc -n constellus logs "$pod" --all-containers --prefix --previous > "$out/logs/$name.previous.log" 2>&1 || true
+          done
+          for f in kind-config.yaml backend-egress-apiserver.yaml; do
+            [ -f "$CONSTELLUS_LAB_STATE/$f" ] && cp "$CONSTELLUS_LAB_STATE/$f" "$out/$f"
+          done
+          true
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-lab-diagnostics
+          path: ${{ runner.temp }}/kind-lab-diag
+          retention-days: 7
+
+      - name: Lab down
+        if: always()
+        run: bash scripts/kind-lab.sh down --purge
