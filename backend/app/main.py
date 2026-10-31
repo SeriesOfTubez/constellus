@@ -35,6 +35,10 @@ from app.services.audit import AuditMiddleware
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # First, so startup failures below reach container logs (planning#326).
+    from app.core.logging import setup_stderr_logging
+    setup_stderr_logging(settings.log_level)
+
     require_configured_secret_key()
 
     db = next(get_db())
