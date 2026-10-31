@@ -26,7 +26,9 @@ subcommands: `verify` (proves NetworkPolicy is enforced for the capture pods and
 backend, and that the backend's RBAC is exactly get/patch on one ConfigMap; PASS/FAIL
 per check), `limits-check` (changes a setting through the backend API, watches the
 backend write the ConfigMap, then watches the proxy re-read it), `status`,
-`e2e --count N`, `down --purge`.
+`e2e --count N`, `backend-e2e` (seeds a synthetic company and candidate with
+`scripts/lab_seed.py`, queues a capture through the real API, and checks the backend
+ingested it and the store is clean), `down --purge`.
 
 - The cluster is `constellus-lab`, on the kind v0.33.0 default node image
   (Kubernetes v1.37.0) pinned by digest. kindnet enforces NetworkPolicy; the
@@ -65,6 +67,11 @@ backend write the ConfigMap, then watches the proxy re-read it), `status`,
 - **The API-server egress rule is generated per cluster.** `up` reads the
   `kubernetes` EndpointSlice and applies `backend-egress-apiserver` with the endpoint
   addresses (`$STATE/backend-egress-apiserver.yaml`); see Production deltas.
+- The lab database is `constellus_lab` and carries the comment `constellus-kind-lab`
+  (set by `up`). `lab_seed.py` refuses unless the name ends in `_lab` AND the comment
+  matches, so it cannot run against dev or the test database. State from before
+  planning#327 used the name `constellus`: `up` refuses it; run
+  `scripts/kind-lab.sh down --purge` once.
 - The lab buckets are `lab-jobs`, `lab-results`, `lab-proxylog`, `lab-images` (the
   backend's) and `lab-e2e-results`, created by `up`. The host script `e2e` remains as
   the capture-only check; it uses its own results bucket because the live backend's
@@ -72,13 +79,13 @@ backend write the ConfigMap, then watches the proxy re-read it), `status`,
 - RustFS needs a writable `/logs` (it exits otherwise), so the lab gives it an
   `emptyDir` there; the rest of its root filesystem is read-only.
 - **CI: the `Kind Lab` workflow** (`.github/workflows/kind-lab.yml`) runs `up`,
-  `verify`, `e2e --count 2`, `limits-check` and `down --purge` when a PR or push
+  `verify`, `e2e --count 2`, `limits-check`, `backend-e2e` and `down --purge` when a PR or push
   touches the manifests, the lab scripts, the capture services or the backend's
   image and limits writer. It also runs on demand (`workflow_dispatch`). It is
   informational and is never a required check. On failure it uploads pod logs,
   events, `describe` output and the two generated YAML files. The secrets files are
-  never uploaded. The job does **not** prove that the real backend queues a capture,
-  because nothing seeds an org or candidate on kind yet.
+  never uploaded. `backend-e2e` also runs, proving the real backend queues and
+  ingests a capture.
 
 ## Production deltas
 

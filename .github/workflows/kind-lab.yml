@@ -11,6 +11,8 @@ on:
       - "deploy/k8s/**"
       - "scripts/kind-lab.sh"
       - "scripts/kind_lab_e2e.py"
+      - "scripts/kind_lab_backend_e2e.py"
+      - "scripts/lab_seed.py"
       - "capture-browser/**"
       - "capture-proxy/**"
       - "backend/Dockerfile"
@@ -24,6 +26,8 @@ on:
       - "deploy/k8s/**"
       - "scripts/kind-lab.sh"
       - "scripts/kind_lab_e2e.py"
+      - "scripts/kind_lab_backend_e2e.py"
+      - "scripts/lab_seed.py"
       - "capture-browser/**"
       - "capture-proxy/**"
       - "backend/Dockerfile"
@@ -89,6 +93,9 @@ jobs:
 
       - name: Limits round trip (backend API -> ConfigMap -> proxy)
         run: bash scripts/kind-lab.sh limits-check
+
+      - name: Backend e2e (real backend queues + ingests a capture)
+        run: bash scripts/kind-lab.sh backend-e2e
 
       # Diagnostics only on failure. An explicit allowlist: pod logs, events, describe,
       # and the two generated YAML files. secrets.env, .secret-*.env and .api-* in the

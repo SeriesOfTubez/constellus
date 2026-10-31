@@ -8,6 +8,9 @@
 #   scripts/kind-lab.sh verify          prove NetworkPolicy is ENFORCED and the backend RBAC is tight (PASS/FAIL)
 #   scripts/kind-lab.sh limits-check    change a setting through the backend API, watch it write the
 #                                       limits ConfigMap, then watch the proxy re-read it
+#   scripts/kind-lab.sh backend-e2e     seed a synthetic company + candidate (scripts/lab_seed.py, run in the
+#                                       backend pod), queue a capture through the REAL API, then check the
+#                                       backend ingested it and the store is clean (scripts/kind_lab_backend_e2e.py)
 #   scripts/kind-lab.sh status          pods, deployments, limits ConfigMap value, network policies
 #   scripts/kind-lab.sh down [--purge]  delete the cluster (--purge also removes the state dir)
 #
@@ -15,6 +18,8 @@
 # password) are generated once, per key, into
 # ${CONSTELLUS_LAB_STATE:-$HOME/.cache/constellus-kind-lab}/secrets.env (0600, outside the
 # repo). Values are never printed and never placed on a command line.
+# The lab database is named constellus_lab and carries the comment 'constellus-kind-lab'
+# (set by `up`); the seed refuses any database without both (planning#327).
 set -eu
 
 CLUSTER=constellus-lab
@@ -47,11 +52,15 @@ ensure_state() {
   ensure_key BACKEND_SECRET_KEY "$(openssl rand -hex 32)"
   ensure_key LAB_ADMIN_PASSWORD "$(openssl rand -hex 16)"
   ensure_key LAB_DB_USER constellus
-  ensure_key LAB_DB_NAME constellus
+  ensure_key LAB_DB_NAME constellus_lab
   ensure_key LAB_ADMIN_USERNAME lab-admin
   # example.com, not .invalid: the backend validates with EmailStr, which rejects
   # special-use domains such as .invalid.
   ensure_key LAB_ADMIN_EMAIL lab-admin@example.com
+  if [ "$(secret_val LAB_DB_NAME)" != constellus_lab ]; then
+    echo "the lab state predates planning#327 (its database is not named constellus_lab); run: scripts/kind-lab.sh down --purge" >&2
+    exit 1
+  fi
 }
 
 # Print one value from the secrets file to stdout (used only to feed files, never the terminal).
@@ -133,6 +142,7 @@ CFG
   kn rollout restart deploy/capture-proxy deploy/capture-browser deploy/backend >/dev/null
   kn rollout status deploy/rustfs --timeout=180s
   kn rollout status deploy/postgres --timeout=180s
+  mark_lab_db
   ensure_buckets
   # The migrate init container runs first, so this also proves the DB path and migrations.
   kn rollout status deploy/backend --timeout=300s
@@ -140,6 +150,17 @@ CFG
   kn rollout status deploy/capture-browser --timeout=180s || true
   wait_browser_running
   cmd_status
+}
+
+# Mark the lab database so scripts/lab_seed.py can prove it is the lab. The SQL goes in on
+# stdin; the name is validated first so it is safe as an identifier. Idempotent.
+mark_lab_db() {
+  db=$(secret_val LAB_DB_NAME)
+  case "$db" in
+    ''|[!a-z_]*|*[!a-z0-9_]*) echo "LAB_DB_NAME is not a safe identifier" >&2; return 1 ;;
+  esac
+  printf "COMMENT ON DATABASE %s IS 'constellus-kind-lab';\n" "$db" |
+    kn exec -i deploy/postgres -- sh -c 'psql -v ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 }
 
 # The backend's API-server egress rule names the ENDPOINT address(es) and port from the
@@ -278,6 +299,34 @@ cmd_e2e() {
   ) || rc=$?
   kill "$PF_PID" 2>/dev/null || true
   wait "$PF_PID" 2>/dev/null || true
+  trap - EXIT
+  return $rc
+}
+
+# cmd_backend_e2e: the REAL backend queues and ingests a capture (planning#327).
+cmd_backend_e2e() {
+  ensure_state
+  start_pf rustfs 9000 /health
+  RUSTFS_PORT=$PORT; RUSTFS_PF=$PF_PID
+  start_pf backend 8000 /api/health
+  BACKEND_PORT=$PORT; BACKEND_PF=$PF_PID
+  trap 'kill "$RUSTFS_PF" "$BACKEND_PF" 2>/dev/null || true; rm -f "$STATE/.api-auth" "$STATE/.api-body.json" "$STATE/.api-resp"' EXIT
+  PORT=$BACKEND_PORT
+  api_login
+  cid=$(kn exec -i deploy/backend -c backend -- python - "$(secret_val LAB_ADMIN_EMAIL)" < "$REPO/scripts/lab_seed.py")
+  if ! printf '%s' "$cid" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+    echo "seed did not return a candidate id" >&2; return 1
+  fi
+  rc=0
+  (
+    set -a; . "$SECRETS"; set +a
+    KIND_LAB_ENDPOINT="http://127.0.0.1:$RUSTFS_PORT" KIND_LAB_BACKEND="http://127.0.0.1:$BACKEND_PORT" \
+      KIND_LAB_AUTH_FILE="$STATE/.api-auth" \
+      exec "$REPO/backend/.venv/bin/python" "$REPO/scripts/kind_lab_backend_e2e.py" "$cid"
+  ) || rc=$?
+  kill "$RUSTFS_PF" "$BACKEND_PF" 2>/dev/null || true
+  wait "$RUSTFS_PF" "$BACKEND_PF" 2>/dev/null || true
+  rm -f "$STATE/.api-auth" "$STATE/.api-body.json" "$STATE/.api-resp"
   trap - EXIT
   return $rc
 }
@@ -510,7 +559,8 @@ case "$sub" in
   e2e) cmd_e2e "$@" ;;
   verify) cmd_verify ;;
   limits-check) cmd_limits_check "$@" ;;
+  backend-e2e) cmd_backend_e2e ;;
   status) cmd_status ;;
   down) cmd_down "$@" ;;
-  *) echo "usage: $0 {up|e2e [url] [--count N]|verify|limits-check [url] [--count N]|status|down [--purge]}" >&2; exit 2 ;;
+  *) echo "usage: $0 {up|e2e [url] [--count N]|verify|limits-check [url] [--count N]|backend-e2e|status|down [--purge]}" >&2; exit 2 ;;
 esac
