@@ -4,21 +4,25 @@
 #
 # Secrets are NOT in this file; scripts/kind-lab.sh creates them from a 0600 file
 # outside the repo: rustfs-root, capture-proxy-key, capture-store-worker,
-# capture-store-proxy.
-#   LAB ONLY: capture-store-worker and capture-store-proxy both hold the RustFS ROOT
-#   credentials, so one key plays the backend, worker and proxy roles. Production uses
+# capture-store-proxy, capture-store-backend, lab-postgres, backend-env.
+#   LAB ONLY: capture-store-worker, capture-store-proxy and capture-store-backend all
+#   hold the RustFS ROOT credentials, so one key plays the backend, worker and proxy roles. Production uses
 #   three scoped keys (see docs/deploy/kubernetes.md).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: constellus
 resources:
-  - ../capture
+  - ../backend
   - rustfs.yaml
+  - postgres.yaml
   - networkpolicy-store.yaml
+  - networkpolicy-backend.yaml
 images:
   - name: constellus/capture-proxy
     newTag: lab
   - name: constellus/capture-browser
+    newTag: lab
+  - name: constellus/backend
     newTag: lab
 # The default content-hash name suffix is kept: kustomize rewrites the keyRefs, and
 # a settings change rolls the pods that read it.
@@ -31,3 +35,5 @@ configMapGenerator:
       - CAPTURE_S3_PATH_STYLE=true
       - CAPTURE_S3_BUCKET_JOBS=lab-jobs
       - CAPTURE_S3_BUCKET_PROXYLOG=lab-proxylog
+      - CAPTURE_S3_BUCKET_RESULTS=lab-results
+      - CAPTURE_S3_BUCKET_IMAGES=lab-images

@@ -1,17 +1,19 @@
 # Kubernetes (page-capture stack)
 
 `deploy/k8s/` holds kustomize manifests for the page-capture stack in S3 mode
-(planning#324 slice 1): the headless-Chromium `capture-browser` worker and the
-`capture-proxy` egress proxy. The backend Deployment is slice 2. Design background:
+(planning#324): the headless-Chromium `capture-browser` worker, the `capture-proxy`
+egress proxy (slice 1) and the `backend` (slice 2), which produces the capture jobs
+and writes the proxy limits. The scanner-worker is not deployed (planning#309). Design background:
 [Page Capture Spool](../architecture/capture-spool.md).
 
 | Path | What |
 |---|---|
-| `deploy/k8s/capture/` | **Base**, the production shape: both Deployments, the Service, a default-deny NetworkPolicy plus the allow rules. No store, no Secret values, no RustFS. |
-| `deploy/k8s/lab/` | **Test-only overlay**: the base plus an in-cluster RustFS and the store NetworkPolicy. Never a production overlay. |
+| `deploy/k8s/capture/` | **Base**, the production shape: both Deployments, the Service, the pre-created empty `capture-proxy-limits` ConfigMap, a default-deny NetworkPolicy plus the allow rules. No store, no Secret values, no RustFS. |
+| `deploy/k8s/backend/` | **Base**, the production shape: includes `capture/`, adds the backend Deployment (migrate init container), Service, ServiceAccount, the get/patch Role and the egress policy. No DB, no store, no Secret values. |
+| `deploy/k8s/lab/` | **Test-only overlay**: `backend/` plus an in-cluster RustFS, an in-cluster Postgres 18 and their NetworkPolicy rules. Never a production overlay. |
 
-The base on its own cannot reach any store: the policy fails closed, and the store
-rule is deployment-specific.
+The bases on their own cannot reach a store, a database or the API server: the policy
+fails closed, and those rules are deployment-specific.
 
 ## Local lab (kind)
 
@@ -19,9 +21,12 @@ rule is deployment-specific.
 scripts/kind-lab.sh up && scripts/kind-lab.sh e2e && scripts/kind-lab.sh down
 ```
 
-Needs `kind`, `kubectl`, Docker, `openssl` and `backend/.venv` (botocore). Other
-subcommands: `verify` (proves NetworkPolicy is enforced, PASS/FAIL per path),
-`limits-check` (live ConfigMap re-read), `status`, `e2e --count N`, `down --purge`.
+Needs `kind`, `kubectl`, Docker, `curl`, `openssl` and `backend/.venv` (botocore). Other
+subcommands: `verify` (proves NetworkPolicy is enforced for the capture pods and the
+backend, and that the backend's RBAC is exactly get/patch on one ConfigMap; PASS/FAIL
+per check), `limits-check` (changes a setting through the backend API, watches the
+backend write the ConfigMap, then watches the proxy re-read it), `status`,
+`e2e --count N`, `down --purge`.
 
 - The cluster is `constellus-lab`, on the kind v0.33.0 default node image
   (Kubernetes v1.37.0) pinned by digest. kindnet enforces NetworkPolicy; the
@@ -34,10 +39,32 @@ subcommands: `verify` (proves NetworkPolicy is enforced, PASS/FAIL per path),
   outside the repo, never printed). **Lab only: the RustFS root key fills both
   `capture-store-worker` and `capture-store-proxy`, so one key plays all three
   roles.**
-- The images `constellus/capture-proxy:lab` and `constellus/capture-browser:lab` are
-  built from the working tree and loaded into the node. The RustFS image is pulled by
+- The images `constellus/capture-proxy:lab`, `constellus/capture-browser:lab` and
+  `constellus/backend:lab` are built from the working tree (the backend from the repo
+  root, as Compose does) and loaded into the node. The RustFS image is pulled by
   the node, by digest (side-loading the multi-platform image fails on Docker
   Desktop's containerd store).
+- **TEST ONLY: Postgres 18 in the cluster**, on an `emptyDir` (data is lost with the
+  pod), credentials generated into the secrets file. The backend's Secret
+  `backend-env` (`DATABASE_URL`, `SECRET_KEY`) is composed by the script in a 0600
+  file, never on a command line. The `migrate` init container runs
+  `alembic upgrade head` before the backend starts.
+- **Lab admin.** `limits-check` creates the first user through `POST /api/auth/setup`
+  (403 once any user exists is accepted) and logs in; its credentials are in the
+  secrets file. The email uses `example.com` because the backend's validator rejects
+  `.invalid`.
+- **`kubectl logs deploy/backend` shows only uvicorn's access lines.** The application
+  logs (including `page_capture: wrote proxy limits to ConfigMap ...` and any
+  `writing the proxy limits failed` traceback) go to the `system_logs` table through
+  the DB log handler, not to stdout. Check the ConfigMap's content, the Logs page or
+  `system_logs` in the lab's Postgres; the lab's `limits-check` watches the ConfigMap.
+- **The API-server egress rule is generated per cluster.** `up` reads the
+  `kubernetes` EndpointSlice and applies `backend-egress-apiserver` with the endpoint
+  addresses (`$STATE/backend-egress-apiserver.yaml`); see Production deltas.
+- The lab buckets are `lab-jobs`, `lab-results`, `lab-proxylog`, `lab-images` (the
+  backend's) and `lab-e2e-results`, created by `up`. The host script `e2e` remains as
+  the capture-only check; it uses its own results bucket because the live backend's
+  ingest deletes any result, proxy log or job whose capture id it does not know.
 - RustFS needs a writable `/logs` (it exits otherwise), so the lab gives it an
   `emptyDir` there; the rest of its root filesystem is read-only.
 
@@ -61,19 +88,43 @@ subcommands: `verify` (proves NetworkPolicy is enforced, PASS/FAIL per path),
   `ipBlock` egress rule for the S3 endpoint's addresses to the browser and proxy pods
   (this replaces the lab's `networkpolicy-store.yaml`). The proxy's own egress rule
   excludes private ranges, so a store on a private address needs it too.
-- **Backend path to the store.** Set `CAPTURE_S3_PUBLIC_ENDPOINT` on the backend when
+- **Backend.** Secret `backend-env` with `DATABASE_URL` and `SECRET_KEY` (the backend
+  refuses to boot with the default key); Secret `capture-store-backend`
+  (`CAPTURE_S3_ACCESS_KEY`/`_SECRET_KEY`); the `capture-store` ConfigMap must also
+  carry `CAPTURE_S3_BUCKET_RESULTS` and `CAPTURE_S3_BUCKET_IMAGES`. The Deployment
+  sets `CAPTURE_LIMITS_SINK=configmap` and `CAPTURE_LIMITS_CONFIGMAP`
+  (`capture-proxy-limits`, which must equal the Role's resourceName). `migrate` is an
+  init container, the strategy is `Recreate` and there is one replica (APScheduler
+  would fire twice). The image's user is not numeric, so the pod sets
+  `runAsUser: 1000`. Ingress is yours to add (the base has no ingress rule); set
+  `ALLOWED_ORIGINS` for your frontend origin. Set `CAPTURE_S3_PUBLIC_ENDPOINT` when
   the endpoint the worker uses (the one presigned URLs are signed for) differs from
-  the backend's own path to the store. In the lab the backend role is played from the
-  host.
+  the backend's own path to the store.
+- **RBAC.** The backend's Role is `get` + `patch` on the one ConfigMap
+  `capture-proxy-limits`, nothing else. There is no `create`: `resourceNames` cannot
+  restrict it, so the base pre-creates the ConfigMap empty. Re-applying the base is
+  safe: a manifest with no `data` leaves the backend's key alone (checked with
+  `kubectl apply`, client- and server-side). `verify` checks the Role by asking the
+  API server what the ServiceAccount may do.
+- **API-server egress.** The backend needs the API server to patch the ConfigMap.
+  Write an `ipBlock` rule for the endpoint addresses and port from
+  `kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes`.
+  Enforcement happens after DNAT, so the rule must name the endpoint, not the
+  `kubernetes` Service ClusterIP: verified on kindnet, where a ClusterIP rule stayed
+  closed and the endpoint rule was open. The addresses differ per cluster, so this
+  rule is yours to generate (the lab script does).
+- **Database and store egress.** The base's `backend-egress-world` allows everything
+  except private ranges, plus DNS. Your overlay adds rules for the database and, if
+  private, the store; the lab's `networkpolicy-backend.yaml` is the TEST ONLY example.
 - **Limits file.** The proxy reads `CAPTURE_LIMITS_FILE=/capture_config/..data/proxy_limits.json`
-  from the optional ConfigMap `capture-proxy-limits` (the backend writes it in slice
-  2; absent means defaults). A ConfigMap volume file is a symlink and the proxy opens
+  from the ConfigMap `capture-proxy-limits`, pre-created empty by the base; the
+  backend writes the key `proxy_limits.json` (absent key means defaults). A ConfigMap volume file is a symlink and the proxy opens
   with `O_NOFOLLOW`, so the plain path is refused. `..data` is a symlinked
   *directory*, which is followed, and the final component is a regular file. An atomic
   ConfigMap update swaps `..data`, so the inode changes and the proxy re-reads.
   `subPath` would freeze the file. Checked in the lab: the symlink path reports
   `source=default`, the `..data` path `source=file`, and an update was picked up in
-  25 s and 59 s (kubelet sync).
+  16 to 66 s (kubelet sync; four updates measured).
 - **One worker.** The browser Deployment is `replicas: 1` with `Recreate`
   (planning#323: a rolling update would briefly run two workers). Do not scale it.
 - **Images.** The base leaves the image tag to the overlay; pin by digest in

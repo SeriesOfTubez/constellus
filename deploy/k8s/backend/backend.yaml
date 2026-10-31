@@ -1,0 +1,207 @@
+# backend: the Constellus API + scheduler, S3 capture mode (planning#324 slice 2).
+# Secrets and the store ConfigMap are NOT created here: see docs/deploy/kubernetes.md.
+#   Secret    backend-env            keys DATABASE_URL, SECRET_KEY
+#   Secret    capture-proxy-key      key CAPTURE_PROXY_KEY (must equal the proxy's)
+#   Secret    capture-store-backend  keys CAPTURE_S3_ACCESS_KEY, CAPTURE_S3_SECRET_KEY
+#   ConfigMap capture-store          CAPTURE_S3_* store settings, all four buckets (overlay supplies it)
+#   ConfigMap capture-proxy-limits   pre-created empty by ../capture/configmap-limits.yaml
+# ALLOWED_ORIGINS is left at its default; set it for a real frontend origin.
+# The scanner-worker is not deployed here (SCANNER_URL unset; out of scope, planning#309).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: constellus
+# The only workload that needs a token: it writes the limits ConfigMap (rbac.yaml).
+automountServiceAccountToken: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: constellus
+spec:
+  replicas: 1
+  # One scheduler process (APScheduler would double-fire with two), and the migrate
+  # init container must finish before the new version starts: never two at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend
+        app.kubernetes.io/part-of: constellus
+    spec:
+      serviceAccountName: backend
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        # The image's user is named, not numeric, so runAsNonRoot needs this.
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: migrate
+          image: constellus/backend
+          command: ["alembic", "upgrade", "head"]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: SECRETS_PROVIDER
+              value: env
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: backend-env
+                  key: DATABASE_URL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: backend
+          image: constellus/backend
+          ports:
+            - name: http
+              containerPort: 8000
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          env:
+            - name: SECRETS_PROVIDER
+              value: env
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: backend-env
+                  key: DATABASE_URL
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backend-env
+                  key: SECRET_KEY
+            - name: CAPTURE_STORE
+              value: s3
+            - name: CAPTURE_LIMITS_SINK
+              value: configmap
+            # Must equal the resourceName in rbac.yaml.
+            - name: CAPTURE_LIMITS_CONFIGMAP
+              value: capture-proxy-limits
+            - name: CAPTURE_PROXY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: capture-proxy-key
+                  key: CAPTURE_PROXY_KEY
+            - name: CAPTURE_S3_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_ENDPOINT
+            - name: CAPTURE_S3_BUCKET_JOBS
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_BUCKET_JOBS
+            - name: CAPTURE_S3_BUCKET_RESULTS
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_BUCKET_RESULTS
+            - name: CAPTURE_S3_BUCKET_PROXYLOG
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_BUCKET_PROXYLOG
+            - name: CAPTURE_S3_BUCKET_IMAGES
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_BUCKET_IMAGES
+            - name: CAPTURE_S3_PUBLIC_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_PUBLIC_ENDPOINT
+                  optional: true
+            - name: CAPTURE_S3_INSECURE_HTTP
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_INSECURE_HTTP
+                  optional: true
+            - name: CAPTURE_S3_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_REGION
+                  optional: true
+            - name: CAPTURE_S3_PATH_STYLE
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_PATH_STYLE
+                  optional: true
+            - name: CAPTURE_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: capture-store-backend
+                  key: CAPTURE_S3_ACCESS_KEY
+            - name: CAPTURE_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: capture-store-backend
+                  key: CAPTURE_S3_SECRET_KEY
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: constellus
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

@@ -1,0 +1,12 @@
+# Backend base (planning#324 slice 2). Includes the capture base because the backend,
+# in S3 mode, is the producer of capture jobs and the writer of the proxy limits.
+# Secrets, the store ConfigMap, the DB and the store/API-server NetworkPolicy rules are
+# NOT here: see backend.yaml's header and docs/deploy/kubernetes.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: constellus
+resources:
+  - ../capture
+  - backend.yaml
+  - rbac.yaml
+  - networkpolicy.yaml
