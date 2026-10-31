@@ -341,6 +341,7 @@ def test_tls_is_pinned_to_the_service_account_ca(sa, tmp_path, monkeypatch):
 
     srv = http.server.HTTPServer(("127.0.0.1", 0), H)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2  # no TLS 1.0/1.1 even on the test server (CodeQL py/insecure-protocol)
     ctx.load_cert_chain(str(certfile))
     srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
