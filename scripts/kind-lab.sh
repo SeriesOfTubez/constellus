@@ -138,7 +138,7 @@ CFG
   kn rollout status deploy/backend --timeout=300s
   kn rollout status deploy/capture-proxy --timeout=180s
   kn rollout status deploy/capture-browser --timeout=180s || true
-  kn wait --for=jsonpath='{.status.phase}'=Running pod -l app.kubernetes.io/name=capture-browser --timeout=120s
+  wait_browser_running
   cmd_status
 }
 
@@ -211,6 +211,22 @@ start_pf() {
     i=$((i + 1)); [ "$i" -gt 30 ] && { echo "port-forward to $1 did not come up" >&2; return 1; }
     sleep 1
   done
+}
+
+# `kubectl wait pod -l …` lists the selector's pods once, so a pod of the ReplicaSet that
+# `rollout restart` just replaced (Recreate: still terminating) is waited on and then
+# vanishes with NotFound. Wait instead for exactly one live (not-deleting) pod, Running.
+wait_browser_running() {
+  i=0
+  while [ "$i" -lt 60 ]; do
+    phases=$(kn get pods -l app.kubernetes.io/name=capture-browser -o \
+      go-template='{{range .items}}{{if not .metadata.deletionTimestamp}}{{.status.phase}} {{end}}{{end}}')
+    [ "$phases" = "Running " ] && return 0
+    i=$((i + 1))
+    sleep 2
+  done
+  echo "capture-browser never reached exactly one Running pod (last: '$phases')" >&2
+  return 1
 }
 
 # Create, idempotently, every bucket the lab uses (the backend needs its four to exist;
