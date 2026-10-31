@@ -67,6 +67,14 @@ backend write the ConfigMap, then watches the proxy re-read it), `status`,
   ingest deletes any result, proxy log or job whose capture id it does not know.
 - RustFS needs a writable `/logs` (it exits otherwise), so the lab gives it an
   `emptyDir` there; the rest of its root filesystem is read-only.
+- **CI: the `Kind Lab` workflow** (`.github/workflows/kind-lab.yml`) runs `up`,
+  `verify`, `e2e --count 2`, `limits-check` and `down --purge` when a PR or push
+  touches the manifests, the lab scripts, the capture services or the backend's
+  image and limits writer. It also runs on demand (`workflow_dispatch`). It is
+  informational and is never a required check. On failure it uploads pod logs,
+  events, `describe` output and the two generated YAML files. The secrets files are
+  never uploaded. The job does **not** prove that the real backend queues a capture,
+  because nothing seeds an org or candidate on kind yet.
 
 ## Production deltas
 
