@@ -34,7 +34,11 @@ backend write the ConfigMap, then watches the proxy re-read it), `status`,
 - The kind node mounts `capture-browser/seccomp.json` at
   `/var/lib/kubelet/seccomp/profiles/capture-browser.json`. On any real cluster the
   profile must be installed on every node that can run the browser (Chromium's own
-  sandbox needs `clone`/`unshare`/`chroot`).
+  sandbox needs `clone`/`unshare`/`chroot`). It also needs unprivileged user
+  namespaces: on Ubuntu 23.10+ nodes (`kernel.apparmor_restrict_unprivileged_userns=1`)
+  an AppArmor-unconfined pod gets "No usable sandbox!", so either give the browser
+  pod an AppArmor profile that allows `userns` or set that sysctl to 0 on the browser
+  nodes. The `Kind Lab` CI job does the latter on its runner. Never `--no-sandbox`.
 - Secrets are generated once into `~/.cache/constellus-kind-lab/secrets.env` (0600,
   outside the repo, never printed). **Lab only: the RustFS root key fills both
   `capture-store-worker` and `capture-store-proxy`, so one key plays all three

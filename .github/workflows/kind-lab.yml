@@ -70,6 +70,14 @@ jobs:
           kind version
           kubectl version --client
 
+      # Ubuntu 23.10+ forbids unconfined processes from creating user namespaces, and a
+      # pod on a kind node runs AppArmor-unconfined, so Chromium's own sandbox dies with
+      # "No usable sandbox!". Lift the restriction on this throwaway runner VM; the
+      # browser keeps its sandbox (never --no-sandbox). Same node requirement as
+      # production: see docs/deploy/kubernetes.md.
+      - name: Allow user namespaces for Chromium's sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Lab up
         run: bash scripts/kind-lab.sh up
 
