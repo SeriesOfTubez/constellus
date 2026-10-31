@@ -33,7 +33,10 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 PUBLIC = "http://rustfs:9000"  # what the worker and the proxy use
-JOBS, RESULTS, PROXYLOG = "lab-jobs", "lab-results", "lab-proxylog"
+# The live backend's ingest discards and deletes any result it does not know, so this
+# host-driven check uses its OWN results bucket, which the backend never scans.
+RESULTS = "lab-e2e-results"
+JOBS, PROXYLOG = "lab-jobs", "lab-proxylog"
 RESULT_TIMEOUT_S = 150
 BASE_TTL_S = 900
 

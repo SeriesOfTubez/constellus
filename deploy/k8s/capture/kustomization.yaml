@@ -5,4 +5,5 @@ resources:
   - namespace.yaml
   - capture-proxy.yaml
   - capture-browser.yaml
+  - configmap-limits.yaml
   - networkpolicy.yaml

@@ -1,0 +1,125 @@
+# TEST ONLY. Postgres 18 as the lab's database. Never a production default:
+# production is a managed or operator-run database, reached through its own
+# NetworkPolicy rule. Same tag as Compose's `db`; the node pulls it (not side-loaded).
+# Credentials come from the Secret `lab-postgres` (POSTGRES_USER/_PASSWORD/_DB), which
+# scripts/kind-lab.sh generates. Data is in an emptyDir: gone with the pod.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postgres
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: constellus
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: constellus
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/part-of: constellus
+    spec:
+      serviceAccountName: postgres
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        # The image's own `postgres` user.
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:18
+          ports:
+            - name: pg
+              containerPort: 5432
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: lab-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lab-postgres
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: lab-postgres
+                  key: POSTGRES_DB
+          volumeMounts:
+            # /var/lib/postgresql, NOT /var/lib/postgresql/data: from PG 18 the image
+            # keeps data in a version subdirectory and refuses the old mount path
+            # (docker-library/postgres#1259, as in docker-compose.yml).
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "$(POSTGRES_USER)", "-d", "$(POSTGRES_DB)"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "$(POSTGRES_USER)", "-d", "$(POSTGRES_DB)"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: data
+          emptyDir:
+            # Disk, not memory.
+            sizeLimit: 2Gi
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: constellus
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: pg
+      port: 5432
+      targetPort: pg

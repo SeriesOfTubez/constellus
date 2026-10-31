@@ -1,0 +1,34 @@
+# The backend writes the proxy limits ConfigMap and nothing else in the cluster:
+# get + patch on that one name. No create (resourceNames cannot restrict it; the
+# ConfigMap is pre-created by ../capture/configmap-limits.yaml), no list, no delete,
+# no secrets. The name must equal CAPTURE_LIMITS_CONFIGMAP in backend.yaml.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: backend-proxy-limits
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: constellus
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [capture-proxy-limits]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: backend-proxy-limits
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: constellus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: backend-proxy-limits
+subjects:
+  - kind: ServiceAccount
+    name: backend
+    namespace: constellus

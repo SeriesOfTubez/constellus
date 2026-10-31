@@ -441,3 +441,53 @@ def test_proxy_credential_ttl_matches_the_backend():
     root = Path(__file__).resolve().parents[3]
     proxy = _literal_constants(root / "capture-proxy" / "proxy.py")
     assert proxy["MAX_CREDENTIAL_TTL_S"] == pc.QUEUE_TIMEOUT_MAX + pc.CREDENTIAL_RUN_MARGIN_S
+
+
+# ── limits sink selection (planning#324 slice 2) ─────────────────────────────
+
+
+def test_configmap_sink_delegates_and_writes_no_file(w, cfg, settings_restore, monkeypatch):
+    monkeypatch.setenv("CAPTURE_LIMITS_SINK", "configmap")
+    calls = []
+    monkeypatch.setattr(pc.capture_limits_configmap, "write_configmap_limits", lambda want: calls.append(want) or True)
+    assert pc.write_proxy_limits(w.db) is True
+    assert calls == [pc.proxy_limits_bytes(w.db)]
+    assert list(cfg.iterdir()) == []
+
+
+def test_unknown_sink_writes_nothing_and_logs(w, cfg, settings_restore, monkeypatch, caplog):
+    monkeypatch.setenv("CAPTURE_LIMITS_SINK", "bogus")
+    calls = []
+    monkeypatch.setattr(pc.capture_limits_configmap, "write_configmap_limits", lambda want: calls.append(want) or True)
+    assert pc.write_proxy_limits(w.db) is False
+    assert list(cfg.iterdir()) == [] and calls == []
+    assert "not a known sink" in caplog.text
+
+
+def test_unset_sink_writes_the_file(w, cfg, settings_restore, monkeypatch):
+    monkeypatch.delenv("CAPTURE_LIMITS_SINK", raising=False)
+    assert pc.write_proxy_limits(w.db) is True
+    assert (cfg / "proxy_limits.json").read_bytes() == CANON
+
+
+def test_file_sink_writes_the_file(w, cfg, settings_restore, monkeypatch):
+    monkeypatch.setenv("CAPTURE_LIMITS_SINK", "file")
+    assert pc.write_proxy_limits(w.db) is True
+    assert (cfg / "proxy_limits.json").read_bytes() == CANON
+
+
+def test_tick_survives_a_configmap_sink_failure_and_continues(w, cfg, settings_restore, tmp_path, monkeypatch, caplog):
+    from app.services.capture_limits_configmap import ConfigMapSinkError
+
+    monkeypatch.setenv("CAPTURE_SPOOL_DIR", str(tmp_path / "no-spool"))
+    monkeypatch.setenv("CAPTURE_LIMITS_SINK", "configmap")
+
+    def boom(want):
+        raise ConfigMapSinkError("x")
+
+    monkeypatch.setattr(pc.capture_limits_configmap, "write_configmap_limits", boom)
+    swept = []
+    monkeypatch.setattr(pc, "sweep_timeouts", lambda db, now=None: swept.append(1) or 0)
+    pc.tick()
+    assert "writing the proxy limits failed" in caplog.text
+    assert swept == [1]

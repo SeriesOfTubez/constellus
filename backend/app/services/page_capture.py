@@ -36,7 +36,7 @@ from app.models.org_entity import OrgEntity
 from app.models.page_capture import USER_AGENT_MODES, PageCapture, PageCaptureRequest, PageCaptureSkip
 from app.models.scope_candidate import ScopeCandidate
 from app.models.user import User
-from app.services import app_settings, wayback
+from app.services import app_settings, capture_limits_configmap, wayback
 from app.services.capture_store import _open_regular, _unlink_quiet, get_store
 from app.services.org_discovery.candidates import refreshable_root_clause
 from app.services.probe_authorisation import authorise_candidate_browse
@@ -100,6 +100,8 @@ PROXY_IDLE_TIMEOUT_MAX = 600
 PROXY_MAX_CONNECTIONS_MIN = 1
 PROXY_MAX_CONNECTIONS_MAX = 1024
 PROXY_LIMITS_FILE = "proxy_limits.json"
+LIMITS_SINK_FILE = "file"
+LIMITS_SINK_CONFIGMAP = "configmap"
 PROXY_LIMITS_VERSION = 1
 PROXY_LIMITS_MAX_BYTES = 4096
 
@@ -187,6 +189,12 @@ def proxy_max_connections(db: Session) -> int:
 
 def config_dir() -> str:
     return os.environ.get("CAPTURE_CONFIG_DIR", "/capture_config")
+
+
+def limits_sink() -> str:
+    """CAPTURE_LIMITS_SINK read at CALL time; exact match, like CAPTURE_STORE in
+    capture_store.get_store."""
+    return os.environ.get("CAPTURE_LIMITS_SINK", LIMITS_SINK_FILE)
 
 
 def _proxy_key() -> str | None:
@@ -1029,8 +1037,18 @@ def proxy_limits_bytes(db: Session) -> bytes:
 def write_proxy_limits(db: Session) -> bool:
     """Write the proxy's limits file when its content differs from the settings
     (so a fresh volume or a restart heals itself). True if it wrote. The proxy
-    has no DB and no route here; it mounts the directory read-only."""
+    has no DB and no route here; it mounts the directory read-only.
+
+    The sink is chosen by CAPTURE_LIMITS_SINK: `file` on Compose (a volume shared
+    with the proxy), `configmap` on Kubernetes. An unknown value writes nothing and
+    logs; it never falls back."""
     want = proxy_limits_bytes(db)
+    sink = limits_sink()
+    if sink == LIMITS_SINK_CONFIGMAP:
+        return capture_limits_configmap.write_configmap_limits(want)
+    if sink != LIMITS_SINK_FILE:
+        log.error("page_capture: CAPTURE_LIMITS_SINK=%r is not a known sink (file|configmap); limits not written", sink)
+        return False
     root = config_dir()
     try:
         if not stat.S_ISDIR(os.lstat(root).st_mode):

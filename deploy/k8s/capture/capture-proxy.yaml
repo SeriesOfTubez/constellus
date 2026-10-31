@@ -3,7 +3,7 @@
 #   Secret    capture-proxy-key     key CAPTURE_PROXY_KEY
 #   Secret    capture-store-proxy   keys CAPTURE_S3_ACCESS_KEY, CAPTURE_S3_SECRET_KEY (put on proxylog/ only)
 #   ConfigMap capture-store         CAPTURE_S3_* store settings (overlay supplies it)
-#   ConfigMap capture-proxy-limits  optional; the backend writes it (planning#324 slice 2)
+#   ConfigMap capture-proxy-limits  pre-created empty by configmap-limits.yaml; the backend writes the key
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -135,6 +135,7 @@ spec:
         - name: limits
           configMap:
             name: capture-proxy-limits
+            # optional only lets the proxy start if the ConfigMap is ever deleted.
             optional: true
 ---
 apiVersion: v1

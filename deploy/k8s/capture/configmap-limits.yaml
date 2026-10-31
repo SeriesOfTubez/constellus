@@ -1,0 +1,19 @@
+# The proxy's limits ConfigMap, pre-created EMPTY. The backend writes the key
+# `proxy_limits.json` into it (planning#324 slice 2); the proxy reads it through the
+# volume in capture-proxy.yaml. An absent key means the proxy's defaults.
+#
+# Why pre-created: a Role's `resourceNames` cannot restrict `create`, so letting the
+# backend create the ConfigMap would mean create on ALL ConfigMaps. Pre-creating it
+# lets the backend's service account hold get + patch on this one name only
+# (deploy/k8s/backend/rbac.yaml).
+#
+# No `data` here on purpose: re-applying a manifest with no `data` leaves a key the
+# backend already patched alone (checked with kubectl apply, client- and server-side).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: capture-proxy-limits
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: capture-proxy
+    app.kubernetes.io/part-of: constellus
