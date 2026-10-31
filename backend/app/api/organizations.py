@@ -366,6 +366,7 @@ class CaptureResponse(BaseModel):
     cert_sha256: str | None
     pinned_ip: str | None
     proxy_log_truncated: bool
+    proxy_log_missing: bool | None
     image_bytes: int | None
     image_sha256: str | None
     image_quality: int | None
@@ -1310,7 +1311,8 @@ def _capture_response(row: PageCapture, request_count: int) -> CaptureResponse:
         user_agent=row.user_agent, user_agent_mode=row.user_agent_mode, image_max_bytes=row.image_max_bytes,
         cert=row.cert, cert_san_dns=row.cert_san_dns, cert_sha256=row.cert_sha256,
         pinned_ip=str(row.pinned_ip) if row.pinned_ip is not None else None,
-        proxy_log_truncated=row.proxy_log_truncated, image_bytes=row.image_bytes,
+        proxy_log_truncated=row.proxy_log_truncated, proxy_log_missing=row.proxy_log_missing,
+        image_bytes=row.image_bytes,
         image_sha256=row.image_sha256, image_quality=row.image_quality,
         image_omitted_reason=row.image_omitted_reason, image_pruned_at=row.image_pruned_at,
         has_image=row.image_path is not None,

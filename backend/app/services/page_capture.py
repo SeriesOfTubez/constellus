@@ -895,7 +895,12 @@ def _store_image(row: PageCapture, name: str, data: bytes, quality: int | None) 
 def _ingest_proxylog(db: Session, row: PageCapture, capture_id: str) -> None:
     got = get_store().read_proxylog(capture_id, PROXYLOG_MAX_BYTES)
     if got is None:
+        # Absent when this capture was processed: on S3 a failed PUT is retried
+        # only at the proxy's next record, so it may never land (planning#325).
+        log.warning("page_capture: no proxy log for %s", capture_id)
+        row.proxy_log_missing = True
         return
+    row.proxy_log_missing = False
     data, row.proxy_log_truncated = got
 
     final_host, final_port = None, None

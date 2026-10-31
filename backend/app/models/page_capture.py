@@ -60,6 +60,9 @@ class PageCapture(Base):
     proxy_log_truncated: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # Set wherever ingest reads the proxy log: true = the store held none at that
+    # moment, false = it did, NULL = never looked (migration 0098).
+    proxy_log_missing: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     image_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     image_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)

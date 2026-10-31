@@ -160,7 +160,7 @@ def test_get_lists_newest_first_with_request_counts_and_no_paths(w, env):
 
     old = cap(c, 10, "failed", failure_reason="queue_timeout", finished_at=now)
     new = cap(c, 1, "done", finished_at=now, image_path="/captures/secret.webp", pinned_ip="192.0.2.10",
-              image_bytes=10)
+              image_bytes=10, proxy_log_missing=True)
     foreign = cap(other, 5, "failed", failure_reason="queue_timeout", finished_at=now)
     for row, n in ((new, 3), (old, 1), (foreign, 4)):
         for seq in range(n):
@@ -174,6 +174,7 @@ def test_get_lists_newest_first_with_request_counts_and_no_paths(w, env):
     assert [x["request_count"] for x in rows] == [3, 1]
     assert rows[0]["has_image"] is True and rows[1]["has_image"] is False
     assert rows[0]["pinned_ip"] == "192.0.2.10"
+    assert [x["proxy_log_missing"] for x in rows] == [True, None]
     assert "image_path" not in r.text and "secret.webp" not in r.text
     assert _get(_candidate(w).id, w.headers()).json() == []
 

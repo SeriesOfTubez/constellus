@@ -154,6 +154,8 @@ export interface PageCapture {
   cert_sha256: string | null
   pinned_ip: string | null
   proxy_log_truncated: boolean
+  /** true = no proxy log when ingested; false = there was one; null = never looked. */
+  proxy_log_missing: boolean | null
   image_bytes: number | null
   image_sha256: string | null
   image_quality: number | null

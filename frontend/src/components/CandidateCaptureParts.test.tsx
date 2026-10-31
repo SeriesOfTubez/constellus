@@ -19,7 +19,7 @@ const capture = (over: Partial<PageCapture> = {}): PageCapture => ({
   domain: "www.fabrikam.com", requested_url: "https://www.fabrikam.com/", final_url: "https://www.fabrikam.com/",
   http_status: 200, redirect_chain: [], title: "Fabrikam Home", user_agent: null, user_agent_mode: "stock",
   image_max_bytes: 1048576, cert: null, cert_san_dns: null, cert_sha256: null, pinned_ip: "192.0.2.10",
-  proxy_log_truncated: false, image_bytes: null, image_sha256: null, image_quality: null,
+  proxy_log_truncated: false, proxy_log_missing: null, image_bytes: null, image_sha256: null, image_quality: null,
   image_omitted_reason: null, image_pruned_at: null, has_image: false, request_count: 3,
   source: "live", archive_snapshot_at: null, archive_host: null, archive_freshness_days: null, ...over,
 })
@@ -39,6 +39,25 @@ describe("captureImageState", () => {
   it("source is live or archive", () => {
     expect(captureSource(capture())).toBe("live")
     expect(captureSource(capture({ source: "archive" }))).toBe("archive")
+  })
+})
+
+describe("CaptureList proxy record", () => {
+  const NO_RECORD = "No proxy record was found when this capture was processed"
+  it("done + missing replaces the request count", () => {
+    const out = list([capture({ proxy_log_missing: true })])
+    expect(out).toContain(NO_RECORD)
+    expect(out).not.toContain("requests via proxy")
+  })
+  it.each([false, null])("done + %s shows the request count", (v) => {
+    const out = list([capture({ proxy_log_missing: v })])
+    expect(out).toContain("3 requests via proxy")
+    expect(out).not.toContain(NO_RECORD)
+  })
+  it("failed + missing adds the line; failed + null does not", () => {
+    const failed = { status: "failed", failure_reason: "capture_error" }
+    expect(list([capture({ ...failed, proxy_log_missing: true })])).toContain(NO_RECORD)
+    expect(list([capture({ ...failed, proxy_log_missing: null })])).not.toContain(NO_RECORD)
   })
 })
 
