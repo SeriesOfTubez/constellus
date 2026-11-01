@@ -505,20 +505,66 @@ def request_capture(db: Session, *, candidate_id: uuid.UUID, user: User | None, 
 
 # ── automatic rolling capture (planning#277 S6a, hourly since S6b) ───────────
 
-# Pacing, all in seconds / counts, module constants so tests can read them.
-# Serial on purpose: one candidate at a time, so the browser queue and the
-# Wayback lookup are never hit in bursts. planning#320 makes these settings.
-SWEEP_PAUSE_S = 2  # between candidates
-SWEEP_LOOKUP_BACKOFF_S = 60  # instead of the pause after an archive:lookup_unavailable refusal
-SWEEP_TIME_LIMIT_S = 600  # per run; what is left stays due for the next hourly run
+# Pacing is admin-settable (planning#320). It is read ONCE at the start of each
+# run into a frozen SweepPacing, so a changed value takes effect on the next
+# hourly run with no restart, and one run never sees two values. The guards
+# stay code: serial (one candidate at a time, so the browser queue and the
+# Wayback lookup are never hit in bursts), refuse on a lookup failure, never
+# fall back to live.
+SWEEP_PAUSE_KEY = "capture.sweep_pause_seconds"  # between candidates
+SWEEP_LOOKUP_BACKOFF_KEY = "capture.sweep_lookup_backoff_seconds"  # instead of the pause after a lookup refusal
+SWEEP_TIME_LIMIT_KEY = "capture.sweep_time_limit_seconds"  # per run; the rest stays due for the next run
 # After this many lookup failures in a row the snapshot service is treated as
 # down for this run: the run stops, and the candidates not yet tried simply
 # stay due (no rows are written for them).
-SWEEP_MAX_CONSECUTIVE_LOOKUP_FAILURES = 3
+SWEEP_MAX_LOOKUP_FAILURES_KEY = "capture.sweep_max_consecutive_lookup_failures"
 # A recorded refusal keeps the candidate out of the next runs for this long, so
-# a candidate gets at most one skip row per day (lookup) or per week (other).
-SKIP_RETRY_AFTER_LOOKUP = timedelta(days=1)
-SKIP_RETRY_AFTER_OTHER = timedelta(days=7)
+# a candidate gets at most one skip row per period.
+SWEEP_RETRY_LOOKUP_KEY = "capture.sweep_retry_after_lookup_days"
+SWEEP_RETRY_OTHER_KEY = "capture.sweep_retry_after_other_days"
+DEFAULT_SWEEP_PAUSE_S, SWEEP_PAUSE_MIN, SWEEP_PAUSE_MAX = 2, 1, 60
+DEFAULT_SWEEP_LOOKUP_BACKOFF_S, SWEEP_LOOKUP_BACKOFF_MIN, SWEEP_LOOKUP_BACKOFF_MAX = 60, 5, 900
+DEFAULT_SWEEP_TIME_LIMIT_S, SWEEP_TIME_LIMIT_MIN, SWEEP_TIME_LIMIT_MAX = 600, 60, 3000
+DEFAULT_SWEEP_MAX_LOOKUP_FAILURES, SWEEP_MAX_LOOKUP_FAILURES_MIN, SWEEP_MAX_LOOKUP_FAILURES_MAX = 3, 1, 10
+DEFAULT_SWEEP_RETRY_LOOKUP_DAYS, SWEEP_RETRY_LOOKUP_DAYS_MIN, SWEEP_RETRY_LOOKUP_DAYS_MAX = 1, 1, 7
+DEFAULT_SWEEP_RETRY_OTHER_DAYS, SWEEP_RETRY_OTHER_DAYS_MIN, SWEEP_RETRY_OTHER_DAYS_MAX = 7, 1, 90
+
+
+@dataclass(frozen=True)
+class SweepPacing:
+    pause_s: int
+    lookup_backoff_s: int
+    time_limit_s: int
+    max_consecutive_lookup_failures: int
+    retry_after_lookup: timedelta
+    retry_after_other: timedelta
+
+
+def sweep_pacing(db: Session) -> SweepPacing:
+    return SweepPacing(
+        pause_s=_bounded_int(db, SWEEP_PAUSE_KEY, DEFAULT_SWEEP_PAUSE_S, SWEEP_PAUSE_MIN, SWEEP_PAUSE_MAX),
+        lookup_backoff_s=_bounded_int(
+            db, SWEEP_LOOKUP_BACKOFF_KEY, DEFAULT_SWEEP_LOOKUP_BACKOFF_S,
+            SWEEP_LOOKUP_BACKOFF_MIN, SWEEP_LOOKUP_BACKOFF_MAX,
+        ),
+        time_limit_s=_bounded_int(
+            db, SWEEP_TIME_LIMIT_KEY, DEFAULT_SWEEP_TIME_LIMIT_S, SWEEP_TIME_LIMIT_MIN, SWEEP_TIME_LIMIT_MAX
+        ),
+        max_consecutive_lookup_failures=_bounded_int(
+            db, SWEEP_MAX_LOOKUP_FAILURES_KEY, DEFAULT_SWEEP_MAX_LOOKUP_FAILURES,
+            SWEEP_MAX_LOOKUP_FAILURES_MIN, SWEEP_MAX_LOOKUP_FAILURES_MAX,
+        ),
+        retry_after_lookup=timedelta(days=_bounded_int(
+            db, SWEEP_RETRY_LOOKUP_KEY, DEFAULT_SWEEP_RETRY_LOOKUP_DAYS,
+            SWEEP_RETRY_LOOKUP_DAYS_MIN, SWEEP_RETRY_LOOKUP_DAYS_MAX,
+        )),
+        retry_after_other=timedelta(days=_bounded_int(
+            db, SWEEP_RETRY_OTHER_KEY, DEFAULT_SWEEP_RETRY_OTHER_DAYS,
+            SWEEP_RETRY_OTHER_DAYS_MIN, SWEEP_RETRY_OTHER_DAYS_MAX,
+        )),
+    )
+
+
 _LOOKUP_RULE = "archive:lookup_unavailable"
 _BUDGET_RULES = frozenset({"capture:revisit_budget", "capture:already_queued"})
 
@@ -550,7 +596,7 @@ def _record_skip(db: Session, candidate_id: uuid.UUID, rule: str) -> bool:
     return True
 
 
-def _select_due(db: Session, now: datetime) -> list[uuid.UUID]:
+def _select_due(db: Session, now: datetime, pacing: SweepPacing) -> list[uuid.UUID]:
     """Due candidates, never-captured domains first, then oldest last capture."""
     recent_domains = select(PageCapture.domain).where(revisit_budget_clause(now, revisit_days(db)))
     recently_refused = (
@@ -558,8 +604,8 @@ def _select_due(db: Session, now: datetime) -> list[uuid.UUID]:
         .where(
             PageCaptureSkip.candidate_id == ScopeCandidate.id,
             or_(
-                and_(PageCaptureSkip.reason == _LOOKUP_RULE, PageCaptureSkip.skipped_at >= now - SKIP_RETRY_AFTER_LOOKUP),
-                and_(PageCaptureSkip.reason != _LOOKUP_RULE, PageCaptureSkip.skipped_at >= now - SKIP_RETRY_AFTER_OTHER),
+                and_(PageCaptureSkip.reason == _LOOKUP_RULE, PageCaptureSkip.skipped_at >= now - pacing.retry_after_lookup),
+                and_(PageCaptureSkip.reason != _LOOKUP_RULE, PageCaptureSkip.skipped_at >= now - pacing.retry_after_other),
             ),
         )
         .exists()
@@ -591,13 +637,15 @@ def run_automatic_sweep() -> SweepResult:
     inside a request). Opens its own session.
 
     Takes the due open domain candidates oldest first (never-captured first) and
-    stops at SWEEP_TIME_LIMIT_S; whatever is left stays due for the next hourly
+    stops at the sweep time limit setting (capture.sweep_time_limit_seconds); whatever is left stays due for the next hourly
     run. Each candidate is captured at most once per revisit window, and a
-    recorded refusal keeps it out for a day (snapshot lookup unavailable) or a
-    week (any other refusal), so it gets at most one skip row per that period.
+    recorded refusal keeps it out for capture.sweep_retry_after_lookup_days (snapshot
+    lookup unavailable) or capture.sweep_retry_after_other_days (any other refusal),
+    so it gets at most one skip row per that period. The pacing settings are read
+    once, at the start of the run.
     Only candidates under our roots and live deals are taken (an abandoned deal
     stops). When capture is not set up (no proxy key) the run does nothing and
-    writes no rows. After SWEEP_MAX_CONSECUTIVE_LOOKUP_FAILURES lookup failures
+    writes no rows. After capture.sweep_max_consecutive_lookup_failures lookup failures
     in a row the run stops; the untried candidates write no "not attempted" rows.
 
     Each candidate goes through `request_capture(user=None, manual=False)`, so
@@ -612,16 +660,17 @@ def run_automatic_sweep() -> SweepResult:
     start = _monotonic()
     db = SessionLocal()
     try:
-        ids = _select_due(db, datetime.now(timezone.utc))
+        pacing = sweep_pacing(db)
+        ids = _select_due(db, datetime.now(timezone.utc), pacing)
         db.rollback()
         result.candidates = len(ids)
         lookup_failures = 0
         last = len(ids) - 1
         for pos, cid in enumerate(ids):
-            if _monotonic() - start >= SWEEP_TIME_LIMIT_S:
+            if _monotonic() - start >= pacing.time_limit_s:
                 result.out_of_time = True
                 break
-            pause = SWEEP_PAUSE_S
+            pause = pacing.pause_s
             refused_rule: str | None = None
             try:
                 request_capture(db, candidate_id=cid, user=None, manual=False)
@@ -641,7 +690,7 @@ def run_automatic_sweep() -> SweepResult:
                 else:
                     if refused_rule == _LOOKUP_RULE:
                         lookup_failures += 1
-                        pause = SWEEP_LOOKUP_BACKOFF_S
+                        pause = pacing.lookup_backoff_s
                     else:
                         lookup_failures = 0
                     try:
@@ -651,7 +700,7 @@ def run_automatic_sweep() -> SweepResult:
                         db.rollback()
                         log.exception("page_capture: recording the skip for candidate %s failed", cid)
                         result.errors += 1
-                    if lookup_failures >= SWEEP_MAX_CONSECUTIVE_LOOKUP_FAILURES:
+                    if lookup_failures >= pacing.max_consecutive_lookup_failures:
                         result.stopped_on_lookup = True
                         log.warning(
                             "page_capture: automatic capture stopped after %d consecutive lookup failures; "

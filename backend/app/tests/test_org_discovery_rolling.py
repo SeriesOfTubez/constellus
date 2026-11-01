@@ -21,7 +21,9 @@ from app.models.org_entity import OrgEntity
 from app.models.scope_candidate import ScopeCandidate
 from app.services import hosting_classifier as hc
 from app.services import scheduler
-from app.services.org_discovery import rolling, runner
+from app.models.app_settings import AppSetting
+from app.services import app_settings
+from app.services.org_discovery import pacing, rolling, runner
 from app.services.org_discovery.domain_facts import DomainFacts
 from app.tests._org_world import World, hexid  # noqa: F401
 from app.tests.test_org_discovery_refresh_stamps import (  # noqa: F401  (w is a fixture)
@@ -42,7 +44,7 @@ def _scope(monkeypatch, *roots):
     """Limit the run to these roots' units; the SQL itself is untouched."""
     ids = {r.id for r in roots}
     real = rolling._read_due
-    monkeypatch.setattr(rolling, "_read_due", lambda now: [u for u in real(now) if u[2] in ids])
+    monkeypatch.setattr(rolling, "_read_due", lambda now, pacing: [u for u in real(now, pacing) if u[2] in ids])
 
 
 class Calls:
@@ -53,7 +55,8 @@ class Calls:
         self.outcome = outcome
         self.hook = None
         monkeypatch.setattr(runner, "refresh_claimed_domain", lambda cid: self._do("claimed", cid))
-        monkeypatch.setattr(runner, "refresh_root", lambda rid, *, fresh_since: (self._do("root", rid), None, None))
+        self.fresh_since: list = []
+        monkeypatch.setattr(runner, "refresh_root", self._root)
         monkeypatch.setattr(runner, "verify_new_candidates", self._verify)
 
     def _do(self, kind, uid):
@@ -61,6 +64,10 @@ class Calls:
         if self.hook:
             self.hook(kind, uid)
         return self.outcome
+
+    def _root(self, rid, *, fresh_since):
+        self.fresh_since.append(fresh_since)
+        return (self._do("root", rid), None, None)
 
     def _verify(self, ids):
         self._do("open", ids[0])
@@ -362,3 +369,133 @@ def test_run_wrapper_logs_and_swallows_a_failure(monkeypatch, caplog):
     with caplog.at_level("ERROR"):
         scheduler._run_rediscovery_tick()  # must not raise
     assert any("rolling re-discovery failed" in r.getMessage() for r in caplog.records)
+
+
+# ── admin-settable pacing (planning#320) ─────────────────────────────────────
+
+_KEYS = (pacing.TIME_LIMIT_KEY, pacing.UNIT_PAUSE_KEY, pacing.DUE_BATCH_KEY,
+         pacing.REFRESH_INTERVAL_KEY, pacing.FAILED_RETRY_KEY)
+
+
+@pytest.fixture
+def pset():
+    """pset(key, value) stores a setting row; all five rows are removed afterwards."""
+    def _put(key, value):
+        with SessionLocal() as s:
+            app_settings.set_value(s, key, str(value))
+    yield _put
+    with SessionLocal() as s:
+        s.query(AppSetting).filter(AppSetting.key.in_(_KEYS)).delete(synchronize_session=False)
+        s.commit()
+
+
+def _read():
+    with SessionLocal() as s:
+        return pacing.read(s)
+
+
+def test_pacing_defaults_and_garbage_fall_back(pset):
+    p = _read()
+    assert (p.time_limit_s, p.unit_pause_s, p.due_batch) == (600, 2, 200)
+    assert (p.refresh_interval, p.failed_retry_after) == (timedelta(days=7), timedelta(days=1))
+    for k in _KEYS:
+        pset(k, "abc")
+    assert _read() == p
+    for k in _KEYS:
+        pset(k, 100000)  # past every max
+    assert _read() == p
+    for k in _KEYS:
+        pset(k, 0)  # below every min
+    assert _read() == p
+
+
+def test_read_clamps_failed_retry_to_the_refresh_interval(pset):
+    pset(pacing.REFRESH_INTERVAL_KEY, 3)
+    pset(pacing.FAILED_RETRY_KEY, 10)  # a row written straight to the DB, in range alone but over the interval
+    p = _read()
+    assert p.refresh_interval == timedelta(days=3) and p.failed_retry_after == timedelta(days=3)
+    pset(pacing.FAILED_RETRY_KEY, 2)  # consistent values are untouched
+    assert _read().failed_retry_after == timedelta(days=2)
+
+
+def test_refresh_interval_and_failed_retry_settings_change_what_is_due(w, monkeypatch, pset):
+    root = w.ours()
+    _root_at(root, _ago(days=1))
+    ok_2d = _claimed_at(w, root, _ago(days=2))
+    ok_4d = _claimed_at(w, root, _ago(days=4))
+    f_2d = _claimed_at(w, root, _ago(days=2), failed=True)
+    f_4d = _claimed_at(w, root, _ago(days=4), failed=True)
+    open_4d = _open_at(w, root, _ago(days=4))
+    open_f_2d = _open_at(w, root, _ago(days=2), failed=True)
+    _scope(monkeypatch, root)
+
+    # defaults (7 / 1): only the failed ones are due
+    calls = Calls(monkeypatch)
+    rolling.run_rediscovery_tick()
+    assert set(calls.ids) == {f_2d, f_4d, open_f_2d}
+
+    # refresh 3 days, failed retry 3 days: the 4-day units (ok or failed) are due, the 2-day ones are not
+    pset(pacing.REFRESH_INTERVAL_KEY, 3)
+    pset(pacing.FAILED_RETRY_KEY, 3)
+    calls = Calls(monkeypatch)
+    result = rolling.run_rediscovery_tick()
+    assert set(calls.ids) == {ok_4d, f_4d, open_4d} and result.due == 3
+    assert not {ok_2d, f_2d, open_f_2d, root.id} & set(calls.ids)
+
+
+def test_due_batch_limits_each_kind(w, monkeypatch, pset):
+    root = w.ours()
+    _root_at(root, _ago(days=1))  # not due
+    claimed = [_claimed_at(w, root, None, tag=f"c{i}") for i in range(12)]
+    opened = [_open_at(w, root, None, tag=f"o{i}") for i in range(12)]
+    _scope(monkeypatch, root)
+    pset(pacing.DUE_BATCH_KEY, 10)
+    calls = Calls(monkeypatch)
+    result = rolling.run_rediscovery_tick()
+    assert result.due == 20 and len(calls.log) == 20  # 10 claimed + 10 open, none dropped after reading
+    assert sum(1 for k, _ in calls.log if k == "claimed") == 10
+    assert sum(1 for k, _ in calls.log if k == "open") == 10
+    assert set(calls.ids) <= set(claimed) | set(opened)
+    # the default batch (200) takes all 24 on the next run
+    with SessionLocal() as s:
+        s.query(AppSetting).filter(AppSetting.key == pacing.DUE_BATCH_KEY).delete()
+        s.commit()
+    calls = Calls(monkeypatch)
+    assert rolling.run_rediscovery_tick().due == 24
+
+
+def test_root_unit_gets_fresh_since_from_the_refresh_interval(w, monkeypatch, pset):
+    root = w.ours()
+    _root_at(root, None)
+    _scope(monkeypatch, root)
+    calls = Calls(monkeypatch)
+    rolling.run_rediscovery_tick()
+    assert calls.ids == [root.id]  # reached
+    assert abs((datetime.now(timezone.utc) - timedelta(days=7)) - calls.fresh_since[0]) < timedelta(minutes=1)
+
+    pset(pacing.REFRESH_INTERVAL_KEY, 2)
+    _root_at(root, None)
+    calls = Calls(monkeypatch)
+    rolling.run_rediscovery_tick()
+    assert calls.ids == [root.id]
+    assert abs((datetime.now(timezone.utc) - timedelta(days=2)) - calls.fresh_since[0]) < timedelta(minutes=1)
+
+
+def test_pause_and_time_limit_come_from_the_settings(w, monkeypatch, pset):
+    root = w.ours()
+    _root_at(root, _ago(days=1))
+    for i in range(3):
+        _claimed_at(w, root, None, tag=f"p{i}")
+    _scope(monkeypatch, root)
+    pauses = []
+    monkeypatch.setattr(rolling, "_sleep", pauses.append)
+    pset(pacing.UNIT_PAUSE_KEY, 7)
+    pset(pacing.TIME_LIMIT_KEY, 100)
+    clock = {"t": 0.0}
+    monkeypatch.setattr(rolling, "_monotonic", lambda: clock["t"])
+    calls = Calls(monkeypatch)
+    calls.hook = lambda k, u: clock.__setitem__("t", clock["t"] + 60)
+    result = rolling.run_rediscovery_tick()
+    # 60s after the first, 120s after the second (>= 100): two ran, the third is out of time (600s default would run all)
+    assert len(calls.log) == 2 and result.out_of_time is True and result.due == 3
+    assert pauses == [7]  # one pause, between the two

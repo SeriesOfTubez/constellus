@@ -11,8 +11,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.core.database import SessionLocal
+from app.models.app_settings import AppSetting
 from app.models.page_capture import PageCapture, PageCaptureRequest, PageCaptureSkip
 from app.models.user import UserRole
+from app.services import app_settings
 from app.services import page_capture as pc
 from app.services import read_scope, wayback
 from app.tests import _decision_log
@@ -112,7 +114,7 @@ def test_sweep_queues_each_eligible_open_domain_and_ignores_the_rest(w, env, sle
     for cid in (claimed, rejected, asn):  # they exist, and got nothing
         assert _rows_for(cid) == 0 and _skips(cid) == []
     assert len(_no_job_files(env)) == 2
-    assert sleeps == [pc.SWEEP_PAUSE_S]  # between the two, none after the last
+    assert pc.DEFAULT_SWEEP_PAUSE_S == 2 and sleeps == [2]  # between the two, none after the last
 
 
 def test_prefilter_skips_a_domain_captured_inside_the_window_only(w, env, sleeps):
@@ -140,7 +142,7 @@ def test_lookup_failure_is_a_skip_with_no_capture_and_no_live_job(w, env, sleeps
     assert _rows_for(c.id) == 0 and _no_job_files(env) == []
     assert (result.queued, result.skipped, result.stopped_on_lookup) == (0, 1, False)
     assert sleeps == []  # the only candidate was the last: no pointless wait after it
-    assert pc.SWEEP_LOOKUP_BACKOFF_S == 60
+    assert pc.sweep_pacing(w.db).lookup_backoff_s == pc.DEFAULT_SWEEP_LOOKUP_BACKOFF_S == 60
 
 
 def test_three_consecutive_lookup_failures_stop_the_sweep(w, env, sleeps, monkeypatch):
@@ -329,7 +331,7 @@ def test_time_limit_stops_the_run_and_the_rest_stay_due(w, env, sleeps, monkeypa
 
     def fake_clock():
         ticks["n"] += 1
-        return 0 if ticks["n"] <= 3 else pc.SWEEP_TIME_LIMIT_S + 1  # start, before 1st, before 2nd
+        return 0 if ticks["n"] <= 3 else pc.DEFAULT_SWEEP_TIME_LIMIT_S + 1  # start, before 1st, before 2nd
 
     monkeypatch.setattr(pc, "_monotonic", fake_clock)
     result = pc.run_automatic_sweep()
@@ -420,3 +422,134 @@ def test_migration_0096_is_the_chain_head_after_0095():
     from pathlib import Path
     src = (Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0096_page_capture_skips.py").read_text()
     assert re.search(r'^down_revision = "0095"$', src, re.M) and re.search(r'^revision = "0096"$', src, re.M)
+
+
+# ── admin-settable pacing (planning#320) ─────────────────────────────────────
+
+_PACING_KEYS = (
+    pc.SWEEP_PAUSE_KEY, pc.SWEEP_LOOKUP_BACKOFF_KEY, pc.SWEEP_TIME_LIMIT_KEY,
+    pc.SWEEP_MAX_LOOKUP_FAILURES_KEY, pc.SWEEP_RETRY_LOOKUP_KEY, pc.SWEEP_RETRY_OTHER_KEY,
+)
+
+
+@pytest.fixture
+def pacing_settings():
+    """set(key, value) writes an app_settings row; every pacing row is removed afterwards."""
+    def _set(key, value):
+        with SessionLocal() as s:
+            app_settings.set_value(s, key, str(value))
+    yield _set
+    with SessionLocal() as s:
+        s.query(AppSetting).filter(AppSetting.key.in_(_PACING_KEYS)).delete(synchronize_session=False)
+        s.commit()
+
+
+def test_default_pacing_values(w):
+    p = pc.sweep_pacing(w.db)
+    assert (p.pause_s, p.lookup_backoff_s, p.time_limit_s, p.max_consecutive_lookup_failures) == (2, 60, 600, 3)
+    assert (p.retry_after_lookup, p.retry_after_other) == (timedelta(days=1), timedelta(days=7))
+
+
+def test_stored_pause_and_backoff_take_effect_on_the_next_run(w, env, sleeps, monkeypatch, pacing_settings):
+    a, b = _candidate(w), _candidate(w)
+    rec = Recorder(monkeypatch)
+    pc.run_automatic_sweep()
+    assert len(rec.calls) == 2 and sleeps == [2]  # default first, same process, no reload
+    sleeps.clear()
+    pacing_settings(pc.SWEEP_PAUSE_KEY, 9)
+    rec.calls.clear()
+    pc.run_automatic_sweep()
+    assert len(rec.calls) == 2 and sleeps == [9]
+
+    # the lookup backoff replaces the pause after a lookup refusal
+    sleeps.clear()
+    pacing_settings(pc.SWEEP_LOOKUP_BACKOFF_KEY, 17)
+    first = sorted((a, b), key=lambda c: str(c.id))[0]
+    rec2 = Recorder(monkeypatch, {first.id: "archive:lookup_unavailable"})
+    w.db.query(PageCaptureSkip).filter(PageCaptureSkip.candidate_id.in_([a.id, b.id])).delete(synchronize_session=False)
+    w.db.commit()
+    pc.run_automatic_sweep()
+    assert first.id in rec2.calls and sleeps == [17]
+
+
+def test_max_consecutive_lookup_failures_of_one_stops_after_the_first(w, env, sleeps, monkeypatch, pacing_settings):
+    pacing_settings(pc.SWEEP_MAX_LOOKUP_FAILURES_KEY, 1)
+    cs = sorted([_candidate(w) for _ in range(3)], key=lambda c: str(c.id))
+    rec = Recorder(monkeypatch, {c.id: "archive:lookup_unavailable" for c in cs})
+    result = pc.run_automatic_sweep()
+    assert rec.calls == [cs[0].id]  # reached the first, and only the first
+    assert (result.stopped_on_lookup, result.skipped, result.candidates) == (True, 1, 3)
+    assert _skips(cs[0].id) == ["archive:lookup_unavailable"] and _skips(cs[1].id) == []
+    assert sleeps == []  # no pause after the stopping failure
+
+
+def test_a_higher_max_consecutive_lookup_failures_keeps_going(w, env, sleeps, monkeypatch, pacing_settings):
+    pacing_settings(pc.SWEEP_MAX_LOOKUP_FAILURES_KEY, 5)
+    cs = sorted([_candidate(w) for _ in range(4)], key=lambda c: str(c.id))
+    rec = Recorder(monkeypatch, {c.id: "archive:lookup_unavailable" for c in cs})
+    result = pc.run_automatic_sweep()
+    assert rec.calls == [c.id for c in cs] and result.stopped_on_lookup is False  # 4 in a row, over the old 3
+
+
+def test_time_limit_setting_is_honoured(w, env, sleeps, monkeypatch, pacing_settings):
+    pacing_settings(pc.SWEEP_TIME_LIMIT_KEY, 100)
+    cs = sorted([_candidate(w) for _ in range(3)], key=lambda c: str(c.id))
+    rec = Recorder(monkeypatch)
+    ticks = {"n": 0}
+
+    def clock():  # start, before 1st, before 2nd (past 100s but under the 600s default)
+        ticks["n"] += 1
+        return 0 if ticks["n"] <= 2 else 150
+
+    monkeypatch.setattr(pc, "_monotonic", clock)
+    result = pc.run_automatic_sweep()
+    assert rec.calls == [cs[0].id] and result.out_of_time is True
+    # same clock under the default limit: nothing stops it
+    with SessionLocal() as s:
+        s.query(AppSetting).filter(AppSetting.key == pc.SWEEP_TIME_LIMIT_KEY).delete()
+        s.commit()
+    ticks["n"] = 0
+    rec.calls.clear()
+    result = pc.run_automatic_sweep()
+    assert len(rec.calls) == 3 and result.out_of_time is False
+
+
+def test_retry_after_days_settings_move_the_due_boundary(w, env, sleeps, monkeypatch, pacing_settings):
+    lk_in, lk_out, ot_in, ot_out = (_candidate(w) for _ in range(4))
+    _add_skip(w, lk_in, "archive:lookup_unavailable", 2 * 24 * 60 - 60)  # 47h old: inside a 2-day window
+    _add_skip(w, lk_out, "archive:lookup_unavailable", 2 * 24 * 60 + 60)  # 49h old: outside it
+    _add_skip(w, ot_in, "candidate:no_relationship", 3 * 24 * 60 - 60)
+    _add_skip(w, ot_out, "candidate:no_relationship", 3 * 24 * 60 + 60)
+    pacing_settings(pc.SWEEP_RETRY_LOOKUP_KEY, 2)
+    pacing_settings(pc.SWEEP_RETRY_OTHER_KEY, 3)
+    rec = Recorder(monkeypatch)
+    result = pc.run_automatic_sweep()
+    assert set(rec.calls) == {lk_out.id, ot_out.id} and result.candidates == 2
+    # at the defaults (1 / 7 days) the 47h lookup skip is due again and the 71h other skip is not
+    with SessionLocal() as s:
+        s.query(AppSetting).filter(AppSetting.key.in_(_PACING_KEYS)).delete(synchronize_session=False)
+        s.commit()
+    rec.calls.clear()
+    pc.run_automatic_sweep()
+    assert set(rec.calls) == {lk_in.id, lk_out.id}
+
+
+@pytest.mark.parametrize("stored", ["0", "abc", "61", "-3", ""])
+def test_out_of_range_or_non_int_pause_falls_back_to_default(w, env, sleeps, monkeypatch, pacing_settings, stored):
+    pacing_settings(pc.SWEEP_PAUSE_KEY, stored)
+    _candidate(w), _candidate(w)
+    rec = Recorder(monkeypatch)
+    pc.run_automatic_sweep()
+    assert len(rec.calls) == 2  # the path was reached
+    assert sleeps == [pc.DEFAULT_SWEEP_PAUSE_S]
+
+
+def test_every_pacing_key_falls_back_on_garbage(w, pacing_settings):
+    for key in _PACING_KEYS:
+        pacing_settings(key, "abc")
+    p = pc.sweep_pacing(w.db)
+    assert (p.pause_s, p.lookup_backoff_s, p.time_limit_s, p.max_consecutive_lookup_failures) == (2, 60, 600, 3)
+    assert (p.retry_after_lookup, p.retry_after_other) == (timedelta(days=1), timedelta(days=7))
+    for key in _PACING_KEYS:  # one past each max
+        pacing_settings(key, 10_000)
+    assert pc.sweep_pacing(w.db) == p

@@ -78,6 +78,20 @@ DEFAULTS = {
     "capture.identifying_user_agent": "",
     "capture.max_image_bytes": "2097152",
     "capture.queue_timeout_seconds": "600",
+    # planning#320 - rolling capture sweep pacing (read once per hourly run).
+    "capture.sweep_pause_seconds": "2",
+    "capture.sweep_lookup_backoff_seconds": "60",
+    "capture.sweep_time_limit_seconds": "600",
+    "capture.sweep_max_consecutive_lookup_failures": "3",
+    "capture.sweep_retry_after_lookup_days": "1",
+    "capture.sweep_retry_after_other_days": "7",
+    # planning#320 - org re-discovery rolling tick pacing (read once per run).
+    # Bounds live in app.services.org_discovery.pacing.
+    "discovery.rediscovery_time_limit_seconds": "600",
+    "discovery.rediscovery_unit_pause_seconds": "2",
+    "discovery.rediscovery_due_batch": "200",
+    "discovery.rediscovery_refresh_interval_days": "7",
+    "discovery.rediscovery_failed_retry_days": "1",
 }
 
 

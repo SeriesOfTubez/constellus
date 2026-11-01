@@ -13,6 +13,7 @@ from app.core.database import get_db
 from app.services import aggressiveness as aggr
 from app.services import app_settings as svc
 from app.services import audit, page_capture
+from app.services.org_discovery import pacing as discovery_pacing
 
 router = APIRouter()
 
@@ -166,6 +167,12 @@ class CaptureSettings(BaseModel):
     proxy_connect_timeout_seconds: int
     proxy_idle_timeout_seconds: int
     proxy_max_connections: int
+    sweep_pause_seconds: int
+    sweep_lookup_backoff_seconds: int
+    sweep_time_limit_seconds: int
+    sweep_max_consecutive_lookup_failures: int
+    sweep_retry_after_lookup_days: int
+    sweep_retry_after_other_days: int
 
 
 class CaptureSettingsUpdate(BaseModel):
@@ -196,6 +203,24 @@ class CaptureSettingsUpdate(BaseModel):
     proxy_max_connections: int | None = Field(
         default=None, ge=page_capture.PROXY_MAX_CONNECTIONS_MIN, le=page_capture.PROXY_MAX_CONNECTIONS_MAX
     )
+    sweep_pause_seconds: int | None = Field(
+        default=None, ge=page_capture.SWEEP_PAUSE_MIN, le=page_capture.SWEEP_PAUSE_MAX
+    )
+    sweep_lookup_backoff_seconds: int | None = Field(
+        default=None, ge=page_capture.SWEEP_LOOKUP_BACKOFF_MIN, le=page_capture.SWEEP_LOOKUP_BACKOFF_MAX
+    )
+    sweep_time_limit_seconds: int | None = Field(
+        default=None, ge=page_capture.SWEEP_TIME_LIMIT_MIN, le=page_capture.SWEEP_TIME_LIMIT_MAX
+    )
+    sweep_max_consecutive_lookup_failures: int | None = Field(
+        default=None, ge=page_capture.SWEEP_MAX_LOOKUP_FAILURES_MIN, le=page_capture.SWEEP_MAX_LOOKUP_FAILURES_MAX
+    )
+    sweep_retry_after_lookup_days: int | None = Field(
+        default=None, ge=page_capture.SWEEP_RETRY_LOOKUP_DAYS_MIN, le=page_capture.SWEEP_RETRY_LOOKUP_DAYS_MAX
+    )
+    sweep_retry_after_other_days: int | None = Field(
+        default=None, ge=page_capture.SWEEP_RETRY_OTHER_DAYS_MIN, le=page_capture.SWEEP_RETRY_OTHER_DAYS_MAX
+    )
 
     @field_validator("identifying_user_agent")
     @classmethod
@@ -208,6 +233,7 @@ class CaptureSettingsUpdate(BaseModel):
 
 
 def _capture_current(db: Session) -> CaptureSettings:
+    pacing = page_capture.sweep_pacing(db)
     return CaptureSettings(
         browse_revisit_days=page_capture.revisit_days(db),
         archive_freshness_days=page_capture.archive_freshness_days(db),
@@ -219,6 +245,12 @@ def _capture_current(db: Session) -> CaptureSettings:
         proxy_connect_timeout_seconds=page_capture.proxy_connect_timeout_seconds(db),
         proxy_idle_timeout_seconds=page_capture.proxy_idle_timeout_seconds(db),
         proxy_max_connections=page_capture.proxy_max_connections(db),
+        sweep_pause_seconds=pacing.pause_s,
+        sweep_lookup_backoff_seconds=pacing.lookup_backoff_s,
+        sweep_time_limit_seconds=pacing.time_limit_s,
+        sweep_max_consecutive_lookup_failures=pacing.max_consecutive_lookup_failures,
+        sweep_retry_after_lookup_days=pacing.retry_after_lookup.days,
+        sweep_retry_after_other_days=pacing.retry_after_other.days,
     )
 
 
@@ -255,6 +287,12 @@ def put_capture_settings(
         "proxy_connect_timeout_seconds": page_capture.PROXY_CONNECT_TIMEOUT_KEY,
         "proxy_idle_timeout_seconds": page_capture.PROXY_IDLE_TIMEOUT_KEY,
         "proxy_max_connections": page_capture.PROXY_MAX_CONNECTIONS_KEY,
+        "sweep_pause_seconds": page_capture.SWEEP_PAUSE_KEY,
+        "sweep_lookup_backoff_seconds": page_capture.SWEEP_LOOKUP_BACKOFF_KEY,
+        "sweep_time_limit_seconds": page_capture.SWEEP_TIME_LIMIT_KEY,
+        "sweep_max_consecutive_lookup_failures": page_capture.SWEEP_MAX_LOOKUP_FAILURES_KEY,
+        "sweep_retry_after_lookup_days": page_capture.SWEEP_RETRY_LOOKUP_KEY,
+        "sweep_retry_after_other_days": page_capture.SWEEP_RETRY_OTHER_KEY,
     }
     changes = {}
     for field, key in keys.items():
@@ -265,3 +303,83 @@ def put_capture_settings(
     if changes:
         audit.record_detail(request, **changes)
     return _capture_current(db)
+
+
+# ── org re-discovery pacing (planning#320) ──────────────────────────────────
+
+
+class DiscoverySettings(BaseModel):
+    rediscovery_time_limit_seconds: int
+    rediscovery_unit_pause_seconds: int
+    rediscovery_due_batch: int
+    rediscovery_refresh_interval_days: int
+    rediscovery_failed_retry_days: int
+
+
+class DiscoverySettingsUpdate(BaseModel):
+    rediscovery_time_limit_seconds: int | None = Field(
+        default=None, ge=discovery_pacing.TIME_LIMIT_MIN, le=discovery_pacing.TIME_LIMIT_MAX
+    )
+    rediscovery_unit_pause_seconds: int | None = Field(
+        default=None, ge=discovery_pacing.UNIT_PAUSE_MIN, le=discovery_pacing.UNIT_PAUSE_MAX
+    )
+    rediscovery_due_batch: int | None = Field(
+        default=None, ge=discovery_pacing.DUE_BATCH_MIN, le=discovery_pacing.DUE_BATCH_MAX
+    )
+    rediscovery_refresh_interval_days: int | None = Field(
+        default=None, ge=discovery_pacing.REFRESH_INTERVAL_MIN, le=discovery_pacing.REFRESH_INTERVAL_MAX
+    )
+    rediscovery_failed_retry_days: int | None = Field(
+        default=None, ge=discovery_pacing.FAILED_RETRY_MIN, le=discovery_pacing.FAILED_RETRY_MAX
+    )
+
+
+def _discovery_current(db: Session) -> DiscoverySettings:
+    pacing = discovery_pacing.read(db)
+    return DiscoverySettings(
+        rediscovery_time_limit_seconds=pacing.time_limit_s,
+        rediscovery_unit_pause_seconds=pacing.unit_pause_s,
+        rediscovery_due_batch=pacing.due_batch,
+        rediscovery_refresh_interval_days=pacing.refresh_interval.days,
+        rediscovery_failed_retry_days=pacing.failed_retry_after.days,
+    )
+
+
+@router.get("/discovery", response_model=DiscoverySettings)
+def get_discovery_settings(
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.SETTINGS_READ)),
+):
+    return _discovery_current(db)
+
+
+@router.put("/discovery", response_model=DiscoverySettings)
+def put_discovery_settings(
+    data: DiscoverySettingsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.SETTINGS_UPDATE)),
+):
+    """Set any of the re-discovery pacing settings, audited old -> new per changed key."""
+    old = _discovery_current(db)
+    new = old.model_copy(update=data.model_dump(exclude_none=True))
+    if new.rediscovery_failed_retry_days > new.rediscovery_refresh_interval_days:
+        raise HTTPException(
+            status_code=422, detail="Retrying a failed item must not take longer than the refresh interval."
+        )
+    keys = {
+        "rediscovery_time_limit_seconds": discovery_pacing.TIME_LIMIT_KEY,
+        "rediscovery_unit_pause_seconds": discovery_pacing.UNIT_PAUSE_KEY,
+        "rediscovery_due_batch": discovery_pacing.DUE_BATCH_KEY,
+        "rediscovery_refresh_interval_days": discovery_pacing.REFRESH_INTERVAL_KEY,
+        "rediscovery_failed_retry_days": discovery_pacing.FAILED_RETRY_KEY,
+    }
+    changes = {}
+    for field, key in keys.items():
+        before, after = getattr(old, field), getattr(new, field)
+        if before != after:
+            svc.set_value(db, key, str(after))
+            changes[f"discovery_{field}"] = {"from": before, "to": after}
+    if changes:
+        audit.record_detail(request, **changes)
+    return _discovery_current(db)

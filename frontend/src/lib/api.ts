@@ -951,6 +951,20 @@ export type CaptureSettings = {
   proxy_idle_timeout_seconds: number
   proxy_max_connections: number
   archive_freshness_days: number
+  sweep_pause_seconds: number
+  sweep_lookup_backoff_seconds: number
+  sweep_time_limit_seconds: number
+  sweep_max_consecutive_lookup_failures: number
+  sweep_retry_after_lookup_days: number
+  sweep_retry_after_other_days: number
+}
+
+export type DiscoverySettings = {
+  rediscovery_time_limit_seconds: number
+  rediscovery_unit_pause_seconds: number
+  rediscovery_due_batch: number
+  rediscovery_refresh_interval_days: number
+  rediscovery_failed_retry_days: number
 }
 
 export type EpssHistoryPoint = {

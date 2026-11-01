@@ -68,7 +68,7 @@ from app.models.org_entity import OrgEntity
 from app.models.scope_candidate import ScopeCandidate, ScopeSignal
 from app.services import entity_graph
 from app.services.org_discovery import (
-    arin, covering, domain_facts, generators, reassignment, ripe, rir_fetch, verifiers,
+    arin, covering, domain_facts, generators, pacing, reassignment, ripe, rir_fetch, verifiers,
 )
 from app.services.org_discovery.generators import ReverseIpResult, RirDedicatedIpResult
 from app.services.org_discovery.domain_facts import DomainFacts
@@ -79,18 +79,20 @@ log = logging.getLogger(__name__)
 # are never stamped: the unit stays due.
 UNIT_OK, UNIT_FAILED, UNIT_RATE_LIMITED = "ok", "failed", "rate_limited"
 UNIT_SKIPPED = "skipped"
-REFRESH_INTERVAL = timedelta(days=7)  # a refreshed unit is due again after this
-FAILED_RETRY_AFTER = timedelta(days=1)  # a failed unit is due again after this
 
 
-def due_clause(at_col, failed_col, now: datetime):
+def due_clause(
+    at_col, failed_col, now: datetime, *, refresh_interval: timedelta, failed_retry_after: timedelta,
+):
     """A unit is due when its time IS NULL, or it failed and the time is older
-    than FAILED_RETRY_AFTER, or the time is older than REFRESH_INTERVAL. Pure:
-    builds SQL, no session."""
+    than `failed_retry_after`, or the time is older than `refresh_interval`
+    (both from the admin settings, `pacing.read`; deliberately required, with no
+    defaults, so no caller can silently fall back to a constant). Pure: builds
+    SQL, no session."""
     return or_(
         at_col.is_(None),
-        and_(failed_col, at_col < now - FAILED_RETRY_AFTER),
-        at_col < now - REFRESH_INTERVAL,
+        and_(failed_col, at_col < now - failed_retry_after),
+        at_col < now - refresh_interval,
     )
 
 
@@ -666,15 +668,16 @@ def refresh_root(
     root_entity_id: uuid.UUID, *, fresh_since: datetime | None,
 ) -> tuple[str, ReassignmentSweepResult, RirDedicatedIpResult]:
     """The root refresh unit: the reassignment sweep, then the dedicated-IP
-    sweep, each its own try; never raises. `fresh_since=None` is the 7-day RIR
-    cache (`rir_fetch.CACHE_TTL`), passed as now - REFRESH_INTERVAL. The root is
+    sweep, each its own try; never raises. The rolling tick passes `fresh_since`
+    explicitly (now - the refresh interval setting); `fresh_since=None` falls
+    back to now - the default refresh interval (`pacing.DEFAULT_REFRESH_INTERVAL_DAYS`). The root is
     stamped (`org_entities.rediscovered_at`) for ok and failed only."""
     raised = False
     sweep = ReassignmentSweepResult()
     dedicated = RirDedicatedIpResult()
     try:
         sweep = reassignment_for_root(
-            root_entity_id, fresh_since=fresh_since or datetime.now(timezone.utc) - REFRESH_INTERVAL,
+            root_entity_id, fresh_since=fresh_since or datetime.now(timezone.utc) - timedelta(days=pacing.DEFAULT_REFRESH_INTERVAL_DAYS),
         )
     except Exception:
         raised = True

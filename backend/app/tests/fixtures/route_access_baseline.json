@@ -523,6 +523,9 @@
  "GET /api/settings/capture": [
   "admin"
  ],
+ "GET /api/settings/discovery": [
+  "admin"
+ ],
  "GET /api/system/monitoring-status": [
   "admin",
   "integration_admin",
@@ -858,6 +861,9 @@
   "admin"
  ],
  "PUT /api/settings/capture": [
+  "admin"
+ ],
+ "PUT /api/settings/discovery": [
   "admin"
  ]
 }
