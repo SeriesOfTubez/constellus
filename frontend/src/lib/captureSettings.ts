@@ -18,6 +18,18 @@ export const PROXY_MAX_CONN_MIN = 1
 export const PROXY_MAX_CONN_MAX = 1024
 export const ARCHIVE_FRESHNESS_MIN = 1
 export const ARCHIVE_FRESHNESS_MAX = 90
+export const SWEEP_PAUSE_MIN = 1
+export const SWEEP_PAUSE_MAX = 60
+export const SWEEP_BACKOFF_MIN = 5
+export const SWEEP_BACKOFF_MAX = 900
+export const SWEEP_TIME_LIMIT_MIN = 60
+export const SWEEP_TIME_LIMIT_MAX = 3000
+export const SWEEP_MAX_FAILURES_MIN = 1
+export const SWEEP_MAX_FAILURES_MAX = 10
+export const SWEEP_RETRY_LOOKUP_MIN = 1
+export const SWEEP_RETRY_LOOKUP_MAX = 7
+export const SWEEP_RETRY_OTHER_MIN = 1
+export const SWEEP_RETRY_OTHER_MAX = 90
 export const UA_MAX_LEN = 256
 export const IMAGE_KIB_MIN = MAX_IMAGE_BYTES_MIN / 1024 // 64
 export const IMAGE_KIB_MAX = MAX_IMAGE_BYTES_MAX / 1024 // 8192
@@ -59,5 +71,17 @@ export function validateCaptureSettings(d: CaptureSettings): string | null {
     return `Proxy max connections must be a whole number from ${PROXY_MAX_CONN_MIN} to ${PROXY_MAX_CONN_MAX}.`
   if (!inRange(d.archive_freshness_days, ARCHIVE_FRESHNESS_MIN, ARCHIVE_FRESHNESS_MAX))
     return `Archive snapshot freshness must be a whole number from ${ARCHIVE_FRESHNESS_MIN} to ${ARCHIVE_FRESHNESS_MAX} days.`
+  if (!inRange(d.sweep_pause_seconds, SWEEP_PAUSE_MIN, SWEEP_PAUSE_MAX))
+    return `Pause between candidates must be a whole number from ${SWEEP_PAUSE_MIN} to ${SWEEP_PAUSE_MAX} seconds.`
+  if (!inRange(d.sweep_lookup_backoff_seconds, SWEEP_BACKOFF_MIN, SWEEP_BACKOFF_MAX))
+    return `Wait after the snapshot service fails must be a whole number from ${SWEEP_BACKOFF_MIN} to ${SWEEP_BACKOFF_MAX} seconds.`
+  if (!inRange(d.sweep_time_limit_seconds, SWEEP_TIME_LIMIT_MIN, SWEEP_TIME_LIMIT_MAX))
+    return `The hourly run limit must be a whole number from ${SWEEP_TIME_LIMIT_MIN} to ${SWEEP_TIME_LIMIT_MAX} seconds.`
+  if (!inRange(d.sweep_max_consecutive_lookup_failures, SWEEP_MAX_FAILURES_MIN, SWEEP_MAX_FAILURES_MAX))
+    return `Snapshot-service failures in a row must be a whole number from ${SWEEP_MAX_FAILURES_MIN} to ${SWEEP_MAX_FAILURES_MAX}.`
+  if (!inRange(d.sweep_retry_after_lookup_days, SWEEP_RETRY_LOOKUP_MIN, SWEEP_RETRY_LOOKUP_MAX))
+    return `Retry after a snapshot-service failure must be a whole number from ${SWEEP_RETRY_LOOKUP_MIN} to ${SWEEP_RETRY_LOOKUP_MAX} days.`
+  if (!inRange(d.sweep_retry_after_other_days, SWEEP_RETRY_OTHER_MIN, SWEEP_RETRY_OTHER_MAX))
+    return `Retry after any other refusal must be a whole number from ${SWEEP_RETRY_OTHER_MIN} to ${SWEEP_RETRY_OTHER_MAX} days.`
   return null
 }

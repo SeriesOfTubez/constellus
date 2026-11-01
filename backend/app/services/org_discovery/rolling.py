@@ -14,12 +14,16 @@ The three units:
   - "open": an open domain candidate re-verified against its root's claimed
     domains (`runner.verify_new_candidates`), stamped on `reverified_at`.
 
-The due rule is `runner.due_clause`: never refreshed, or failed more than a day
-ago, or refreshed more than a week ago.
+The due rule is `runner.due_clause`: never refreshed, or failed more than the
+failed-retry setting ago (discovery.rediscovery_failed_retry_days, default 1
+day), or refreshed more than the refresh-interval setting ago
+(discovery.rediscovery_refresh_interval_days, default 7 days). All pacing
+settings are read once at the start of a run (`pacing.read`).
 
 Rate-limited is not failed: a unit that hit a rate limit is not stamped (it
 stays due) and the run stops, leaving the rest due for the next hour. The
-runner's caches are honoured (no `fresh_since`). Eligible roots are
+root unit's RIR freshness is the refresh interval; the claimed unit honours the
+runner's caches (no `fresh_since`). Eligible roots are
 `candidates.refreshable_root_clause()`: ours and live deals; an abandoned deal
 stops. Claimed and root units take the root's Re-check slot (one root at a
 time, never concurrently with a manual Re-check) and release it themselves;
@@ -40,16 +44,17 @@ from sqlalchemy import select
 from app.core.database import SessionLocal
 from app.models.org_entity import OrgEntity
 from app.models.scope_candidate import ScopeCandidate
-from app.services.org_discovery import runner
+from app.services.org_discovery import pacing as pacing_mod, runner
 from app.services.org_discovery.candidates import refreshable_root_clause
 
 log = logging.getLogger(__name__)
 
-TICK_TIME_LIMIT_S = 600  # one run works at most this long (planning#320 makes it a setting)
-UNIT_PAUSE_S = 2  # between units: third-party lookups stay paced
-DUE_BATCH = 200  # at most this many of each kind are read per run
 _sleep = time.sleep  # tests patch it
 _monotonic = time.monotonic  # tests patch it
+
+def _due_kw(pacing: pacing_mod.RollingPacing) -> dict:
+    return {"refresh_interval": pacing.refresh_interval, "failed_retry_after": pacing.failed_retry_after}
+
 
 _KIND_ORDER = {"claimed": 0, "root": 1, "open": 2}
 
@@ -66,7 +71,7 @@ class RollingResult:
     out_of_time: bool = False
 
 
-def _read_due(now: datetime) -> list[tuple[str, uuid.UUID, uuid.UUID, datetime | None]]:
+def _read_due(now: datetime, pacing: pacing_mod.RollingPacing) -> list[tuple[str, uuid.UUID, uuid.UUID, datetime | None]]:
     """The three due lists, merged oldest first: (kind, id, root_id, at)."""
     eligible = refreshable_root_clause()
     db = SessionLocal()
@@ -76,26 +81,26 @@ def _read_due(now: datetime) -> list[tuple[str, uuid.UUID, uuid.UUID, datetime |
             .join(OrgEntity, OrgEntity.id == ScopeCandidate.root_entity_id)
             .where(
                 ScopeCandidate.kind == "domain", ScopeCandidate.status == "claimed", eligible,
-                runner.due_clause(ScopeCandidate.rediscovered_at, ScopeCandidate.rediscovery_failed, now),
+                runner.due_clause(ScopeCandidate.rediscovered_at, ScopeCandidate.rediscovery_failed, now, **_due_kw(pacing)),
             )
             .order_by(ScopeCandidate.rediscovered_at.asc().nulls_first(), ScopeCandidate.id)
-            .limit(DUE_BATCH)
+            .limit(pacing.due_batch)
         ).all()
         roots = db.execute(
             select(OrgEntity.id, OrgEntity.id, OrgEntity.rediscovered_at)
-            .where(eligible, runner.due_clause(OrgEntity.rediscovered_at, OrgEntity.rediscovery_failed, now))
+            .where(eligible, runner.due_clause(OrgEntity.rediscovered_at, OrgEntity.rediscovery_failed, now, **_due_kw(pacing)))
             .order_by(OrgEntity.rediscovered_at.asc().nulls_first(), OrgEntity.id)
-            .limit(DUE_BATCH)
+            .limit(pacing.due_batch)
         ).all()
         opened = db.execute(
             select(ScopeCandidate.id, ScopeCandidate.root_entity_id, ScopeCandidate.reverified_at)
             .join(OrgEntity, OrgEntity.id == ScopeCandidate.root_entity_id)
             .where(
                 ScopeCandidate.kind == "domain", ScopeCandidate.status == "open", eligible,
-                runner.due_clause(ScopeCandidate.reverified_at, ScopeCandidate.reverify_failed, now),
+                runner.due_clause(ScopeCandidate.reverified_at, ScopeCandidate.reverify_failed, now, **_due_kw(pacing)),
             )
             .order_by(ScopeCandidate.reverified_at.asc().nulls_first(), ScopeCandidate.id)
-            .limit(DUE_BATCH)
+            .limit(pacing.due_batch)
         ).all()
         db.rollback()
     finally:
@@ -110,7 +115,7 @@ def _read_due(now: datetime) -> list[tuple[str, uuid.UUID, uuid.UUID, datetime |
     return merged
 
 
-def _still_due(kind: str, unit_id: uuid.UUID) -> bool:
+def _still_due(kind: str, unit_id: uuid.UUID, pacing: pacing_mod.RollingPacing) -> bool:
     """A short read at unit time: the row exists, its root is still eligible,
     it still has the right status, and it is still due now."""
     now = datetime.now(timezone.utc)
@@ -120,7 +125,7 @@ def _still_due(kind: str, unit_id: uuid.UUID) -> bool:
         if kind == "root":
             stmt = select(OrgEntity.id).where(
                 OrgEntity.id == unit_id, eligible,
-                runner.due_clause(OrgEntity.rediscovered_at, OrgEntity.rediscovery_failed, now),
+                runner.due_clause(OrgEntity.rediscovered_at, OrgEntity.rediscovery_failed, now, **_due_kw(pacing)),
             )
         elif kind == "claimed":
             stmt = (
@@ -128,7 +133,7 @@ def _still_due(kind: str, unit_id: uuid.UUID) -> bool:
                 .where(
                     ScopeCandidate.id == unit_id, ScopeCandidate.kind == "domain",
                     ScopeCandidate.status == "claimed", eligible,
-                    runner.due_clause(ScopeCandidate.rediscovered_at, ScopeCandidate.rediscovery_failed, now),
+                    runner.due_clause(ScopeCandidate.rediscovered_at, ScopeCandidate.rediscovery_failed, now, **_due_kw(pacing)),
                 )
             )
         else:
@@ -137,7 +142,7 @@ def _still_due(kind: str, unit_id: uuid.UUID) -> bool:
                 .where(
                     ScopeCandidate.id == unit_id, ScopeCandidate.kind == "domain",
                     ScopeCandidate.status == "open", eligible,
-                    runner.due_clause(ScopeCandidate.reverified_at, ScopeCandidate.reverify_failed, now),
+                    runner.due_clause(ScopeCandidate.reverified_at, ScopeCandidate.reverify_failed, now, **_due_kw(pacing)),
                 )
             )
         found = db.execute(stmt).first() is not None
@@ -147,7 +152,7 @@ def _still_due(kind: str, unit_id: uuid.UUID) -> bool:
         db.close()
 
 
-def _run_unit(kind: str, unit_id: uuid.UUID, root_id: uuid.UUID) -> str | None:
+def _run_unit(kind: str, unit_id: uuid.UUID, root_id: uuid.UUID, pacing: pacing_mod.RollingPacing) -> str | None:
     """One unit; returns a runner UNIT_* outcome, or None when the root's slot
     is held (skipped_busy)."""
     if kind == "open":
@@ -160,7 +165,7 @@ def _run_unit(kind: str, unit_id: uuid.UUID, root_id: uuid.UUID) -> str | None:
     try:
         if kind == "claimed":
             return runner.refresh_claimed_domain(unit_id)
-        return runner.refresh_root(root_id, fresh_since=None)[0]
+        return runner.refresh_root(root_id, fresh_since=datetime.now(timezone.utc) - pacing.refresh_interval)[0]
     finally:
         runner.end_recheck(root_id)
 
@@ -168,19 +173,25 @@ def _run_unit(kind: str, unit_id: uuid.UUID, root_id: uuid.UUID) -> str | None:
 def run_rediscovery_tick() -> RollingResult:
     result = RollingResult()
     start = _monotonic()
-    units = _read_due(datetime.now(timezone.utc))
+    db = SessionLocal()
+    try:
+        pacing = pacing_mod.read(db)
+        db.rollback()
+    finally:
+        db.close()
+    units = _read_due(datetime.now(timezone.utc), pacing)
     result.due = len(units)
     for index, (kind, unit_id, root_id, _at) in enumerate(units):
-        if _monotonic() - start >= TICK_TIME_LIMIT_S:
+        if _monotonic() - start >= pacing.time_limit_s:
             result.out_of_time = True
             break
         if index > 0:
-            _sleep(UNIT_PAUSE_S)
+            _sleep(pacing.unit_pause_s)
         try:
-            if not _still_due(kind, unit_id):
+            if not _still_due(kind, unit_id, pacing):
                 result.skipped += 1
                 continue
-            outcome = _run_unit(kind, unit_id, root_id)
+            outcome = _run_unit(kind, unit_id, root_id, pacing)
         except Exception:
             result.errors += 1
             log.exception("org-discovery rolling unit failed kind=%s id=%s", kind, unit_id)

@@ -22,8 +22,16 @@ import {
   REVISIT_DAYS_MIN, ARCHIVE_FRESHNESS_MAX, ARCHIVE_FRESHNESS_MIN, UA_MAX_LEN, IMAGE_KEEP_MAX, IMAGE_KEEP_MIN, PROXY_CONNECT_TIMEOUT_MAX,
   PROXY_CONNECT_TIMEOUT_MIN, PROXY_IDLE_TIMEOUT_MAX, PROXY_IDLE_TIMEOUT_MIN, PROXY_MAX_CONN_MAX,
   PROXY_MAX_CONN_MIN, bytesToKiB, kibToBytes, validateCaptureSettings,
+  SWEEP_PAUSE_MIN, SWEEP_PAUSE_MAX, SWEEP_BACKOFF_MIN, SWEEP_BACKOFF_MAX,
+  SWEEP_TIME_LIMIT_MIN, SWEEP_TIME_LIMIT_MAX, SWEEP_MAX_FAILURES_MIN, SWEEP_MAX_FAILURES_MAX,
+  SWEEP_RETRY_LOOKUP_MIN, SWEEP_RETRY_LOOKUP_MAX, SWEEP_RETRY_OTHER_MIN, SWEEP_RETRY_OTHER_MAX,
 } from "@/lib/captureSettings"
-import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type CaptureSettings, type DigestSettings, type DigestSummary, type SystemStatus } from "@/lib/api"
+import {
+  REDISCOVERY_TIME_LIMIT_MIN, REDISCOVERY_TIME_LIMIT_MAX, REDISCOVERY_PAUSE_MIN, REDISCOVERY_PAUSE_MAX,
+  REDISCOVERY_BATCH_MIN, REDISCOVERY_BATCH_MAX, REDISCOVERY_REFRESH_MIN, REDISCOVERY_REFRESH_MAX,
+  REDISCOVERY_FAILED_RETRY_MIN, REDISCOVERY_FAILED_RETRY_MAX, validateDiscoverySettings,
+} from "@/lib/discoverySettings"
+import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type CaptureSettings, type DigestSettings, type DigestSummary, type DiscoverySettings, type SystemStatus } from "@/lib/api"
 
 type MonitoringPolicy = {
   id: string
@@ -857,6 +865,12 @@ export function CaptureSettingsCard() {
   const [idleT, setIdleT] = useState("")
   const [maxConn, setMaxConn] = useState("")
   const [archiveDays, setArchiveDays] = useState("")
+  const [swPause, setSwPause] = useState("")
+  const [swBackoff, setSwBackoff] = useState("")
+  const [swLimit, setSwLimit] = useState("")
+  const [swMaxFail, setSwMaxFail] = useState("")
+  const [swRetryLookup, setSwRetryLookup] = useState("")
+  const [swRetryOther, setSwRetryOther] = useState("")
   useEffect(() => {
     if (!data) return
     setDays(String(data.browse_revisit_days))
@@ -869,6 +883,12 @@ export function CaptureSettingsCard() {
     setIdleT(String(data.proxy_idle_timeout_seconds))
     setMaxConn(String(data.proxy_max_connections))
     setArchiveDays(String(data.archive_freshness_days))
+    setSwPause(String(data.sweep_pause_seconds))
+    setSwBackoff(String(data.sweep_lookup_backoff_seconds))
+    setSwLimit(String(data.sweep_time_limit_seconds))
+    setSwMaxFail(String(data.sweep_max_consecutive_lookup_failures))
+    setSwRetryLookup(String(data.sweep_retry_after_lookup_days))
+    setSwRetryOther(String(data.sweep_retry_after_other_days))
   }, [data])
 
   const num = (s: string) => (s.trim() === "" ? NaN : Number(s))
@@ -883,6 +903,12 @@ export function CaptureSettingsCard() {
     proxy_idle_timeout_seconds: num(idleT),
     proxy_max_connections: num(maxConn),
     archive_freshness_days: num(archiveDays),
+    sweep_pause_seconds: num(swPause),
+    sweep_lookup_backoff_seconds: num(swBackoff),
+    sweep_time_limit_seconds: num(swLimit),
+    sweep_max_consecutive_lookup_failures: num(swMaxFail),
+    sweep_retry_after_lookup_days: num(swRetryLookup),
+    sweep_retry_after_other_days: num(swRetryOther),
   }
   const error = data ? validateCaptureSettings(draft) : null
   const dirty = data !== undefined && (
@@ -895,7 +921,13 @@ export function CaptureSettingsCard() {
     draft.proxy_connect_timeout_seconds !== data.proxy_connect_timeout_seconds ||
     draft.proxy_idle_timeout_seconds !== data.proxy_idle_timeout_seconds ||
     draft.proxy_max_connections !== data.proxy_max_connections ||
-    draft.archive_freshness_days !== data.archive_freshness_days
+    draft.archive_freshness_days !== data.archive_freshness_days ||
+    draft.sweep_pause_seconds !== data.sweep_pause_seconds ||
+    draft.sweep_lookup_backoff_seconds !== data.sweep_lookup_backoff_seconds ||
+    draft.sweep_time_limit_seconds !== data.sweep_time_limit_seconds ||
+    draft.sweep_max_consecutive_lookup_failures !== data.sweep_max_consecutive_lookup_failures ||
+    draft.sweep_retry_after_lookup_days !== data.sweep_retry_after_lookup_days ||
+    draft.sweep_retry_after_other_days !== data.sweep_retry_after_other_days
   )
   const save = useMutation({
     mutationFn: () => api.put<CaptureSettings>("/settings/capture", draft),
@@ -983,8 +1015,138 @@ export function CaptureSettingsCard() {
               </div>
               <p className="text-xs text-muted-foreground">Applied by the capture proxy to new connections within about 10 seconds; connections already open keep their limits.</p>
             </div>
+            <div className="space-y-3 border-t pt-3">
+              <h4 className="text-xs font-medium">Automatic capture (hourly)</h4>
+              <p className="text-xs text-muted-foreground">Each hour, Constellus captures the due domain candidates one at a time, oldest first.</p>
+              <div className="space-y-1">
+                <Label htmlFor="capture-sweep-pause" className="text-xs text-muted-foreground">Pause between candidates (seconds)</Label>
+                <Input id="capture-sweep-pause" type="number" min={SWEEP_PAUSE_MIN} max={SWEEP_PAUSE_MAX} step={1}
+                  className="h-8 w-24 text-xs" value={swPause} onChange={(e) => setSwPause(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="capture-sweep-backoff" className="text-xs text-muted-foreground">Wait after the snapshot service fails (seconds)</Label>
+                <Input id="capture-sweep-backoff" type="number" min={SWEEP_BACKOFF_MIN} max={SWEEP_BACKOFF_MAX} step={1}
+                  className="h-8 w-28 text-xs" value={swBackoff} onChange={(e) => setSwBackoff(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="capture-sweep-limit" className="text-xs text-muted-foreground">Stop each hourly run after (seconds)</Label>
+                <Input id="capture-sweep-limit" type="number" min={SWEEP_TIME_LIMIT_MIN} max={SWEEP_TIME_LIMIT_MAX} step={1}
+                  className="h-8 w-28 text-xs" value={swLimit} onChange={(e) => setSwLimit(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="capture-sweep-maxfail" className="text-xs text-muted-foreground">Stop the run after this many snapshot-service failures in a row</Label>
+                <Input id="capture-sweep-maxfail" type="number" min={SWEEP_MAX_FAILURES_MIN} max={SWEEP_MAX_FAILURES_MAX} step={1}
+                  className="h-8 w-24 text-xs" value={swMaxFail} onChange={(e) => setSwMaxFail(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="capture-sweep-retry-lookup" className="text-xs text-muted-foreground">Try again after a snapshot-service failure (days)</Label>
+                <Input id="capture-sweep-retry-lookup" type="number" min={SWEEP_RETRY_LOOKUP_MIN} max={SWEEP_RETRY_LOOKUP_MAX} step={1}
+                  className="h-8 w-24 text-xs" value={swRetryLookup} onChange={(e) => setSwRetryLookup(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="capture-sweep-retry-other" className="text-xs text-muted-foreground">Try again after any other refusal (days)</Label>
+                <Input id="capture-sweep-retry-other" type="number" min={SWEEP_RETRY_OTHER_MIN} max={SWEEP_RETRY_OTHER_MAX} step={1}
+                  className="h-8 w-24 text-xs" value={swRetryOther} onChange={(e) => setSwRetryOther(e.target.value)} />
+              </div>
+            </div>
             {error && <p className="text-xs text-destructive">{error}</p>}
             <Button size="sm" className="h-8" aria-label="Save page capture settings"
+              disabled={!dirty || error !== null || save.isPending} onClick={() => save.mutate()}>Save</Button>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+export function DiscoverySettingsCard() {
+  const qc = useQueryClient()
+  const { data, isLoading } = useQuery({
+    queryKey: ["settings", "discovery"],
+    queryFn: () => api.get<DiscoverySettings>("/settings/discovery"),
+  })
+  // Numeric fields are held as strings so a half-typed value is not coerced.
+  const [limit, setLimit] = useState("")
+  const [pause, setPause] = useState("")
+  const [batch, setBatch] = useState("")
+  const [refresh, setRefresh] = useState("")
+  const [failedRetry, setFailedRetry] = useState("")
+  useEffect(() => {
+    if (!data) return
+    setLimit(String(data.rediscovery_time_limit_seconds))
+    setPause(String(data.rediscovery_unit_pause_seconds))
+    setBatch(String(data.rediscovery_due_batch))
+    setRefresh(String(data.rediscovery_refresh_interval_days))
+    setFailedRetry(String(data.rediscovery_failed_retry_days))
+  }, [data])
+
+  const num = (s: string) => (s.trim() === "" ? NaN : Number(s))
+  const draft: DiscoverySettings = {
+    rediscovery_time_limit_seconds: num(limit),
+    rediscovery_unit_pause_seconds: num(pause),
+    rediscovery_due_batch: num(batch),
+    rediscovery_refresh_interval_days: num(refresh),
+    rediscovery_failed_retry_days: num(failedRetry),
+  }
+  const error = data ? validateDiscoverySettings(draft) : null
+  const dirty = data !== undefined && (
+    draft.rediscovery_time_limit_seconds !== data.rediscovery_time_limit_seconds ||
+    draft.rediscovery_unit_pause_seconds !== data.rediscovery_unit_pause_seconds ||
+    draft.rediscovery_due_batch !== data.rediscovery_due_batch ||
+    draft.rediscovery_refresh_interval_days !== data.rediscovery_refresh_interval_days ||
+    draft.rediscovery_failed_retry_days !== data.rediscovery_failed_retry_days
+  )
+  const save = useMutation({
+    mutationFn: () => api.put<DiscoverySettings>("/settings/discovery", draft),
+    onSuccess: (next) => {
+      qc.setQueryData(["settings", "discovery"], next)
+      qc.invalidateQueries({ queryKey: ["settings", "discovery"] })
+      toast.success("Discovery settings saved")
+    },
+    onError: (e: Error) => toast.error(`Save failed: ${e.message}`),
+  })
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">Discovery</CardTitle>
+        <CardDescription className="text-xs">How often and how hard Constellus re-runs discovery.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {isLoading || !data ? <Skeleton className="h-28" /> : (
+          <>
+            <div className="space-y-3">
+              <h4 className="text-xs font-medium">Re-discovery (hourly)</h4>
+              <p className="text-xs text-muted-foreground">Each hour, Constellus refreshes the organization roots and domains that are due, oldest first. Whatever is left waits for the next hour.</p>
+              <div className="space-y-1">
+                <Label htmlFor="discovery-time-limit" className="text-xs text-muted-foreground">Stop each hourly run after (seconds)</Label>
+                <Input id="discovery-time-limit" type="number" min={REDISCOVERY_TIME_LIMIT_MIN} max={REDISCOVERY_TIME_LIMIT_MAX} step={1}
+                  className="h-8 w-28 text-xs" value={limit} onChange={(e) => setLimit(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="discovery-pause" className="text-xs text-muted-foreground">Pause between items (seconds)</Label>
+                <Input id="discovery-pause" type="number" min={REDISCOVERY_PAUSE_MIN} max={REDISCOVERY_PAUSE_MAX} step={1}
+                  className="h-8 w-24 text-xs" value={pause} onChange={(e) => setPause(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="discovery-batch" className="text-xs text-muted-foreground">Items read per kind per run</Label>
+                <Input id="discovery-batch" type="number" min={REDISCOVERY_BATCH_MIN} max={REDISCOVERY_BATCH_MAX} step={1}
+                  className="h-8 w-28 text-xs" value={batch} onChange={(e) => setBatch(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="discovery-refresh" className="text-xs text-muted-foreground">Refresh each item every (days)</Label>
+                <Input id="discovery-refresh" type="number" min={REDISCOVERY_REFRESH_MIN} max={REDISCOVERY_REFRESH_MAX} step={1}
+                  className="h-8 w-24 text-xs" value={refresh} onChange={(e) => setRefresh(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="discovery-failed-retry" className="text-xs text-muted-foreground">Try a failed item again after (days)</Label>
+                <Input id="discovery-failed-retry" type="number" min={REDISCOVERY_FAILED_RETRY_MIN} max={REDISCOVERY_FAILED_RETRY_MAX} step={1}
+                  className="h-8 w-24 text-xs" value={failedRetry} onChange={(e) => setFailedRetry(e.target.value)} />
+                <p className="text-xs text-muted-foreground">No longer than the refresh interval.</p>
+              </div>
+            </div>
+            {error && <p className="text-xs text-destructive">{error}</p>}
+            <Button size="sm" className="h-8" aria-label="Save discovery settings"
               disabled={!dirty || error !== null || save.isPending} onClick={() => save.mutate()}>Save</Button>
           </>
         )}
@@ -1014,6 +1176,8 @@ export default function Settings() {
       <MonitoringPoliciesCard />
 
       <CaptureSettingsCard />
+
+      <DiscoverySettingsCard />
 
       <NotificationRulesCard />
 

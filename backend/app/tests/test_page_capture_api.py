@@ -220,7 +220,9 @@ from app.services import page_capture as pc  # noqa: E402
 WEBP = b"RIFF" + b"\x10\x00\x00\x00" + b"WEBP" + b"VP8 " + b"\x00" * 32
 _KEYS = (pc.REVISIT_DAYS_KEY, pc.USER_AGENT_MODE_KEY, pc.IDENTIFYING_UA_KEY, pc.MAX_IMAGE_BYTES_KEY,
          pc.QUEUE_TIMEOUT_KEY, pc.IMAGE_KEEP_COUNT_KEY, pc.PROXY_CONNECT_TIMEOUT_KEY,
-         pc.PROXY_IDLE_TIMEOUT_KEY, pc.PROXY_MAX_CONNECTIONS_KEY, pc.ARCHIVE_FRESHNESS_DAYS_KEY)
+         pc.PROXY_IDLE_TIMEOUT_KEY, pc.PROXY_MAX_CONNECTIONS_KEY, pc.ARCHIVE_FRESHNESS_DAYS_KEY,
+         pc.SWEEP_PAUSE_KEY, pc.SWEEP_LOOKUP_BACKOFF_KEY, pc.SWEEP_TIME_LIMIT_KEY,
+         pc.SWEEP_MAX_LOOKUP_FAILURES_KEY, pc.SWEEP_RETRY_LOOKUP_KEY, pc.SWEEP_RETRY_OTHER_KEY)
 
 
 @pytest.fixture
@@ -380,6 +382,13 @@ def test_modes_literal_matches_the_model():
     assert {a for arg in get_args(lit) for a in get_args(arg)} - {None} == set(USER_AGENT_MODES)
 
 
+_SWEEP_DEFAULTS = {
+    "sweep_pause_seconds": 2, "sweep_lookup_backoff_seconds": 60, "sweep_time_limit_seconds": 600,
+    "sweep_max_consecutive_lookup_failures": 3, "sweep_retry_after_lookup_days": 1,
+    "sweep_retry_after_other_days": 7,
+}
+
+
 def test_settings_get_defaults_and_permissions(w, cap_settings):
     r = client.get(S, headers=w.headers(role=VIEWER))
     assert r.status_code in (200, 403)
@@ -388,8 +397,9 @@ def test_settings_get_defaults_and_permissions(w, cap_settings):
     assert set(ok.json()) == {"browse_revisit_days", "user_agent_mode", "identifying_user_agent",
                               "max_image_bytes", "queue_timeout_seconds", "image_keep_count",
                               "proxy_connect_timeout_seconds", "proxy_idle_timeout_seconds",
-                              "proxy_max_connections", "archive_freshness_days"}
+                              "proxy_max_connections", "archive_freshness_days", *_SWEEP_DEFAULTS}
     assert ok.json()["archive_freshness_days"] == 7
+    assert {k: ok.json()[k] for k in _SWEEP_DEFAULTS} == _SWEEP_DEFAULTS
     assert client.get(S).status_code in (401, 403)
     assert client.put(S, headers=w.headers(role=VIEWER), json={"browse_revisit_days": 5}).status_code == 403
     assert client.put(S, json={"browse_revisit_days": 5}).status_code in (401, 403)
@@ -403,6 +413,11 @@ def test_settings_get_defaults_and_permissions(w, cap_settings):
     {"proxy_connect_timeout_seconds": 61}, {"proxy_idle_timeout_seconds": 4}, {"proxy_idle_timeout_seconds": 601},
     {"proxy_max_connections": 0}, {"proxy_max_connections": 1025},
     {"archive_freshness_days": 0}, {"archive_freshness_days": 91},
+    {"sweep_pause_seconds": 0}, {"sweep_pause_seconds": 61}, {"sweep_lookup_backoff_seconds": 4},
+    {"sweep_lookup_backoff_seconds": 901}, {"sweep_time_limit_seconds": 59}, {"sweep_time_limit_seconds": 3001},
+    {"sweep_max_consecutive_lookup_failures": 0}, {"sweep_max_consecutive_lookup_failures": 11},
+    {"sweep_retry_after_lookup_days": 0}, {"sweep_retry_after_lookup_days": 8},
+    {"sweep_retry_after_other_days": 0}, {"sweep_retry_after_other_days": 91},
     {"identifying_user_agent": "café"}, {"identifying_user_agent": "a" * 257}, {"browse_revisit_days": "x"},
 ])
 def test_settings_put_bounds_are_422_and_write_nothing(w, cap_settings, bad):
@@ -533,3 +548,28 @@ def test_settings_archive_freshness_days_persists_and_audits(w, cap_settings):
         changes = [x.detail.get("changes", {}) for x in
                    s.query(AuditLog).order_by(AuditLog.occurred_at.desc()).limit(30).all() if x.detail]
     assert any(c.get("capture_archive_freshness_days") == {"from": 7, "to": 30} for c in changes)
+
+
+def test_sweep_pacing_settings_round_trip_and_audit(w, cap_settings):
+    h = w.headers()
+    new = {"sweep_pause_seconds": 5, "sweep_lookup_backoff_seconds": 120, "sweep_time_limit_seconds": 900,
+           "sweep_max_consecutive_lookup_failures": 4, "sweep_retry_after_lookup_days": 2,
+           "sweep_retry_after_other_days": 14}
+    with SessionLocal() as s:
+        for k in _KEYS[10:]:
+            row = s.get(AppSetting, k)
+            if row is not None:
+                s.delete(row)
+        s.commit()
+    r = client.put(S, headers=h, json=new)
+    assert r.status_code == 200, r.text
+    assert {k: r.json()[k] for k in new} == new and r.json() == client.get(S, headers=h).json()
+    with SessionLocal() as s:
+        p = pc.sweep_pacing(s)  # the sweep reads what the API wrote
+        changes = [x.detail.get("changes", {}) for x in
+                   s.query(AuditLog).order_by(AuditLog.occurred_at.desc()).limit(30).all() if x.detail]
+    assert (p.pause_s, p.lookup_backoff_s, p.time_limit_s, p.max_consecutive_lookup_failures) == (5, 120, 900, 4)
+    assert (p.retry_after_lookup, p.retry_after_other) == (timedelta(days=2), timedelta(days=14))
+    hit = [c for c in changes if c.get("capture_sweep_pause_seconds") == {"from": 2, "to": 5}]
+    assert hit and hit[0]["capture_sweep_retry_after_other_days"] == {"from": 7, "to": 14}
+    assert len({k for k in hit[0] if k.startswith("capture_sweep_")}) == 6

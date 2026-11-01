@@ -9,6 +9,8 @@ const ok: CaptureSettings = {
   max_image_bytes: 2097152, queue_timeout_seconds: 600,
   image_keep_count: 3, proxy_connect_timeout_seconds: 10,
   proxy_idle_timeout_seconds: 30, proxy_max_connections: 256, archive_freshness_days: 7,
+  sweep_pause_seconds: 2, sweep_lookup_backoff_seconds: 60, sweep_time_limit_seconds: 600,
+  sweep_max_consecutive_lookup_failures: 3, sweep_retry_after_lookup_days: 1, sweep_retry_after_other_days: 7,
 }
 const v = (o: Partial<CaptureSettings>) => validateCaptureSettings({ ...ok, ...o })
 
@@ -81,6 +83,24 @@ describe("validateCaptureSettings", () => {
     expect(v({ proxy_max_connections: 0 })).toMatch(/max connections/)
     expect(v({ proxy_max_connections: 1025 })).not.toBeNull()
     expect(v({ proxy_max_connections: NaN })).not.toBeNull()
+  })
+  it("checks sweep bounds", () => {
+    const cases: [keyof CaptureSettings, number, number][] = [
+      ["sweep_pause_seconds", 1, 60],
+      ["sweep_lookup_backoff_seconds", 5, 900],
+      ["sweep_time_limit_seconds", 60, 3000],
+      ["sweep_max_consecutive_lookup_failures", 1, 10],
+      ["sweep_retry_after_lookup_days", 1, 7],
+      ["sweep_retry_after_other_days", 1, 90],
+    ]
+    for (const [k, lo, hi] of cases) {
+      expect(v({ [k]: lo })).toBeNull()
+      expect(v({ [k]: hi })).toBeNull()
+      expect(v({ [k]: lo - 1 })).not.toBeNull()
+      expect(v({ [k]: hi + 1 })).not.toBeNull()
+      expect(v({ [k]: lo + 0.5 })).not.toBeNull()
+      expect(v({ [k]: NaN })).not.toBeNull()
+    }
   })
   it("cross-field: identifying needs a UA", () => {
     expect(v({ user_agent_mode: "identifying", identifying_user_agent: "" })).toMatch(/User-Agent/)

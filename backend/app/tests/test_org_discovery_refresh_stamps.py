@@ -27,7 +27,7 @@ from app.models.org_entity import OrgEntity
 from app.models.scope_candidate import ScopeCandidate
 from app.services import hosting_classifier as hc
 from app.services.org_discovery import candidates as cd
-from app.services.org_discovery import generators, runner
+from app.services.org_discovery import generators, pacing, runner
 from app.services.org_discovery.domain_facts import DomainFacts
 from app.tests._org_world import World, hexid
 from app.tests.test_org_discovery_schema import _claimed, _insert_candidate, _rejected
@@ -149,7 +149,10 @@ def test_due_clause_against_real_rows(w):
     due = set(w.db.execute(
         select(ScopeCandidate.id).where(
             ScopeCandidate.root_entity_id == root.id,
-            runner.due_clause(ScopeCandidate.rediscovered_at, ScopeCandidate.rediscovery_failed, now),
+            runner.due_clause(
+                ScopeCandidate.rediscovered_at, ScopeCandidate.rediscovery_failed, now,
+                refresh_interval=timedelta(days=7), failed_retry_after=timedelta(days=1),
+            ),
         )
     ).scalars())
     assert {n for n, i in ids.items() if i in due} == {n for n, c in cases.items() if c[2]}
@@ -432,8 +435,10 @@ def test_refresh_root_budget_indeterminate_is_rate_limited_and_not_stamped(w, mo
     outcome, _, _ = runner.refresh_root(root.id, fresh_since=None)
     now = datetime.now(timezone.utc)
     assert outcome == runner.UNIT_RATE_LIMITED
-    # fresh_since=None became "now - 7 days" (the RIR cache TTL)
-    assert len(sweeps) == 1 and abs((now - runner.REFRESH_INTERVAL) - sweeps[0]) < timedelta(minutes=1)
+    # fresh_since=None became "now - the default refresh interval" (7 days, the RIR cache TTL)
+    default = timedelta(days=pacing.DEFAULT_REFRESH_INTERVAL_DAYS)
+    assert default == timedelta(days=7)
+    assert len(sweeps) == 1 and abs((now - default) - sweeps[0]) < timedelta(minutes=1)
     assert _root_row(root.id).rediscovered_at is None
 
 
