@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 import botocore.session
 import pytest
 from botocore.config import Config
+from botocore.exceptions import ClientError
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
@@ -43,6 +44,21 @@ class _FakeSigner:
     def presign(self, method, bucket, key, expires_in):
         self.calls.append((method, bucket, key, expires_in))
         return f"signed:{method}:{key}"
+
+    def presign_put_if_absent(self, bucket, key, expires_in):
+        self.calls.append(("PUT-IF-ABSENT", bucket, key, expires_in))
+        return f"signed:PUT-IF-ABSENT:{key}"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_probe_cache():
+    m._CONDITIONAL_OK.clear()
+    yield
+    m._CONDITIONAL_OK.clear()
+
+
+def _seed_probe():
+    m._CONDITIONAL_OK.add(("https://store.example", BUCKETS.results))
 
 
 def _store(client, signer=None):
@@ -193,8 +209,9 @@ def test_store_from_env_signs_for_the_public_endpoint(env):
     env.setenv("CAPTURE_S3_PUBLIC_ENDPOINT", "https://store.example.test")
     try:
         store = m.s3_store_from_env()
+        _seed_probe()  # the probe talks to the private endpoint; presign-only here
         urls = store.job_fields(ID, int(time.time()) + 600)["store"]
-        for k in ("result_put", "screenshot_put"):
+        for k in ("result_put", "screenshot_put", "claim_put"):
             assert urlsplit(urls[k]).netloc == "store.example.test"
         assert store._c.meta.endpoint_url == "https://store.example"
     finally:
@@ -221,20 +238,23 @@ def test_sigv4_presign_put_and_get_shape():
 def test_job_fields_shape_and_expiry(monkeypatch):
     sig = _FakeSigner()
     store = _store(_client(), sig)
+    _seed_probe()
     monkeypatch.setattr(m.time, "time", lambda: 1000.0)
     out = store.job_fields(ID, 1600)
     assert sig.calls == [
         ("PUT", "b-results", f"results/{ID}/result.json", 600),
         ("PUT", "b-results", f"results/{ID}/screenshot.webp", 600),
+        ("PUT-IF-ABSENT", "b-results", f"claims/{ID}", 600),
     ]
     assert out == {"store": {
         "result_put": f"signed:PUT:results/{ID}/result.json",
         "screenshot_put": f"signed:PUT:results/{ID}/screenshot.webp",
+        "claim_put": f"signed:PUT-IF-ABSENT:claims/{ID}",
         "expires": 1600,
     }}
     sig.calls.clear()
     store.job_fields(ID, 900)
-    assert [c[3] for c in sig.calls] == [1, 1]
+    assert [c[3] for c in sig.calls] == [1, 1, 1]
 
 
 def test_job_fields_presign_failure_is_oserror():
@@ -247,6 +267,7 @@ def test_job_fields_presign_failure_is_oserror():
             raise ParamValidationError(report="bad key")
 
     store = _store(_client(), _Broken())
+    _seed_probe()
     with pytest.raises(OSError) as info:
         store.job_fields(ID, int(m.time.time()) + 60)
     assert str(info.value) == "capture store: ParamValidationError: "
@@ -453,3 +474,161 @@ def test_no_secret_or_url_in_error_messages(env):
     with pytest.raises(StoreConfigError) as ce:
         m.s3_config_from_env()
     assert "AKIATESTDISTINCT" not in str(ce.value)
+
+
+# ── claim marker (planning#323) ──────────────────────────────────────────────
+
+
+def test_sigv4_presign_put_if_absent_signs_the_if_none_match_header():
+    url = urlsplit(SigV4Signer(_client()).presign_put_if_absent("b", f"claims/{ID}", 600))
+    q = {k: v[0] for k, v in parse_qs(url.query).items()}
+    assert url.path == f"/b/claims/{ID}"
+    assert q["X-Amz-Expires"] == "600"
+    assert q["X-Amz-SignedHeaders"].split(";") == ["host", "if-none-match"]
+
+
+def test_claim_marker_max_age_matches_the_claim_url_lifetime():
+    from app.services import page_capture as pc
+    assert m.CLAIM_SKEW_S == 300
+    assert m.CLAIM_MARKER_MAX_AGE_S == pc.QUEUE_TIMEOUT_MAX + pc.CREDENTIAL_RUN_MARGIN_S + m.CLAIM_SKEW_S
+
+
+def _precondition_failed():
+    return ClientError({"Error": {"Code": "PreconditionFailed", "Message": ""},
+                        "ResponseMetadata": {"HTTPStatusCode": 412}}, "PutObject")
+
+
+class _ProbeClient:
+    """Fake client for the probe: `puts` is a script of per-call outcomes (None = success,
+    an exception = raised). Records every put and delete."""
+
+    def __init__(self, puts, endpoint="https://store.example"):
+        self.meta = type("Meta", (), {"endpoint_url": endpoint})()
+        self.script = list(puts)
+        self.puts, self.deletes = [], []
+
+    def put_object(self, **kw):
+        self.puts.append(kw)
+        out = self.script.pop(0) if self.script else None
+        if out is not None:
+            raise out
+        return {}
+
+    def delete_object(self, **kw):
+        self.deletes.append(kw)
+        return {}
+
+
+def _conforming():
+    return _ProbeClient([None, _precondition_failed()])
+
+
+def test_job_fields_contains_the_claim_put_after_a_passing_probe():
+    sig = _FakeSigner()
+    client = _conforming()
+    out = _store(client, sig).job_fields(ID, int(time.time()) + 600)
+    assert out["store"]["claim_put"] == f"signed:PUT-IF-ABSENT:claims/{ID}"
+    (call,) = [c for c in sig.calls if c[0] == "PUT-IF-ABSENT"]
+    assert call[1:3] == ("b-results", f"claims/{ID}")
+    assert len(client.puts) == 2  # the probe was reached
+    assert all(p["IfNoneMatch"] == "*" and p["Bucket"] == "b-results" for p in client.puts)
+
+
+def test_probe_success_is_cached_per_process(caplog):
+    client = _conforming()
+    store = _store(client)
+    store.job_fields(ID, int(time.time()) + 600)
+    store.job_fields(ID, int(time.time()) + 600)
+    _store(client).job_fields(ID, int(time.time()) + 600)  # a fresh store, like get_store() builds
+    assert len(client.puts) == 2
+    # another endpoint is a different key and probes again
+    other = _ProbeClient([None, _precondition_failed()], endpoint="https://other.example")
+    _store(other).job_fields(ID, int(time.time()) + 600)
+    assert len(other.puts) == 2
+
+
+def test_a_store_that_ignores_the_condition_issues_no_job(caplog):
+    sig = _FakeSigner()
+    client = _ProbeClient([None, None])  # the second PUT succeeds: the condition was ignored
+    caplog.set_level(logging.ERROR)
+    with pytest.raises(OSError) as info:
+        _store(client, sig).job_fields(ID, int(time.time()) + 600)
+    assert "conditional writes not supported" in str(info.value)
+    assert sig.calls == []  # nothing presigned
+    assert len(client.puts) == 2 and len(client.deletes) == 1  # reached, and the probe key removed
+    assert client.deletes[0]["Key"] == client.puts[0]["Key"] and client.deletes[0]["Key"].startswith("claims/.probe-")
+    assert "does not honour conditional writes" in caplog.text
+    assert not m._CONDITIONAL_OK
+    # not cached: the next request probes again
+    client.script = [None, None]
+    with pytest.raises(OSError):
+        _store(client, sig).job_fields(ID, int(time.time()) + 600)
+    assert len(client.puts) == 4
+
+
+def test_probe_deletes_its_key_on_success_too():
+    client = _conforming()
+    _store(client).ensure_conditional_writes()
+    assert len(client.deletes) == 1 and client.deletes[0]["Key"] == client.puts[0]["Key"]
+
+
+def test_probe_other_errors_are_oserror_and_not_cached():
+    denied = ClientError({"Error": {"Code": "AccessDenied"}, "ResponseMetadata": {"HTTPStatusCode": 403}}, "PutObject")
+    sig = _FakeSigner()
+    for script in ([denied], [None, denied]):
+        client = _ProbeClient(script)
+        with pytest.raises(OSError) as info:
+            _store(client, sig).job_fields(ID, int(time.time()) + 600)
+        assert str(info.value) == "capture store: ClientError: AccessDenied"
+        assert len(client.puts) == len(script) and len(client.deletes) == 1
+        assert not m._CONDITIONAL_OK
+    assert sig.calls == []
+
+
+def test_probe_accepts_a_bare_412_status_without_the_code():
+    bare = ClientError({"Error": {"Code": "Weird"}, "ResponseMetadata": {"HTTPStatusCode": 412}}, "PutObject")
+    _store(_ProbeClient([None, bare])).ensure_conditional_writes()
+    assert m._CONDITIONAL_OK
+
+
+def test_sweep_claims_boundary_and_prefix():
+    now = 1_000_000.0
+    age = m.CLAIM_MARKER_MAX_AGE_S
+
+    def entry(key, seconds_old):
+        return {"Key": key, "LastModified": datetime.fromtimestamp(now - seconds_old, tz=timezone.utc)}
+
+    client = _client()
+    stub = Stubber(client)
+    stub.add_response("list_objects_v2", {"IsTruncated": False, "Contents": [
+        entry(f"claims/{A}", age + 1), entry(f"claims/{B}", age - 1), entry(f"claims/{C}", age + 5000)]},
+        {"Bucket": "b-results", "Prefix": "claims/"})
+    stub.add_response("delete_object", {}, {"Bucket": "b-results", "Key": f"claims/{A}"})
+    stub.add_response("delete_object", {}, {"Bucket": "b-results", "Key": f"claims/{C}"})
+    with stub:
+        assert _store(client).sweep_claims(now_ts=now) == 2
+        stub.assert_no_pending_responses()
+
+
+def test_sweep_claims_list_errors_return_zero_without_raising(caplog):
+    for code, expected_log in (("NoSuchBucket", False), ("InternalError", True)):
+        client = _client()
+        stub = Stubber(client)
+        stub.add_client_error("list_objects_v2", service_error_code=code)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING), stub:
+            assert _store(client).sweep_claims() == 0
+        assert ("could not list claim markers" in caplog.text) is expected_log
+
+
+def test_claims_keys_do_not_disturb_the_results_views():
+    client = _client()
+    stub = Stubber(client)
+    stub.add_response("list_objects_v2", _listing(f"results/{A}/result.json"),
+                      {"Bucket": "b-results", "Prefix": "results/"})
+    stub.add_response("list_objects_v2", _listing(f"results/{A}/result.json", f"results/{A}/screenshot.webp"),
+                      {"Bucket": "b-results", "Prefix": f"results/{A}/"})
+    with stub:
+        store = _store(client)
+        assert store.list_results() == [A]
+        assert store.result_files_ok(A) is True

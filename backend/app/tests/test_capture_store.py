@@ -69,6 +69,8 @@ class _S3Raw:
     def _bucket(self, area):
         if area == "claimed":
             raise AssertionError("`claimed` exists on the filesystem only")
+        if area == "claims":
+            return self._b.results  # claim markers live in the results bucket
         return getattr(self._b, area)
 
     def put(self, area, rel, data):
@@ -439,3 +441,46 @@ def test_s3_presigned_put_refuses_what_the_presign_did_not_authorise(s3, raw):
 def test_s3_store_is_built_by_get_store(s3):
     assert isinstance(s3, S3Store)
     assert isinstance(get_store(), S3Store)
+
+
+# ── claim marker against a real store (planning#323) ─────────────────────────
+
+
+def test_s3_conditional_write_probe_passes_on_the_real_store(s3, raw):
+    capture_store_s3._CONDITIONAL_OK.clear()
+    s3.ensure_conditional_writes()
+    assert capture_store_s3._CONDITIONAL_OK
+    assert raw.names("claims") == []  # the probe key was removed (reached: the probe ran)
+
+
+def test_s3_claim_put_is_exclusive(s3, raw):
+    url = s3.job_fields(ID, int(time.time()) + 600)["store"]["claim_put"]
+    assert httpx.put(url, content=b"", headers={"If-None-Match": "*"}).status_code == 200
+    assert raw.names("claims") == [ID]  # reached: the marker exists, so the 412 below is real
+    assert httpx.put(url, content=b"", headers={"If-None-Match": "*"}).status_code == 412
+    assert httpx.put(url, content=b"").status_code == 403
+    assert s3.list_results() == []  # a marker is not a result
+
+
+def test_s3_claim_put_eight_way_race_has_one_winner(s3, raw):
+    from concurrent.futures import ThreadPoolExecutor
+
+    url = s3.job_fields(ID2, int(time.time()) + 600)["store"]["claim_put"]
+
+    def go(_):
+        return httpx.put(url, content=b"", headers={"If-None-Match": "*"}).status_code
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        codes = list(ex.map(go, range(8)))
+    assert sum(1 for c in codes if 200 <= c < 300) == 1
+
+
+def test_s3_sweep_claims_removes_only_old_markers(s3, raw):
+    raw.put("claims", ID, b"")
+    raw.put("claims", ID2, b"")
+    raw.put("results", f"{ID3}/result.json", b"{}")
+    assert s3.sweep_claims() == 0  # fresh markers stay
+    far = time.time() + capture_store_s3.CLAIM_MARKER_MAX_AGE_S + 60
+    assert s3.sweep_claims(now_ts=far) == 2
+    assert raw.names("claims") == []
+    assert raw.names("results") == [ID3]  # results untouched

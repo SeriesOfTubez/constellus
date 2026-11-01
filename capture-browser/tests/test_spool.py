@@ -457,10 +457,11 @@ def test_worker_archive_job_installs_archive_only_route(tmp_path, fake_playwrigh
 NETLOC = "s3.example.com:9000"
 PUT_R = f"https://{NETLOC}/res/results/{ID}/result.json?X-Amz-Signature=aa"
 PUT_S = f"https://{NETLOC}/res/results/{ID}/screenshot.webp?X-Amz-Signature=bb"
+PUT_C = f"https://{NETLOC}/res/claims/{ID}?X-Amz-SignedHeaders=host%3Bif-none-match&X-Amz-Signature=cc"
 
 
 def _store(**over):
-    s = {"result_put": PUT_R, "screenshot_put": PUT_S, "expires": EXP}
+    s = {"result_put": PUT_R, "screenshot_put": PUT_S, "claim_put": PUT_C, "expires": EXP}
     s.update(over)
     return s
 
@@ -474,10 +475,10 @@ def test_filesystem_job_result_has_store_none():
     assert spool.validate_job(job(), ID)["store"] is None
 
 
-def test_validate_store_happy_path_returns_exactly_the_three_keys():
+def test_validate_store_happy_path_returns_exactly_the_four_keys():
     out = spool.validate_store({**_store(), "extra": 1}, NETLOC, False)
     assert out == _store()
-    assert sorted(out) == ["expires", "result_put", "screenshot_put"]
+    assert sorted(out) == ["claim_put", "expires", "result_put", "screenshot_put"]
 
 
 def test_validate_store_host_compare_is_case_insensitive():
@@ -522,8 +523,31 @@ def test_validate_store_rejects(obj, allow_http):
         spool.validate_store(obj, NETLOC, allow_http)
 
 
+@pytest.mark.parametrize(
+    "claim,why",
+    [
+        (_ABSENT, "missing"),
+        (None, "non-string"),
+        (5, "non-string"),
+        ("", "empty"),
+        (PUT_C.replace(NETLOC, "evil.example.net"), "wrong host"),
+        (PUT_C.replace("https", "http"), "http without allow_http"),
+        (PUT_C.replace(NETLOC, "user@" + NETLOC), "userinfo"),
+        ("https:///x", "no host"),
+    ],
+)
+def test_validate_store_claim_put_is_required_and_validated(claim, why):
+    obj = {k: v for k, v in _store(claim_put=claim).items() if v is not _ABSENT}
+    with pytest.raises(spool.InvalidJob, match="claim_put"):
+        spool.validate_store(obj, NETLOC, False)
+
+
 def test_validate_store_http_allowed_only_with_the_flag():
-    http = _store(result_put=PUT_R.replace("https", "http"), screenshot_put=PUT_S.replace("https", "http"))
+    http = _store(
+        result_put=PUT_R.replace("https", "http"),
+        screenshot_put=PUT_S.replace("https", "http"),
+        claim_put=PUT_C.replace("https", "http"),
+    )
     with pytest.raises(spool.InvalidJob):
         spool.validate_store(http, NETLOC, False)
     assert spool.validate_store(http, NETLOC, True) == http

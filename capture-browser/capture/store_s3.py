@@ -1,8 +1,11 @@
 """S3 job mode of the capture worker (planning#318 S1c).
 
-The worker's key is list/get/delete on the jobs bucket and nothing else: the
-DELETE of a job is the claim, and results go out through presigned PUT URLs
-carried by the job (plain HTTP, never through capture-proxy, no redirects).
+The worker's key is list/get/delete on the jobs bucket and nothing else. A job
+is claimed by a presigned conditional PUT (`store.claim_put`, If-None-Match: *):
+the first PUT wins, every later one gets 412, so any number of workers can poll
+one bucket. The DELETE of the job is only cleanup. Results go out through
+presigned PUT URLs carried by the job (plain HTTP, never through capture-proxy,
+no redirects).
 Never imports Playwright. Contract: docs/architecture/capture-spool.md.
 """
 
@@ -155,7 +158,7 @@ class S3Jobs:
             self._c.delete_object(Bucket=self._bucket, Key=f"{JOBS_PREFIX}{cid}.json")
         except (ClientError, BotoCoreError) as exc:
             print(
-                f"capture-worker: {cid}: could not claim the job: {_code(exc)}",
+                f"capture-worker: {cid}: could not remove the claimed job: {_code(exc)}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -189,6 +192,43 @@ def upload(url: str, data: bytes, content_type: str, *, timeout_s: float = UPLOA
         raise UploadError(type(exc).__name__) from None
     if not 200 <= status <= 299:
         raise UploadError(f"HTTP {status}")
+
+
+def claim(url: str, *, cid: str, report: bool = True, timeout_s: float = UPLOAD_TIMEOUT_S) -> bool:
+    """Claim a job with its presigned conditional PUT. True only when this worker
+    won (2xx). 412 = another worker won: False, silently. Anything else is logged
+    (code or exception type only, never the URL) and is also False; `report=False`
+    suppresses that line (the caller already reported this job)."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    try:
+        req = urllib.request.Request(
+            url,
+            data=b"",
+            method="PUT",
+            headers={"If-None-Match": "*", "Content-Length": "0"},
+        )
+        with opener.open(req, timeout=timeout_s) as resp:
+            status = resp.status
+            resp.read(1024)
+    except urllib.error.HTTPError as exc:
+        code = exc.code
+        exc.close()
+        if code != 412 and report:
+            _claim_failed(cid, f"HTTP {code}")
+        return False
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        if report:
+            _claim_failed(cid, type(exc).__name__)
+        return False
+    if not 200 <= status <= 299:
+        if report:
+            _claim_failed(cid, f"HTTP {status}")
+        return False
+    return True
+
+
+def _claim_failed(cid: str, why: str) -> None:
+    print(f"capture-worker: {cid}: could not claim the job: {why}", file=sys.stderr, flush=True)
 
 
 def extract_store(raw: bytes, netloc: str, allow_http: bool) -> dict | None:

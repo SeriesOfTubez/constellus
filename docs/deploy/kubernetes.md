@@ -145,8 +145,20 @@ ingested it and the store is clean), `down --purge`.
   `subPath` would freeze the file. Checked in the lab: the symlink path reports
   `source=default`, the `..data` path `source=file`, and an update was picked up in
   16 to 66 s (kubelet sync; four updates measured).
-- **One worker.** The browser Deployment is `replicas: 1` with `Recreate`
-  (planning#323: a rolling update would briefly run two workers). Do not scale it.
+- **Workers.** The base is `replicas: 1`; scaling is the operator's overlay. Workers
+  claim an S3 job with a conditional PUT (`If-None-Match: *`) of `claims/<id>` in the
+  results bucket (planning#323), so more than one worker is safe on a store that
+  honours that header. Tested: RustFS (the lab and CI store). AWS S3 documents
+  support for it but is not tested here. Not verified: GCS interop and any other store. The backend probes the store at first use and refuses to issue
+  S3 jobs if the store does not honour it, so on such a store captures stop and the
+  queue timeout fails them; it never runs a job twice. The backend's store key
+  therefore needs PUT, LIST and DELETE on `claims/` in the results bucket (the
+  probe, the markers and the sweep of old markers; it never reads them). The
+  worker's key is unchanged: list, get and delete on the jobs bucket. The
+  Deployment keeps `Recreate`: it avoids two pod generations overlapping during a
+  rollout, and the lab's `wait_browser_running` waits for exactly the expected
+  number of live pods. The lab scales to two pods for `scripts/kind-lab.sh e2e
+  --count 8 --workers 2` and back to one afterwards.
 - **Images.** The base leaves the image tag to the overlay; pin by digest in
   production.
 
