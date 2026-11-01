@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_permission
@@ -22,9 +22,9 @@ from app.models.alert_event import AlertDelivery, AlertDispatch, AlertEvent
 from app.models.asset_canonical import AssetCanonical
 from app.models.digest import Digest
 from app.models.finding_canonical import FindingCanonical
-from app.models.notification_rule import RULE_MODES, NotificationRule
+from app.models.notification_rule import RULE_KIND_ORG_DISCOVERY, RULE_KINDS, RULE_MODES, NotificationRule
 
-from app.services import app_settings, audit, digest as digest_svc
+from app.services import app_settings, audit, candidate_digest, digest as digest_svc
 from app.services.notification_dispatcher import _SEVERITY_RANK
 
 log = logging.getLogger(__name__)
@@ -41,6 +41,18 @@ def _check_mode(v: str) -> str:
     return v
 
 
+def _check_kind(v: str) -> str:
+    v = v.strip().lower()
+    if v not in RULE_KINDS:
+        raise ValueError(f"kind must be one of {sorted(RULE_KINDS)}")
+    return v
+
+
+_ORG_MODE_MSG = "An organization discovery rule is sent in the daily digest only."
+_ORG_CATEGORIES_MSG = "An organization discovery rule has no categories."
+_KIND_FIXED_MSG = "A rule's kind can't be changed. Create a new rule instead."
+
+
 class RuleResponse(BaseModel):
     id: uuid.UUID
     name: str
@@ -49,6 +61,7 @@ class RuleResponse(BaseModel):
     categories: list[str]
     recipients: list[str]
     mode: str
+    kind: str
 
     model_config = {"from_attributes": True}
 
@@ -60,6 +73,23 @@ class RuleCreate(BaseModel):
     recipients: list[str]
     enabled: bool = True
     mode: str = "immediate"
+    kind: str = "finding"
+
+    @field_validator("kind")
+    @classmethod
+    def _kind(cls, v: str) -> str:
+        return _check_kind(v)
+
+    @model_validator(mode="after")
+    def _org_shape(self):
+        if self.kind == RULE_KIND_ORG_DISCOVERY:
+            if "mode" not in self.model_fields_set:
+                self.mode = "digest"
+            elif self.mode != "digest":
+                raise ValueError(_ORG_MODE_MSG)
+            if self.categories:
+                raise ValueError(_ORG_CATEGORIES_MSG)
+        return self
 
     @field_validator("mode")
     @classmethod
@@ -98,6 +128,12 @@ class RuleUpdate(BaseModel):
     recipients: list[str] | None = None
     enabled: bool | None = None
     mode: str | None = None
+    kind: str | None = None
+
+    @field_validator("kind")
+    @classmethod
+    def _kind(cls, v: str | None) -> str | None:
+        return None if v is None else _check_kind(v)
 
     @field_validator("mode")
     @classmethod
@@ -137,6 +173,7 @@ def create_rule(
         categories=data.categories,
         recipients=data.recipients,
         mode=data.mode,
+        kind=data.kind,
     )
     db.add(rule)
     db.commit()
@@ -155,6 +192,13 @@ def update_rule(
     rule = db.get(NotificationRule, rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
+    if data.kind is not None and data.kind != rule.kind:
+        raise HTTPException(status_code=422, detail=_KIND_FIXED_MSG)
+    if rule.kind == RULE_KIND_ORG_DISCOVERY:
+        if data.mode is not None and data.mode != "digest":
+            raise HTTPException(status_code=422, detail=_ORG_MODE_MSG)
+        if data.categories:
+            raise HTTPException(status_code=422, detail=_ORG_CATEGORIES_MSG)
     if data.name is not None:
         rule.name = data.name.strip() or rule.name
     if data.severity_threshold is not None:
@@ -286,6 +330,7 @@ def list_alerts(
 
 class DigestOut(BaseModel):
     id: uuid.UUID
+    kind: str
     rule_id: uuid.UUID | None
     rule_name: str
     period_start: datetime
@@ -313,7 +358,15 @@ def list_digests(
     db: Session = Depends(get_db),
     _=Depends(require_permission(Permission.NOTIFICATIONS_READ)),
 ):
-    return db.query(Digest).order_by(Digest.created_at.desc(), Digest.id.desc()).limit(limit).all()
+    rows = db.query(Digest).order_by(Digest.created_at.desc(), Digest.id.desc()).limit(limit).all()
+    out = []
+    for row in rows:
+        item = DigestOut.model_validate(row)
+        if row.kind == RULE_KIND_ORG_DISCOVERY:
+            # planning#319: re-filtered on read; the stored row is never written.
+            item.event_count = candidate_digest.filter_body(db, row)["totals"]["candidates"]
+        out.append(item)
+    return out
 
 
 @router.get("/digests/{digest_id}", response_model=DigestDetailOut)
@@ -325,7 +378,11 @@ def get_digest(
     row = db.get(Digest, digest_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Digest not found")
-    return row
+    out = DigestDetailOut.model_validate(row)
+    if row.kind == RULE_KIND_ORG_DISCOVERY:
+        out.body = candidate_digest.filter_body(db, row)
+        out.event_count = out.body["totals"]["candidates"]
+    return out
 
 
 _BASE_URL_RE = re.compile(r"https?://[^\s/?#@]+(/[^\s?#]*)?")

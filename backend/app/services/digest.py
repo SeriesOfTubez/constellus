@@ -71,10 +71,10 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.alert_event import AlertDelivery, AlertDispatch, AlertEvent
 from app.models.asset_canonical import AssetCanonical
-from app.models.digest import Digest
+from app.models.digest import Digest, DigestCandidate
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
-from app.models.notification_rule import NotificationRule
-from app.services import app_settings, llm_connector, notification_dispatcher
+from app.models.notification_rule import RULE_KIND_ORG_DISCOVERY, NotificationRule
+from app.services import app_settings, candidate_digest, llm_connector, notification_dispatcher
 from app.services.finding_writeup import _DEESCALATION, _FAILURES, _ledger, resolve_scopes
 from app.services.llm_grounding import check_path_grounding
 
@@ -207,6 +207,9 @@ def claim(db: Session, rule_id: uuid.UUID, now: datetime) -> Digest | None:
         db.rollback()  # created after this run began; the next run picks it up
         return None
 
+    if rule.kind == RULE_KIND_ORG_DISCOVERY:
+        return _claim_org_discovery(db, rule, floor, now)
+
     # A deferred dispatch was never sent, so it is claimed whatever its age.
     # The floor and grace window only bound the `both`-mode dispatches, which
     # already went out immediately; a rule no longer in a digest mode gets
@@ -243,6 +246,26 @@ def claim(db: Session, rule_id: uuid.UUID, now: datetime) -> Digest | None:
     db.flush()
     for d in dispatches:
         d.digest_id = digest.id
+    db.commit()
+    return digest
+
+
+def _claim_org_discovery(db: Session, rule: NotificationRule, floor: datetime, now: datetime) -> Digest:
+    """planning#319: the org-discovery claim. Runs under `claim`'s advisory lock
+    and commits once. Only candidates actually listed get a claim row."""
+    pairs = candidate_digest.select_new(db, rule, floor, now, grace=GRACE)
+    body = candidate_digest.build_body(
+        rule, pairs, period_start=floor, period_end=now, base_url=app_base_url(db),
+    )
+    digest = Digest(
+        kind=RULE_KIND_ORG_DISCOVERY, rule_id=rule.id, rule_name=rule.name, period_start=floor, period_end=now,
+        event_count=body["totals"]["candidates"], finding_count=0, body=body,
+        outcome="pending" if pairs else "empty", narrative_status="skipped",
+    )
+    db.add(digest)
+    db.flush()
+    for cand, _org in pairs:
+        db.add(DigestCandidate(digest_id=digest.id, rule_id=rule.id, candidate_id=cand.id))
     db.commit()
     return digest
 
@@ -674,17 +697,27 @@ def send(db: Session, digest: Digest) -> None:
     Everything the send needs is read BEFORE the single closing commit."""
     digest_id = digest.id
     body, status, narrative, reason = digest.body, digest.narrative_status, digest.narrative, digest.narrative_reason
+    org_digest = digest.kind == RULE_KIND_ORG_DISCOVERY
+    if org_digest:
+        # Re-checked at send: a stale digest is sent from its stored body, and a
+        # deal may have gone back to a restricting posture since it was built.
+        body = candidate_digest.filter_body(db, digest)
     rule = db.get(NotificationRule, digest.rule_id) if digest.rule_id else None
     recipients = [r for r in (rule.recipients or []) if r] if rule is not None else []
     deliveries: list[dict] = []
-    if not recipients:
+    if org_digest and body["totals"]["candidates"] == 0:
+        outcome = "empty"
+    elif not recipients:
         outcome = "no_recipients"
     else:
         connectors = notification_dispatcher._enabled_notification_connectors(db)
         if not connectors:
             outcome = "no_channel"
         else:
-            subject, text_body, html_body = render(body, status, narrative, reason, app_base_url(db))
+            if org_digest:
+                subject, text_body, html_body = candidate_digest.render(body, app_base_url(db))
+            else:
+                subject, text_body, html_body = render(body, status, narrative, reason, app_base_url(db))
             for cid, connector, config in connectors:
                 try:
                     ok = connector.send(
@@ -703,7 +736,9 @@ def send(db: Session, digest: Digest) -> None:
     row.outcome = outcome
     row.deliveries = deliveries
     row.attempts = (row.attempts or 0) + 1
-    row.sent_at = datetime.now(timezone.utc)
+    # Nothing was sent for an empty outcome: sent_at stays NULL, as for an
+    # empty period at claim time.
+    row.sent_at = None if outcome == "empty" else datetime.now(timezone.utc)
     db.commit()
 
 
@@ -778,8 +813,10 @@ def run_due(now: datetime | None = None) -> int:
                     continue
                 created += 1
                 if digest.outcome == "pending":
-                    _embed_cluster_writeups(db, digest)
-                    narrate(db, digest)
+                    # An org discovery digest has no AI summary and no write-ups.
+                    if digest.kind != RULE_KIND_ORG_DISCOVERY:
+                        _embed_cluster_writeups(db, digest)
+                        narrate(db, digest)
                     send(db, digest)
             except Exception:
                 db.rollback()

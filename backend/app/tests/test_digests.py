@@ -1179,7 +1179,7 @@ def test_digests_list_is_newest_first_capped_and_admin_only(denv, admin):
     assert r.status_code == 200
     mine = [d for d in r.json() if e.suffix in d["rule_name"]]
     assert [d["id"] for d in mine] == list(reversed(ids))
-    assert set(mine[0]) == {"id", "rule_id", "rule_name", "period_start", "period_end", "event_count",
+    assert set(mine[0]) == {"id", "kind", "rule_id", "rule_name", "period_start", "period_end", "event_count",
                             "finding_count", "outcome", "narrative_status", "narrative_reason", "deliveries",
                             "created_at", "sent_at"}
     assert len(client.get("/api/notifications/digests?limit=1", headers=h).json()) == 1
