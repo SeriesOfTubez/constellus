@@ -261,6 +261,7 @@ function MonitoringPoliciesCard() {
 
 type NotificationRule = {
   id: string
+  kind: "finding" | "org_discovery"
   name: string
   enabled: boolean
   severity_threshold: "info" | "low" | "medium" | "high" | "critical"
@@ -290,12 +291,26 @@ function NotificationRuleDialog({
   const [recipientsText, setRecipientsText] = useState((rule?.recipients ?? []).join(", "))
   const [enabled, setEnabled] = useState(rule?.enabled ?? true)
   const [mode, setMode] = useState<NotificationRule["mode"]>(rule?.mode ?? "immediate")
+  // The kind is chosen at create time only; the server does not allow changing it.
+  const [newKind, setNewKind] = useState<NotificationRule["kind"]>("finding")
+  const kind = isNew ? newKind : (rule?.kind ?? "finding")
+  const isOrg = kind === "org_discovery"
 
   const mutation = useMutation({
     mutationFn: () => {
       const recipients = recipientsText.split(/[,\s]+/).map(s => s.trim()).filter(Boolean)
+      if (isNew && isOrg) {
+        return api.post<NotificationRule>("/notifications/rules", {
+          name: name.trim(), kind: "org_discovery", recipients, enabled,
+        })
+      }
+      if (!isNew && isOrg) {
+        return api.patch<NotificationRule>(`/notifications/rules/${rule!.id}`, {
+          name: name.trim(), recipients, enabled,
+        })
+      }
       const body = { name: name.trim(), severity_threshold: severity, recipients, enabled, mode }
-      if (isNew) return api.post<NotificationRule>("/notifications/rules", body)
+      if (isNew) return api.post<NotificationRule>("/notifications/rules", { ...body, kind: "finding" })
       return api.patch<NotificationRule>(`/notifications/rules/${rule!.id}`, body)
     },
     onSuccess: () => {
@@ -312,14 +327,36 @@ function NotificationRuleDialog({
         <DialogHeader>
           <DialogTitle>{isNew ? "Add notification rule" : "Edit notification rule"}</DialogTitle>
           <DialogDescription>
-            Email recipients when a new finding lands at or above the chosen severity.
+            {isOrg
+              ? "Email recipients a daily digest of new organization discovery candidates."
+              : "Email recipients when a new finding lands at or above the chosen severity."}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div className="space-y-1.5">
+            <Label>What it's about</Label>
+            {isNew ? (
+              <Select value={newKind} onValueChange={(v) => setNewKind(v as NotificationRule["kind"])}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="finding">New findings</SelectItem>
+                  <SelectItem value="org_discovery">New organization discovery candidates</SelectItem>
+                </SelectContent>
+              </Select>
+            ) : (
+              <p className="text-sm">{isOrg ? "New organization discovery candidates" : "New findings"}</p>
+            )}
+            {isOrg && (
+              <p className="text-xs text-muted-foreground">
+                Sent once a day in the digest. Organizations under a pre-close or abandoned deal are never included.
+              </p>
+            )}
+          </div>
+          <div className="space-y-1.5">
             <Label htmlFor="rule-name">Name</Label>
             <Input id="rule-name" value={name} onChange={e => setName(e.target.value)} placeholder="Critical findings → security@…" autoFocus />
           </div>
+          {!isOrg && (<>
           <div className="space-y-1.5">
             <Label>Severity threshold</Label>
             <Select value={severity} onValueChange={(v) => setSeverity(v as NotificationRule["severity_threshold"])}>
@@ -344,6 +381,7 @@ function NotificationRuleDialog({
               Daily digest groups the day's alerts into one email at the digest hour below. Alerts are recorded either way.
             </p>
           </div>
+          </>)}
           <div className="space-y-1.5">
             <Label htmlFor="rule-recipients">Recipients</Label>
             <Input
@@ -509,8 +547,13 @@ function NotificationRulesCard() {
                     >
                       {r.name}
                     </button>
-                    <Badge variant="outline" className="text-[10px] uppercase">{r.severity_threshold}+</Badge>
-                    {r.mode && r.mode !== "immediate" && (
+                    {r.kind === "org_discovery" && (
+                      <Badge variant="secondary" className="text-[10px]">Org discovery</Badge>
+                    )}
+                    {r.kind !== "org_discovery" && (
+                      <Badge variant="outline" className="text-[10px] uppercase">{r.severity_threshold}+</Badge>
+                    )}
+                    {r.kind !== "org_discovery" && r.mode && r.mode !== "immediate" && (
                       <Badge variant="secondary" className="text-[10px] text-muted-foreground">
                         {r.mode === "digest" ? "Digest" : "Immediate + digest"}
                       </Badge>

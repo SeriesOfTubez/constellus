@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import type { DigestDetail, DigestOutcome, DigestSummary } from "@/lib/api"
+import type { DigestOutcome, DigestSummary, FindingDigestDetail, OrgDiscoveryDigestDetail } from "@/lib/api"
 import { DigestBodyView, DigestHistoryList } from "@/components/DigestHistoryList"
 
 function summary(over: Partial<DigestSummary> = {}): DigestSummary {
   return {
-    id: "g1", rule_id: "r1", rule_name: "Fabrikam daily",
+    id: "g1", kind: "finding", rule_id: "r1", rule_name: "Fabrikam daily",
     period_start: "2026-01-01T00:00:00Z", period_end: "2026-01-02T00:00:00Z",
     event_count: 4, finding_count: 3, outcome: "sent",
     narrative_status: null, narrative_reason: null, deliveries: [],
@@ -15,9 +15,10 @@ function summary(over: Partial<DigestSummary> = {}): DigestSummary {
   }
 }
 
-function detail(over: Partial<DigestDetail> = {}): DigestDetail {
+function detail(over: Partial<FindingDigestDetail> = {}): FindingDigestDetail {
   return {
     ...summary({ narrative_status: "succeeded" }),
+    kind: "finding",
     body: {
       rule: { id: "r1", name: "Fabrikam daily", severity_threshold: "high" },
       period: { start: "2026-01-01T00:00:00Z", end: "2026-01-02T00:00:00Z" },
@@ -125,5 +126,60 @@ describe("DigestBodyView", () => {
     const html = wrap(<DigestBodyView detail={d} />)
     expect(html).not.toContain("<script>")
     expect(html).toContain("&lt;script&gt;")
+  })
+})
+
+function orgDetail(over: Partial<OrgDiscoveryDigestDetail["body"]> = {}): OrgDiscoveryDigestDetail {
+  return {
+    ...summary({ kind: "org_discovery", rule_name: "Org candidates daily", event_count: 5, finding_count: 0 }),
+    kind: "org_discovery",
+    body: {
+      kind: "org_discovery",
+      rule: { id: "r2", name: "Org candidates daily" },
+      period: { start: "2026-01-01T00:00:00Z", end: "2026-01-02T00:00:00Z" },
+      totals: { candidates: 5, organizations: 1 },
+      organizations: [{
+        id: "org-1", name: "Example Holdings A", candidate_count: 5, url: "https://easm.example.com/organizations/org-1",
+        candidates: [
+          { id: "c1", kind: "domain", value: "a.example.com" },
+          { id: "c2", kind: "asn", value: "AS64500" },
+          { id: "c3", kind: "cidr", value: "203.0.113.0/24" },
+        ],
+      }],
+      ...over,
+    },
+  }
+}
+
+describe("org discovery digest", () => {
+  it("renders org, counts, values, kind labels, overflow and an in-app link, with no AI summary", () => {
+    const html = wrap(<DigestBodyView detail={orgDetail()} />)
+    expect(html).toContain("Example Holdings A")
+    expect(html).toContain("5 new candidates across 1 organization")
+    expect(html).toContain("5 new")
+    expect(html).toContain("a.example.com")
+    expect(html).toContain("AS64500")
+    expect(html).toContain("203.0.113.0/24")
+    expect(html).toContain("ASN")
+    expect(html).toContain("IP range")
+    expect(html).toContain("and 2 more")
+    expect(html).toContain('href="/organizations/org-1?tab=domains&amp;seg=candidates"')
+    expect(html).not.toContain("https://easm.example.com")
+    expect(html).not.toContain("AI summary")
+  })
+
+  it("omits the overflow line when everything is listed", () => {
+    const d = orgDetail()
+    d.body.organizations[0].candidate_count = 3
+    expect(wrap(<DigestBodyView detail={d} />)).not.toContain("more")
+  })
+
+  it("list row says candidates, not findings, and shows no AI label", () => {
+    const html = renderList([summary({
+      kind: "org_discovery", event_count: 5, finding_count: 0, narrative_status: "succeeded",
+    })])
+    expect(html).toContain("5 candidates")
+    expect(html).not.toContain("finding")
+    expect(html).not.toContain("AI summary")
   })
 })

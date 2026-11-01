@@ -2,7 +2,10 @@ import { useState } from "react"
 import { Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import { ChevronDown, ChevronRight } from "lucide-react"
-import { api, type DigestDetail, type DigestOutcome, type DigestSummary } from "@/lib/api"
+import {
+  api, type DigestDetail, type DigestOutcome, type DigestSummary, type FindingDigestDetail,
+  type OrgDiscoveryDigestDetail,
+} from "@/lib/api"
 import { SeverityBadge } from "@/components/finding-badges"
 
 /** What is on record, no more. */
@@ -28,7 +31,50 @@ function outcomeTone(o: string): string {
 
 const fmt = (iso: string) => new Date(iso).toLocaleString()
 
+const CANDIDATE_KIND_LABEL: Record<string, string> = { domain: "domain", asn: "ASN", cidr: "IP range" }
+
+function OrgDiscoveryBodyView({ detail }: { detail: OrgDiscoveryDigestDetail }) {
+  const { totals, organizations } = detail.body
+  return (
+    <div className="space-y-3 text-sm">
+      <p className="text-xs text-muted-foreground">
+        {totals.candidates} new candidate{totals.candidates === 1 ? "" : "s"} across{" "}
+        {totals.organizations} organization{totals.organizations === 1 ? "" : "s"}
+      </p>
+      {organizations.map(o => (
+        <div key={o.id} className="space-y-1">
+          <div className="flex items-center gap-2 min-w-0">
+            <Link
+              to={`/organizations/${o.id}?tab=domains&seg=candidates`}
+              className="font-medium truncate hover:underline"
+            >
+              {o.name}
+            </Link>
+            <span className="text-xs text-muted-foreground shrink-0">{o.candidate_count} new</span>
+          </div>
+          <div className="space-y-0.5 pl-4">
+            {o.candidates.map(c => (
+              <div key={c.id} className="flex items-center gap-2 min-w-0">
+                <span className="text-xs text-muted-foreground shrink-0">{CANDIDATE_KIND_LABEL[c.kind] ?? c.kind}</span>
+                <span className="truncate">{c.value}</span>
+              </div>
+            ))}
+            {o.candidate_count > o.candidates.length && (
+              <p className="text-xs text-muted-foreground">and {o.candidate_count - o.candidates.length} more</p>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function DigestBodyView({ detail }: { detail: DigestDetail }) {
+  if (detail.kind === "org_discovery") return <OrgDiscoveryBodyView detail={detail} />
+  return <FindingDigestBodyView detail={detail} />
+}
+
+function FindingDigestBodyView({ detail }: { detail: FindingDigestDetail }) {
   const { body, narrative } = detail
   const t = body.totals
   return (
@@ -115,12 +161,14 @@ function DigestRow({ d }: { d: DigestSummary }) {
           <span className="block text-xs text-muted-foreground">{fmt(d.period_start)} → {fmt(d.period_end)}</span>
         </span>
         <span className="block flex-1 min-w-0">
-          {d.finding_count > 0 ? `${d.finding_count} finding${d.finding_count === 1 ? "" : "s"}` : "Nothing new"}
+          {d.kind === "org_discovery"
+            ? (d.event_count > 0 ? `${d.event_count} candidate${d.event_count === 1 ? "" : "s"}` : "Nothing new")
+            : d.finding_count > 0 ? `${d.finding_count} finding${d.finding_count === 1 ? "" : "s"}` : "Nothing new"}
         </span>
         <span className="block w-64 shrink-0 space-y-0.5 text-xs">
           <span className={`block ${outcomeTone(d.outcome)}`}>{digestOutcomeLabel(d.outcome)}</span>
-          {d.narrative_status === "succeeded" && <span className="block">AI summary</span>}
-          {(d.narrative_status === "skipped" || d.narrative_status === "failed") && (
+          {d.kind !== "org_discovery" && d.narrative_status === "succeeded" && <span className="block">AI summary</span>}
+          {d.kind !== "org_discovery" && (d.narrative_status === "skipped" || d.narrative_status === "failed") && (
             <span className="block text-muted-foreground" title={d.narrative_reason ?? undefined}>No AI summary</span>
           )}
         </span>

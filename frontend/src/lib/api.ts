@@ -690,8 +690,11 @@ export type AlertDelivery = {
 export type DigestOutcome =
   "pending" | "empty" | "sent" | "partial" | "failed" | "no_channel" | "no_recipients" | "abandoned"
 
+export type DigestKind = "finding" | "org_discovery"
+
 export type DigestSummary = {
   id: string
+  kind: DigestKind
   rule_id: string | null
   rule_name: string
   period_start: string
@@ -762,10 +765,34 @@ export type DigestNarrative = {
   dropped: number
 }
 
-export type DigestDetail = DigestSummary & {
+export type FindingDigestDetail = DigestSummary & {
+  kind: "finding"
   body: DigestBody
   narrative: DigestNarrative | null
 }
+
+/** candidates is capped per organization, so candidate_count can exceed candidates.length. */
+export type OrgDiscoveryDigestBody = {
+  kind: "org_discovery"
+  rule: { id: string; name: string }
+  period: { start: string; end: string }
+  totals: { candidates: number; organizations: number }
+  organizations: {
+    id: string
+    name: string
+    candidate_count: number
+    url: string | null
+    candidates: { id: string; kind: "domain" | "asn" | "cidr"; value: string }[]
+  }[]
+}
+
+export type OrgDiscoveryDigestDetail = DigestSummary & {
+  kind: "org_discovery"
+  body: OrgDiscoveryDigestBody
+  narrative?: null
+}
+
+export type DigestDetail = FindingDigestDetail | OrgDiscoveryDigestDetail
 
 export type DigestSettings = {
   digest_hour_utc: number

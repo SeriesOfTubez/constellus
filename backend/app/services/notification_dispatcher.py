@@ -28,9 +28,12 @@ as detected by `app.services.score_history.capture`. It is called from
 both `scan_executor.py` (a scan-time promotion) and `nightly_rescore.py`
 (the nightly full-scope re-score), and deliberately reuses
 `_enabled_notification_connectors` and `_rule_matches` UNCHANGED so a
-`NotificationRule` keeps exactly one meaning (severity threshold + category
-filter against the finding) regardless of which event triggered dispatch —
-this module does not grow a second rule vocabulary for promotions.
+FINDING `NotificationRule` keeps exactly one meaning (severity threshold +
+category filter against the finding) regardless of which event triggered
+dispatch — this module does not grow a second rule vocabulary for promotions.
+Organization discovery rules (`kind = 'org_discovery'`, planning#319) are never
+loaded here: both entrypoints select finding rules only, and the digest
+service handles the other kind.
 
 Ownership gating is IDENTICAL across both entrypoints, and must stay that
 way. Each applies two independent filters in the same order: the
@@ -53,7 +56,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.alert_event import AlertDelivery, AlertDispatch, AlertEvent
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
-from app.models.notification_rule import NotificationRule
+from app.models.notification_rule import RULE_KIND_FINDING, NotificationRule
 from app.services import claims_query
 
 log = logging.getLogger(__name__)
@@ -85,7 +88,7 @@ def dispatch(new_finding_ids: list[uuid.UUID]) -> None:
 def _dispatch(db: Session, new_finding_ids: list[uuid.UUID]) -> None:
     rules = (
         db.query(NotificationRule)
-        .filter(NotificationRule.enabled == True)  # noqa: E712
+        .filter(NotificationRule.enabled == True, NotificationRule.kind == RULE_KIND_FINDING)  # noqa: E712
         .all()
     )
     if not rules:
@@ -144,7 +147,7 @@ def dispatch_promotions(promotions: list) -> None:
 def _dispatch_promotions(db: Session, promotions: list) -> None:
     rules = (
         db.query(NotificationRule)
-        .filter(NotificationRule.enabled == True)  # noqa: E712
+        .filter(NotificationRule.enabled == True, NotificationRule.kind == RULE_KIND_FINDING)  # noqa: E712
         .all()
     )
     if not rules:

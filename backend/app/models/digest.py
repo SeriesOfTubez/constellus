@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, Text, func, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -45,3 +45,29 @@ class Digest(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # planning#319: the kind of rule this digest was built for (mirrors 0099).
+    kind: Mapped[str] = mapped_column(Text, nullable=False, default="finding", server_default=text("'finding'"))
+
+
+class DigestCandidate(Base):
+    """An organization discovery candidate a rule's digest listed (planning#319).
+    The unique key claims each candidate for a rule exactly once. `rule_id`
+    goes NULL if the rule is deleted, so the digest's stored body can still be
+    filtered when read back."""
+
+    __tablename__ = "digest_candidates"
+    __table_args__ = (
+        UniqueConstraint("rule_id", "candidate_id", name="uq_digest_candidates_rule_candidate"),
+        Index("ix_digest_candidates_digest_id", "digest_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("uuidv7()"))
+    digest_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("digests.id", ondelete="CASCADE"), nullable=False
+    )
+    rule_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("notification_rules.id", ondelete="SET NULL"), nullable=True
+    )
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scope_candidates.id", ondelete="CASCADE"), nullable=False
+    )
