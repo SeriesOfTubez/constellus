@@ -667,6 +667,98 @@ def test_job_carries_store_fields_when_the_store_provides_them(w, env, monkeypat
     assert calls == [(str(row.id), job["proxy_expires"])]
 
 
+def test_a_store_that_ignores_conditional_writes_fails_the_row_and_writes_no_job(w, env, monkeypatch):
+    """Through the real S3Store and request path: the probe is reached (two conditional PUTs), the
+    store ignores the condition, so no job is written and the row fails spool_unavailable."""
+    from app.services import capture_store_s3 as s3mod
+
+    class _Meta:
+        endpoint_url = "https://store.example"
+
+    class _Ignoring:
+        meta = _Meta()
+
+        def __init__(self):
+            self.puts, self.jobs = [], []
+
+        def head_bucket(self, **kw):
+            return {}
+
+        def put_object(self, **kw):
+            (self.jobs if kw["Key"].startswith("jobs/") else self.puts).append(kw)
+            return {}
+
+        def delete_object(self, **kw):
+            return {}
+
+    class _Signer:
+        def __init__(self):
+            self.calls = 0
+
+        def presign(self, *a):
+            self.calls += 1
+            return "u"
+
+        def presign_put_if_absent(self, *a):
+            self.calls += 1
+            return "u"
+
+    client, signer = _Ignoring(), _Signer()
+    s3mod._CONDITIONAL_OK.clear()
+    monkeypatch.setattr(pc, "get_store", lambda: s3mod.S3Store(
+        client, signer, s3mod.S3Buckets("j", "r", "p", "i")))
+    c = _candidate(w)
+    with pytest.raises(pc.CaptureRefused) as e:
+        pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
+    assert e.value.rule == "spool_unavailable"
+    assert len(client.puts) == 2 and all(p["IfNoneMatch"] == "*" for p in client.puts)  # the probe ran
+    assert client.jobs == [] and signer.calls == 0
+    db = SessionLocal()
+    try:
+        (r,) = db.query(PageCapture).filter(PageCapture.candidate_id == c.id).all()
+        assert (r.status, r.failure_reason) == ("failed", "spool_unavailable")
+    finally:
+        db.close()
+
+
+def test_tick_sweeps_claim_markers_even_when_the_store_check_fails(w, env, monkeypatch):
+    reached = []
+
+    class Fake:
+        def check_spool(self):
+            raise OSError("down")
+
+        def sweep_claims(self):
+            reached.append(1)
+            return 0
+
+        def list_results(self):
+            return []
+
+    monkeypatch.setattr(pc, "get_store", lambda: Fake())
+    pc.tick()
+    assert reached == [1]
+
+
+def test_tick_survives_a_claim_sweep_failure_and_still_prunes(w, env, monkeypatch):
+    pruned = []
+
+    class Fake:
+        def check_spool(self):
+            pass
+
+        def list_results(self):
+            return []
+
+        def sweep_claims(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(pc, "get_store", lambda: Fake())
+    monkeypatch.setattr(pc, "prune_images", lambda db, now=None: pruned.append(1))
+    pc.tick()
+    assert pruned == [1]
+
+
 def test_hostname_validator_accepts_ordinary_names():
     for ok in ("fabrikam.com", "a-b.c-d.fabrikam.com", "xn--bcher-kva.example.com", "a.b"):
         assert pc._valid_hostname(ok)

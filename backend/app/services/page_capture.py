@@ -728,9 +728,9 @@ def ingest_results(db: Session, now: datetime | None = None) -> int:
     """Ingest every `results/<id>/` directory at least RESULT_MIN_AGE_S old.
     Each capture is its own unit of work. Returns how many queued rows were
     resolved (done or failed). A resolved or discarded result also retires its
-    job: on the filesystem the worker already removed its claim, but on S3 there
-    is no claim, so the backend's delete is what stops the job being pulled
-    again (planning#318 S1b)."""
+    job. On the filesystem the worker already removed its claim; on S3 the
+    worker's claim is the `claims/<id>` marker (a conditional PUT, planning#323),
+    and the backend's job delete stays as cleanup so the job is not listed again."""
     now = now or datetime.now(timezone.utc)
     store = get_store()
     names = store.list_results()
@@ -1178,6 +1178,10 @@ def tick() -> None:
         except Exception:
             db.rollback()
             log.exception("page_capture: timeout sweep failed")
+        try:
+            get_store().sweep_claims()
+        except Exception:
+            log.exception("page_capture: claim marker sweep failed")
         try:
             prune_images(db)
             db.commit()

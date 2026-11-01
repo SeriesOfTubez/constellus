@@ -1,7 +1,8 @@
 name: Kind Lab
 
 # Runs the Kubernetes lab (scripts/kind-lab.sh, planning#324) on a kind cluster:
-# up, verify (NetworkPolicy + RBAC), a real capture through proxy + RustFS, and
+# up, verify (NetworkPolicy + RBAC), a real capture through proxy + RustFS (also with
+# two workers racing for the jobs), and
 # the backend -> limits ConfigMap -> proxy round trip. TEST ONLY.
 # Informational: NOT a required status check, and must never become one (it is
 # path-filtered, so it would sit pending on unrelated PRs).
@@ -90,6 +91,12 @@ jobs:
 
       - name: Capture end to end (x2)
         run: bash scripts/kind-lab.sh e2e --count 2
+
+      # planning#323: two workers poll one jobs bucket; every capture must be claimed by
+      # exactly one of them (conditional PUT) and both must claim some. Scales the lab's
+      # capture-browser to 2 pods for the run and back to 1 afterwards.
+      - name: Capture end to end (two workers, claim race)
+        run: bash scripts/kind-lab.sh e2e --count 8 --workers 2
 
       - name: Limits round trip (backend API -> ConfigMap -> proxy)
         run: bash scripts/kind-lab.sh limits-check

@@ -19,6 +19,7 @@ This module never logs a key, secret or presigned URL.
 import logging
 import os
 import time
+import uuid
 import dataclasses
 from dataclasses import dataclass
 from functools import lru_cache
@@ -36,6 +37,17 @@ log = logging.getLogger(__name__)
 _MISSING = frozenset({"404", "NoSuchKey", "NotFound"})
 _NO_BUCKET = frozenset({"NoSuchBucket", "404", "NotFound"})
 RESULT_NAMES = frozenset({"result.json", "screenshot.webp"})
+
+# Claim markers (planning#323): `claims/<id>` in the results bucket, written by a worker through a
+# presigned conditional PUT. A marker may only go once its claim URL must have expired, or a slow
+# worker could re-claim a job. The claim URL lives at most QUEUE_TIMEOUT_MAX + CREDENTIAL_RUN_MARGIN_S
+# (page_capture.py; a drift test asserts the sum below), plus a clock-skew allowance.
+CLAIM_SKEW_S = 300
+CLAIM_MARKER_MAX_AGE_S = 3600 + 300 + CLAIM_SKEW_S
+
+# (endpoint, results bucket) pairs proved to honour `If-None-Match: *`. Module level because
+# get_store() builds a fresh store per call. Only successes are cached.
+_CONDITIONAL_OK: set[tuple] = set()
 
 
 @dataclass(frozen=True)
@@ -60,6 +72,7 @@ class S3Config:
 
 class Signer(Protocol):
     def presign(self, method: Literal["GET", "PUT"], bucket: str, key: str, expires_in: int) -> str: ...
+    def presign_put_if_absent(self, bucket: str, key: str, expires_in: int) -> str: ...
 
 
 class SigV4Signer:
@@ -72,6 +85,13 @@ class SigV4Signer:
         op = {"GET": "get_object", "PUT": "put_object"}[method]
         return self._client.generate_presigned_url(
             ClientMethod=op, Params={"Bucket": bucket, "Key": key}, ExpiresIn=expires_in, HttpMethod=method)
+
+    def presign_put_if_absent(self, bucket, key, expires_in):
+        """A PUT whose SIGNED headers include `If-None-Match: *`: the worker must send it, and the
+        store answers 412 to every PUT after the first."""
+        return self._client.generate_presigned_url(
+            ClientMethod="put_object", Params={"Bucket": bucket, "Key": key, "IfNoneMatch": "*"},
+            ExpiresIn=expires_in, HttpMethod="PUT")
 
 
 def _checked_url(value: str | None, name: str, insecure: bool) -> str | None:
@@ -213,13 +233,63 @@ class S3Store:
     def delete_job(self, capture_id: str) -> None:
         self._delete_quiet(self._b.jobs, f"jobs/{capture_id}.json")
 
+    def ensure_conditional_writes(self) -> None:
+        """Prove, once per process per (endpoint, results bucket), that the store honours
+        `If-None-Match: *`. Without it the claim marker is not exclusive and two workers could run one
+        job, so on failure no job is issued (OSError). A failure is never cached."""
+        cache_key = (self._c.meta.endpoint_url, self._b.results)
+        if cache_key in _CONDITIONAL_OK:
+            return
+        key = f"claims/.probe-{uuid.uuid4().hex}"
+        try:
+            try:
+                self._c.put_object(Bucket=self._b.results, Key=key, Body=b"", IfNoneMatch="*")
+            except (ClientError, BotoCoreError) as e:
+                raise _oserror(e) from None
+            try:
+                self._c.put_object(Bucket=self._b.results, Key=key, Body=b"", IfNoneMatch="*")
+            except ClientError as e:
+                status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+                if _code(e) != "PreconditionFailed" and status != 412:
+                    raise _oserror(e) from None
+            except BotoCoreError as e:
+                raise _oserror(e) from None
+            else:
+                log.error("page_capture: the capture store does not honour conditional writes (If-None-Match); "
+                          "S3 capture jobs are refused so two workers can never run one job")
+                raise OSError("capture store: conditional writes not supported")
+        finally:
+            self._delete_quiet(self._b.results, key)
+        _CONDITIONAL_OK.add(cache_key)
+
+    def sweep_claims(self, now_ts: float | None = None) -> int:
+        """Remove claim markers old enough that their claim URL has expired. Never raises."""
+        now = time.time() if now_ts is None else now_ts
+        try:
+            entries = self._list(self._b.results, "claims/")
+        except ClientError as e:
+            if _code(e) not in _NO_BUCKET:
+                log.warning("page_capture: could not list claim markers (%s)", _code(e))
+            return 0
+        except BotoCoreError as e:
+            log.warning("page_capture: could not list claim markers (%s)", type(e).__name__)
+            return 0
+        removed = 0
+        for key, modified in entries:
+            if modified.timestamp() < now - CLAIM_MARKER_MAX_AGE_S:
+                self._delete_quiet(self._b.results, key)
+                removed += 1
+        return removed
+
     def job_fields(self, capture_id: str, expires_at: int) -> dict:
+        self.ensure_conditional_writes()
         expires_in = max(1, int(expires_at) - int(time.time()))
         res = self._b.results
         try:
             return {"store": {
                 "result_put": self._signer.presign("PUT", res, f"results/{capture_id}/result.json", expires_in),
                 "screenshot_put": self._signer.presign("PUT", res, f"results/{capture_id}/screenshot.webp", expires_in),
+                "claim_put": self._signer.presign_put_if_absent(res, f"claims/{capture_id}", expires_in),
                 "expires": int(expires_at),
             }}
         except (ClientError, BotoCoreError) as e:

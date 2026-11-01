@@ -10,7 +10,7 @@ import socket
 import sys
 import threading
 import uuid
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import botocore.session
 import pytest
@@ -27,7 +27,8 @@ BUCKET = "jobs-bucket"
 NETLOC = "s3.example.com:9000"
 PUT_R = f"https://{NETLOC}/res/results/{ID}/result.json?X-Amz-Signature=aa"
 PUT_S = f"https://{NETLOC}/res/results/{ID}/screenshot.webp?X-Amz-Signature=bb"
-STORE = {"result_put": PUT_R, "screenshot_put": PUT_S, "expires": EXP}
+PUT_C = f"https://{NETLOC}/res/claims/{ID}?X-Amz-SignedHeaders=host%3Bif-none-match&X-Amz-Signature=cc"
+STORE = {"result_put": PUT_R, "screenshot_put": PUT_S, "claim_put": PUT_C, "expires": EXP}
 
 
 class _Sentinel(Exception):
@@ -196,6 +197,7 @@ def test_delete_failure_is_false_and_logged(stubbed, capsys):
     assert store_s3.S3Jobs(client, BUCKET).delete(ID) is False
     err = capsys.readouterr().err
     assert err.count("\n") == 1 and ID in err and "AccessDenied" in err
+    assert "could not remove the claimed job" in err
 
 
 # --- upload ---------------------------------------------------------------------
@@ -285,6 +287,56 @@ def test_upload_ignores_proxy_environment(http_server, monkeypatch):
     assert [r[2] for r in http_server.requests] == [b"direct"]
 
 
+# --- claim (presigned conditional PUT) ---------------------------------------------
+
+def _claim_url(rec):
+    return rec.url + "&X-Amz-SignedHeaders=host%3Bif-none-match"
+
+
+def test_claim_200_is_true_and_sends_if_none_match_with_an_empty_body(http_server, capsys):
+    assert store_s3.claim(_claim_url(http_server), cid=ID) is True
+    ((method, headers, body, path),) = http_server.requests  # the server SAW the request
+    names = {k.lower(): v for k, v in headers.items()}
+    assert method == "PUT" and body == b"" and names["if-none-match"] == "*"
+    assert names["content-length"] == "0"
+    assert not [n for n in names if n.startswith("x-amz-")]
+    assert capsys.readouterr().err == ""
+
+
+def test_claim_412_is_false_and_silent(http_server, capsys):
+    http_server.status = 412
+    assert store_s3.claim(_claim_url(http_server), cid=ID) is False
+    assert len(http_server.requests) == 1  # reached
+    captured = capsys.readouterr()
+    assert captured.err == "" and captured.out == ""
+
+
+@pytest.mark.parametrize("code", [403, 500])
+def test_claim_other_http_errors_are_false_and_logged_without_the_url(http_server, capsys, code):
+    http_server.status = code
+    assert store_s3.claim(_claim_url(http_server), cid=ID) is False
+    assert len(http_server.requests) == 1
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and ID in err and f"HTTP {code}" in err
+    assert "X-Amz" not in err and "127.0.0.1" not in err and "sig" not in err and "?" not in err
+
+
+def test_claim_does_not_follow_a_redirect(http_server, capsys):
+    http_server.status = 302
+    http_server.location = http_server.url + "&again=1"
+    assert store_s3.claim(_claim_url(http_server), cid=ID) is False
+    assert len(http_server.requests) == 1
+    err = capsys.readouterr().err
+    assert "HTTP 302" in err and "X-Amz" not in err and "127.0.0.1" not in err
+
+
+def test_claim_connection_refused_is_false_and_hides_the_url(capsys):
+    url = f"http://127.0.0.1:{_dead_port()}/obj?X-Amz-Signature=sig"
+    assert store_s3.claim(url, cid=ID, timeout_s=2) is False
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and ID in err and "sig" not in err and "127.0.0.1" not in err
+
+
 # --- claim_next_s3 / extract_store -----------------------------------------------
 
 class _FakeJobs:
@@ -305,35 +357,221 @@ class _FakeJobs:
         return True
 
 
-def test_claim_returns_the_first_claimable_job():
-    jobs = _FakeJobs([ID, ID2], {ID: b"a", ID2: b"b"})
-    assert worker.claim_next_s3(jobs) == (ID, b"a")
+class _Claims:
+    """Stands in for store_s3.claim; records each call and answers from `grants`."""
+
+    def __init__(self, monkeypatch, grants=None, default=True):
+        self.calls, self.grants, self.default = [], grants or {}, default
+        monkeypatch.setattr(store_s3, "claim", self)
+
+    def __call__(self, url, *, cid, **kw):
+        self.calls.append((cid, url))
+        return self.grants.get(cid, self.default)
+
+
+def _next(jobs, reported=None):
+    return worker.claim_next_s3(jobs, netloc=NETLOC, allow_http=False, reported=set() if reported is None else reported)
+
+
+RAW = s3_job()
+
+
+def test_claim_returns_the_first_claimable_job_and_deletes_it_as_cleanup(monkeypatch):
+    claims = _Claims(monkeypatch)
+    jobs = _FakeJobs([ID, ID2], {ID: RAW, ID2: RAW})
+    assert _next(jobs) == (ID, RAW)
+    assert claims.calls == [(ID, PUT_C)]  # the claim URL came from the job's store
     assert jobs.deleted == [ID]
 
 
-def test_claim_skips_a_job_whose_delete_failed():
-    jobs = _FakeJobs([ID, ID2], {ID: b"a", ID2: b"b"}, undeletable=[ID])
-    assert worker.claim_next_s3(jobs) == (ID2, b"b")
-    assert jobs.deleted == [ID2]  # ID was never claimed, so never processed
+def test_claim_lost_race_does_not_delete_and_tries_the_next_job(monkeypatch):
+    claims = _Claims(monkeypatch, grants={ID: False})
+    jobs = _FakeJobs([ID, ID2], {ID: RAW, ID2: RAW})
+    assert _next(jobs) == (ID2, RAW)
+    assert [c[0] for c in claims.calls] == [ID, ID2]  # the first claim was REACHED
+    assert jobs.deleted == [ID2]  # the lost job is never deleted
 
 
-def test_claim_skips_a_job_gone_between_list_and_get():
-    jobs = _FakeJobs([ID, ID2], {ID2: b"b"})
-    assert worker.claim_next_s3(jobs) == (ID2, b"b")
-    assert jobs.deleted == [ID2]  # nothing to delete for the vanished one
+def test_claim_still_returns_the_job_when_the_cleanup_delete_fails(monkeypatch):
+    _Claims(monkeypatch)
+    jobs = _FakeJobs([ID, ID2], {ID: RAW, ID2: RAW}, undeletable=[ID])
+    assert _next(jobs) == (ID, RAW)  # the claim marker already made it ours
+    assert jobs.deleted == []
+
+
+def test_claim_job_without_a_valid_claim_url_is_skipped_and_reported_once(monkeypatch, capsys):
+    claims = _Claims(monkeypatch)
+    no_claim = job(store={k: v for k, v in STORE.items() if k != "claim_put"})
+    jobs = _FakeJobs([ID], {ID: no_claim})
+    reported: set[str] = set()
+    assert _next(jobs, reported) is None
+    assert _next(jobs, reported) is None  # a second poll, same set
+    assert claims.calls == [] and jobs.deleted == []
+    err = capsys.readouterr().err
+    assert err.count("job has no valid claim URL; skipped") == 1 and ID in err
+    assert reported == {ID}
+
+
+def test_claim_job_with_no_store_at_all_is_skipped_never_claimed(monkeypatch):
+    claims = _Claims(monkeypatch)
+    jobs = _FakeJobs([ID, ID2], {ID: job(), ID2: RAW})
+    assert _next(jobs) == (ID2, RAW)
+    assert [c[0] for c in claims.calls] == [ID2] and jobs.deleted == [ID2]
+
+
+def test_claim_skips_a_job_gone_between_list_and_get(monkeypatch):
+    claims = _Claims(monkeypatch)
+    jobs = _FakeJobs([ID, ID2], {ID2: RAW})
+    assert _next(jobs) == (ID2, RAW)
+    assert [c[0] for c in claims.calls] == [ID2] and jobs.deleted == [ID2]
 
 
 def test_claim_empty_listing_is_none():
-    assert worker.claim_next_s3(_FakeJobs([], {})) is None
+    assert _next(_FakeJobs([], {})) is None
 
 
-def test_claim_with_stubbed_client_does_get_then_delete(stubbed):
+def test_claim_with_stubbed_client_does_get_claim_then_delete(stubbed, monkeypatch):
     client, stub = stubbed
+    claims = _Claims(monkeypatch)
     stub.add_response("list_objects_v2", _listing([f"jobs/{ID}.json"]))
-    stub.add_response("get_object", {"Body": _body(b"raw")})
+    stub.add_response("get_object", {"Body": _body(RAW)})
     stub.add_response("delete_object", {})
-    assert worker.claim_next_s3(store_s3.S3Jobs(client, BUCKET)) == (ID, b"raw")
+    assert _next(store_s3.S3Jobs(client, BUCKET)) == (ID, RAW)
     stub.assert_no_pending_responses()
+    assert len(claims.calls) == 1
+
+
+class _ClaimServer:
+    """Grants the first PUT per path (200) and answers every later one 412, like a
+    conditional-write store. Counts grants per path."""
+
+    def __init__(self):
+        self.grants: dict[str, int] = {}
+        self.lock = threading.Lock()
+        srv = self
+
+        class H(BaseHTTPRequestHandler):
+            def do_PUT(self):
+                with srv.lock:
+                    first = self.path not in srv.grants
+                    srv.grants[self.path] = srv.grants.get(self.path, 0) + 1
+                self.send_response(200 if first else 412)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.netloc = f"127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+RACE_IDS = [f"0190a1b2-c3d4-7e5f-8a6b-12345678{n:04x}" for n in range(10)]
+
+
+def _race(jobs, netloc, allow_http):
+    """Two workers poll the same jobs to exhaustion; returns each one's claimed ids."""
+    start = threading.Barrier(2)
+    won: list[list[str]] = [[], []]
+
+    def worker_thread(i):
+        reported: set[str] = set()
+        start.wait()
+        # claim_next_s3 returns after one claim, like a worker process; loop = many workers
+        # bounded: a broken claim that always "wins" would otherwise re-claim forever
+        for _ in range(3 * len(RACE_IDS)):
+            got = worker.claim_next_s3(jobs, netloc=netloc, allow_http=allow_http, reported=reported)
+            if got is None:
+                return
+            won[i].append(got[0])
+
+    threads = [threading.Thread(target=worker_thread, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+    assert not any(t.is_alive() for t in threads)
+    return won
+
+
+class _AlwaysDeletes(_FakeJobs):
+    """Like S3: DELETE of an absent key is a 204, so delete never says 'not yours'
+    and never removes the job from view (both workers see every job)."""
+
+    def delete(self, cid):
+        return True
+
+
+def test_two_claimers_over_ten_jobs_run_each_job_exactly_once():
+    srv = _ClaimServer()
+    try:
+        # every store URL must be on the store host to validate
+        bodies = {
+            cid: job(
+                store={
+                    "result_put": f"http://{srv.netloc}/r/{cid}/result.json?s=1",
+                    "screenshot_put": f"http://{srv.netloc}/r/{cid}/screenshot.webp?s=1",
+                    "claim_put": f"http://{srv.netloc}/claims/{cid}?sig=x",
+                    "expires": EXP,
+                }
+            )
+            for cid in RACE_IDS
+        }
+        won = _race(_AlwaysDeletes(RACE_IDS, bodies), srv.netloc, True)
+        assert sorted(won[0] + won[1]) == sorted(RACE_IDS)  # every id exactly once
+        assert all(n >= 2 for n in srv.grants.values())  # the race was real: both workers PUT every claim
+        assert set(srv.grants) == {f"/claims/{cid}?sig=x" for cid in RACE_IDS}
+    finally:
+        srv.close()
+
+
+def _live_job(rec):
+    """A job whose store URLs all point at the recording server (so they validate)."""
+    base = rec.url.split("/obj")[0]
+    return job(
+        store={
+            "result_put": f"{base}/r?s=1",
+            "screenshot_put": f"{base}/s?s=1",
+            "claim_put": f"{base}/claims/{ID}?s=1",
+            "expires": EXP,
+        }
+    ), base.split("//")[1]
+
+
+def test_claim_report_false_on_403_prints_nothing_but_reaches_the_server(http_server, capsys):
+    http_server.status = 403
+    assert store_s3.claim(_claim_url(http_server), cid=ID, report=False) is False
+    assert len(http_server.requests) == 1  # reached: silence is not "never tried"
+    assert capsys.readouterr().err == ""
+
+
+def test_a_persistent_claim_failure_is_logged_once_across_polls(http_server, capsys):
+    http_server.status = 403
+    raw, netloc = _live_job(http_server)
+    jobs = _FakeJobs([ID], {ID: raw})
+    reported: set[str] = set()
+    for _ in range(2):
+        got = worker.claim_next_s3(jobs, netloc=netloc, allow_http=True, reported=reported)
+        assert got is None
+    assert len(http_server.requests) == 2  # both polls really attempted the claim
+    err = capsys.readouterr().err
+    assert err.count("could not claim the job: HTTP 403") == 1 and ID in err
+    assert "claimed\n" not in err and jobs.deleted == []
+    assert reported == {ID}
+
+
+def test_a_won_claim_prints_exactly_one_claimed_line(http_server, capsys):
+    raw, netloc = _live_job(http_server)
+    jobs = _FakeJobs([ID], {ID: raw})
+    assert worker.claim_next_s3(jobs, netloc=netloc, allow_http=True, reported=set()) == (ID, raw)
+    assert len(http_server.requests) == 1
+    err = capsys.readouterr().err
+    assert err.count(f"capture-worker: {ID}: claimed") == 1 and err.count("\n") == 1
 
 
 def test_extract_store():
@@ -428,13 +666,14 @@ def test_main_s3_claims_and_processes_one_job_then_returns_zero(s3_env, monkeypa
     calls = []
     monkeypatch.setattr(store_s3, "make_client", lambda cfg: client)
     monkeypatch.setattr(worker, "process_s3", lambda cid, raw, **kw: calls.append((cid, raw, kw)))
+    _Claims(monkeypatch)
     with Stubber(client) as stub:
         stub.add_response("list_objects_v2", _listing([f"jobs/{ID}.json"]))
-        stub.add_response("get_object", {"Body": _body(b"RAW")})
+        stub.add_response("get_object", {"Body": _body(RAW)})
         stub.add_response("delete_object", {})
         assert worker.main() == 0
         stub.assert_no_pending_responses()
-    assert calls == [(ID, b"RAW", {"netloc": "s3.example.com:9000", "allow_http": False})]
+    assert calls == [(ID, RAW, {"netloc": "s3.example.com:9000", "allow_http": False})]
 
 
 def test_main_s3_config_error_exits(s3_env, monkeypatch):
@@ -498,6 +737,14 @@ def test_live_claim_process_and_signature_tamper(fake_playwright, monkeypatch):
         admin.create_bucket(Bucket=jobs_b)
         admin.create_bucket(Bucket=res_b)
 
+        def presign_claim(cid):
+            return admin.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": res_b, "Key": f"claims/{cid}", "IfNoneMatch": "*"},
+                ExpiresIn=600,
+                HttpMethod="PUT",
+            )
+
         def presign(name):
             return admin.generate_presigned_url(
                 "put_object",
@@ -506,7 +753,12 @@ def test_live_claim_process_and_signature_tamper(fake_playwright, monkeypatch):
                 HttpMethod="PUT",
             )
 
-        store = {"result_put": presign("result.json"), "screenshot_put": presign("screenshot.webp"), "expires": EXP}
+        store = {
+            "result_put": presign("result.json"),
+            "screenshot_put": presign("screenshot.webp"),
+            "claim_put": presign_claim(ID),
+            "expires": EXP,
+        }
         admin.put_object(Bucket=jobs_b, Key=f"jobs/{ID}.json", Body=job(store=store))
 
         monkeypatch.setenv("CAPTURE_S3_ENDPOINT", LIVE)
@@ -517,10 +769,15 @@ def test_live_claim_process_and_signature_tamper(fake_playwright, monkeypatch):
         cfg = store_s3.config_from_env()
         jobs = store_s3.S3Jobs(store_s3.make_client(cfg), cfg.bucket)
 
-        claimed = worker.claim_next_s3(jobs)
+        def nxt():
+            return worker.claim_next_s3(jobs, netloc=cfg.netloc, allow_http=cfg.allow_http, reported=set())
+
+        claimed = nxt()
         assert claimed is not None and claimed[0] == ID
+        assert admin.head_object(Bucket=res_b, Key=f"claims/{ID}")  # the claim marker exists
         listed = admin.list_objects_v2(Bucket=jobs_b, Prefix="jobs/")
-        assert listed.get("KeyCount", 0) == 0  # the delete was the claim
+        assert listed.get("KeyCount", 0) == 0  # the delete was cleanup
+        assert store_s3.claim(store["claim_put"], cid=ID) is False  # a second claim loses (412)
 
         worker.process_s3(ID, claimed[1], netloc=cfg.netloc, allow_http=cfg.allow_http)
         result = json.loads(admin.get_object(Bucket=res_b, Key=f"results/{ID}/result.json")["Body"].read())
@@ -528,7 +785,7 @@ def test_live_claim_process_and_signature_tamper(fake_playwright, monkeypatch):
         shot = admin.get_object(Bucket=res_b, Key=f"results/{ID}/screenshot.webp")["Body"].read()
         assert shot == b"RIFF....WEBP"
 
-        assert worker.claim_next_s3(jobs) is None
+        assert nxt() is None
 
         url = store["result_put"]
         sig_at = url.index("X-Amz-Signature=") + len("X-Amz-Signature=")
@@ -537,6 +794,60 @@ def test_live_claim_process_and_signature_tamper(fake_playwright, monkeypatch):
         assert tampered != store["result_put"]
         with pytest.raises(store_s3.UploadError, match="HTTP 403"):
             store_s3.upload(tampered, b"{}", "application/json")
+    finally:
+        _empty_and_delete(admin, jobs_b)
+        _empty_and_delete(admin, res_b)
+
+
+@pytest.mark.skipif(not LIVE, reason="CAPTURE_S3_TEST_ENDPOINT not set")
+def test_live_two_claimers_over_ten_jobs_run_each_job_exactly_once(monkeypatch):
+    tag = uuid.uuid4().hex[:8]
+    jobs_b, res_b = f"cap-{tag}-jobs", f"cap-{tag}-results"
+    admin = botocore.session.get_session().create_client(
+        "s3",
+        endpoint_url=LIVE,
+        region_name="us-east-1",
+        aws_access_key_id=os.environ["CAPTURE_S3_TEST_ACCESS_KEY"],
+        aws_secret_access_key=os.environ["CAPTURE_S3_TEST_SECRET_KEY"],
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+    )
+    try:
+        admin.create_bucket(Bucket=jobs_b)
+        admin.create_bucket(Bucket=res_b)
+
+        def presign(cid, key, **extra):
+            return admin.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": res_b, "Key": key, **extra},
+                ExpiresIn=600,
+                HttpMethod="PUT",
+            )
+
+        for cid in RACE_IDS:
+            store = {
+                "result_put": presign(cid, f"results/{cid}/result.json"),
+                "screenshot_put": presign(cid, f"results/{cid}/screenshot.webp"),
+                "claim_put": presign(cid, f"claims/{cid}", IfNoneMatch="*"),
+                "expires": EXP,
+            }
+            admin.put_object(Bucket=jobs_b, Key=f"jobs/{cid}.json", Body=job(store=store))
+
+        monkeypatch.setenv("CAPTURE_S3_ENDPOINT", LIVE)
+        monkeypatch.setenv("CAPTURE_S3_INSECURE_HTTP", "1")
+        monkeypatch.setenv("CAPTURE_S3_ACCESS_KEY", os.environ["CAPTURE_S3_TEST_ACCESS_KEY"])
+        monkeypatch.setenv("CAPTURE_S3_SECRET_KEY", os.environ["CAPTURE_S3_TEST_SECRET_KEY"])
+        monkeypatch.setenv("CAPTURE_S3_BUCKET_JOBS", jobs_b)
+        cfg = store_s3.config_from_env()
+
+        class NoDelete(store_s3.S3Jobs):
+            def delete(self, cid):  # keep every job visible to both workers: only the claim decides
+                return True
+
+        jobs = NoDelete(store_s3.make_client(cfg), cfg.bucket)
+        won = _race(jobs, cfg.netloc, cfg.allow_http)
+        assert sorted(won[0] + won[1]) == sorted(RACE_IDS)
+        listed = admin.list_objects_v2(Bucket=res_b, Prefix="claims/")
+        assert listed["KeyCount"] == len(RACE_IDS)
     finally:
         _empty_and_delete(admin, jobs_b)
         _empty_and_delete(admin, res_b)

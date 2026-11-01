@@ -27,8 +27,10 @@ metadata:
     app.kubernetes.io/part-of: constellus
 spec:
   replicas: 1
-  # Single-worker invariant (planning#323): a RollingUpdate would briefly run two
-  # workers at once. Recreate stops the old pod before starting the new one.
+  # Not about safety since planning#323: workers claim jobs with a conditional PUT, so
+  # several at once are safe on a store that honours If-None-Match (docs/deploy/
+  # kubernetes.md). Recreate is kept so a rollout never overlaps two pod generations
+  # (the lab's wait_browser_running counts live pods). Scale with an overlay.
   strategy:
     type: Recreate
   selector:

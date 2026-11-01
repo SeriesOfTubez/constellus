@@ -100,11 +100,13 @@ def _same_store_host(url_netloc: str, store_netloc: str) -> bool:
 def validate_store(obj: object, netloc: str | None, allow_http: bool) -> dict:
     """Validate the optional `store` object of an S3-mode job (presigned PUT URLs).
 
+    `claim_put` is required: without it the job cannot be claimed safely, so it is invalid.
+
     When `netloc` is given every URL must point at exactly that host."""
     if not isinstance(obj, dict):
         raise InvalidJob("bad store")
     out: dict[str, Any] = {}
-    for k in ("result_put", "screenshot_put"):
+    for k in ("result_put", "screenshot_put", "claim_put"):
         url = obj.get(k)
         if not isinstance(url, str) or not 1 <= len(url) <= MAX_STORE_URL_CHARS:
             raise InvalidJob(f"bad store.{k}")

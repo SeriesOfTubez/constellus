@@ -96,7 +96,7 @@ def test_main_s3_drops_the_store_env_after_config_and_before_claiming(env, monke
 
     seen = []
 
-    def fake_claim(jobs):
+    def fake_claim(jobs, **kw):
         seen.append(os.environ.get("CAPTURE_S3_SECRET_KEY"))
         raise _Sentinel
 

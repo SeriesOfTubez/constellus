@@ -3,8 +3,12 @@
 #
 #   scripts/kind-lab.sh up              create the kind cluster, build + load images (proxy, browser,
 #                                       backend), apply deploy/k8s/lab (in-cluster Postgres + RustFS)
-#   scripts/kind-lab.sh e2e [url] [--count N]
-#                                       one real capture through proxy + RustFS (scripts/kind_lab_e2e.py)
+#   scripts/kind-lab.sh e2e [url] [--count N] [--workers N]
+#                                       one real capture through proxy + RustFS (scripts/kind_lab_e2e.py).
+#                                       --workers 2 (needs --count >= 6) scales capture-browser to 2 pods
+#                                       for the run, asserts every capture was claimed exactly once and
+#                                       that both pods claimed some (planning#323), and ALWAYS scales back
+#                                       to 1. The base manifest is never edited.
 #   scripts/kind-lab.sh verify          prove NetworkPolicy is ENFORCED and the backend RBAC is tight (PASS/FAIL)
 #   scripts/kind-lab.sh limits-check    change a setting through the backend API, watch it write the
 #                                       limits ConfigMap, then watch the proxy re-read it
@@ -236,18 +240,27 @@ start_pf() {
 
 # `kubectl wait pod -l …` lists the selector's pods once, so a pod of the ReplicaSet that
 # `rollout restart` just replaced (Recreate: still terminating) is waited on and then
-# vanishes with NotFound. Wait instead for exactly one live (not-deleting) pod, Running.
+# vanishes with NotFound. Wait instead for exactly N (default 1) live (not-deleting) pods, all Running.
 wait_browser_running() {
+  want_n=${1:-1}
+  want=""; n=0
+  while [ "$n" -lt "$want_n" ]; do want="${want}Running "; n=$((n + 1)); done
   i=0
   while [ "$i" -lt 60 ]; do
     phases=$(kn get pods -l app.kubernetes.io/name=capture-browser -o \
       go-template='{{range .items}}{{if not .metadata.deletionTimestamp}}{{.status.phase}} {{end}}{{end}}')
-    [ "$phases" = "Running " ] && return 0
+    [ "$phases" = "$want" ] && return 0
     i=$((i + 1))
     sleep 2
   done
-  echo "capture-browser never reached exactly one Running pod (last: '$phases')" >&2
+  echo "capture-browser never reached exactly $want_n Running pod(s) (last: '$phases')" >&2
   return 1
+}
+
+# Back to the base manifest's single worker (lab only; the manifest itself is never edited).
+scale_browser_back() {
+  kn scale deploy/capture-browser --replicas=1 >/dev/null || true
+  wait_browser_running 1 || true
 }
 
 # Create, idempotently, every bucket the lab uses (the backend needs its four to exist;
@@ -289,8 +302,20 @@ PY
 
 cmd_e2e() {
   ensure_state
+  workers=1; prev=""
+  for a in "$@"; do
+    [ "$prev" = --workers ] && workers=$a
+    prev=$a
+  done
+  case "$workers" in
+    ''|*[!0-9]*|0) echo "--workers needs a positive integer" >&2; return 2 ;;
+  esac
   start_pf rustfs 9000 /health
-  trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+  trap 'kill "$PF_PID" 2>/dev/null || true; [ "$workers" -gt 1 ] && scale_browser_back' EXIT
+  if [ "$workers" -gt 1 ]; then
+    kn scale deploy/capture-browser --replicas="$workers" >/dev/null
+    wait_browser_running "$workers"
+  fi
   rc=0
   (
     set -a; . "$SECRETS"; set +a
@@ -300,6 +325,7 @@ cmd_e2e() {
   kill "$PF_PID" 2>/dev/null || true
   wait "$PF_PID" 2>/dev/null || true
   trap - EXIT
+  [ "$workers" -gt 1 ] && scale_browser_back
   return $rc
 }
 
@@ -562,5 +588,5 @@ case "$sub" in
   backend-e2e) cmd_backend_e2e ;;
   status) cmd_status ;;
   down) cmd_down "$@" ;;
-  *) echo "usage: $0 {up|e2e [url] [--count N]|verify|limits-check [url] [--count N]|backend-e2e|status|down [--purge]}" >&2; exit 2 ;;
+  *) echo "usage: $0 {up|e2e [url] [--count N] [--workers N]|verify|limits-check [url] [--count N]|backend-e2e|status|down [--purge]}" >&2; exit 2 ;;
 esac

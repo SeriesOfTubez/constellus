@@ -106,14 +106,31 @@ def _run_capture(cid: str, job: dict) -> tuple[dict, bytes | None]:
         )
 
 
-def claim_next_s3(jobs) -> tuple[str, bytes] | None:
-    """GET then DELETE: the delete is the claim. A failed delete = not ours; skip it."""
+def claim_next_s3(jobs, *, netloc: str, allow_http: bool, reported: set[str]) -> tuple[str, bytes] | None:
+    """The conditional PUT of store.claim_put is the claim (first PUT wins, later
+    ones get 412), so concurrent workers never both run one job. The delete is
+    cleanup only. A job without a valid claim URL is skipped, never run: it is
+    reported once per id (`reported`) and left for the backend to expire; a failed
+    claim is likewise logged once per id."""
     for cid in jobs.list_ids():
         raw = jobs.get(cid)
         if raw is None:
             continue  # gone between list and get (ingested or swept)
-        if not jobs.delete(cid):
-            continue  # logged inside
+        store = store_s3.extract_store(raw, netloc, allow_http)
+        if store is None:
+            if cid not in reported:
+                reported.add(cid)
+                print(
+                    f"capture-worker: {cid}: job has no valid claim URL; skipped (the backend expires it)",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            continue
+        if not store_s3.claim(store["claim_put"], cid=cid, report=cid not in reported):
+            reported.add(cid)  # a failure that persists (an expired URL, a skewed clock) is logged once, not every poll
+            continue  # lost the race, or the claim failed (logged inside)
+        print(f"capture-worker: {cid}: claimed", file=sys.stderr, flush=True)
+        jobs.delete(cid)  # cleanup; result ignored: the claim marker already makes the job ours alone
         return cid, raw
     return None
 
@@ -197,7 +214,7 @@ def main() -> int:
             os.unlink(claimed_path)
         except FileNotFoundError:
             pass
-        return 0  # one capture per process; compose restarts the container
+        return 0  # one capture per process; the PID-1 supervisor starts the next
 
 
 def _main_s3() -> int:
@@ -207,10 +224,11 @@ def _main_s3() -> int:
         raise SystemExit(f"capture-worker: {exc}") from None
     _drop_store_env()  # cfg holds what is still needed
     jobs = store_s3.S3Jobs(store_s3.make_client(cfg), cfg.bucket)
+    reported: set[str] = set()  # jobs already reported as unclaimable, across polls
     last_error: str | None = None  # the listing error is printed once per change, not once per poll
     while True:
         try:
-            claimed = claim_next_s3(jobs)
+            claimed = claim_next_s3(jobs, netloc=cfg.netloc, allow_http=cfg.allow_http, reported=reported)
         except store_s3.StoreError as exc:
             if str(exc) != last_error:
                 last_error = str(exc)
@@ -223,7 +241,7 @@ def _main_s3() -> int:
             continue
         cid, raw = claimed
         process_s3(cid, raw, netloc=cfg.netloc, allow_http=cfg.allow_http)
-        return 0  # one capture per process; compose restarts the container
+        return 0  # one capture per process; the PID-1 supervisor starts the next
 
 
 if __name__ == "__main__":
