@@ -1,0 +1,32 @@
+# EXAMPLE overlay (planning#322 slice 2b-1): the backend on GCS with no static key, under
+# GKE Workload Identity (`CAPTURE_S3_AUTH=gcs-wi`). A starting point to copy, not a
+# deployable as-is: every <...> value is yours, and the GCP side (IAM service account,
+# signBlob-only role, bucket roles) is set up first. See "Keyless GCS" in
+# docs/deploy/kubernetes.md.
+#
+# The worker and the proxy still use HMAC keys (Secrets capture-store-worker and
+# capture-store-proxy) until slice 2b-3. Only the backend is keyless here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: constellus
+resources:
+  - ../../backend
+  - networkpolicy-store.yaml
+  # Keep ONE of the two metadata rules, the one for your cluster's dataplane.
+  - networkpolicy-metadata-dpv2.yaml
+  # - networkpolicy-metadata-legacy.yaml
+patches:
+  - path: patch-backend.yaml
+configMapGenerator:
+  - name: capture-store
+    literals:
+      - CAPTURE_S3_AUTH=gcs-wi
+      # Exactly this, no slash: gcs-wi refuses anything else at startup.
+      - CAPTURE_S3_ENDPOINT=https://storage.googleapis.com
+      - CAPTURE_S3_PATH_STYLE=true
+      # The worker and proxy sign SigV4 with HMAC keys until 2b-3; GCS accepts `auto`.
+      - CAPTURE_S3_REGION=auto
+      - CAPTURE_S3_BUCKET_JOBS=<jobs-bucket>
+      - CAPTURE_S3_BUCKET_PROXYLOG=<proxylog-bucket>
+      - CAPTURE_S3_BUCKET_RESULTS=<results-bucket>
+      - CAPTURE_S3_BUCKET_IMAGES=<images-bucket>

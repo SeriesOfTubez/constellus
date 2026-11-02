@@ -161,6 +161,14 @@ spec:
                   name: capture-store
                   key: CAPTURE_S3_PATH_STYLE
                   optional: true
+            # sigv4 (default) or gcs-wi. gcs-wi refuses static keys: its overlay removes
+            # the two key entries below (deploy/k8s/examples/gcs-wi).
+            - name: CAPTURE_S3_AUTH
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_AUTH
+                  optional: true
             - name: CAPTURE_S3_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
