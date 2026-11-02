@@ -30,3 +30,7 @@ univers==32.0.1
 # planning#318 S1b: S3 capture store. botocore only (AWS's own SigV4 signer + S3 client);
 # boto3 adds s3transfer, which the size-capped contract never needs.
 botocore==1.43.122
+# planning#322: keyless GCS (CAPTURE_S3_AUTH=gcs-wi) — V4 URLs signed by the maintained SDK through
+# IAM signBlob (no hand-rolled signing); google-auth supplies Workload Identity tokens.
+google-cloud-storage==3.17.1
+google-auth==2.62.0

@@ -692,18 +692,26 @@ def test_a_store_that_ignores_conditional_writes_fails_the_row_and_writes_no_job
             return {}
 
     class _Signer:
+        claim_headers = {"If-None-Match": "*"}
+
         def __init__(self):
-            self.calls = 0
+            self.job_urls, self.probe_urls = 0, 0
 
         def presign(self, *a):
-            self.calls += 1
+            self.job_urls += 1
             return "u"
 
-        def presign_put_if_absent(self, *a):
-            self.calls += 1
-            return "u"
+        def presign_put_if_absent(self, bucket, key, expires_in):
+            if key.startswith("claims/.probe-"):
+                self.probe_urls += 1
+            else:
+                self.job_urls += 1
+            return "https://store.example/probe-url"
 
     client, signer = _Ignoring(), _Signer()
+    probe_puts = []
+    # the store ignores the condition: both PUTs of the signed probe URL succeed
+    monkeypatch.setattr(s3mod, "_probe_put", lambda url, headers: probe_puts.append(dict(headers)) or 200)
     s3mod._CONDITIONAL_OK.clear()
     monkeypatch.setattr(pc, "get_store", lambda: s3mod.S3Store(
         client, signer, s3mod.S3Buckets("j", "r", "p", "i")))
@@ -711,8 +719,8 @@ def test_a_store_that_ignores_conditional_writes_fails_the_row_and_writes_no_job
     with pytest.raises(pc.CaptureRefused) as e:
         pc.request_capture(w.db, candidate_id=c.id, user=w.user(), manual=True)
     assert e.value.rule == "spool_unavailable"
-    assert len(client.puts) == 2 and all(p["IfNoneMatch"] == "*" for p in client.puts)  # the probe ran
-    assert client.jobs == [] and signer.calls == 0
+    assert probe_puts == [{"If-None-Match": "*"}] * 2 and signer.probe_urls == 1  # the probe ran
+    assert client.jobs == [] and signer.job_urls == 0
     db = SessionLocal()
     try:
         (r,) = db.query(PageCapture).filter(PageCapture.candidate_id == c.id).all()

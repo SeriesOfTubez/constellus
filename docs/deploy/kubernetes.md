@@ -119,7 +119,10 @@ ingested it and the store is clean), `down --purge`.
   `runAsUser: 1000`. Ingress is yours to add (the base has no ingress rule); set
   `ALLOWED_ORIGINS` for your frontend origin. Set `CAPTURE_S3_PUBLIC_ENDPOINT` when
   the endpoint the worker uses (the one presigned URLs are signed for) differs from
-  the backend's own path to the store.
+  the backend's own path to the store. For keyless GCS under Workload Identity
+  (`CAPTURE_S3_AUTH=gcs-wi`, backend only; the worker and proxy keep HMAC keys until
+  slice 2b) see "Keyless GCS" in `docs/architecture/capture-spool.md`; no manifest
+  changes in slice 2a.
 - **RBAC.** The backend's Role is `get` + `patch` on the one ConfigMap
   `capture-proxy-limits`, nothing else. There is no `create`: `resourceNames` cannot
   restrict it, so the base pre-creates the ConfigMap empty. Re-applying the base is
