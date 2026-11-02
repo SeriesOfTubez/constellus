@@ -107,9 +107,10 @@ def _run_capture(cid: str, job: dict) -> tuple[dict, bytes | None]:
 
 
 def claim_next_s3(jobs, *, netloc: str, allow_http: bool, reported: set[str]) -> tuple[str, bytes] | None:
-    """The conditional PUT of store.claim_put is the claim (first PUT wins, later
+    """The conditional PUT of store.claim_put, sent with the job's store.claim_headers
+    (the signed precondition), is the claim (first PUT wins, later
     ones get 412), so concurrent workers never both run one job. The delete is
-    cleanup only. A job without a valid claim URL is skipped, never run: it is
+    cleanup only. A job without a valid claim URL or headers is skipped, never run: it is
     reported once per id (`reported`) and left for the backend to expire; a failed
     claim is likewise logged once per id."""
     for cid in jobs.list_ids():
@@ -126,7 +127,7 @@ def claim_next_s3(jobs, *, netloc: str, allow_http: bool, reported: set[str]) ->
                     flush=True,
                 )
             continue
-        if not store_s3.claim(store["claim_put"], cid=cid, report=cid not in reported):
+        if not store_s3.claim(store["claim_put"], store["claim_headers"], cid=cid, report=cid not in reported):
             reported.add(cid)  # a failure that persists (an expired URL, a skewed clock) is logged once, not every poll
             continue  # lost the race, or the claim failed (logged inside)
         print(f"capture-worker: {cid}: claimed", file=sys.stderr, flush=True)

@@ -340,6 +340,7 @@ guard test keeps `page_capture.py` free of direct file access.
 | Variable | Meaning |
 |---|---|
 | `CAPTURE_STORE` | `filesystem` (default) or `s3`. Anything else is an error. |
+| `CAPTURE_S3_AUTH` | `sigv4` (default) or `gcs-wi` (keyless Google Cloud Storage, below). Anything else is an error; there is no fallback. |
 | `CAPTURE_S3_ENDPOINT` | Endpoint URL; unset means AWS default endpoints. |
 | `CAPTURE_S3_PUBLIC_ENDPOINT` | The endpoint the presigned URLs are signed for, when the worker reaches the store by a different host than the backend (unset = `CAPTURE_S3_ENDPOINT`). Same scheme rules. |
 | `CAPTURE_S3_REGION` | Region, default `us-east-1`. |
@@ -347,6 +348,19 @@ guard test keeps `page_capture.py` free of direct file access.
 | `CAPTURE_S3_PATH_STYLE` | `true` (default) or `false`. |
 | `CAPTURE_S3_INSECURE_HTTP` | `1` allows an `http` endpoint. Test profile only. |
 | `CAPTURE_S3_BUCKET_JOBS` / `_RESULTS` / `_PROXYLOG` / `_IMAGES` | The four bucket names. |
+
+#### Keyless GCS (`gcs-wi`, planning#322 slice 2a)
+
+`CAPTURE_S3_AUTH=gcs-wi` lets the backend use a GCS bucket with no static key, under Workload Identity. The backend refuses to start the store unless:
+
+- `CAPTURE_S3_ENDPOINT` is exactly `https://storage.googleapis.com` (no slash, path, port or userinfo). The data-plane client also re-checks every request, redirects included, against that host and refuses anything else before any credential is attached.
+- `CAPTURE_S3_ACCESS_KEY`/`_SECRET_KEY` are both unset (static keys are refused), `CAPTURE_S3_PUBLIC_ENDPOINT` is unset, `CAPTURE_S3_PATH_STYLE` is `true` and `CAPTURE_S3_INSECURE_HTTP` is not `1`.
+
+Two Google tokens, never interchanged: the data-plane Bearer token (scope `https://www.googleapis.com/auth/devstorage.read_write`) goes only on the backend's own requests (head, put, get, list, delete); the signing token (scope `https://www.googleapis.com/auth/iam`) goes only to the SDK that signs worker URLs. Worker URLs are V4 URLs signed by `google-cloud-storage` through IAM `signBlob`, as the backend's own service account (its identity is read from the credentials, never configured).
+
+The backend's service account needs (a) a custom role holding ONLY `iam.serviceAccounts.signBlob`, granted on itself (not `roles/iam.serviceAccountTokenCreator`), and (b) its bucket rights. The signer's rights are the ceiling of every URL it signs, and removing them revokes outstanding URLs.
+
+The claim URL signs `x-goog-if-generation-match: 0` (GCS ignores `If-None-Match`), and the job's `store.claim_headers` carries the header the worker must send. Once per process, `ensure_conditional_writes` PUTs a real signed claim URL twice (2xx, then 412) and refuses to issue jobs otherwise. That probe now uses a signed URL in `sigv4` mode too (signed for the backend's own endpoint, not the public one). The worker and proxy still use HMAC keys until slice 2b.
 
 Worker and proxy (S1c):
 

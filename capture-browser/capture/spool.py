@@ -97,10 +97,18 @@ def _same_store_host(url_netloc: str, store_netloc: str) -> bool:
     return got == want or got.endswith("." + want)
 
 
+# The only claim preconditions the worker will send: S3/RustFS honour If-None-Match,
+# GCS ignores it and honours x-goog-if-generation-match. The header is signed into
+# `claim_put`, so the job must supply it; the worker never invents or widens it.
+ALLOWED_CLAIM_HEADERS = frozenset({("If-None-Match", "*"), ("x-goog-if-generation-match", "0")})
+
+
 def validate_store(obj: object, netloc: str | None, allow_http: bool) -> dict:
     """Validate the optional `store` object of an S3-mode job (presigned PUT URLs).
 
-    `claim_put` is required: without it the job cannot be claimed safely, so it is invalid.
+    `claim_put` and `claim_headers` are required: without them the job cannot be claimed
+    safely, so it is invalid. `claim_headers` must be exactly one (name, value) pair from
+    ALLOWED_CLAIM_HEADERS (case-sensitive, string values).
 
     When `netloc` is given every URL must point at exactly that host."""
     if not isinstance(obj, dict):
@@ -121,6 +129,13 @@ def validate_store(obj: object, netloc: str | None, allow_http: bool) -> dict:
         if netloc is not None and not _same_store_host(parts.netloc, netloc):
             raise InvalidJob(f"bad store.{k} host")
         out[k] = url
+    headers = obj.get("claim_headers")
+    if not isinstance(headers, dict) or len(headers) != 1:
+        raise InvalidJob("bad store.claim_headers")
+    ((hname, hvalue),) = headers.items()
+    if not isinstance(hname, str) or not isinstance(hvalue, str) or (hname, hvalue) not in ALLOWED_CLAIM_HEADERS:
+        raise InvalidJob("bad store.claim_headers")
+    out["claim_headers"] = {hname: hvalue}
     expires = obj.get("expires")
     if isinstance(expires, bool) or not isinstance(expires, int) or not 1 <= expires < 10**12:
         raise InvalidJob("bad store.expires")

@@ -461,7 +461,13 @@ PUT_C = f"https://{NETLOC}/res/claims/{ID}?X-Amz-SignedHeaders=host%3Bif-none-ma
 
 
 def _store(**over):
-    s = {"result_put": PUT_R, "screenshot_put": PUT_S, "claim_put": PUT_C, "expires": EXP}
+    s = {
+        "result_put": PUT_R,
+        "screenshot_put": PUT_S,
+        "claim_put": PUT_C,
+        "claim_headers": {"If-None-Match": "*"},
+        "expires": EXP,
+    }
     s.update(over)
     return s
 
@@ -475,10 +481,10 @@ def test_filesystem_job_result_has_store_none():
     assert spool.validate_job(job(), ID)["store"] is None
 
 
-def test_validate_store_happy_path_returns_exactly_the_four_keys():
+def test_validate_store_happy_path_returns_exactly_the_five_keys():
     out = spool.validate_store({**_store(), "extra": 1}, NETLOC, False)
     assert out == _store()
-    assert sorted(out) == ["claim_put", "expires", "result_put", "screenshot_put"]
+    assert sorted(out) == ["claim_headers", "claim_put", "expires", "result_put", "screenshot_put"]
 
 
 def test_validate_store_host_compare_is_case_insensitive():
@@ -540,6 +546,33 @@ def test_validate_store_claim_put_is_required_and_validated(claim, why):
     obj = {k: v for k, v in _store(claim_put=claim).items() if v is not _ABSENT}
     with pytest.raises(spool.InvalidJob, match="claim_put"):
         spool.validate_store(obj, NETLOC, False)
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        _ABSENT,
+        None,
+        [("If-None-Match", "*")],
+        {},
+        {"If-None-Match": "*", "x-goog-if-generation-match": "0"},
+        {"If-None-Match": "abc"},
+        {"if-none-match": "*"},
+        {"x-goog-if-generation-match": 0},
+        {"x-goog-if-generation-match": "1"},
+        {"Authorization": "x"},
+    ],
+)
+def test_validate_store_claim_headers_is_required_and_an_exact_allowed_pair(headers):
+    obj = {k: v for k, v in _store(claim_headers=headers).items() if v is not _ABSENT}
+    with pytest.raises(spool.InvalidJob, match="claim_headers"):
+        spool.validate_store(obj, NETLOC, False)
+
+
+@pytest.mark.parametrize("pair", [{"If-None-Match": "*"}, {"x-goog-if-generation-match": "0"}])
+def test_validate_store_accepts_each_allowed_claim_header_pair(pair):
+    out = spool.validate_store(_store(claim_headers=pair), NETLOC, False)
+    assert out["claim_headers"] == pair and out["claim_headers"] is not pair
 
 
 def test_validate_store_http_allowed_only_with_the_flag():

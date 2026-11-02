@@ -1,8 +1,9 @@
 """S3 job mode of the capture worker (planning#318 S1c).
 
 The worker's key is list/get/delete on the jobs bucket and nothing else. A job
-is claimed by a presigned conditional PUT (`store.claim_put`, If-None-Match: *):
-the first PUT wins, every later one gets 412, so any number of workers can poll
+is claimed by a presigned conditional PUT (`store.claim_put`) carrying the job-supplied
+precondition `store.claim_headers` (S3 `If-None-Match: *`, GCS
+`x-goog-if-generation-match: 0`; signed into the URL): the first PUT wins, every later one gets 412, so any number of workers can poll
 one bucket. The DELETE of the job is only cleanup. Results go out through
 presigned PUT URLs carried by the job (plain HTTP, never through capture-proxy,
 no redirects).
@@ -194,8 +195,9 @@ def upload(url: str, data: bytes, content_type: str, *, timeout_s: float = UPLOA
         raise UploadError(f"HTTP {status}")
 
 
-def claim(url: str, *, cid: str, report: bool = True, timeout_s: float = UPLOAD_TIMEOUT_S) -> bool:
-    """Claim a job with its presigned conditional PUT. True only when this worker
+def claim(url: str, headers: dict[str, str], *, cid: str, report: bool = True, timeout_s: float = UPLOAD_TIMEOUT_S) -> bool:
+    """Claim a job with its presigned conditional PUT, sending the job's validated
+    `claim_headers` (the signed precondition) exactly. True only when this worker
     won (2xx). 412 = another worker won: False, silently. Anything else is logged
     (code or exception type only, never the URL) and is also False; `report=False`
     suppresses that line (the caller already reported this job)."""
@@ -205,7 +207,7 @@ def claim(url: str, *, cid: str, report: bool = True, timeout_s: float = UPLOAD_
             url,
             data=b"",
             method="PUT",
-            headers={"If-None-Match": "*", "Content-Length": "0"},
+            headers={**headers, "Content-Length": "0"},
         )
         with opener.open(req, timeout=timeout_s) as resp:
             status = resp.status
