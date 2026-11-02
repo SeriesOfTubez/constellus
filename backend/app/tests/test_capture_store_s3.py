@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlsplit
 
+import botocore
 import botocore.session
 import pytest
 from botocore.config import Config
@@ -38,6 +39,8 @@ def _client():
 
 
 class _FakeSigner:
+    claim_headers = {"If-None-Match": "*"}
+
     def __init__(self):
         self.calls = []
 
@@ -53,8 +56,14 @@ class _FakeSigner:
 @pytest.fixture(autouse=True)
 def _fresh_probe_cache():
     m._CONDITIONAL_OK.clear()
+    m._google_token.cache_clear()
+    m._gcs_signer.cache_clear()
+    m._client.cache_clear()
     yield
     m._CONDITIONAL_OK.clear()
+    m._google_token.cache_clear()
+    m._gcs_signer.cache_clear()
+    m._client.cache_clear()
 
 
 def _seed_probe():
@@ -93,7 +102,8 @@ _FULL_ENV = {
     "CAPTURE_S3_BUCKET_PROXYLOG": "b-proxylog", "CAPTURE_S3_BUCKET_IMAGES": "b-images",
 }
 _ALL_VARS = [*_FULL_ENV, "CAPTURE_S3_REGION", "CAPTURE_S3_PATH_STYLE", "CAPTURE_S3_INSECURE_HTTP",
-                                    "CAPTURE_S3_PUBLIC_ENDPOINT"]
+                                    "CAPTURE_S3_PUBLIC_ENDPOINT",
+             "CAPTURE_S3_AUTH"]
 
 
 @pytest.fixture
@@ -250,6 +260,7 @@ def test_job_fields_shape_and_expiry(monkeypatch):
         "result_put": f"signed:PUT:results/{ID}/result.json",
         "screenshot_put": f"signed:PUT:results/{ID}/screenshot.webp",
         "claim_put": f"signed:PUT-IF-ABSENT:claims/{ID}",
+        "claim_headers": {"If-None-Match": "*"},
         "expires": 1600,
     }}
     sig.calls.clear()
@@ -485,6 +496,9 @@ def test_sigv4_presign_put_if_absent_signs_the_if_none_match_header():
     assert url.path == f"/b/claims/{ID}"
     assert q["X-Amz-Expires"] == "600"
     assert q["X-Amz-SignedHeaders"].split(";") == ["host", "if-none-match"]
+    # the advertised claim headers are what is actually signed
+    assert [h.lower() for h in SigV4Signer.claim_headers] == ["if-none-match"]
+    assert dict(SigV4Signer.claim_headers) == {"If-None-Match": "*"}
 
 
 def test_claim_marker_max_age_matches_the_claim_url_lifetime():
@@ -493,102 +507,210 @@ def test_claim_marker_max_age_matches_the_claim_url_lifetime():
     assert m.CLAIM_MARKER_MAX_AGE_S == pc.QUEUE_TIMEOUT_MAX + pc.CREDENTIAL_RUN_MARGIN_S + m.CLAIM_SKEW_S
 
 
-def _precondition_failed():
-    return ClientError({"Error": {"Code": "PreconditionFailed", "Message": ""},
-                        "ResponseMetadata": {"HTTPStatusCode": 412}}, "PutObject")
+class _Client:
+    """Fake data-plane client for the probe: records deletes only."""
 
-
-class _ProbeClient:
-    """Fake client for the probe: `puts` is a script of per-call outcomes (None = success,
-    an exception = raised). Records every put and delete."""
-
-    def __init__(self, puts, endpoint="https://store.example"):
+    def __init__(self, endpoint="https://store.example"):
         self.meta = type("Meta", (), {"endpoint_url": endpoint})()
-        self.script = list(puts)
-        self.puts, self.deletes = [], []
-
-    def put_object(self, **kw):
-        self.puts.append(kw)
-        out = self.script.pop(0) if self.script else None
-        if out is not None:
-            raise out
-        return {}
+        self.deletes = []
 
     def delete_object(self, **kw):
         self.deletes.append(kw)
         return {}
 
 
-def _conforming():
-    return _ProbeClient([None, _precondition_failed()])
+class _ProbeSigner(_FakeSigner):
+    def __init__(self, host="https://store.example", headers=None, fail=None):
+        super().__init__()
+        self.host, self.fail = host, fail
+        self.claim_headers = headers or {"If-None-Match": "*"}
+
+    def presign_put_if_absent(self, bucket, key, expires_in):
+        self.calls.append(("PUT-IF-ABSENT", bucket, key, expires_in))
+        if self.fail:
+            raise self.fail
+        return f"{self.host}/{bucket}/{key}?sig=SECRET-SIG"
 
 
-def test_job_fields_contains_the_claim_put_after_a_passing_probe():
-    sig = _FakeSigner()
-    client = _conforming()
-    out = _store(client, sig).job_fields(ID, int(time.time()) + 600)
+class _Puts:
+    """Scripted `_probe_put`: each outcome is an int status or an exception to raise."""
+
+    def __init__(self, monkeypatch, *script):
+        self.script, self.calls = list(script), []
+        monkeypatch.setattr(m, "_probe_put", self)
+
+    def __call__(self, url, headers):
+        self.calls.append((url, dict(headers)))
+        out = self.script.pop(0)
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+
+def _probe_store(client=None, signer=None, probe_signer=None):
+    return S3Store(client or _Client(), signer or _FakeSigner(), BUCKETS, probe_signer=probe_signer)
+
+
+def test_job_fields_contains_the_claim_put_after_a_passing_probe(monkeypatch):
+    sig, psig, client = _FakeSigner(), _ProbeSigner(), _Client()
+    puts = _Puts(monkeypatch, 201, 412)
+    out = _probe_store(client, sig, psig).job_fields(ID, int(time.time()) + 600)
     assert out["store"]["claim_put"] == f"signed:PUT-IF-ABSENT:claims/{ID}"
-    (call,) = [c for c in sig.calls if c[0] == "PUT-IF-ABSENT"]
-    assert call[1:3] == ("b-results", f"claims/{ID}")
-    assert len(client.puts) == 2  # the probe was reached
-    assert all(p["IfNoneMatch"] == "*" and p["Bucket"] == "b-results" for p in client.puts)
+    assert out["store"]["claim_headers"] == {"If-None-Match": "*"}
+    assert len(puts.calls) == 2  # the probe was reached
+    (url, headers), (url2, headers2) = puts.calls
+    assert url == url2 and headers == headers2 == {"If-None-Match": "*"}
+    assert url.startswith("https://store.example/b-results/claims/.probe-")
+    assert [c[0] for c in psig.calls] == ["PUT-IF-ABSENT"] and psig.calls[0][3] == m.PROBE_URL_TTL_S
+    assert len(client.deletes) == 1 and client.deletes[0]["Key"].startswith("claims/.probe-")
 
 
-def test_probe_success_is_cached_per_process(caplog):
-    client = _conforming()
-    store = _store(client)
+def test_probe_uses_exactly_the_probe_signers_claim_headers(monkeypatch):
+    puts = _Puts(monkeypatch, 200, 412)
+    psig = _ProbeSigner(headers={"x-goog-if-generation-match": "0"})
+    _probe_store(probe_signer=psig).ensure_conditional_writes()
+    assert [h for _, h in puts.calls] == [{"x-goog-if-generation-match": "0"}] * 2
+
+
+def test_probe_success_is_cached_per_process(monkeypatch):
+    puts = _Puts(monkeypatch, 200, 412, 200, 412)
+    client = _Client()
+    store = _probe_store(client)
     store.job_fields(ID, int(time.time()) + 600)
     store.job_fields(ID, int(time.time()) + 600)
-    _store(client).job_fields(ID, int(time.time()) + 600)  # a fresh store, like get_store() builds
-    assert len(client.puts) == 2
+    _probe_store(client).job_fields(ID, int(time.time()) + 600)  # a fresh store, like get_store() builds
+    assert len(puts.calls) == 2
     # another endpoint is a different key and probes again
-    other = _ProbeClient([None, _precondition_failed()], endpoint="https://other.example")
-    _store(other).job_fields(ID, int(time.time()) + 600)
-    assert len(other.puts) == 2
+    _probe_store(_Client(endpoint="https://other.example")).job_fields(ID, int(time.time()) + 600)
+    assert len(puts.calls) == 4
 
 
-def test_a_store_that_ignores_the_condition_issues_no_job(caplog):
-    sig = _FakeSigner()
-    client = _ProbeClient([None, None])  # the second PUT succeeds: the condition was ignored
+def test_a_store_that_ignores_the_condition_issues_no_job(monkeypatch, caplog):
+    sig, psig, client = _FakeSigner(), _ProbeSigner(), _Client()
+    puts = _Puts(monkeypatch, 200, 200, 200, 200)  # the second PUT succeeds: the condition was ignored
     caplog.set_level(logging.ERROR)
     with pytest.raises(OSError) as info:
-        _store(client, sig).job_fields(ID, int(time.time()) + 600)
+        _probe_store(client, sig, psig).job_fields(ID, int(time.time()) + 600)
     assert "conditional writes not supported" in str(info.value)
-    assert sig.calls == []  # nothing presigned
-    assert len(client.puts) == 2 and len(client.deletes) == 1  # reached, and the probe key removed
-    assert client.deletes[0]["Key"] == client.puts[0]["Key"] and client.deletes[0]["Key"].startswith("claims/.probe-")
+    assert sig.calls == []  # nothing presigned for the job
+    assert len(puts.calls) == 2 and len(client.deletes) == 1  # reached, and the probe key removed
     assert "does not honour conditional writes" in caplog.text
+    assert "SECRET-SIG" not in caplog.text and "https://store.example/" not in caplog.text
     assert not m._CONDITIONAL_OK
-    # not cached: the next request probes again
-    client.script = [None, None]
+    with pytest.raises(OSError):  # not cached: the next request probes again
+        _probe_store(client, sig, psig).job_fields(ID, int(time.time()) + 600)
+    assert len(puts.calls) == 4
+
+
+@pytest.mark.parametrize("script, expect_calls, message", [
+    ([403], 1, "HTTP 403"),
+    ([200, 500], 2, "HTTP 500"),
+    ([200, 403], 2, "HTTP 403"),
+    ([OSError("capture store: conditional-write probe: URLError")], 1, "URLError"),
+    ([200, OSError("capture store: conditional-write probe: TimeoutError")], 2, "TimeoutError"),
+])
+def test_probe_failures_are_oserror_not_cached_and_still_delete(monkeypatch, caplog, script, expect_calls, message):
+    sig, client = _FakeSigner(), _Client()
+    puts = _Puts(monkeypatch, *script)
+    with pytest.raises(OSError) as info:
+        _probe_store(client, sig, _ProbeSigner()).job_fields(ID, int(time.time()) + 600)
+    assert message in str(info.value)
+    assert len(puts.calls) == expect_calls  # reached; the second call is not made after a first failure
+    assert len(client.deletes) == 1
+    assert not m._CONDITIONAL_OK and sig.calls == []
+    assert "SECRET-SIG" not in caplog.text and "SECRET-SIG" not in str(info.value)
+
+
+def test_probe_signer_failure_is_oserror_not_cached_and_makes_no_request(monkeypatch):
+    client = _Client()
+    puts = _Puts(monkeypatch)
+    psig = _ProbeSigner(fail=OSError("capture store: signer: TransportError"))
     with pytest.raises(OSError):
-        _store(client, sig).job_fields(ID, int(time.time()) + 600)
-    assert len(client.puts) == 4
+        _probe_store(client, _FakeSigner(), psig).job_fields(ID, int(time.time()) + 600)
+    assert [c[0] for c in psig.calls] == ["PUT-IF-ABSENT"]  # reached
+    assert puts.calls == [] and not m._CONDITIONAL_OK
+    assert len(client.deletes) == 1  # the delete is harmless and runs
 
 
-def test_probe_deletes_its_key_on_success_too():
-    client = _conforming()
-    _store(client).ensure_conditional_writes()
-    assert len(client.deletes) == 1 and client.deletes[0]["Key"] == client.puts[0]["Key"]
+def test_probe_put_wire_behaviour(monkeypatch):
+    """The real `_probe_put` against a local socket-free opener stub: statuses, redirects, errors."""
+    import urllib.error
 
+    seen = []
 
-def test_probe_other_errors_are_oserror_and_not_cached():
-    denied = ClientError({"Error": {"Code": "AccessDenied"}, "ResponseMetadata": {"HTTPStatusCode": 403}}, "PutObject")
-    sig = _FakeSigner()
-    for script in ([denied], [None, denied]):
-        client = _ProbeClient(script)
+    class _Resp:
+        status = 201
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n):
+            return b""
+
+    class _Opener:
+        def __init__(self, outcome):
+            self.outcome = outcome
+
+        def open(self, req, timeout=None):
+            seen.append((req.get_method(), req.full_url, dict(req.header_items()), req.data, timeout))
+            if isinstance(self.outcome, Exception):
+                raise self.outcome
+            return self.outcome
+
+    def run(outcome):
+        monkeypatch.setattr(m.urllib.request, "build_opener", lambda *h: _Opener(outcome))
+        return m._probe_put("https://store.example/k?sig=SECRET-SIG", {"If-None-Match": "*"})
+
+    assert run(_Resp()) == 201
+    method, url, headers, data, timeout = seen[0]
+    assert method == "PUT" and data == b"" and timeout == m.PROBE_TIMEOUT_S
+    assert headers["If-none-match"] == "*" and headers["Content-length"] == "0"
+    err = urllib.error.HTTPError("https://store.example/k", 412, "x", {}, None)
+    assert run(err) == 412
+    for exc in (urllib.error.URLError("https://store.example/k?sig=SECRET-SIG"), TimeoutError("SECRET-SIG"), ValueError("SECRET-SIG")):
         with pytest.raises(OSError) as info:
-            _store(client, sig).job_fields(ID, int(time.time()) + 600)
-        assert str(info.value) == "capture store: ClientError: AccessDenied"
-        assert len(client.puts) == len(script) and len(client.deletes) == 1
-        assert not m._CONDITIONAL_OK
-    assert sig.calls == []
+            run(exc)
+        assert "SECRET-SIG" not in str(info.value) and "conditional-write probe" in str(info.value)
 
 
-def test_probe_accepts_a_bare_412_status_without_the_code():
-    bare = ClientError({"Error": {"Code": "Weird"}, "ResponseMetadata": {"HTTPStatusCode": 412}}, "PutObject")
-    _store(_ProbeClient([None, bare])).ensure_conditional_writes()
-    assert m._CONDITIONAL_OK
+def test_probe_put_ignores_environment_proxies(monkeypatch):
+    """The probe PUT carries a signed URL: it must never go through an HTTP(S)_PROXY from the env."""
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.test:3128")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example.test:3128")
+    real = m.urllib.request.build_opener
+    handlers = []
+
+    def spy(*h):
+        handlers.extend(h)
+        return real(*h)
+
+    monkeypatch.setattr(m.urllib.request, "build_opener", spy)
+    with pytest.raises(OSError):
+        m._probe_put("https://store.invalid/k", {"If-None-Match": "*"})  # .invalid never resolves
+    assert handlers  # reached
+    proxies = [h for h in handlers if isinstance(h, m.urllib.request.ProxyHandler)]
+    assert len(proxies) == 1 and proxies[0].proxies == {}
+    assert any(isinstance(h, m._NoRedirect) for h in handlers)
+
+
+def test_no_redirect_handler_turns_a_redirect_into_an_error():
+    assert m._NoRedirect().redirect_request(None, None, 307, "", {}, "https://elsewhere.example/") is None
+
+
+def test_probe_signer_uses_the_backend_endpoint_while_job_urls_use_the_public_one(env, monkeypatch):
+    env.setenv("CAPTURE_S3_PUBLIC_ENDPOINT", "https://store.example.test")
+    store = m.s3_store_from_env()
+    puts = _Puts(monkeypatch, 200, 412)
+    monkeypatch.setattr(store, "_delete_quiet", lambda *a: None)
+    urls = store.job_fields(ID, int(time.time()) + 600)["store"]
+    assert len(puts.calls) == 2  # reached
+    assert urlsplit(puts.calls[0][0]).netloc == "store.example"
+    for k in ("result_put", "screenshot_put", "claim_put"):
+        assert urlsplit(urls[k]).netloc == "store.example.test"
+    assert urls["claim_headers"] == {"If-None-Match": "*"}
 
 
 def test_sweep_claims_boundary_and_prefix():
@@ -632,3 +754,293 @@ def test_claims_keys_do_not_disturb_the_results_views():
         store = _store(client)
         assert store.list_results() == [A]
         assert store.result_files_ok(A) is True
+
+
+# ── CAPTURE_S3_AUTH=gcs-wi (planning#322) ────────────────────────────────────
+
+DATA_TOKEN, SIGN_TOKEN = "data-token-aaaa", "sign-token-bbbb"
+SA_EMAIL = "capture@fabrikam-project.iam.gserviceaccount.com"
+
+
+@pytest.fixture
+def gcs_env(env):
+    env.delenv("CAPTURE_S3_ACCESS_KEY")
+    env.delenv("CAPTURE_S3_SECRET_KEY")
+    env.setenv("CAPTURE_S3_AUTH", "gcs-wi")
+    env.setenv("CAPTURE_S3_ENDPOINT", m.GCS_ENDPOINT)
+    return env
+
+
+class _FakeCreds:
+    def __init__(self, scope, email=SA_EMAIL, valid=False):
+        self.scope, self.valid, self.refreshes = scope, valid, 0
+        self.token = None
+        if email is not None:
+            self.service_account_email = email
+
+    def refresh(self, request):
+        self.refreshes += 1
+        self.valid = True
+        self.token = DATA_TOKEN if self.scope == m.GCS_DATA_SCOPE else SIGN_TOKEN
+
+
+@pytest.fixture
+def creds(monkeypatch):
+    """Replace google.auth.default; one fake credentials object per scope asked for."""
+    import google.auth
+    made = {}
+    state = {"email": SA_EMAIL}
+
+    def default(scopes=None, **kw):
+        (scope,) = scopes
+        made[scope] = _FakeCreds(scope, state["email"])
+        return made[scope], "fabrikam-project"
+
+    monkeypatch.setattr(google.auth, "default", default)
+    made["state"] = state
+    return made
+
+
+def test_config_auth_defaults_to_sigv4_and_rejects_unknown(env):
+    assert m.s3_config_from_env().auth == "sigv4"
+    env.setenv("CAPTURE_S3_AUTH", " SigV4 ")
+    assert m.s3_config_from_env().auth == "sigv4"
+    for bad in ("gcs", "gcs_wi", "iam", "none"):
+        env.setenv("CAPTURE_S3_AUTH", bad)
+        with pytest.raises(StoreConfigError) as e:
+            m.s3_config_from_env()
+        assert "CAPTURE_S3_AUTH" in str(e.value)
+
+
+def test_config_gcs_wi_happy_path(gcs_env):
+    cfg = m.s3_config_from_env()
+    assert cfg.auth == "gcs-wi" and cfg.endpoint == m.GCS_ENDPOINT
+    assert cfg.access_key is None and cfg.secret_key is None and cfg.path_style is True
+    gcs_env.setenv("CAPTURE_S3_AUTH", " GCS-WI ")
+    assert m.s3_config_from_env().auth == "gcs-wi"
+
+
+@pytest.mark.parametrize("var, value, named", [
+    ("CAPTURE_S3_ENDPOINT", None, "CAPTURE_S3_ENDPOINT"),
+    ("CAPTURE_S3_ENDPOINT", "http://storage.googleapis.com", "CAPTURE_S3_ENDPOINT"),
+    ("CAPTURE_S3_ENDPOINT", "https://storage.googleapis.com/", "CAPTURE_S3_ENDPOINT"),
+    ("CAPTURE_S3_ENDPOINT", "https://storage.googleapis.com:8443", "CAPTURE_S3_ENDPOINT"),
+    ("CAPTURE_S3_ENDPOINT", "https://storage.googleapis.com.example.test", "CAPTURE_S3_ENDPOINT"),
+    ("CAPTURE_S3_ENDPOINT", "https://u@storage.googleapis.com", "CAPTURE_S3_ENDPOINT"),
+    ("CAPTURE_S3_ACCESS_KEY", "AKIATESTDISTINCT", "CAPTURE_S3_ACCESS_KEY"),
+    ("CAPTURE_S3_SECRET_KEY", "SECRETTESTDISTINCT", "CAPTURE_S3_SECRET_KEY"),
+    ("CAPTURE_S3_PUBLIC_ENDPOINT", "https://store.example.test", "CAPTURE_S3_PUBLIC_ENDPOINT"),
+    ("CAPTURE_S3_PATH_STYLE", "false", "CAPTURE_S3_PATH_STYLE"),
+    ("CAPTURE_S3_INSECURE_HTTP", "1", "CAPTURE_S3_INSECURE_HTTP"),
+])
+def test_config_gcs_wi_rejects(gcs_env, var, value, named):
+    assert m.s3_config_from_env().auth == "gcs-wi"  # reached: the base config is valid
+    if value is None:
+        gcs_env.delenv(var)
+    else:
+        gcs_env.setenv(var, value)
+    with pytest.raises(StoreConfigError) as e:
+        m.s3_config_from_env()
+    assert named in str(e.value)
+    assert "AKIATESTDISTINCT" not in str(e.value) and "SECRETTESTDISTINCT" not in str(e.value)
+
+
+def test_config_gcs_wi_rejects_both_static_keys(gcs_env):
+    gcs_env.setenv("CAPTURE_S3_ACCESS_KEY", "k")
+    gcs_env.setenv("CAPTURE_S3_SECRET_KEY", "s")
+    with pytest.raises(StoreConfigError) as e:
+        m.s3_config_from_env()
+    assert "static keys are refused" in str(e.value)
+
+
+def _short_circuit(client, status=200, seen=None):
+    """Register AFTER the client's own hook so the pin/auth hook ran first; answer without a network."""
+    from botocore.awsrequest import AWSResponse
+
+    class _Raw:
+        def stream(self, *a, **k):
+            return iter(())
+
+        def read(self, *a, **k):
+            return b""
+
+    def spy(request, **kw):
+        seen.append((request.url, dict(request.headers)))
+        return AWSResponse(request.url, status, {}, _Raw())
+
+    client.meta.events.register("before-send.s3", spy)
+
+
+def test_gcs_data_plane_is_unsigned_and_carries_only_the_data_bearer(gcs_env, creds):
+    client = m._client(m.s3_config_from_env())
+    seen = []
+    _short_circuit(client, seen=seen)
+    client.head_bucket(Bucket="b-jobs")
+    assert len(seen) == 1  # reached the transport
+    url, headers = seen[0]
+    assert urlsplit(url).netloc == "storage.googleapis.com"
+    assert headers["Authorization"] == "Bearer " + DATA_TOKEN
+    assert "AWS4-HMAC" not in " ".join(str(v) for v in headers.values())
+    assert not any(k.lower().startswith("x-amz-security") for k in headers)
+    assert list(k for k in creds if k != "state") == [m.GCS_DATA_SCOPE]  # the signing scope was never asked
+    assert SIGN_TOKEN not in str(headers)
+    assert client.meta.endpoint_url == m.GCS_ENDPOINT
+
+
+def test_gcs_token_is_refreshed_only_when_invalid_and_shared_across_clients(gcs_env, creds):
+    cfg = m.s3_config_from_env()
+    client = m._client(cfg)
+    seen = []
+    _short_circuit(client, seen=seen)
+    client.head_bucket(Bucket="b-jobs")
+    client.head_bucket(Bucket="b-results")
+    assert creds[m.GCS_DATA_SCOPE].refreshes == 1 and len(seen) == 2
+    creds[m.GCS_DATA_SCOPE].valid = False  # expired
+    client.head_bucket(Bucket="b-jobs")
+    assert creds[m.GCS_DATA_SCOPE].refreshes == 2
+    m._client.cache_clear()  # a fresh client (get_store builds a fresh store per call) reuses the holder
+    other = m._client(cfg)
+    _short_circuit(other, seen=seen)
+    other.head_bucket(Bucket="b-jobs")
+    assert creds[m.GCS_DATA_SCOPE].refreshes == 2 and len(seen) == 4
+
+
+def test_gcs_pin_handler_refuses_other_hosts_schemes_ports_without_a_header(creds):
+    for url in ("https://storage.googleapis.com.example.test/b/k", "http://storage.googleapis.com/b/k",
+                "https://storage.googleapis.com:444/b/k", "https://u@storage.googleapis.com/b/k",
+                "https://example.test/b/k", "https://storage.googleapis.com:notaport/b/k"):
+        req = type("Req", (), {"url": url, "headers": {}})()
+        with pytest.raises(m._EndpointRefused):
+            m._pin_and_authorize(req)
+        assert "Authorization" not in req.headers, url
+    assert creds == {"state": creds["state"]}  # no token was even requested
+    ok = type("Req", (), {"url": "https://storage.googleapis.com:443/b/k", "headers": {}})()
+    m._pin_and_authorize(ok)  # reached: the pinned host passes
+    assert ok.headers["Authorization"] == "Bearer " + DATA_TOKEN
+
+
+def test_gcs_redirect_to_another_host_is_refused_through_the_client(gcs_env, creds):
+    client = m._client(m.s3_config_from_env())
+
+    def redirect(request, **kw):  # runs BEFORE the pin hook, like botocore re-sending a redirect
+        request.url = "https://storage.googleapis.com.example.test/b-jobs/k"
+
+    client.meta.events.register_first("before-send.s3", redirect)
+    seen = []
+    _short_circuit(client, seen=seen)
+    with pytest.raises(OSError) as info:
+        _store(client).put_job(ID, b"{}")
+    assert "_EndpointRefused" in str(info.value)
+    assert seen == []  # the request never reached the transport
+    assert m.GCS_DATA_SCOPE not in creds  # and no token was minted for it
+
+
+def test_gcs_token_failure_surfaces_as_oserror_without_the_original_text(gcs_env, monkeypatch):
+    import google.auth
+    from google.auth.exceptions import TransportError
+
+    def boom(scopes=None, **kw):
+        raise TransportError("https://metadata.example.test/secret-url")
+
+    monkeypatch.setattr(google.auth, "default", boom)
+    client = m._client(m.s3_config_from_env())
+    seen = []
+    _short_circuit(client, seen=seen)
+    with pytest.raises(OSError) as info:
+        _store(client).put_job(ID, b"{}")
+    assert "_TokenUnavailable" in str(info.value) and "secret-url" not in str(info.value)
+    assert seen == []
+
+
+@pytest.fixture
+def signed(monkeypatch):
+    """Record what the SDK hands to signBlob; return a fixed base64 signature."""
+    from google.cloud.storage import _signing
+    calls = []
+
+    def fake(message, access_token, service_account_email, universe_domain="googleapis.com"):
+        calls.append((access_token, service_account_email))
+        return "c2lnbmF0dXJl"
+
+    monkeypatch.setattr(_signing, "_sign_message", fake)
+    return calls
+
+
+def _q(url):
+    return {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+
+
+def test_gcs_signer_presign_shapes_and_uses_the_signing_token_as_itself(creds, signed):
+    signer = m.GcsSigner()
+    for method in ("PUT", "GET"):
+        url = signer.presign(method, "example-bucket", "results/x/result.json", 600)
+        parts = urlsplit(url)
+        assert (parts.scheme, parts.netloc, parts.path) == ("https", "storage.googleapis.com",
+                                                            "/example-bucket/results/x/result.json")
+        q = _q(url)
+        assert q["X-Goog-Algorithm"] == "GOOG4-RSA-SHA256" and q["X-Goog-Expires"] == "600"
+        assert q["X-Goog-SignedHeaders"] == "host"
+        assert q["X-Goog-Credential"].startswith(SA_EMAIL + "/")
+    url = signer.presign_put_if_absent("example-bucket", "claims/x", 300)
+    assert urlsplit(url).path == "/example-bucket/claims/x"
+    q = _q(url)
+    assert q["X-Goog-Expires"] == "300"
+    assert "x-goog-if-generation-match" in q["X-Goog-SignedHeaders"].split(";")
+    assert signed and set(signed) == {(SIGN_TOKEN, SA_EMAIL)}  # the signing token, as the SA itself
+    assert len(signed) == 3
+    assert DATA_TOKEN not in str(signed) and m.GCS_DATA_SCOPE not in creds
+    assert list(k for k in creds if k != "state") == [m.GCS_SIGN_SCOPE]
+    assert dict(signer.claim_headers) == {"x-goog-if-generation-match": "0"}
+
+
+@pytest.mark.parametrize("email", [None, "default", "no-at-sign", ""])
+def test_gcs_signer_refuses_a_missing_or_placeholder_identity(creds, signed, email):
+    creds["state"]["email"] = email
+    with pytest.raises(OSError) as info:
+        m.GcsSigner().presign("PUT", "example-bucket", "k", 60)
+    assert str(info.value).startswith("capture store: signer: ")
+    assert m.GCS_SIGN_SCOPE in creds  # reached: credentials were obtained and refreshed
+    assert signed == []  # nothing was signed
+
+
+def test_gcs_signer_errors_never_carry_the_original_message(creds, monkeypatch):
+    from google.auth.exceptions import TransportError
+    from google.cloud.storage import _signing
+
+    def boom(*a, **k):
+        raise TransportError("https://iamcredentials.example.test/secret-url token=abc")
+
+    monkeypatch.setattr(_signing, "_sign_message", boom)
+    for fn in (lambda: m.GcsSigner().presign("PUT", "example-bucket", "k", 60),
+               lambda: m.GcsSigner().presign_put_if_absent("example-bucket", "k", 60)):
+        with pytest.raises(OSError) as info:
+            fn()
+        assert str(info.value) == "capture store: signer: TransportError"
+        assert "secret-url" not in str(info.value) and info.value.__cause__ is None
+
+
+def test_job_fields_under_gcs_has_the_generation_claim_and_fails_closed(creds, signed, monkeypatch):
+    client = _Client(endpoint=m.GCS_ENDPOINT)
+    store = S3Store(client, m.GcsSigner(), BUCKETS)
+    m._CONDITIONAL_OK.add((m.GCS_ENDPOINT, BUCKETS.results))
+    out = store.job_fields(ID, int(time.time()) + 600)["store"]
+    assert out["claim_headers"] == {"x-goog-if-generation-match": "0"}
+    assert "x-goog-if-generation-match" in _q(out["claim_put"])["X-Goog-SignedHeaders"]
+    assert urlsplit(out["result_put"]).netloc == "storage.googleapis.com"
+    # fail closed when the probe fails: no job, no job URLs signed
+    m._CONDITIONAL_OK.clear()
+    signed.clear()
+    puts = _Puts(monkeypatch, 500)
+    with pytest.raises(OSError):
+        store.job_fields(ID, int(time.time()) + 600)
+    assert len(puts.calls) == 1 and puts.calls[0][1] == {"x-goog-if-generation-match": "0"}  # reached
+    assert len(signed) == 1  # only the probe URL was signed, none of the three job URLs
+    assert not m._CONDITIONAL_OK
+
+
+def test_s3_store_from_env_under_gcs_wi(gcs_env, creds, signed):
+    store = m.s3_store_from_env()
+    assert isinstance(store._signer, m.GcsSigner) and store._probe_signer is store._signer
+    assert store._c.meta.config.signature_version is botocore.UNSIGNED
+    assert store._c.meta.endpoint_url == m.GCS_ENDPOINT
+    assert m.s3_store_from_env()._signer is store._signer  # cached across get_store() calls

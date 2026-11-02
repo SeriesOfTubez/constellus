@@ -9,7 +9,7 @@ the capture id. With --count N it reports, per capture, the seconds from enqueue
 to result.json, plus the browser pod's restart count: the measure of the
 kubelet's restart back-off between one-page-per-container captures.
 
-Every job also carries `store.claim_put`: a presigned conditional PUT (If-None-Match: *)
+Every job also carries `store.claim_put`: a presigned conditional PUT (If-None-Match: *, also sent as `store.claim_headers`)
 of claims/<cid> in the results bucket, which the worker requires. The check asserts that
 claims/<cid> exists for every capture. With --workers N (N >= 2) it also reads the
 capture-browser pods' logs and asserts each capture has EXACTLY ONE "capture-worker:
@@ -202,6 +202,7 @@ def main():
             "store": {
                 "result_put": presign(f"results/{cid}/result.json"),
                 "screenshot_put": presign(f"results/{cid}/screenshot.webp"),
+                "claim_headers": {"If-None-Match": "*"},
                 "claim_put": signer.generate_presigned_url(
                     "put_object", Params={"Bucket": RESULTS, "Key": f"claims/{cid}", "IfNoneMatch": "*"},
                     ExpiresIn=exp - int(time.time()), HttpMethod="PUT",
