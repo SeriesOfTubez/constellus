@@ -1,0 +1,25 @@
+# The BACKEND alone may reach the GKE metadata server, for its Workload Identity tokens.
+# The base's backend-egress-world excepts 169.254.0.0/16, and the capture pods
+# (browser + worker, proxy) never get this rule: Chromium shares the worker's network
+# namespace, and a renderer that reached the metadata server could mint tokens.
+#
+# GKE Dataplane V2 clusters (GKE docs, "Network policy and Workload Identity Federation
+# for GKE"): 169.254.169.254/32 on ports 80 and 8080. Other clusters on GKE
+# 1.21.0-gke.1000 or later: use networkpolicy-metadata-legacy.yaml instead.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-egress-metadata
+  namespace: constellus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - {protocol: TCP, port: 80}
+        - {protocol: TCP, port: 8080}

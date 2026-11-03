@@ -4,6 +4,7 @@ Kustomize manifests for the page-capture stack on Kubernetes (S3 mode).
 
 - `capture/`: the **base**, production shape (capture-browser, capture-proxy, NetworkPolicy). No store, no secret values.
 - `backend/`: the **base** that includes `capture/` and adds the backend (migrate init container, get/patch RBAC on the proxy limits ConfigMap, egress policy). No DB, no store, no secret values.
+- `examples/gcs-wi/`: an **example overlay** to copy, for a backend on GCS with no static key under GKE Workload Identity (`CAPTURE_S3_AUTH=gcs-wi`). Not deployable as-is: its `<...>` values are yours.
 - `lab/`: a **test-only overlay** adding an in-cluster RustFS store and Postgres 18. Used by `scripts/kind-lab.sh`.
 
 `kubectl apply -k deploy/k8s/capture` (base) or `deploy/k8s/lab` (lab; needs the Secrets that `scripts/kind-lab.sh up` creates).

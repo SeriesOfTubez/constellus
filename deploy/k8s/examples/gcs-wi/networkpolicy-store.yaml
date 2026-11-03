@@ -1,0 +1,29 @@
+# Store reach for the browser (worker) and proxy pods. NetworkPolicy has no FQDN rules,
+# and storage.googleapis.com resolves into Google's large, changing address space. This
+# example assumes Private Google Access with private DNS: a `googleapis.com` zone that
+# answers storage.googleapis.com with the private.googleapis.com VIP range (or the
+# restricted.googleapis.com range under VPC Service Controls). Take the /30 from Google's
+# Private Google Access docs ("Domain options"). The host name stays
+# storage.googleapis.com, so TLS and the backend's endpoint pin are unchanged.
+#
+# The backend needs no rule here: backend-egress-world already allows public addresses.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: capture-egress-store
+  namespace: constellus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: constellus
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [capture-proxy, capture-browser]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: <private-googleapis-vip-range>
+      ports:
+        - {protocol: TCP, port: 443}

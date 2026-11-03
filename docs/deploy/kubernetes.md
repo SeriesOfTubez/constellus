@@ -120,9 +120,7 @@ ingested it and the store is clean), `down --purge`.
   `ALLOWED_ORIGINS` for your frontend origin. Set `CAPTURE_S3_PUBLIC_ENDPOINT` when
   the endpoint the worker uses (the one presigned URLs are signed for) differs from
   the backend's own path to the store. For keyless GCS under Workload Identity
-  (`CAPTURE_S3_AUTH=gcs-wi`, backend only; the worker and proxy keep HMAC keys until
-  slice 2b) see "Keyless GCS" in `docs/architecture/capture-spool.md`; no manifest
-  changes in slice 2a.
+  (`CAPTURE_S3_AUTH=gcs-wi`) see [Keyless GCS](#keyless-gcs-gcs-wi) below.
 - **RBAC.** The backend's Role is `get` + `patch` on the one ConfigMap
   `capture-proxy-limits`, nothing else. There is no `create`: `resourceNames` cannot
   restrict it, so the base pre-creates the ConfigMap empty. Re-applying the base is
@@ -149,10 +147,13 @@ ingested it and the store is clean), `down --purge`.
   `source=default`, the `..data` path `source=file`, and an update was picked up in
   16 to 66 s (kubelet sync; four updates measured).
 - **Workers.** The base is `replicas: 1`; scaling is the operator's overlay. Workers
-  claim an S3 job with a conditional PUT (`If-None-Match: *`) of `claims/<id>` in the
-  results bucket (planning#323), so more than one worker is safe on a store that
-  honours that header. Tested: RustFS (the lab and CI store). AWS S3 documents
-  support for it but is not tested here. Not verified: GCS interop and any other store. The backend probes the store at first use and refuses to issue
+  claim an S3 job with a conditional PUT of `claims/<id>` in the results bucket
+  (planning#323), sending exactly the header the job's `store.claim_headers` names
+  (`If-None-Match: *` under `sigv4`; `x-goog-if-generation-match: 0` under `gcs-wi`,
+  because GCS ignores `If-None-Match`), so more than one worker is safe on a store that
+  honours it. Tested: RustFS (the lab and CI store) and GCS under `gcs-wi` (a lab
+  bucket, planning#322). AWS S3 documents support but is not tested here. Not
+  verified: GCS through HMAC keys under `sigv4`, and any other store. The backend probes the store at first use and refuses to issue
   S3 jobs if the store does not honour it, so on such a store captures stop and the
   queue timeout fails them; it never runs a job twice. The backend's store key
   therefore needs PUT, LIST and DELETE on `claims/` in the results bucket (the
@@ -164,6 +165,96 @@ ingested it and the store is clean), `down --purge`.
   --count 8 --workers 2` and back to one afterwards.
 - **Images.** The base leaves the image tag to the overlay; pin by digest in
   production.
+
+## Keyless GCS (`gcs-wi`)
+
+`CAPTURE_S3_AUTH=gcs-wi` runs the backend on GCS with no static key, under GKE Workload
+Identity (planning#322). The backend signs every URL a worker uses through IAM
+`signBlob`, as its own IAM service account. The worker and proxy **still use HMAC keys**
+until slice 2b-3, which moves them to short-lived tokens that the backend mints. They will
+never fetch a token from the metadata server themselves. The design and the startup checks
+are in "Keyless GCS" in [capture-spool.md](../architecture/capture-spool.md).
+
+`deploy/k8s/examples/gcs-wi/` is an example overlay to copy. Every `<...>` value is yours.
+
+### GCP side (before applying)
+
+Use one IAM service account for the backend, and separate ones for the worker and the proxy.
+
+```bash
+P=<project>; GSA=<backend-gsa>@$P.iam.gserviceaccount.com
+gcloud services enable iamcredentials.googleapis.com --project=$P   # signBlob lives here
+
+# 1. Workload Identity, annotation method: the KSA constellus/backend acts as $GSA.
+#    Direct principal:// access is not enough: the signer needs an IAM service account.
+gcloud iam service-accounts add-iam-policy-binding $GSA --project=$P \
+  --role=roles/iam.workloadIdentityUser \
+  --member="serviceAccount:$P.svc.id.goog[constellus/backend]"
+
+# 2. signBlob on ITSELF only. Not roles/iam.serviceAccountTokenCreator, which can
+#    also mint access and ID tokens.
+gcloud iam roles create captureSignBlobOnly --project=$P --stage=GA \
+  --title="Capture signBlob only" --permissions=iam.serviceAccounts.signBlob
+gcloud iam service-accounts add-iam-policy-binding $GSA --project=$P \
+  --role=projects/$P/roles/captureSignBlobOnly --member="serviceAccount:$GSA"
+
+# 3. Bucket rights, for each of the four buckets (uniform bucket-level access on).
+gcloud storage buckets add-iam-policy-binding gs://<bucket> \
+  --role=roles/storage.objectUser --member="serviceAccount:$GSA"
+```
+
+- **The signer's rights are the ceiling of every URL it signs.** A worker URL can do no
+  more than the backend could do on that one object with that one method. Removing the
+  backend's bucket roles, or its signBlob binding, revokes every outstanding URL.
+- **The worker and proxy HMAC service accounts (until 2b-3):**
+  - The worker needs `storage.objects.list`, `get` and `delete` on the jobs bucket (a
+    custom role).
+  - The proxy needs `storage.objects.create` on the proxy-log bucket. It rewrites
+    `proxylog/<id>.jsonl` several times per capture, and GCS documents that overwriting
+    an object also needs `storage.objects.delete`. Not yet verified here: the 2b-0 lab
+    spike checks it.
+
+### Cluster side (the example overlay)
+
+- **KSA annotation:** `iam.gke.io/gcp-service-account` on the `backend` ServiceAccount.
+- **No backend key:** the overlay deletes the backend's `CAPTURE_S3_ACCESS_KEY`/`_SECRET_KEY`
+  env (gcs-wi refuses static keys at startup). Don't create the Secret `capture-store-backend`.
+- **`capture-store` ConfigMap:**
+  - `CAPTURE_S3_AUTH=gcs-wi`;
+  - `CAPTURE_S3_ENDPOINT=https://storage.googleapis.com`, exactly that;
+  - `CAPTURE_S3_PATH_STYLE=true`;
+  - no `CAPTURE_S3_PUBLIC_ENDPOINT`;
+  - `CAPTURE_S3_REGION=auto` for the HMAC worker and proxy.
+- **Metadata egress, backend only.** The base's `backend-egress-world` excepts
+  `169.254.0.0/16`, so the backend needs one narrow rule to reach the GKE metadata server.
+  Per GKE's network-policy docs, the rule is:
+  - Dataplane V2: `169.254.169.254/32`, TCP 80 and 8080 (`networkpolicy-metadata-dpv2.yaml`);
+  - other clusters on GKE 1.21.0-gke.1000 or later: `169.254.169.252/32`, TCP 988 and
+    987 (`networkpolicy-metadata-legacy.yaml`).
+
+  Keep the one that matches your dataplane. The browser/worker and proxy pods never get a
+  metadata rule: Chromium shares the worker's network namespace, so that rule would let a
+  compromised renderer mint tokens.
+- **Store egress for the browser and proxy pods.** `storage.googleapis.com` resolves into
+  Google's large, changing address space, and NetworkPolicy has no FQDN rules. The example
+  therefore assumes Private Google Access with private DNS: a `googleapis.com` zone that
+  points `storage.googleapis.com` at the `private.googleapis.com` VIP range, or at the
+  `restricted.googleapis.com` range under VPC Service Controls. Take the /30 from
+  Google's Private Google Access docs ("Domain options"). The host
+  name is unchanged, so TLS and the backend's endpoint pin hold. The backend needs no
+  rule: `backend-egress-world` already allows public addresses.
+
+### Checks at deploy time
+
+The following has not been verified on a GKE cluster:
+- The GKE metadata server issues a token for a **requested scope**. The backend asks for
+  two: `devstorage.read_write` for the data plane and `auth/iam` for signing. A token
+  scoped only `devstorage` gets `403 ACCESS_TOKEN_SCOPE_INSUFFICIENT` from signBlob (lab
+  finding). If the requested scope is not honoured, signing fails, the backend refuses to
+  issue S3 jobs, and captures fail; nothing is ever run twice.
+- **Smoke test:** queue one capture. The first job runs the conditional-write probe, which
+  PUTs a real signed claim URL twice and expects 2xx then 412. On failure the backend log
+  names the step (`signer: <type>` or the probe's HTTP status), never a token or a URL.
 
 ## Restart back-off
 

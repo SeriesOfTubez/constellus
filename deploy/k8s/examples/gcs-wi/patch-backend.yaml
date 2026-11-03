@@ -1,0 +1,28 @@
+# The backend's Kubernetes ServiceAccount impersonates ONE IAM service account (the
+# annotation method). Direct `principal://` access is not enough: the signer signs worker
+# URLs through signBlob AS an IAM service account, and refuses to sign without one.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend
+  namespace: constellus
+  annotations:
+    iam.gke.io/gcp-service-account: <backend-gsa>@<project>.iam.gserviceaccount.com
+---
+# gcs-wi refuses static keys at startup, so the key entries from the base go, and the
+# Secret capture-store-backend is not created.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: constellus
+spec:
+  template:
+    spec:
+      containers:
+        - name: backend
+          env:
+            - name: CAPTURE_S3_ACCESS_KEY
+              $patch: delete
+            - name: CAPTURE_S3_SECRET_KEY
+              $patch: delete

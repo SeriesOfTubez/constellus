@@ -1,0 +1,21 @@
+# The BACKEND alone may reach the GKE metadata server: the variant for clusters NOT on
+# Dataplane V2, GKE 1.21.0-gke.1000 or later (GKE docs, "Network policy and Workload
+# Identity Federation for GKE"): 169.254.169.252/32 on ports 988 and 987. See
+# networkpolicy-metadata-dpv2.yaml for why only the backend gets this rule.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-egress-metadata
+  namespace: constellus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.252/32
+      ports:
+        - {protocol: TCP, port: 988}
+        - {protocol: TCP, port: 987}
