@@ -1,11 +1,11 @@
 # ── Stage 1: build Python deps ────────────────────────────────────────────────
-FROM python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f AS py-builder
+FROM python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54 AS py-builder
 WORKDIR /build
 COPY requirements.txt .
 RUN pip install --no-cache-dir --root-user-action=ignore --prefix=/install -r requirements.txt
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
-FROM python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f AS runtime
+FROM python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54 AS runtime
 WORKDIR /app
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]

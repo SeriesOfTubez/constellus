@@ -1,6 +1,6 @@
 # capture-browser — headless Chromium whose only network path is capture-proxy
 # (planning#280 S5b-1). Chromium ONLY: no Firefox / WebKit in the image.
-FROM python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f
+FROM python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
