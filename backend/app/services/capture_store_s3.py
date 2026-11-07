@@ -3,7 +3,7 @@
 Key layout (prefixed inside each bucket, so all four may name one bucket):
   jobs bucket      jobs/<id>.json
   results bucket   results/<id>/result.json, results/<id>/screenshot.webp
-  proxylog bucket  proxylog/<id>.jsonl
+  proxylog bucket  proxylog/<id>/<seq>.jsonl  (append-only snapshot chunks, seq 1..64; the highest wins)
   images bucket    images/<id>.webp
 
 Commit marker: the worker PUTs `result.json` LAST, so `list_results` returns only
@@ -25,6 +25,7 @@ only inside the gcs-wi code paths.
 
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -56,6 +57,11 @@ RESULT_NAMES = frozenset({"result.json", "screenshot.webp"})
 # (page_capture.py; a drift test asserts the sum below), plus a clock-skew allowance.
 CLAIM_SKEW_S = 300
 CLAIM_MARKER_MAX_AGE_S = 3600 + 300 + CLAIM_SKEW_S
+
+# The proxy writes each capture's log as snapshot chunks `proxylog/<id>/<seq>.jsonl` and never more than
+# this many (a guard, not a setting). capture-proxy/log_s3.py has the same constant; a test asserts they match.
+PROXYLOG_MAX_CHUNKS = 64
+_CHUNK_SEQ = re.compile(r"[1-9][0-9]*")
 
 PROBE_URL_TTL_S = 300
 PROBE_TIMEOUT_S = 10
@@ -524,8 +530,32 @@ class S3Store:
         return self._get_capped(self._b.results, f"results/{name}/{filename}", cap)
 
     # ── proxy log ────────────────────────────────────────────────────────
+    def _proxylog_max_chunk(self, capture_id: str) -> str | None:
+        """The key of the highest valid snapshot chunk, or None. Only `proxylog/<id>/<seq>.jsonl` with
+        1 <= seq <= PROXYLOG_MAX_CHUNKS counts; any other key under the prefix is ignored, never read."""
+        prefix = f"proxylog/{capture_id}/"
+        best_seq, best_key = 0, None
+        for key, _ in self._list(self._b.proxylog, prefix):
+            name = key[len(prefix):] if key.startswith(prefix) else ""
+            seq_s, dot, ext = name.partition(".")
+            if not dot or ext != "jsonl" or not _CHUNK_SEQ.fullmatch(seq_s):
+                continue
+            seq = int(seq_s)
+            if seq <= PROXYLOG_MAX_CHUNKS and seq > best_seq:
+                best_seq, best_key = seq, key
+        return best_key
+
     def read_proxylog(self, capture_id: str, cap: int) -> tuple[bytes, bool] | None:
-        key = f"proxylog/{capture_id}.jsonl"
+        try:
+            key = self._proxylog_max_chunk(capture_id)
+        except (ClientError, BotoCoreError) as e:
+            log.warning("page_capture: could not list the proxy log for %s (%s)", capture_id, _code(e) or type(e).__name__)
+            return None
+        if key is None:
+            return None
+        return self._read_proxylog_object(capture_id, key, cap)
+
+    def _read_proxylog_object(self, capture_id: str, key: str, cap: int) -> tuple[bytes, bool] | None:
         try:
             resp = self._c.get_object(Bucket=self._b.proxylog, Key=key)
         except ClientError as e:
@@ -546,7 +576,14 @@ class S3Store:
         return data, resp.get("ContentLength", 0) >= cap
 
     def delete_proxylog(self, capture_id: str) -> None:
-        self._delete_quiet(self._b.proxylog, f"proxylog/{capture_id}.jsonl")
+        """Delete every key under this capture's prefix (valid seq or not: the prefix is its own)."""
+        try:
+            entries = self._list(self._b.proxylog, f"proxylog/{capture_id}/")
+        except (ClientError, BotoCoreError) as e:
+            log.warning("page_capture: could not list the proxy log for %s (%s)", capture_id, _code(e) or type(e).__name__)
+            return
+        for key, _ in entries:
+            self._delete_quiet(self._b.proxylog, key)
 
     # ── images ───────────────────────────────────────────────────────────
     def check_images(self) -> None:

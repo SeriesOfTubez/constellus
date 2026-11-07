@@ -58,7 +58,7 @@ Four buckets, each keyed under its own prefix:
 jobs bucket      jobs/<capture_id>.json
 results bucket   results/<capture_id>/result.json
                  results/<capture_id>/screenshot.webp
-proxylog bucket  proxylog/<capture_id>.jsonl
+proxylog bucket  proxylog/<capture_id>/<seq>.jsonl   (append-only snapshot chunks, seq 1..64)
 images bucket    images/<capture_id>.webp
 ```
 
@@ -191,7 +191,7 @@ same JSON object it prints to stdout) to `<dir>/<capture_id>.jsonl`.
 
 Stdout logging is unchanged.
 
-**On S3 (`CAPTURE_STORE=s3`):** the proxy holds a put-only key on the proxylog bucket (`CAPTURE_S3_BUCKET_PROXYLOG`); `CAPTURE_PROXY_LOG_DIR` must be unset. S3 has no append, so the proxy buffers each capture's records in memory and PUTs the whole `proxylog/<capture_id>.jsonl` object, replacing the previous one, about 1 s after the last record, at once when the 4 MiB cap is reached, and on shutdown. A buffer is dropped once it has been idle for the credential's maximum lifetime (3900 s). At most 16 captures are buffered at a time; past that, and past the cap, records go to stdout only. A failed PUT is logged by its error code and retried at the next record or at shutdown; the proxy never fails a connection because the store misbehaves. The backend's 5 s result min-age is what gives the proxy its time to flush: the browser closes its connections, which produces the last records, before the worker uploads `result.json`. A log that still arrives late is lost without a trace today (planning#325 records that on the row).
+**On S3 (`CAPTURE_STORE=s3`):** the proxy holds a put-only key on the proxylog bucket (`CAPTURE_S3_BUCKET_PROXYLOG`); `CAPTURE_PROXY_LOG_DIR` must be unset. S3 has no append, so the proxy buffers each capture's records in memory and PUTs the log so far as a new snapshot chunk `proxylog/<capture_id>/<seq>.jsonl` (seq 1, 2, 3, ...) about 1 s after the last record, at once when the 4 MiB cap is reached, and on shutdown. A chunk is never overwritten, so a create-only credential is enough; every PUT attempt, even a failed one, takes the next seq. Each chunk holds the whole log so far and the backend reads only the highest seq (numerically), so a failed middle write loses nothing. At most 64 chunks exist per capture: debounced flushes stop at seq 63, and only the 4 MiB cap or shutdown writes seq 64; after that records go to stdout only. A buffer is dropped once it has been idle for the credential's maximum lifetime (3900 s). At most 16 captures are buffered at a time; past that, and past the cap, records go to stdout only. A failed PUT is logged by its error code and retried at the next record or at shutdown; the proxy never fails a connection because the store misbehaves. The backend's 5 s result min-age is what gives the proxy its time to flush: the browser closes its connections, which produces the last records, before the worker uploads `result.json`. A log that still arrives late is lost without a trace today (planning#325 records that on the row).
 
 ## Ingest (backend)
 
@@ -210,7 +210,7 @@ rendered an arbitrary page.
 - Accept a screenshot only if it starts with `RIFF` and has `WEBP` at offset
   8. **Never decode the image.**
 - Copy the screenshot to `/captures/<id>.webp`.
-- Read `/proxylog/<id>.jsonl`.
+- Read `/proxylog/<id>.jsonl` (on S3: the highest-numbered chunk `proxylog/<id>/<seq>.jsonl`).
 - Then delete `results/<id>/`, the proxy log and the job (`jobs/<id>.json`). On the
   filesystem the worker already removed its claim; on S3 the worker already deleted the job when it claimed it, so this
   delete is the backstop.
@@ -356,9 +356,9 @@ guard test keeps `page_capture.py` free of direct file access.
 - `CAPTURE_S3_ENDPOINT` is exactly `https://storage.googleapis.com` (no slash, path, port or userinfo). The data-plane client also re-checks every request, redirects included, against that host and refuses anything else before any credential is attached.
 - `CAPTURE_S3_ACCESS_KEY`/`_SECRET_KEY` are both unset (static keys are refused), `CAPTURE_S3_PUBLIC_ENDPOINT` is unset, `CAPTURE_S3_PATH_STYLE` is `true` and `CAPTURE_S3_INSECURE_HTTP` is not `1`.
 
-Two Google tokens, never interchanged: the data-plane Bearer token (scope `https://www.googleapis.com/auth/devstorage.read_write`) goes only on the backend's own requests (head, put, get, list, delete); the signing token (scope `https://www.googleapis.com/auth/iam`) goes only to the SDK that signs worker URLs. Worker URLs are V4 URLs signed by `google-cloud-storage` through IAM `signBlob`, as the backend's own service account (its identity is read from the credentials, never configured).
+Four Google tokens, never interchanged. (1) The signing token (scope `https://www.googleapis.com/auth/iam`) goes to IAM Credentials only: `signBlob` for worker URLs (V4 URLs signed by `google-cloud-storage`, as the backend's own service account, whose identity is read from the credentials, never configured) and `generateAccessToken` for the minter. (2) The data-plane Bearer token (scope `https://www.googleapis.com/auth/devstorage.read_write`) goes only on the backend's own store requests (head, put, get, list, delete). (3) A freshly self-impersonated `devstorage.read_write` token is the source of every mint and goes to `sts.googleapis.com` only (the google-auth downscoped exchange). (4) The downscoped worker and proxy tokens are only published to a Secret, never used by the backend.
 
-The backend's service account needs (a) a custom role holding ONLY `iam.serviceAccounts.signBlob`, granted on itself (not `roles/iam.serviceAccountTokenCreator`), and (b) its bucket rights. The signer's rights are the ceiling of every URL it signs, and removing them revokes outstanding URLs. Deploying it (the GCP IAM setup, the KSA annotation, backend-only metadata egress, store egress) is in "Keyless GCS" in [docs/deploy/kubernetes.md](../deploy/kubernetes.md), with the example overlay `deploy/k8s/examples/gcs-wi/`.
+The backend's service account needs (a) a custom role holding ONLY `iam.serviceAccounts.signBlob` and `iam.serviceAccounts.getAccessToken`, granted on itself (not `roles/iam.serviceAccountTokenCreator`, which also grants ID tokens, signJwt and implicit delegation), and (b) its bucket rights. The signer's rights are the ceiling of every URL it signs, and removing them revokes outstanding URLs. A rolling job (every 60 s) re-mints a consumer's token when less than 30 minutes remain and refuses to publish one with less than 10 minutes. Deploying it (the GCP IAM setup, the KSA annotation, backend-only metadata egress, store egress, the token Secret) is in "Keyless GCS" in [docs/deploy/kubernetes.md](../deploy/kubernetes.md), with the example overlay `deploy/k8s/examples/gcs-wi/`.
 
 The claim URL signs `x-goog-if-generation-match: 0` (GCS ignores `If-None-Match`), and the job's `store.claim_headers` carries the header the worker must send. Once per process, `ensure_conditional_writes` PUTs a real signed claim URL twice (2xx, then 412) and refuses to issue jobs otherwise. That probe now uses a signed URL in `sigv4` mode too (signed for the backend's own endpoint, not the public one). The worker and proxy still use HMAC keys until slice 2b-3. That slice moves them to downscoped Bearer tokens that the backend mints and publishes, so neither ever holds a Google identity or reaches the metadata server (planning#322, 2b decisions).
 

@@ -76,6 +76,7 @@ def start() -> None:
     _register_chat_transcript_purger()
     _register_report_purger()
     _register_page_capture()
+    _register_capture_tokens()
     _register_capture_sweep()
     _register_rediscovery_tick()
 
@@ -139,6 +140,35 @@ def _register_page_capture() -> None:
         max_instances=1,
     )
     log.info("Scheduled page_capture (every %ds)", page_capture.TICK_INTERVAL_SECONDS)
+
+
+def _register_capture_tokens() -> None:
+    """Mint and publish the downscoped worker/proxy tokens (planning#322 slice 2b-2). Only for
+    CAPTURE_STORE=s3 with CAPTURE_S3_AUTH=gcs-wi; a rolling job, never a window."""
+    if _scheduler is None:
+        return
+    import os
+    if os.environ.get("CAPTURE_STORE", "filesystem") != "s3":
+        return
+    from app.services import capture_token_secret
+    from app.services.capture_store import StoreConfigError
+    from app.services.capture_store_s3 import s3_config_from_env
+    try:
+        if s3_config_from_env().auth != "gcs-wi":
+            return
+    except StoreConfigError as e:
+        log.error("capture publisher not scheduled: capture store config is invalid: %s", e)
+        return
+    _scheduler.add_job(
+        capture_token_secret.tick,
+        trigger=IntervalTrigger(seconds=capture_token_secret.TICK_INTERVAL_SECONDS),
+        id="capture_tokens",
+        name="Capture store token publisher",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    log.info("Scheduled capture_tokens (every %ds)", capture_token_secret.TICK_INTERVAL_SECONDS)
 
 
 def _register_epss_refresher() -> None:

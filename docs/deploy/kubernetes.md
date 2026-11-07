@@ -191,12 +191,14 @@ gcloud iam service-accounts add-iam-policy-binding $GSA --project=$P \
   --role=roles/iam.workloadIdentityUser \
   --member="serviceAccount:$P.svc.id.goog[constellus/backend]"
 
-# 2. signBlob on ITSELF only. Not roles/iam.serviceAccountTokenCreator, which can
-#    also mint access and ID tokens.
-gcloud iam roles create captureSignBlobOnly --project=$P --stage=GA \
-  --title="Capture signBlob only" --permissions=iam.serviceAccounts.signBlob
+# 2. signBlob and getAccessToken on ITSELF only. Not roles/iam.serviceAccountTokenCreator:
+#    that role also grants ID tokens, signJwt and implicit delegation. This one holds
+#    only the two permissions the backend uses.
+gcloud iam roles create captureSelfCredentials --project=$P --stage=GA \
+  --title="Capture self credentials" \
+  --permissions=iam.serviceAccounts.signBlob,iam.serviceAccounts.getAccessToken
 gcloud iam service-accounts add-iam-policy-binding $GSA --project=$P \
-  --role=projects/$P/roles/captureSignBlobOnly --member="serviceAccount:$GSA"
+  --role=projects/$P/roles/captureSelfCredentials --member="serviceAccount:$GSA"
 
 # 3. Bucket rights, for each of the four buckets (uniform bucket-level access on).
 gcloud storage buckets add-iam-policy-binding gs://<bucket> \
@@ -206,13 +208,43 @@ gcloud storage buckets add-iam-policy-binding gs://<bucket> \
 - **The signer's rights are the ceiling of every URL it signs.** A worker URL can do no
   more than the backend could do on that one object with that one method. Removing the
   backend's bucket roles, or its signBlob binding, revokes every outstanding URL.
+- **Why getAccessToken.** The backend mints the worker and proxy tokens from a fresh
+  1 hour token that it obtains by impersonating its own service account
+  (`generateAccessToken`, scope `devstorage.read_write`). A downscoped token expires
+  exactly when its source does, and the metadata server returns its cached token until
+  about five minutes before expiry, so without a fresh source every downscoped token
+  would be nearly dead on arrival. The role is bound on the service account itself only.
 - **The worker and proxy HMAC service accounts (until 2b-3):**
   - The worker needs `storage.objects.list`, `get` and `delete` on the jobs bucket (a
     custom role).
-  - The proxy needs `storage.objects.create` on the proxy-log bucket. It rewrites
-    `proxylog/<id>.jsonl` several times per capture, and GCS documents that overwriting
-    an object also needs `storage.objects.delete`. Not yet verified here: the 2b-0 lab
-    spike checks it.
+  - The proxy needs `storage.objects.create` on the proxy-log bucket (a create-only
+    role such as objectCreator). The store writes append-only snapshot chunks
+    `proxylog/<id>/<seq>.jsonl`: each flush is a new key holding the whole log so far, the
+    backend reads the highest seq, and there are at most 64 per capture. Nothing is ever
+    overwritten, so no `storage.objects.delete` is needed.
+
+### Token Secret
+
+The backend mints one Credential Access Boundary token per consumer and publishes them in
+one Secret, from a rolling job that runs every 60 s (only under `CAPTURE_S3_AUTH=gcs-wi`).
+
+- **Secret.** `capture-store-tokens` (override with `CAPTURE_TOKEN_SECRET`), pre-created
+  empty by `secret-capture-tokens.yaml`. Keys `worker.json` and `proxy.json`; each value is
+  `{"token": "...", "expires_at": "<RFC 3339 UTC>", "boundary": "<sha256 hex>"}`. `boundary`
+  is not secret: it fingerprints the bucket and rules, so changing a bucket forces a re-mint.
+- **Boundaries.** The worker token is `roles/storage.objectViewer` on the jobs bucket,
+  restricted to objects under `jobs/` (and to listing that prefix). The proxy token is
+  `roles/storage.objectCreator` on the proxy-log bucket, restricted to `proxylog/`.
+- **RBAC.** `rbac-capture-tokens.yaml`: `get` + `patch` on that one Secret name. No create,
+  list, watch or delete.
+- **Refresh.** A consumer is re-minted when its published token has less than 30 minutes
+  left. A token with less than 10 minutes left is never published (the tick logs an error).
+- **A token cannot be revoked on its own.** Each lives up to 1 hour, and refreshing the
+  backend's credentials does not end it (lab). The backend's bucket roles are the ceiling
+  of every token, so removing them should cut all outstanding tokens off once IAM
+  propagates, at the cost of stopping the backend too (not lab-verified).
+- **Consumers.** The worker and proxy read this Secret from slice 2b-3. Until then it is
+  published and unused.
 
 ### Cluster side (the example overlay)
 
@@ -242,7 +274,8 @@ gcloud storage buckets add-iam-policy-binding gs://<bucket> \
   `restricted.googleapis.com` range under VPC Service Controls. Take the /30 from
   Google's Private Google Access docs ("Domain options"). The host
   name is unchanged, so TLS and the backend's endpoint pin hold. The backend needs no
-  rule: `backend-egress-world` already allows public addresses.
+  extra rule: `backend-egress-world` already allows public addresses, and STS
+  (`sts.googleapis.com`) and IAM Credentials are public Google APIs.
 
 ### Checks at deploy time
 
@@ -252,6 +285,15 @@ The following has not been verified on a GKE cluster:
   scoped only `devstorage` gets `403 ACCESS_TOKEN_SCOPE_INSUFFICIENT` from signBlob (lab
   finding). If the requested scope is not honoured, signing fails, the backend refuses to
   issue S3 jobs, and captures fail; nothing is ever run twice.
+- **`generateAccessToken` for itself works under Workload Identity.** The backend's log
+  should show `capture publisher: published for worker` within a minute of start. A
+  `source: <type>` error means the impersonation failed: check that the
+  `captureSelfCredentials` role holds `iam.serviceAccounts.getAccessToken` and is bound
+  on the service account itself, and that `iamcredentials.googleapis.com` is enabled.
+- **The STS exchange works.** No API enabling was needed in the lab. If the exchange
+  fails (log: `mint <consumer>: <type>`; the log carries the type only, so check the
+  project's enabled APIs), enable
+  `sts.googleapis.com`.
 - **Smoke test:** queue one capture. The first job runs the conditional-write probe, which
   PUTs a real signed claim URL twice and expects 2xx then 412. On failure the backend log
   names the step (`signer: <type>` or the probe's HTTP status), never a token or a URL.
