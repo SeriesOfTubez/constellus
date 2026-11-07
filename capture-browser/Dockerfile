@@ -12,8 +12,10 @@ COPY requirements.txt .
 
 # `--only-shell` installs chromium-headless-shell only (no full Chrome, no other
 # engines); `--with-deps` pulls just the OS libraries it links against. apt lists
-# are cleared in the same layer.
-RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt \
+# are cleared in the same layer. apt-get upgrade first applies Debian security updates
+# the pinned base predates (same rule as backend/Dockerfile).
+RUN apt-get update && apt-get upgrade -y \
+    && pip install --no-cache-dir --root-user-action=ignore -r requirements.txt \
     && playwright install --with-deps --only-shell chromium \
     && rm -rf /var/lib/apt/lists/* /root/.cache \
     && chmod -R a+rX /ms-playwright \

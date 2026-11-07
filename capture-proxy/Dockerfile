@@ -12,7 +12,11 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Shared spool group (gid 10050): the proxy writes per-capture logs to /proxylog
 # which the backend reads. See docs/architecture/capture-spool.md.
-RUN groupadd --gid 10050 capture-spool \
+# apt-get upgrade applies Debian security updates the pinned base predates (Trivy gates
+# on them; same rule as backend/Dockerfile).
+RUN apt-get update && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10050 capture-spool \
     && useradd --uid 10001 --create-home --shell /bin/false --groups capture-spool capture-proxy \
     && mkdir /proxylog \
     && chown 10001:10050 /proxylog \
