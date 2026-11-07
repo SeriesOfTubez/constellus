@@ -407,13 +407,89 @@ def test_read_result_file_caps():
 # ── proxy log ────────────────────────────────────────────────────────────────
 
 
+def _list_plog(stub, *names, prefix=None, **kw):
+    prefix = prefix or f"proxylog/{ID}/"
+    stub.add_response("list_objects_v2", _listing(*(f"{prefix}{n}" for n in names), **kw),
+                      {"Bucket": "b-proxylog", "Prefix": prefix})
+
+
+def _get_plog(stub, name, data, length=None):
+    stub.add_response("get_object", {"Body": _body(data), "ContentLength": len(data) if length is None else length},
+                      {"Bucket": "b-proxylog", "Key": f"proxylog/{ID}/{name}"})
+
+
+def test_proxylog_max_chunks_matches_the_proxy():
+    import re
+    from pathlib import Path
+    src = Path(__file__).resolve().parents[3] / "capture-proxy" / "log_s3.py"
+    found = re.findall(r"^PROXYLOG_MAX_CHUNKS\s*=\s*(\d+)\b", src.read_text(), re.MULTILINE)
+    assert found == [str(m.PROXYLOG_MAX_CHUNKS)] == ["64"]
+
+
+def test_read_proxylog_takes_the_numerically_highest_chunk():
+    client = _client()
+    with Stubber(client) as stub:
+        _list_plog(stub, "1.jsonl", "10.jsonl", "2.jsonl", "9.jsonl")
+        _get_plog(stub, "10.jsonl", b"ten")  # a lexical max would pick 9
+        assert _store(client).read_proxylog(ID, 100) == (b"ten", False)
+        stub.assert_no_pending_responses()
+
+
+def test_read_proxylog_follows_a_paginated_listing():
+    client = _client()
+    with Stubber(client) as stub:
+        stub.add_response("list_objects_v2", _listing(f"proxylog/{ID}/3.jsonl", truncated=True, token="t"),
+                          {"Bucket": "b-proxylog", "Prefix": f"proxylog/{ID}/"})
+        stub.add_response("list_objects_v2", _listing(f"proxylog/{ID}/11.jsonl"),
+                          {"Bucket": "b-proxylog", "Prefix": f"proxylog/{ID}/", "ContinuationToken": "t"})
+        _get_plog(stub, "11.jsonl", b"x")
+        assert _store(client).read_proxylog(ID, 10) == (b"x", False)
+        stub.assert_no_pending_responses()
+
+
+@pytest.mark.parametrize("bad", [
+    "0.jsonl", "65.jsonl", "100.jsonl", "07.jsonl", "+5.jsonl", "-1.jsonl", "a.jsonl", "5.json", "5.jsonl.bak",
+    "5", ".jsonl", "5.jsonl/", "5/6.jsonl", "5.JSONL", " 5.jsonl", "٥.jsonl",
+])
+def test_read_proxylog_ignores_invalid_keys_and_never_reads_them(bad):
+    client = _client()
+    with Stubber(client) as stub:
+        _list_plog(stub, bad, "3.jsonl")
+        _get_plog(stub, "3.jsonl", b"three")  # the only valid key: it, and nothing else, is read
+        assert _store(client).read_proxylog(ID, 10) == (b"three", False)
+        stub.assert_no_pending_responses()
+
+
+def test_read_proxylog_with_only_invalid_keys_is_none_and_reads_nothing():
+    client = _client()
+    other_prefix_key = f"proxylog/{ID}.jsonl"  # the retired single-key shape: no fallback
+    with Stubber(client) as stub:
+        stub.add_response("list_objects_v2", _listing(other_prefix_key, f"proxylog/{ID}/0.jsonl",
+                                                      f"proxylog/{ID}/65.jsonl"),
+                          {"Bucket": "b-proxylog", "Prefix": f"proxylog/{ID}/"})
+        assert _store(client).read_proxylog(ID, 10) is None
+        stub.assert_no_pending_responses()  # reached: the listing was consumed; no get_object was queued
+
+
+def test_read_proxylog_accepts_chunk_64_as_the_highest():
+    client = _client()
+    with Stubber(client) as stub:
+        _list_plog(stub, "63.jsonl", "64.jsonl", "65.jsonl")
+        _get_plog(stub, "64.jsonl", b"last")
+        assert _store(client).read_proxylog(ID, 10) == (b"last", False)
+        stub.assert_no_pending_responses()
+
+
 def test_read_proxylog_truncation_and_missing():
     client = _client()
-    params = {"Bucket": "b-proxylog", "Key": f"proxylog/{ID}.jsonl"}
     with Stubber(client) as stub:
-        stub.add_response("get_object", {"Body": _body(b"a" * 9), "ContentLength": 9}, params)
-        stub.add_response("get_object", {"Body": _body(b"a" * 10), "ContentLength": 10}, params)
-        stub.add_response("get_object", {"Body": _body(b"a" * 25), "ContentLength": 25}, params)
+        _list_plog(stub, "1.jsonl")
+        _get_plog(stub, "1.jsonl", b"a" * 9)
+        _list_plog(stub, "1.jsonl")
+        _get_plog(stub, "1.jsonl", b"a" * 10)
+        _list_plog(stub, "1.jsonl")
+        _get_plog(stub, "1.jsonl", b"a" * 25)
+        _list_plog(stub, "1.jsonl")
         stub.add_client_error("get_object", "NoSuchKey")
         store = _store(client)
         assert store.read_proxylog(ID, 10) == (b"a" * 9, False)
@@ -421,6 +497,65 @@ def test_read_proxylog_truncation_and_missing():
         data, truncated = store.read_proxylog(ID, 10)
         assert len(data) == 10 and truncated is True
         assert store.read_proxylog(ID, 10) is None
+        stub.assert_no_pending_responses()
+
+
+def test_read_proxylog_empty_listing_is_none():
+    client = _client()
+    with Stubber(client) as stub:
+        _list_plog(stub)
+        assert _store(client).read_proxylog(ID, 10) is None
+        stub.assert_no_pending_responses()
+
+
+def test_read_proxylog_max_chunk_error_is_none_without_falling_back(caplog):
+    client = _client()
+    with Stubber(client) as stub, caplog.at_level(logging.WARNING):
+        _list_plog(stub, "1.jsonl", "2.jsonl")
+        stub.add_client_error("get_object", "AccessDenied")  # the only get queued: a fallback would break
+        assert _store(client).read_proxylog(ID, 10) is None
+        stub.assert_no_pending_responses()
+    assert "AccessDenied" in caplog.text and ID in caplog.text
+
+
+def test_read_proxylog_list_error_is_none_with_a_code_only_warning(caplog):
+    client = _client()
+    with Stubber(client) as stub, caplog.at_level(logging.WARNING):
+        stub.add_client_error("list_objects_v2", "AccessDenied")
+        assert _store(client).read_proxylog(ID, 10) is None
+        stub.assert_no_pending_responses()
+    assert "AccessDenied" in caplog.text
+
+
+def test_delete_proxylog_removes_every_key_under_the_prefix_and_nothing_else():
+    client = _client()
+    keys = [f"proxylog/{ID}/{n}" for n in ("1.jsonl", "2.jsonl", "0.jsonl", "07.jsonl", "x", "9/9.jsonl")]
+    with Stubber(client) as stub:
+        # the listing is scoped by the trailing-slash prefix, so another capture's keys are never returned
+        stub.add_response("list_objects_v2", _listing(*keys), {"Bucket": "b-proxylog", "Prefix": f"proxylog/{ID}/"})
+        for k in keys:
+            stub.add_response("delete_object", {}, {"Bucket": "b-proxylog", "Key": k})
+        _store(client).delete_proxylog(ID)
+        stub.assert_no_pending_responses()
+
+
+def test_delete_proxylog_list_error_warns_and_never_raises(caplog):
+    client = _client()
+    with Stubber(client) as stub, caplog.at_level(logging.WARNING):
+        stub.add_client_error("list_objects_v2", "AccessDenied")
+        _store(client).delete_proxylog(ID)
+        stub.assert_no_pending_responses()
+    assert "AccessDenied" in caplog.text
+
+
+def test_delete_proxylog_continues_past_a_failed_delete():
+    client = _client()
+    k1, k2 = f"proxylog/{ID}/1.jsonl", f"proxylog/{ID}/2.jsonl"
+    with Stubber(client) as stub:
+        stub.add_response("list_objects_v2", _listing(k1, k2), {"Bucket": "b-proxylog", "Prefix": f"proxylog/{ID}/"})
+        stub.add_client_error("delete_object", "AccessDenied")
+        stub.add_response("delete_object", {}, {"Bucket": "b-proxylog", "Key": k2})
+        _store(client).delete_proxylog(ID)
         stub.assert_no_pending_responses()
 
 

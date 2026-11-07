@@ -1,12 +1,21 @@
 """S3 mode of the capture proxy's per-capture log (planning#318 S1c).
 
-S3 has no append, so each capture's records are buffered in memory and the
-whole object `proxylog/<capture_id>.jsonl` is PUT (overwrite) about one second
-after the last record, immediately when the byte cap is reached, and on
-shutdown. The proxy's key is PUT-only on the proxylog bucket: this module calls
-`put_object` and nothing else. Nothing here may raise into the proxy: a failed
-PUT is logged (error code only, never credentials or the response body) and
-retried at the next record or at shutdown. stdout always has every record.
+S3 has no append, so each capture's records are buffered in memory and the log
+so far is PUT as a new SNAPSHOT chunk `proxylog/<capture_id>/<seq>.jsonl`
+(seq = 1, 2, 3, ...) about one second after the last record, immediately when
+the byte cap is reached, and on shutdown. A chunk is never overwritten (a
+create-only credential cannot, and GCS refuses it): every PUT ATTEMPT takes the
+next seq, even a failed one, because a failed PUT may still have landed. Each
+chunk holds the whole log up to that point, so the reader takes the highest seq
+and a failed middle write loses nothing. At most PROXYLOG_MAX_CHUNKS (64)
+chunks exist per capture; after that no PUT is attempted and later records go
+to stdout only. The last slot is reserved: debounced flushes stop at seq 63,
+and only the byte-cap flush or shutdown may write seq 64.
+
+This module calls `put_object` and nothing else. Nothing here may raise into
+the proxy: a failed PUT is logged (error code only, never credentials or the
+response body) and retried at the next record or at shutdown. stdout always has
+every record.
 
 Does not import `proxy`; `proxy` imports this lazily so filesystem mode never
 loads botocore.
@@ -32,6 +41,7 @@ DEBOUNCE_S = 1.0
 MAX_BUFFERS = 16
 BUFFER_TTL_S = 3900  # == proxy.MAX_CREDENTIAL_TTL_S (a test asserts)
 KEY_PREFIX = "proxylog/"
+PROXYLOG_MAX_CHUNKS = 64  # == capture_store_s3.PROXYLOG_MAX_CHUNKS in the backend (a backend test asserts)
 _WARNED_MAX = 256
 
 
@@ -115,6 +125,8 @@ class _Buffer:
     size: int = 0
     full: bool = False
     dirty: bool = False
+    next_seq: int = 1
+    capped: bool = False
     last: float = 0.0
     handle: asyncio.TimerHandle | None = None
     task: asyncio.Task | None = None
@@ -186,6 +198,8 @@ class S3LogSink:
         self._schedule(cid, immediate=False)
 
     def _schedule(self, cid: str, immediate: bool) -> None:
+        if not immediate and self._buffers[cid].next_seq >= PROXYLOG_MAX_CHUNKS:
+            return  # the last slot is for the byte-cap flush or close(); keep buffering
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -208,24 +222,33 @@ class S3LogSink:
         if buf.task is None or buf.task.done():
             buf.task = asyncio.get_running_loop().create_task(self._flush(cid))
 
-    async def _flush(self, cid: str) -> None:
+    async def _flush(self, cid: str, final: bool = False) -> None:
         buf = self._buffers.get(cid)
         if buf is None:
             return
         loop = asyncio.get_running_loop()
-        while buf.dirty:
+        # Records that arrive during a PUT keep the loop going; it must not take the reserved
+        # last slot unless this is the byte-cap flush or close().
+        while buf.dirty and (final or buf.full or buf.next_seq < PROXYLOG_MAX_CHUNKS):
             buf.dirty = False
             body = b"".join(buf.lines)
-            ok = await loop.run_in_executor(None, self._put, cid, body)
+            ok = await loop.run_in_executor(None, self._put, cid, buf, body)
             if not ok:
                 buf.dirty = True  # retried on the next add() or close()
                 break
 
-    def _put(self, cid: str, body: bytes) -> bool:
+    def _put(self, cid: str, buf: _Buffer, body: bytes) -> bool:
+        seq = buf.next_seq
+        if seq > PROXYLOG_MAX_CHUNKS:
+            if not buf.capped:
+                buf.capped = True
+                _err(f"proxy log for {cid} reached {PROXYLOG_MAX_CHUNKS} chunks; later records go to stdout only")
+            return True  # nothing to retry: the cap is final
+        buf.next_seq = seq + 1  # taken whether or not the PUT lands: a retry must be a new key
         try:
             self._c.put_object(
                 Bucket=self._bucket,
-                Key=f"{KEY_PREFIX}{cid}.jsonl",
+                Key=f"{KEY_PREFIX}{cid}/{seq}.jsonl",
                 Body=body,
                 ContentType="application/x-ndjson",
             )
@@ -240,7 +263,7 @@ class S3LogSink:
     def _flush_sync(self, cid: str) -> None:
         buf = self._buffers[cid]
         buf.dirty = False
-        if not self._put(cid, b"".join(buf.lines)):
+        if not self._put(cid, buf, b"".join(buf.lines)):
             buf.dirty = True
 
     def _evict(self, now: float) -> None:
@@ -265,7 +288,7 @@ class S3LogSink:
                 if buf.task is not None and not buf.task.done():
                     await buf.task
                 if buf.dirty:
-                    await self._flush(cid)
+                    await self._flush(cid, final=True)
             except Exception as exc:  # noqa: BLE001 - shutdown must finish
                 _err(f"proxy log flush at shutdown failed for {cid}: {type(exc).__name__}")
 

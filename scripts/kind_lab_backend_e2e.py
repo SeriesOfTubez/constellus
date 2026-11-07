@@ -149,7 +149,7 @@ def main():
     c = s3_client(os.environ["KIND_LAB_ENDPOINT"], os.environ["RUSTFS_ACCESS_KEY"], os.environ["RUSTFS_SECRET_KEY"])
     check(head_size(c, JOBS, f"jobs/{cap_id}.json") is None, "jobs/{id}.json is absent")
     check(not list_keys(c, RESULTS, f"results/{cap_id}/"), "nothing is left under results/{id}/")
-    check(head_size(c, PROXYLOG, f"proxylog/{cap_id}.jsonl") is None, "proxylog/{id}.jsonl is absent")
+    check(not list_keys(c, PROXYLOG, f"proxylog/{cap_id}/"), "nothing is left under proxylog/{id}/")
     size = head_size(c, IMAGES, f"images/{cap_id}.webp")
     check(size is not None, "images/{id}.webp is present")
     print(f"image_bytes={size}")

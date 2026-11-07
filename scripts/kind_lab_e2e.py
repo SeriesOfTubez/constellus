@@ -247,7 +247,10 @@ def main():
         if "res" not in cap:
             continue
         cid, res, problems = cap["id"], cap["res"], cap["problems"]
-        raw = get_body(c, PROXYLOG, f"proxylog/{cid}.jsonl")
+        # snapshot chunks proxylog/<cid>/<seq>.jsonl: the highest seq holds the whole log
+        chunks = [o["Key"] for o in c.list_objects_v2(Bucket=PROXYLOG, Prefix=f"proxylog/{cid}/").get("Contents", [])]
+        newest = max(chunks, key=lambda k: int(k.rsplit("/", 1)[1].split(".")[0]), default=None)
+        raw = get_body(c, PROXYLOG, newest) if newest else None
         recs = [json.loads(line) for line in (raw or b"").splitlines() if line.strip()]
         if not recs:
             problems.append("no proxy log")
