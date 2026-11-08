@@ -920,7 +920,7 @@ def test_build_proxy_s3_wires_the_sink(monkeypatch):
 
     import log_s3
 
-    monkeypatch.setattr(log_s3, "make_client", lambda cfg: MagicMock())
+    monkeypatch.setattr(log_s3, "make_client", lambda cfg, source=None: MagicMock())
     p = build_proxy_from_env(S3_ENV)
     assert isinstance(p.log_sink, log_s3.S3LogSink)
     assert p._log is not proxy_mod.emit_stdout

@@ -73,7 +73,8 @@ def test_idle_sleeps_for_the_poll_interval(env, monkeypatch):
 
 
 def test_drop_store_env_removes_only_the_store_variables(monkeypatch):
-    for k in ("CAPTURE_S3_SECRET_KEY", "CAPTURE_S3_ACCESS_KEY", "CAPTURE_S3_ENDPOINT"):
+    for k in ("CAPTURE_S3_SECRET_KEY", "CAPTURE_S3_ACCESS_KEY", "CAPTURE_S3_ENDPOINT", "CAPTURE_S3_AUTH",
+              "CAPTURE_S3_TOKEN_FILE", "CAPTURE_S3_BUCKET_RESULTS"):
         monkeypatch.setenv(k, "x")
     monkeypatch.setenv("CAPTURE_PROXY_URL", "http://proxy.example.test:3128")
     worker._drop_store_env()
@@ -89,6 +90,7 @@ def test_main_s3_drops_the_store_env_after_config_and_before_claiming(env, monke
 
     class _Cfg:
         bucket, netloc, allow_http = "b", "n", False
+        results_bucket, path_style = "r", True
 
     def fake_config():
         cfg_saw.append(os.environ.get("CAPTURE_S3_SECRET_KEY"))

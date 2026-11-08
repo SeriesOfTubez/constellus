@@ -106,18 +106,30 @@ def _run_capture(cid: str, job: dict) -> tuple[dict, bytes | None]:
         )
 
 
-def claim_next_s3(jobs, *, netloc: str, allow_http: bool, reported: set[str]) -> tuple[str, bytes] | None:
+def claim_next_s3(
+    jobs, *, netloc: str, allow_http: bool, reported: set[str], settled: set[str],
+    bucket: str, path_style: bool,
+) -> tuple[str, bytes] | None:
     """The conditional PUT of store.claim_put, sent with the job's store.claim_headers
-    (the signed precondition), is the claim (first PUT wins, later
-    ones get 412), so concurrent workers never both run one job. The delete is
-    cleanup only. A job without a valid claim URL or headers is skipped, never run: it is
-    reported once per id (`reported`) and left for the backend to expire; a failed
-    claim is likewise logged once per id."""
-    for cid in jobs.list_ids():
+    (the signed precondition), is the claim (first PUT wins, later ones get 412), so
+    concurrent workers never both run one job. The worker cannot delete: the backend
+    removes the job. A job without a valid claim URL or headers is skipped, never run: it
+    is reported once per id (`reported`) and left for the backend to expire; a failed
+    claim is likewise logged once per id.
+
+    `settled` (owned by the caller, like `reported`) holds ids this process WON or saw TAKEN.
+    The job object stays in the bucket until the backend deletes it, so without this every
+    poll would re-GET and re-claim it. It is pruned to the ids still listed; FAILED ids are
+    not settled and are retried on the next poll."""
+    ids = jobs.list_ids()
+    settled &= set(ids)
+    for cid in ids:
+        if cid in settled:
+            continue
         raw = jobs.get(cid)
         if raw is None:
             continue  # gone between list and get (ingested or swept)
-        store = store_s3.extract_store(raw, netloc, allow_http)
+        store = store_s3.extract_store(raw, netloc, allow_http, bucket=bucket, path_style=path_style)
         if store is None:
             if cid not in reported:
                 reported.add(cid)
@@ -127,11 +139,16 @@ def claim_next_s3(jobs, *, netloc: str, allow_http: bool, reported: set[str]) ->
                     flush=True,
                 )
             continue
-        if not store_s3.claim(store["claim_put"], store["claim_headers"], cid=cid, report=cid not in reported):
+        outcome = store_s3.claim(store["claim_put"], store["claim_headers"], cid=cid, report=cid not in reported)
+        if outcome == store_s3.CLAIM_TAKEN:
+            settled.add(cid)
+            continue  # lost the race: someone else's job
+        if outcome != store_s3.CLAIM_WON:
             reported.add(cid)  # a failure that persists (an expired URL, a skewed clock) is logged once, not every poll
-            continue  # lost the race, or the claim failed (logged inside)
+            continue  # the claim failed (logged inside)
+        settled.add(cid)
         print(f"capture-worker: {cid}: claimed", file=sys.stderr, flush=True)
-        jobs.delete(cid)  # cleanup; result ignored: the claim marker already makes the job ours alone
+        # No delete: the claim marker makes the job ours alone; the backend removes the job object.
         return cid, raw
     return None
 
@@ -154,8 +171,8 @@ def _upload_result(cid: str, store: dict, result: dict, image: bytes | None) -> 
     return True
 
 
-def process_s3(cid: str, raw: bytes, *, netloc: str, allow_http: bool) -> None:
-    store = store_s3.extract_store(raw, netloc, allow_http)
+def process_s3(cid: str, raw: bytes, *, netloc: str, allow_http: bool, bucket: str, path_style: bool) -> None:
+    store = store_s3.extract_store(raw, netloc, allow_http, bucket=bucket, path_style=path_style)
     if store is None:
         print(
             f"capture-worker: {cid}: invalid store object; no result can be uploaded",
@@ -164,7 +181,10 @@ def process_s3(cid: str, raw: bytes, *, netloc: str, allow_http: bool) -> None:
         )
         return
     try:
-        job = spool.validate_job(raw, cid, store="s3", store_netloc=netloc, allow_http=allow_http)
+        job = spool.validate_job(
+            raw, cid, store="s3", store_netloc=netloc, allow_http=allow_http,
+            store_bucket=bucket, store_path_style=path_style,
+        )
     except spool.InvalidJob as exc:
         print(f"capture-worker: {cid}: invalid job: {exc}", file=sys.stderr, flush=True)
         result, _ = spool.build_result(cid, error="invalid_job")
@@ -187,8 +207,9 @@ def _make_undumpable() -> None:
 
 
 def _drop_store_env() -> None:
-    """The store key can list/get/delete every queued job; Playwright and Chromium
-    inherit os.environ, so it goes before any browser starts."""
+    """The store key (and the access-file path) can list/get every queued job; Playwright and
+    Chromium inherit os.environ, so it all goes before any browser starts. This covers
+    CAPTURE_S3_AUTH, CAPTURE_S3_TOKEN_FILE and CAPTURE_S3_BUCKET_RESULTS too (all CAPTURE_S3_*)."""
     for name in [n for n in os.environ if n.startswith("CAPTURE_S3_")]:
         os.environ.pop(name, None)
 
@@ -226,10 +247,14 @@ def _main_s3() -> int:
     _drop_store_env()  # cfg holds what is still needed
     jobs = store_s3.S3Jobs(store_s3.make_client(cfg), cfg.bucket)
     reported: set[str] = set()  # jobs already reported as unclaimable, across polls
+    settled: set[str] = set()  # jobs this process won or saw taken: never re-fetched while listed
     last_error: str | None = None  # the listing error is printed once per change, not once per poll
     while True:
         try:
-            claimed = claim_next_s3(jobs, netloc=cfg.netloc, allow_http=cfg.allow_http, reported=reported)
+            claimed = claim_next_s3(
+                jobs, netloc=cfg.netloc, allow_http=cfg.allow_http, reported=reported, settled=settled,
+                bucket=cfg.results_bucket, path_style=cfg.path_style,
+            )
         except store_s3.StoreError as exc:
             if str(exc) != last_error:
                 last_error = str(exc)
@@ -241,7 +266,10 @@ def _main_s3() -> int:
             time.sleep(POLL_INTERVAL_S)
             continue
         cid, raw = claimed
-        process_s3(cid, raw, netloc=cfg.netloc, allow_http=cfg.allow_http)
+        process_s3(
+            cid, raw, netloc=cfg.netloc, allow_http=cfg.allow_http,
+            bucket=cfg.results_bucket, path_style=cfg.path_style,
+        )
         return 0  # one capture per process; the PID-1 supervisor starts the next
 
 

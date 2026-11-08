@@ -92,6 +92,13 @@ spec:
                   name: capture-store
                   key: CAPTURE_S3_PATH_STYLE
                   optional: true
+            # sigv4 (default) or gcs-wi (Bearer token read from a mounted file).
+            - name: CAPTURE_S3_AUTH
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_AUTH
+                  optional: true
             - name: CAPTURE_S3_BUCKET_PROXYLOG
               valueFrom:
                 configMapKeyRef:

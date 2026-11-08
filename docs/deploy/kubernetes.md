@@ -94,12 +94,15 @@ ingested it and the store is clean), `down --purge`.
   `CAPTURE_S3_INSECURE_HTTP` unset (the workloads refuse http without it). Put the
   non-secret settings in a ConfigMap named `capture-store` (the base reads the keys
   `CAPTURE_S3_ENDPOINT`, `CAPTURE_S3_BUCKET_JOBS`, `CAPTURE_S3_BUCKET_PROXYLOG`, and
-  optionally `_REGION`, `_PATH_STYLE`, `_INSECURE_HTTP`). Buckets are provisioned by
-  the operator; nothing here creates them.
+  `CAPTURE_S3_BUCKET_RESULTS`, and optionally `_REGION`, `_PATH_STYLE`, `_INSECURE_HTTP`,
+  `_AUTH`). Buckets are provisioned by the operator; nothing here creates them.
+  The worker requires `CAPTURE_S3_BUCKET_RESULTS` in S3 mode: it accepts a store URL
+  from a job only if it is on the store host (`CAPTURE_S3_ENDPOINT`) AND in that bucket.
 - **Three scoped keys**, one Secret each (`CAPTURE_S3_ACCESS_KEY`/`_SECRET_KEY`):
     - backend: list/get/put/delete on its four prefixes (jobs, results, proxylog, images);
-    - worker, `capture-store-worker`: list, get and delete on `jobs/` only (the delete
-      is its claim on a job);
+    - worker, `capture-store-worker`: list and get on `jobs/` only. The worker never
+      deletes: its claim is the conditional PUT of `claims/<id>`, and the backend deletes
+      jobs (on ingest, discard, invalid job, or timeout), in every mode;
     - proxy, `capture-store-proxy`: put on `proxylog/` only.
 
   The proxy HMAC key is a fourth Secret, `capture-proxy-key` (`CAPTURE_PROXY_KEY`,
@@ -158,7 +161,7 @@ ingested it and the store is clean), `down --purge`.
   queue timeout fails them; it never runs a job twice. The backend's store key
   therefore needs PUT, LIST and DELETE on `claims/` in the results bucket (the
   probe, the markers and the sweep of old markers; it never reads them). The
-  worker's key is unchanged: list, get and delete on the jobs bucket. The
+  worker's key needs only list and get on the jobs bucket. The
   Deployment keeps `Recreate`: it avoids two pod generations overlapping during a
   rollout, and the lab's `wait_browser_running` waits for exactly the expected
   number of live pods. The lab scales to two pods for `scripts/kind-lab.sh e2e
@@ -170,16 +173,17 @@ ingested it and the store is clean), `down --purge`.
 
 `CAPTURE_S3_AUTH=gcs-wi` runs the backend on GCS with no static key, under GKE Workload
 Identity (planning#322). The backend signs every URL a worker uses through IAM
-`signBlob`, as its own IAM service account. The worker and proxy **still use HMAC keys**
-until slice 2b-3, which moves them to short-lived tokens that the backend mints. They will
-never fetch a token from the metadata server themselves. The design and the startup checks
+`signBlob`, as its own IAM service account. The worker and proxy are keyless too: they
+read short-lived, downscoped tokens that the backend mints, from a mounted file. They have
+no Google identity and never reach the metadata server. The design and the startup checks
 are in "Keyless GCS" in [capture-spool.md](../architecture/capture-spool.md).
 
 `deploy/k8s/examples/gcs-wi/` is an example overlay to copy. Every `<...>` value is yours.
 
 ### GCP side (before applying)
 
-Use one IAM service account for the backend, and separate ones for the worker and the proxy.
+Use one IAM service account, for the backend. The worker and proxy need none: their
+access is the downscoped token the backend mints.
 
 ```bash
 P=<project>; GSA=<backend-gsa>@$P.iam.gserviceaccount.com
@@ -214,11 +218,12 @@ gcloud storage buckets add-iam-policy-binding gs://<bucket> \
   exactly when its source does, and the metadata server returns its cached token until
   about five minutes before expiry, so without a fresh source every downscoped token
   would be nearly dead on arrival. The role is bound on the service account itself only.
-- **The worker and proxy HMAC service accounts (until 2b-3):**
-  - The worker needs `storage.objects.list`, `get` and `delete` on the jobs bucket (a
-    custom role).
-  - The proxy needs `storage.objects.create` on the proxy-log bucket (a create-only
-    role such as objectCreator). The store writes append-only snapshot chunks
+- **What the worker and proxy tokens can do** (set by the backend, nothing to grant on
+  their side):
+  - The worker token holds `storage.objects.list` and `get` on the jobs bucket (it never
+    deletes).
+  - The proxy token holds `storage.objects.create` on the proxy-log bucket (create-only,
+    as objectCreator). The store writes append-only snapshot chunks
     `proxylog/<id>/<seq>.jsonl`: each flush is a new key holding the whole log so far, the
     backend reads the highest seq, and there are at most 64 per capture. Nothing is ever
     overwritten, so no `storage.objects.delete` is needed.
@@ -243,20 +248,31 @@ one Secret, from a rolling job that runs every 60 s (only under `CAPTURE_S3_AUTH
   backend's credentials does not end it (lab). The backend's bucket roles are the ceiling
   of every token, so removing them should cut all outstanding tokens off once IAM
   propagates, at the cost of stopping the backend too (not lab-verified).
-- **Consumers.** The worker and proxy read this Secret from slice 2b-3. Until then it is
-  published and unused.
+- **Consumers.** The worker and proxy run keyless and read only their own key, mounted from
+  this Secret as a directory with a per-key `items:` entry (`patch-capture.yaml`): the
+  worker gets `worker.json`, the proxy `proxy.json`, never the other. Never use `subPath`:
+  a subPath mount does not receive Secret updates, so the token would freeze and expire.
+  Each consumer checks the file on every request (re-reading it only when it changed) and
+  refuses a missing, expired or unparseable value: that request fails, one log line is
+  written per state change (`store access file: <state>`), and it never falls back to a
+  key, an environment value or the metadata server. A token within 30 s of expiry counts as
+  expired. The file is mounted mode 0444 because the pods run as uid 10001 with no fsGroup
+  (Secret files are root-owned); it holds only that pod's own short-lived token.
+  `CAPTURE_S3_TOKEN_FILE` names the path, is required under `gcs-wi` and must be unset under
+  `sigv4`.
 
 ### Cluster side (the example overlay)
 
 - **KSA annotation:** `iam.gke.io/gcp-service-account` on the `backend` ServiceAccount.
-- **No backend key:** the overlay deletes the backend's `CAPTURE_S3_ACCESS_KEY`/`_SECRET_KEY`
-  env (gcs-wi refuses static keys at startup). Don't create the Secret `capture-store-backend`.
+- **No keys:** the overlay deletes `CAPTURE_S3_ACCESS_KEY`/`_SECRET_KEY` from the backend,
+  worker and proxy (gcs-wi refuses static keys at startup). Don't create the Secrets
+  `capture-store-backend`, `capture-store-worker` or `capture-store-proxy`.
 - **`capture-store` ConfigMap:**
   - `CAPTURE_S3_AUTH=gcs-wi`;
   - `CAPTURE_S3_ENDPOINT=https://storage.googleapis.com`, exactly that;
   - `CAPTURE_S3_PATH_STYLE=true`;
   - no `CAPTURE_S3_PUBLIC_ENDPOINT`;
-  - `CAPTURE_S3_REGION=auto` for the HMAC worker and proxy.
+  - `CAPTURE_S3_REGION=auto` (nothing signs SigV4 under gcs-wi; the clients still want a value).
 - **Metadata egress, backend only.** The base's `backend-egress-world` excepts
   `169.254.0.0/16`, so the backend needs one narrow rule to reach the GKE metadata server.
   Per GKE's network-policy docs, the rule is:
@@ -265,7 +281,7 @@ one Secret, from a rolling job that runs every 60 s (only under `CAPTURE_S3_AUTH
     987 (`networkpolicy-metadata-legacy.yaml`).
 
   Keep the one that matches your dataplane. The browser/worker and proxy pods never get a
-  metadata rule: Chromium shares the worker's network namespace, so that rule would let a
+  metadata rule (they need none: they read a token file): Chromium shares the worker's network namespace, so that rule would let a
   compromised renderer mint tokens.
 - **Store egress for the browser and proxy pods.** `storage.googleapis.com` resolves into
   Google's large, changing address space, and NetworkPolicy has no FQDN rules. The example

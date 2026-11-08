@@ -1,7 +1,10 @@
 # capture-browser: headless Chromium worker (S3 mode). It never receives
 # CAPTURE_PROXY_KEY (the backend mints per-job proxy tokens) and never receives the
 # proxylog bucket. Secret capture-store-worker: CAPTURE_S3_ACCESS_KEY, CAPTURE_S3_SECRET_KEY
-# (list/get/delete on jobs/ only).
+# (list + get on jobs/ only: the worker never deletes, the backend deletes jobs). The
+# worker pins every store URL in a job to the store host AND the results bucket
+# (CAPTURE_S3_BUCKET_RESULTS). Under CAPTURE_S3_AUTH=gcs-wi the key entries are removed by
+# the overlay and the worker reads a token file instead (deploy/k8s/examples/gcs-wi).
 #
 # Chromium's own sandbox needs clone/unshare/chroot, which Docker's default seccomp
 # profile blocks. The profile (capture-browser/seccomp.json) must be installed on
@@ -104,11 +107,25 @@ spec:
                   name: capture-store
                   key: CAPTURE_S3_PATH_STYLE
                   optional: true
+            # sigv4 (default) or gcs-wi (Bearer token read from a mounted file).
+            - name: CAPTURE_S3_AUTH
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_AUTH
+                  optional: true
             - name: CAPTURE_S3_BUCKET_JOBS
               valueFrom:
                 configMapKeyRef:
                   name: capture-store
                   key: CAPTURE_S3_BUCKET_JOBS
+            # Required in S3 mode: store URLs in a job must be on the store host and
+            # in this bucket.
+            - name: CAPTURE_S3_BUCKET_RESULTS
+              valueFrom:
+                configMapKeyRef:
+                  name: capture-store
+                  key: CAPTURE_S3_BUCKET_RESULTS
             - name: CAPTURE_S3_ACCESS_KEY
               valueFrom:
                 secretKeyRef:

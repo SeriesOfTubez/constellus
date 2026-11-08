@@ -911,7 +911,8 @@ def build_proxy_from_env(env=os.environ) -> Proxy:
             cfg = log_s3.config_from_env(env)
         except log_s3.S3ConfigError as exc:
             raise SystemExit(f"capture-proxy: {exc}") from exc
-        sink = log_s3.S3LogSink(log_s3.make_client(cfg), cfg.bucket)
+        source = log_s3.make_source(cfg)
+        sink = log_s3.S3LogSink(log_s3.make_client(cfg, source), cfg.bucket, source=source)
         proxy = Proxy(key=key, limits=limits, log=make_s3_log(sink))
         proxy.log_sink = sink
         return proxy
