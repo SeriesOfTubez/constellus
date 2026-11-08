@@ -93,7 +93,7 @@ def publish_tokens(cfg, *, now: datetime | None = None, client=None, sa_dir: str
     try:
         status, body = k8s.request(c, "GET", base + path, headers=headers, label="Secret")
         if status == 404:
-            log.error("capture publisher: the token Secret (CAPTURE_TOKEN_SECRET) is missing in namespace %s; "
+            log.error("capture publisher: the publish target is missing in namespace %s; "
                       "the manifests pre-create it (planning#322); nothing published", namespace)
             return {}
         if status != 200:
@@ -152,7 +152,7 @@ def publish_tokens(cfg, *, now: datetime | None = None, client=None, sa_dir: str
             c, "PATCH", base + path, headers={**headers, "Content-Type": "application/merge-patch+json"},
             content=patch, label="Secret")
         if status == 409:
-            log.info("capture publisher: the token Secret changed under us; the next tick re-reads")
+            log.info("capture publisher: the publish target changed under us; the next tick re-reads")
             return {**outcomes, **{k: "conflict" for k in expiries}}
         if status != 200:
             raise K8sApiError(f"PATCH Secret {namespace}/{name}: HTTP {status}")
