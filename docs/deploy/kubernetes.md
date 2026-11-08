@@ -73,10 +73,11 @@ ingested it and the store is clean), `down --purge`.
   matches, so it cannot run against dev or the test database. State from before
   planning#327 used the name `constellus`: `up` refuses it; run
   `scripts/kind-lab.sh down --purge` once.
-- The lab buckets are `lab-jobs`, `lab-results`, `lab-proxylog`, `lab-images` (the
-  backend's) and `lab-e2e-results`, created by `up`. The host script `e2e` remains as
-  the capture-only check; it uses its own results bucket because the live backend's
-  ingest deletes any result, proxy log or job whose capture id it does not know.
+- The lab buckets are `lab-jobs`, `lab-results`, `lab-proxylog` and `lab-images`, created
+  by `up`. The host script `e2e` remains as the capture-only check. The worker pins store
+  URLs to its results bucket, so the script writes into `lab-results`, but under the
+  `e2e-results/` and `e2e-claims/` prefixes, which the live backend never scans (its ingest
+  deletes any result under `results/` whose capture id it does not know).
 - RustFS needs a writable `/logs` (it exits otherwise), so the lab gives it an
   `emptyDir` there; the rest of its root filesystem is read-only.
 - **CI: the `Kind Lab` workflow** (`.github/workflows/kind-lab.yml`) runs `up`,
