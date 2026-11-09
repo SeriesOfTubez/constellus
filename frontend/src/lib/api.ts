@@ -995,6 +995,35 @@ export type DiscoverySettings = {
   rediscovery_failed_retry_days: number
 }
 
+export type JobRun = {
+  id: string
+  job: string
+  started_at: string
+  finished_at: string
+  duration_seconds: number
+  finish_reason: string
+  items_selected: number
+  counts: Record<string, number>
+  error: string | null
+}
+
+export type JobStatus = {
+  job: string
+  cadence_minute: number
+  last_run: JobRun | null
+  recorded_since: string | null
+  missed_slots: string[]
+}
+
+export type JobsStatus = {
+  window_hours: number
+  jobs: JobStatus[]
+}
+
+export type JobSettings = {
+  run_history_days: number
+}
+
 export type EpssHistoryPoint = {
   week_start: string
   epss_score: number
