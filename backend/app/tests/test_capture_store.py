@@ -270,22 +270,41 @@ def test_read_proxylog_absent_is_none(store):
     assert store.read_proxylog(ID, 10) is None
 
 
+def _plog(store, seq=1):
+    """The raw proxylog name for this store: one file on the filesystem, snapshot chunks on S3."""
+    return f"{ID}.jsonl" if isinstance(store, FilesystemStore) else f"{ID}/{seq}.jsonl"
+
+
 def test_read_proxylog_truncated_flag(store, raw):
-    raw.put("proxylog", f"{ID}.jsonl", b"x" * 9)
+    raw.put("proxylog", _plog(store), b"x" * 9)
     assert store.read_proxylog(ID, 10) == (b"x" * 9, False)
-    raw.put("proxylog", f"{ID}.jsonl", b"x" * 10)
+    raw.put("proxylog", _plog(store), b"x" * 10)
     assert store.read_proxylog(ID, 10) == (b"x" * 10, True)
-    raw.put("proxylog", f"{ID}.jsonl", b"x" * 25)
+    raw.put("proxylog", _plog(store), b"x" * 25)
     data, truncated = store.read_proxylog(ID, 10)
     assert len(data) == 10 and truncated is True
 
 
 def test_delete_proxylog_is_quiet(store, raw):
     store.delete_proxylog(ID)
-    raw.put("proxylog", f"{ID}.jsonl", b"x")
-    assert raw.exists("proxylog", f"{ID}.jsonl")  # reached: there was something to delete
+    raw.put("proxylog", _plog(store), b"x")
+    assert raw.exists("proxylog", _plog(store))  # reached: there was something to delete
     store.delete_proxylog(ID)
-    assert not raw.exists("proxylog", f"{ID}.jsonl")
+    assert not raw.exists("proxylog", _plog(store))
+
+
+def test_s3_proxylog_reads_the_highest_chunk_and_delete_removes_them_all(store, raw):
+    if isinstance(store, FilesystemStore):
+        pytest.skip("snapshot chunks are the S3 layout; the filesystem keeps one file")
+    other = "22222222-2222-4222-8222-222222222222"
+    for seq, body in ((1, b"one"), (2, b"two"), (9, b"nine"), (10, b"ten")):
+        raw.put("proxylog", f"{ID}/{seq}.jsonl", body)
+    raw.put("proxylog", f"{other}/1.jsonl", b"other")
+    assert store.read_proxylog(ID, 100) == (b"ten", False)  # numeric max, not lexical
+    store.delete_proxylog(ID)
+    assert raw.get("proxylog", f"{ID}/10.jsonl") is None and raw.get("proxylog", f"{ID}/1.jsonl") is None
+    assert raw.get("proxylog", f"{other}/1.jsonl") == b"other"  # reached, and untouched
+    assert store.read_proxylog(ID, 100) is None
 
 
 def test_image_round_trip_and_deletes(store, raw):

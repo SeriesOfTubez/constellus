@@ -1,18 +1,22 @@
 # ── Stage 1: build Python deps ────────────────────────────────────────────────
-FROM python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f AS py-builder
+FROM python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54 AS py-builder
 WORKDIR /build
 COPY requirements.txt .
 RUN pip install --no-cache-dir --root-user-action=ignore --prefix=/install -r requirements.txt
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
-FROM python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f AS runtime
+FROM python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54 AS runtime
 WORKDIR /app
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Shared spool group (gid 10050): the proxy writes per-capture logs to /proxylog
 # which the backend reads. See docs/architecture/capture-spool.md.
-RUN groupadd --gid 10050 capture-spool \
+# apt-get upgrade applies Debian security updates the pinned base predates (Trivy gates
+# on them; same rule as backend/Dockerfile).
+RUN apt-get update && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10050 capture-spool \
     && useradd --uid 10001 --create-home --shell /bin/false --groups capture-spool capture-proxy \
     && mkdir /proxylog \
     && chown 10001:10050 /proxylog \

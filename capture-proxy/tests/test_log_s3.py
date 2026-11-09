@@ -44,12 +44,16 @@ def _rec(cid, n=0):
     return {"capture_id": cid, "host": f"h{n}.example.test", "n": n}
 
 
-def _expect_put(stub, cid, body):
+def _expect_put(stub, cid, body, seq=1):
     stub.add_response(
         "put_object",
         {},
-        {"Bucket": BUCKET, "Key": f"proxylog/{cid}.jsonl", "Body": body, "ContentType": CT},
+        {"Bucket": BUCKET, "Key": f"proxylog/{cid}/{seq}.jsonl", "Body": body, "ContentType": CT},
     )
+
+
+def _keys(client):
+    return [c.kwargs["Key"] for c in client.put_object.call_args_list]
 
 
 def _run(coro):
@@ -62,6 +66,7 @@ def _run(coro):
 def test_constants_match_the_proxy():
     assert log_s3.LOG_MAX_BYTES == proxy_mod.LOG_FILE_MAX_BYTES
     assert log_s3.BUFFER_TTL_S == proxy_mod.MAX_CREDENTIAL_TTL_S
+    assert log_s3.PROXYLOG_MAX_CHUNKS == 64  # the backend's reader has the same bound (a backend test asserts)
 
 
 GOOD_ENV = {"CAPTURE_S3_ENDPOINT": "https://s3.example.test", "CAPTURE_S3_BUCKET_PROXYLOG": "b"}
@@ -180,6 +185,7 @@ def test_unexpected_put_exception_never_escapes_and_is_retried(capsys):
     _run(go())
     assert client.put_object.call_count == 2
     assert client.put_object.call_args.kwargs["Body"] == _line(r1) + _line(r2)
+    assert _keys(client) == [f"proxylog/{A}/1.jsonl", f"proxylog/{A}/2.jsonl"]  # never the same key twice
     err = capsys.readouterr().err
     assert "proxy log upload failed for" in err and "RuntimeError" in err
 
@@ -236,7 +242,7 @@ def test_put_failure_is_logged_by_code_and_retried_with_everything(capsys):
 
     with Stubber(client) as stub:
         stub.add_client_error("put_object", "AccessDenied")
-        _expect_put(stub, A, _line(r1) + _line(r2))
+        _expect_put(stub, A, _line(r1) + _line(r2), seq=2)  # the failed attempt used seq 1
         _run(go())
         stub.assert_no_pending_responses()
     err = capsys.readouterr().err
@@ -300,7 +306,7 @@ def test_idle_buffers_are_evicted_after_the_ttl():
 
     with Stubber(client) as stub:
         _expect_put(stub, A, _line(r1))
-        _expect_put(stub, B, _line(_rec(B, 1)))
+        _expect_put(stub, B, _line(_rec(B, 1)))  # B has its own seq counter
         _run(go())
         stub.assert_no_pending_responses()
 
@@ -341,13 +347,151 @@ def test_make_s3_log_writes_stdout_and_the_sink(capsys):
     assert json.loads(capsys.readouterr().out.strip()) == rec
 
 
+# ── snapshot chunks ──────────────────────────────────────────────────────────
+
+CHUNK = log_s3.PROXYLOG_MAX_CHUNKS
+
+
+def test_successive_flushes_write_snapshot_chunks_1_2_3():
+    client = MagicMock()
+    recs = [_rec(A, n) for n in (1, 2, 3)]
+
+    async def go():
+        sink = log_s3.S3LogSink(client, BUCKET, debounce_s=0.02)
+        for r in recs:
+            sink.add(r)
+            await asyncio.sleep(0.15)
+            assert sink.pending() == 0
+
+    _run(go())
+    assert _keys(client) == [f"proxylog/{A}/{n}.jsonl" for n in (1, 2, 3)]  # reached: three PUTs
+    bodies = [c.kwargs["Body"] for c in client.put_object.call_args_list]
+    assert bodies == [_line(recs[0]), _line(recs[0]) + _line(recs[1]), b"".join(_line(r) for r in recs)]
+
+
+def test_debounced_flushes_stop_at_63_and_records_still_buffer():
+    client = MagicMock()
+
+    async def go():
+        sink = log_s3.S3LogSink(client, BUCKET, debounce_s=0.001)
+        for n in range(CHUNK + 6):
+            sink.add(_rec(A, n))
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        buf = sink._buffers[A]
+        assert len(_keys(client)) == CHUNK - 1  # reached: 1..63 were written
+        assert buf.next_seq == CHUNK
+        assert buf.dirty and len(buf.lines) == CHUNK + 6  # buffered, not written
+        assert sink.pending() == 1
+        await sink.close()  # close() takes the reserved slot
+        assert sink.pending() == 0
+
+    _run(go())
+    assert _keys(client) == [f"proxylog/{A}/{n}.jsonl" for n in range(1, CHUNK + 1)]
+    last = client.put_object.call_args.kwargs["Body"]
+    assert last.count(b"\n") == CHUNK + 6  # the final snapshot has every record
+
+
+def _at_slot(sink, seq, rec=None):
+    """A buffer for A that is next to write `seq`, holding one record."""
+    sink.add(rec or _rec(A, 1))
+    buf = sink._buffers[A]
+    buf.next_seq = seq
+    if buf.handle is not None:  # the first add() armed a debounce at the old seq
+        buf.handle.cancel()
+        buf.handle = None
+    return buf
+
+
+def test_byte_cap_flush_writes_the_reserved_last_slot():
+    client = MagicMock()
+    r1, r2 = _rec(A, 1), _rec(A, 2)
+    cap = len(_line(r1)) + len(_line(r2)) - 1
+
+    async def go():
+        sink = log_s3.S3LogSink(client, BUCKET, debounce_s=30, max_bytes=cap)
+        sink.add(r1)
+        sink._buffers[A].next_seq = CHUNK
+        sink.add(r2)  # crosses the byte cap: immediate flush
+        await asyncio.sleep(0.15)
+        assert sink.pending() == 0
+
+    _run(go())
+    assert _keys(client) == [f"proxylog/{A}/{CHUNK}.jsonl"]
+    assert client.put_object.call_args.kwargs["Body"] == _line(r1)
+
+
+def test_debounced_flush_does_not_take_the_reserved_slot_but_close_does():
+    client = MagicMock()
+
+    async def go():
+        sink = log_s3.S3LogSink(client, BUCKET, debounce_s=0.02)
+        buf = _at_slot(sink, CHUNK)
+        sink.add(_rec(A, 2))
+        await asyncio.sleep(0.2)
+        assert client.put_object.call_count == 0  # nothing written, though the window passed
+        assert buf.dirty and buf.handle is None
+        await sink.close()
+        assert sink.pending() == 0
+
+    _run(go())
+    assert _keys(client) == [f"proxylog/{A}/{CHUNK}.jsonl"]  # reached: close() wrote chunk 64
+    assert client.put_object.call_args.kwargs["Body"] == _line(_rec(A, 1)) + _line(_rec(A, 2))
+
+
+def test_nothing_is_attempted_past_the_cap_and_the_log_line_is_once_only(capsys):
+    client = MagicMock()
+
+    async def go():
+        sink = log_s3.S3LogSink(client, BUCKET, debounce_s=0.02)
+        _at_slot(sink, CHUNK)
+        await sink.close()  # writes 64
+        assert client.put_object.call_count == 1
+        for n in range(2, 6):
+            sink.add(_rec(A, n))
+            await asyncio.sleep(0.1)
+            await sink.close()
+        assert sink._buffers[A].next_seq == CHUNK + 1
+
+    _run(go())
+    assert _keys(client) == [f"proxylog/{A}/{CHUNK}.jsonl"]  # still only the one
+    err = capsys.readouterr().err
+    assert err.count(f"proxy log for {A} reached {CHUNK} chunks; later records go to stdout only") == 1
+    assert "AKIA" not in err
+
+
+def test_a_failed_put_at_the_reserved_slot_is_not_retried_as_65(capsys):
+    client = MagicMock()
+    client.put_object.side_effect = RuntimeError("boom")
+
+    async def go():
+        sink = log_s3.S3LogSink(client, BUCKET, debounce_s=30)
+        _at_slot(sink, CHUNK)
+        await sink.close()  # attempt 64 fails
+        assert client.put_object.call_count == 1 and sink.pending() == 1
+        await sink.close()  # would be attempt 65: refused
+        assert sink.pending() == 0
+
+    _run(go())
+    assert _keys(client) == [f"proxylog/{A}/{CHUNK}.jsonl"]
+    assert "reached 64 chunks" in capsys.readouterr().err
+
+
+def test_no_running_loop_flush_also_uses_chunk_keys():
+    client = MagicMock()
+    sink = log_s3.S3LogSink(client, BUCKET)
+    sink.add(_rec(A, 1))
+    sink.add(_rec(A, 2))
+    assert _keys(client) == [f"proxylog/{A}/1.jsonl", f"proxylog/{A}/2.jsonl"]
+
+
 # ── live (local S3) ──────────────────────────────────────────────────────────
 
 LIVE = os.environ.get("CAPTURE_S3_TEST_ENDPOINT")
 
 
 @pytest.mark.skipif(not LIVE, reason="CAPTURE_S3_TEST_ENDPOINT not set")
-def test_live_two_records_land_as_one_object():
+def test_live_two_records_land_as_snapshot_chunks():
     cfg = log_s3.config_from_env(
         {
             "CAPTURE_S3_ENDPOINT": LIVE,
@@ -365,15 +509,48 @@ def test_live_two_records_land_as_one_object():
         async def go():
             sink = log_s3.S3LogSink(log_s3.make_client(cfg), cfg.bucket, debounce_s=0.05)
             sink.add(r1)
+            await asyncio.sleep(0.5)  # chunk 1
             sink.add(r2)
-            await sink.close()
+            await sink.close()  # chunk 2
             assert sink.pending() == 0
 
         _run(go())
-        body = admin.get_object(Bucket=cfg.bucket, Key=f"proxylog/{A}.jsonl")["Body"].read()
-        assert body == _line(r1) + _line(r2)
+        keys = sorted(
+            o["Key"] for o in admin.list_objects_v2(Bucket=cfg.bucket, Prefix="proxylog/")["Contents"]
+        )
+        assert keys == [f"proxylog/{A}/1.jsonl", f"proxylog/{A}/2.jsonl"]
+        get = lambda k: admin.get_object(Bucket=cfg.bucket, Key=k)["Body"].read()  # noqa: E731
+        assert get(keys[0]) == _line(r1)
+        assert get(keys[1]) == _line(r1) + _line(r2)
     finally:
         for page in admin.get_paginator("list_objects_v2").paginate(Bucket=cfg.bucket):
             for obj in page.get("Contents", []):
                 admin.delete_object(Bucket=cfg.bucket, Key=obj["Key"])
         admin.delete_bucket(Bucket=cfg.bucket)
+
+
+def test_records_arriving_during_the_slot_63_put_do_not_take_the_reserved_slot():
+    client = MagicMock()
+    sink = None
+
+    def put_object(**kw):
+        if kw["Key"].endswith(f"/{CHUNK - 1}.jsonl"):
+            sink._buffers[A].lines.append(_line(_rec(A, 9)))  # a record lands mid-PUT
+            sink._buffers[A].dirty = True
+
+    client.put_object.side_effect = put_object
+
+    async def go():
+        nonlocal sink
+        sink = log_s3.S3LogSink(client, BUCKET, debounce_s=0.02)
+        _at_slot(sink, CHUNK - 1)
+        sink._schedule(A, immediate=False)
+        await asyncio.sleep(0.2)
+        assert _keys(client) == [f"proxylog/{A}/{CHUNK - 1}.jsonl"]  # reached: 63 written, 64 kept back
+        assert sink.pending() == 1
+        await sink.close()
+        assert sink.pending() == 0
+
+    _run(go())
+    assert _keys(client)[-1] == f"proxylog/{A}/{CHUNK}.jsonl"
+    assert client.put_object.call_args.kwargs["Body"].count(b"\n") == 2  # the final snapshot has the late record

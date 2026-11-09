@@ -90,6 +90,11 @@ _EGRESS: dict[str, tuple[str, str, str | None]] = {
         "THIRD_PARTY", "the in-cluster Kubernetes API (KUBERNETES_SERVICE_HOST from the pod env, never a user URL): "
         "one GET and one PATCH on the proxy-limits ConfigMap; no target ever sees the packet (planning#324)", None,
     ),
+    "k8s_incluster.py": (
+        "THIRD_PARTY", "the in-cluster Kubernetes API client shared by the ConfigMap and token-Secret writers "
+        "(KUBERNETES_SERVICE_HOST from the pod env, never a user URL); no target ever sees the packet "
+        "(planning#322 2b-2)", None,
+    ),
     "capture_store_s3.py": (
         "THIRD_PARTY", "the operator-configured object store (S3 API via botocore) that holds the capture spool, "
         "proxy log and images; a fixed endpoint from env, never a host we are pointed at (planning#318 S1b)", None,

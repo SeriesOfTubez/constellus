@@ -1,0 +1,34 @@
+# The backend publishes the downscoped capture tokens into one Secret and touches nothing else:
+# get + patch on that one name. No create (resourceNames cannot restrict it; the Secret is
+# pre-created by secret-capture-tokens.yaml), no list, no watch, no delete. The name must equal
+# CAPTURE_TOKEN_SECRET (default capture-store-tokens).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: backend-capture-tokens
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: constellus
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [capture-store-tokens]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: backend-capture-tokens
+  namespace: constellus
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: constellus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: backend-capture-tokens
+subjects:
+  - kind: ServiceAccount
+    name: backend
+    namespace: constellus
