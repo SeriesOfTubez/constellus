@@ -32,7 +32,10 @@ import {
   REDISCOVERY_BATCH_MIN, REDISCOVERY_BATCH_MAX, REDISCOVERY_REFRESH_MIN, REDISCOVERY_REFRESH_MAX,
   REDISCOVERY_FAILED_RETRY_MIN, REDISCOVERY_FAILED_RETRY_MAX, validateDiscoverySettings,
 } from "@/lib/discoverySettings"
-import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type CaptureSettings, type DigestSettings, type DigestSummary, type DiscoverySettings, type SystemStatus } from "@/lib/api"
+import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type CaptureSettings, type DigestSettings, type DigestSummary, type DiscoverySettings, type JobRun, type JobSettings, type JobsStatus, type SystemStatus } from "@/lib/api"
+import { useAuthStore } from "@/lib/auth"
+import { RUN_HISTORY_DAYS_MAX, RUN_HISTORY_DAYS_MIN, validateJobSettings } from "@/lib/jobRuns"
+import { JobRunsList, JobStatusRow } from "@/components/ScheduledJobsParts"
 
 type MonitoringPolicy = {
   id: string
@@ -1209,7 +1212,88 @@ export function DiscoverySettingsCard() {
   )
 }
 
+function JobRunsPanel({ job }: { job: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["jobs", "runs", job],
+    queryFn: () => api.get<JobRun[]>("/jobs/runs?job=" + encodeURIComponent(job) + "&limit=20"),
+  })
+  return <JobRunsList runs={data} isLoading={isLoading} />
+}
+
+export function ScheduledJobsCard() {
+  const qc = useQueryClient()
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const statusQ = useQuery({
+    queryKey: ["jobs", "status"],
+    queryFn: () => api.get<JobsStatus>("/jobs/status?hours=24"),
+    refetchInterval: 60_000,
+  })
+  const settingsQ = useQuery({
+    queryKey: ["settings", "jobs"],
+    queryFn: () => api.get<JobSettings>("/settings/jobs"),
+  })
+  const settings = settingsQ.data
+  const [days, setDays] = useState("")
+  useEffect(() => {
+    if (settings) setDays(String(settings.run_history_days))
+  }, [settings])
+
+  const num = (s: string) => (s.trim() === "" ? NaN : Number(s))
+  const draft: JobSettings = { run_history_days: num(days) }
+  const error = settings ? validateJobSettings(draft) : null
+  const dirty = settings !== undefined && draft.run_history_days !== settings.run_history_days
+  const save = useMutation({
+    mutationFn: () => api.put<JobSettings>("/settings/jobs", draft),
+    onSuccess: (next) => {
+      qc.setQueryData(["settings", "jobs"], next)
+      qc.invalidateQueries({ queryKey: ["settings", "jobs"] })
+      toast.success("Scheduled job settings saved")
+    },
+    onError: (e: Error) => toast.error(`Save failed: ${e.message}`),
+  })
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">Scheduled jobs</CardTitle>
+        <CardDescription className="text-xs">When the hourly background jobs last ran and how each run ended.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {statusQ.isError ? (
+          <p className="text-xs text-muted-foreground">Couldn&apos;t load the job history. Try again in a minute.</p>
+        ) : statusQ.isLoading || !statusQ.data ? <Skeleton className="h-28" /> : (
+          <div className="space-y-4">
+            {statusQ.data.jobs.map((j) => (
+              <div key={j.job} className="space-y-2">
+                <JobStatusRow status={j} windowHours={statusQ.data.window_hours} expanded={expanded === j.job}
+                  onToggle={() => setExpanded(expanded === j.job ? null : j.job)} />
+                {expanded === j.job && <JobRunsPanel job={j.job} />}
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="border-t pt-3 space-y-3">
+          {settingsQ.isLoading || !settings ? <Skeleton className="h-16" /> : (
+            <>
+              <div className="space-y-1">
+                <Label htmlFor="jobs-run-history-days" className="text-xs text-muted-foreground">Keep run history for (days)</Label>
+                <Input id="jobs-run-history-days" type="number" min={RUN_HISTORY_DAYS_MIN} max={RUN_HISTORY_DAYS_MAX} step={1}
+                  className="h-8 w-24 text-xs" value={days} onChange={(e) => setDays(e.target.value)} />
+                <p className="text-xs text-muted-foreground">Older runs are deleted once a day. 7–365 days.</p>
+              </div>
+              {error && <p className="text-xs text-destructive">{error}</p>}
+              <Button size="sm" className="h-8" aria-label="Save scheduled job settings"
+                disabled={!dirty || error !== null || save.isPending} onClick={() => save.mutate()}>Save</Button>
+            </>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function Settings() {
+  const isAdmin = useAuthStore().user?.role === "admin"
   const { data: status } = useQuery({
     queryKey: ["system-status"],
     queryFn: () => api.get<SystemStatus>("/system/status"),
@@ -1232,6 +1316,8 @@ export default function Settings() {
       <CaptureSettingsCard />
 
       <DiscoverySettingsCard />
+
+      {isAdmin && <ScheduledJobsCard />}
 
       <NotificationRulesCard />
 
