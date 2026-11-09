@@ -28,7 +28,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from app.core.database import SessionLocal
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.scan_template import ScanTemplate
-from app.services import ct_refresher, page_capture
+from app.services import ct_refresher, job_runs, page_capture
 from app.services import tenancy_enricher
 from app.services import tenancy_tls
 
@@ -79,6 +79,7 @@ def start() -> None:
     _register_capture_tokens()
     _register_capture_sweep()
     _register_rediscovery_tick()
+    _register_job_run_purger()
 
 
 def _seed_default_connectors() -> None:
@@ -458,19 +459,21 @@ def _register_capture_sweep() -> None:
         return
     _scheduler.add_job(
         _run_capture_sweep,
-        trigger=CronTrigger(minute=40, timezone="UTC"),
+        trigger=CronTrigger(minute=job_runs.CADENCE_MINUTE["capture_sweep"], timezone="UTC"),
         id="capture_sweep",
         name="Automatic page capture (hourly)",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
     )
-    log.info("Scheduled capture_sweep (hourly at :40 UTC)")
+    log.info("Scheduled capture_sweep (hourly at :%02d UTC)", job_runs.CADENCE_MINUTE["capture_sweep"])
 
 
 def _run_capture_sweep() -> None:
     try:
-        stats = page_capture.run_automatic_sweep()
+        stats = job_runs.run_recorded(
+            "capture_sweep", page_capture.run_automatic_sweep, job_runs.capture_outcome
+        )
         log.info("Automatic page capture complete — %s", stats)
     except Exception:
         log.error("Automatic page capture failed", exc_info=True)
@@ -487,23 +490,56 @@ def _register_rediscovery_tick() -> None:
         return
     _scheduler.add_job(
         _run_rediscovery_tick,
-        trigger=CronTrigger(minute=20, timezone="UTC"),
+        trigger=CronTrigger(minute=job_runs.CADENCE_MINUTE["rediscovery_tick"], timezone="UTC"),
         id="rediscovery_tick",
         name="Org discovery: rolling re-discovery (hourly)",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
     )
-    log.info("Scheduled rediscovery_tick (hourly at :20 UTC)")
+    log.info("Scheduled rediscovery_tick (hourly at :%02d UTC)", job_runs.CADENCE_MINUTE["rediscovery_tick"])
 
 
 def _run_rediscovery_tick() -> None:
     try:
         from app.services.org_discovery import rolling
-        result = rolling.run_rediscovery_tick()
+        result = job_runs.run_recorded(
+            "rediscovery_tick", rolling.run_rediscovery_tick, job_runs.rediscovery_outcome
+        )
         log.info("Org-discovery rolling re-discovery complete — %s", result)
     except Exception:
         log.error("Org-discovery rolling re-discovery failed", exc_info=True)
+
+
+def _register_job_run_purger() -> None:
+    """Delete job run history older than `jobs.run_history_days` (planning#329),
+    daily. First run ~210s after startup, staggered past the other daily jobs."""
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        _run_job_run_purge,
+        trigger=IntervalTrigger(hours=24),
+        id="job_run_purger",
+        name="Job run history daily retention",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=210),
+    )
+    log.info("Scheduled job_run_purger (every 24h; first run ~210s after start)")
+
+
+def _run_job_run_purge() -> None:
+    db = SessionLocal()
+    try:
+        deleted = job_runs.purge(db)
+        db.commit()
+        log.info("Job run history retention complete — %d run(s) deleted", deleted)
+    except Exception:
+        db.rollback()
+        log.error("Job run history retention failed", exc_info=True)
+    finally:
+        db.close()
 
 
 def _register_alert_digests() -> None:

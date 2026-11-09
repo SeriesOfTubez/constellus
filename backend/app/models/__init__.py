@@ -65,6 +65,7 @@ from app.models.scope_candidate import (
     EVENT_KINDS,
 )
 from app.models.entity_ingest_run import EntityIngestRun, INGEST_RUN_STATUSES
+from app.models.job_run import JobRun, JOB_RUN_FINISH_REASONS
 from app.models.chat import ChatConversation, ChatMessage
 from app.models.report import Report
 from app.models.http_redirect_hop import HttpRedirectHop
@@ -149,6 +150,7 @@ __all__ = [
     "ANCHOR_KINDS",
     "EVENT_KINDS",
     "EntityIngestRun",
+    "JobRun",
     "INGEST_RUN_STATUSES",
     "ChatConversation",
     "ChatMessage",
