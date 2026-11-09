@@ -529,6 +529,18 @@ DEFAULT_SWEEP_MAX_LOOKUP_FAILURES, SWEEP_MAX_LOOKUP_FAILURES_MIN, SWEEP_MAX_LOOK
 DEFAULT_SWEEP_RETRY_LOOKUP_DAYS, SWEEP_RETRY_LOOKUP_DAYS_MIN, SWEEP_RETRY_LOOKUP_DAYS_MAX = 1, 1, 7
 DEFAULT_SWEEP_RETRY_OTHER_DAYS, SWEEP_RETRY_OTHER_DAYS_MIN, SWEEP_RETRY_OTHER_DAYS_MAX = 7, 1, 90
 
+# planning#332: the keyless GCS store token is re-minted when the published one has less than this
+# left. Floor = PUBLISH_FLOOR_S (600) + one 60 s tick, so a published token never drifts below the
+# publish floor before it is replaced; ceiling is under the ~3599 s minted lifetime.
+STORE_ACCESS_REFRESH_BELOW_KEY = "capture.store_access_refresh_below_seconds"
+DEFAULT_STORE_ACCESS_REFRESH_BELOW_S, STORE_ACCESS_REFRESH_BELOW_MIN, STORE_ACCESS_REFRESH_BELOW_MAX = 1800, 660, 3000
+
+
+def store_access_refresh_below_s(db: Session) -> int:
+    return _bounded_int(
+        db, STORE_ACCESS_REFRESH_BELOW_KEY, DEFAULT_STORE_ACCESS_REFRESH_BELOW_S, STORE_ACCESS_REFRESH_BELOW_MIN, STORE_ACCESS_REFRESH_BELOW_MAX
+    )
+
 
 @dataclass(frozen=True)
 class SweepPacing:

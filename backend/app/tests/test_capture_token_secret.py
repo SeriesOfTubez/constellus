@@ -96,6 +96,7 @@ class Calls:
 
 
 def run(api, calls, sa, **kw):
+    kw.setdefault("refresh_below_s", 1800)
     return ts.publish_tokens(cfg(), now=NOW, client=api.client(), sa_dir=sa,
                              make_source=calls.make_source, mint=calls.mint, **kw)
 
@@ -275,7 +276,7 @@ def test_secret_name_override_and_validation(sa, monkeypatch):
 def test_bad_bucket_refuses_before_any_request(sa):
     api = FakeApi()
     with pytest.raises(StoreConfigError):
-        ts.publish_tokens(cfg(jobs="bad'bucket"), now=NOW, client=api.client(), sa_dir=sa,
+        ts.publish_tokens(cfg(jobs="bad'bucket"), refresh_below_s=1800, now=NOW, client=api.client(), sa_dir=sa,
                           make_source=Calls().make_source, mint=Calls().mint)
     assert api.requests == []
 
@@ -335,6 +336,7 @@ def test_tick_never_raises(monkeypatch, caplog, exc):
                  ("CAPTURE_S3_BUCKET_PROXYLOG", "proxylog-bucket"), ("CAPTURE_S3_BUCKET_IMAGES", "images-bucket")):
         monkeypatch.setenv(k, v)
     monkeypatch.setattr(ts, "publish_tokens", boom)
+    monkeypatch.setattr(ts, "_refresh_below_s", lambda: 1800)
     ts.tick()
     assert len(calls) == 1  # publish WAS reached
     assert any(r.levelno == logging.ERROR for r in caplog.records)
@@ -345,9 +347,39 @@ def test_tick_logs_the_k8s_message_but_nothing_for_other_errors(monkeypatch, cap
         raise RuntimeError(f"secret {FAKE_TOKEN}")
 
     monkeypatch.setattr(ts, "publish_tokens", boom)
+    monkeypatch.setattr(ts, "_refresh_below_s", lambda: 1800)
     monkeypatch.setattr("app.services.capture_store_s3.s3_config_from_env", lambda: cfg())
     ts.tick()
     assert "RuntimeError" in caplog.text and FAKE_TOKEN not in caplog.text
+
+
+def test_tick_passes_the_setting_through(monkeypatch):
+    seen = []
+    c = cfg()
+    monkeypatch.setattr("app.services.capture_store_s3.s3_config_from_env", lambda: c)
+    monkeypatch.setattr(ts, "_refresh_below_s", lambda: 2222)
+    monkeypatch.setattr(ts, "publish_tokens", lambda config, **kw: seen.append((config, kw)) or {})
+    ts.tick()
+    assert seen == [(c, {"refresh_below_s": 2222})]  # publish WAS reached, with the setting's value
+
+
+def test_refresh_below_s_is_required_keyword_only(sa):
+    with pytest.raises(TypeError):
+        ts.publish_tokens(cfg(), now=NOW, client=FakeApi().client(), sa_dir=sa)
+
+
+def test_the_argument_is_the_threshold_in_both_directions(sa):
+    data = {"worker.json": published("worker", expires_in=1200), "proxy.json": published("proxy", expires_in=1200)}
+    out = run(FakeApi(data=data), Calls(), sa, refresh_below_s=1800)
+    assert out == {"worker": "published", "proxy": "published"}
+    out = run(FakeApi(data=data), Calls(), sa, refresh_below_s=900)
+    assert out == {"worker": "fresh", "proxy": "fresh"}
+
+
+def test_remaining_equal_to_the_threshold_is_fresh(sa):
+    data = {"worker.json": published("worker", expires_in=1200), "proxy.json": published("proxy", expires_in=1200)}
+    assert run(FakeApi(data=data), Calls(), sa, refresh_below_s=1200) == {"worker": "fresh", "proxy": "fresh"}
+    assert run(FakeApi(data=data), Calls(), sa, refresh_below_s=1201) == {"worker": "published", "proxy": "published"}
 
 
 # ── scheduler registration ───────────────────────────────────────────────────

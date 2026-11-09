@@ -30,6 +30,8 @@ export const SWEEP_RETRY_LOOKUP_MIN = 1
 export const SWEEP_RETRY_LOOKUP_MAX = 7
 export const SWEEP_RETRY_OTHER_MIN = 1
 export const SWEEP_RETRY_OTHER_MAX = 90
+export const TOKEN_REFRESH_MIN = 660
+export const TOKEN_REFRESH_MAX = 3000
 export const UA_MAX_LEN = 256
 export const IMAGE_KIB_MIN = MAX_IMAGE_BYTES_MIN / 1024 // 64
 export const IMAGE_KIB_MAX = MAX_IMAGE_BYTES_MAX / 1024 // 8192
@@ -83,5 +85,7 @@ export function validateCaptureSettings(d: CaptureSettings): string | null {
     return `Retry after a snapshot-service failure must be a whole number from ${SWEEP_RETRY_LOOKUP_MIN} to ${SWEEP_RETRY_LOOKUP_MAX} days.`
   if (!inRange(d.sweep_retry_after_other_days, SWEEP_RETRY_OTHER_MIN, SWEEP_RETRY_OTHER_MAX))
     return `Retry after any other refusal must be a whole number from ${SWEEP_RETRY_OTHER_MIN} to ${SWEEP_RETRY_OTHER_MAX} days.`
+  if (!inRange(d.store_access_refresh_below_seconds, TOKEN_REFRESH_MIN, TOKEN_REFRESH_MAX))
+    return `The store access refresh time must be a whole number from ${TOKEN_REFRESH_MIN} to ${TOKEN_REFRESH_MAX} seconds.`
   return null
 }
