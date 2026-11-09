@@ -85,6 +85,8 @@ DEFAULTS = {
     "capture.sweep_max_consecutive_lookup_failures": "3",
     "capture.sweep_retry_after_lookup_days": "1",
     "capture.sweep_retry_after_other_days": "7",
+    # planning#332 - keyless GCS store token refresh threshold (read once per publisher tick).
+    "capture.store_access_refresh_below_seconds": "1800",
     # planning#320 - org re-discovery rolling tick pacing (read once per run).
     # Bounds live in app.services.org_discovery.pacing.
     "discovery.rediscovery_time_limit_seconds": "600",

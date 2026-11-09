@@ -984,6 +984,7 @@ export type CaptureSettings = {
   sweep_max_consecutive_lookup_failures: number
   sweep_retry_after_lookup_days: number
   sweep_retry_after_other_days: number
+  store_access_refresh_below_seconds: number
 }
 
 export type DiscoverySettings = {

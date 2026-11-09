@@ -173,6 +173,7 @@ class CaptureSettings(BaseModel):
     sweep_max_consecutive_lookup_failures: int
     sweep_retry_after_lookup_days: int
     sweep_retry_after_other_days: int
+    store_access_refresh_below_seconds: int
 
 
 class CaptureSettingsUpdate(BaseModel):
@@ -221,6 +222,9 @@ class CaptureSettingsUpdate(BaseModel):
     sweep_retry_after_other_days: int | None = Field(
         default=None, ge=page_capture.SWEEP_RETRY_OTHER_DAYS_MIN, le=page_capture.SWEEP_RETRY_OTHER_DAYS_MAX
     )
+    store_access_refresh_below_seconds: int | None = Field(
+        default=None, ge=page_capture.STORE_ACCESS_REFRESH_BELOW_MIN, le=page_capture.STORE_ACCESS_REFRESH_BELOW_MAX
+    )
 
     @field_validator("identifying_user_agent")
     @classmethod
@@ -251,6 +255,7 @@ def _capture_current(db: Session) -> CaptureSettings:
         sweep_max_consecutive_lookup_failures=pacing.max_consecutive_lookup_failures,
         sweep_retry_after_lookup_days=pacing.retry_after_lookup.days,
         sweep_retry_after_other_days=pacing.retry_after_other.days,
+        store_access_refresh_below_seconds=page_capture.store_access_refresh_below_s(db),
     )
 
 
@@ -293,6 +298,7 @@ def put_capture_settings(
         "sweep_max_consecutive_lookup_failures": page_capture.SWEEP_MAX_LOOKUP_FAILURES_KEY,
         "sweep_retry_after_lookup_days": page_capture.SWEEP_RETRY_LOOKUP_KEY,
         "sweep_retry_after_other_days": page_capture.SWEEP_RETRY_OTHER_KEY,
+        "store_access_refresh_below_seconds": page_capture.STORE_ACCESS_REFRESH_BELOW_KEY,
     }
     changes = {}
     for field, key in keys.items():

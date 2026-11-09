@@ -25,6 +25,7 @@ import {
   SWEEP_PAUSE_MIN, SWEEP_PAUSE_MAX, SWEEP_BACKOFF_MIN, SWEEP_BACKOFF_MAX,
   SWEEP_TIME_LIMIT_MIN, SWEEP_TIME_LIMIT_MAX, SWEEP_MAX_FAILURES_MIN, SWEEP_MAX_FAILURES_MAX,
   SWEEP_RETRY_LOOKUP_MIN, SWEEP_RETRY_LOOKUP_MAX, SWEEP_RETRY_OTHER_MIN, SWEEP_RETRY_OTHER_MAX,
+  TOKEN_REFRESH_MIN, TOKEN_REFRESH_MAX,
 } from "@/lib/captureSettings"
 import {
   REDISCOVERY_TIME_LIMIT_MIN, REDISCOVERY_TIME_LIMIT_MAX, REDISCOVERY_PAUSE_MIN, REDISCOVERY_PAUSE_MAX,
@@ -914,6 +915,7 @@ export function CaptureSettingsCard() {
   const [swMaxFail, setSwMaxFail] = useState("")
   const [swRetryLookup, setSwRetryLookup] = useState("")
   const [swRetryOther, setSwRetryOther] = useState("")
+  const [storeAccessRefresh, setStoreAccessRefresh] = useState("")
   useEffect(() => {
     if (!data) return
     setDays(String(data.browse_revisit_days))
@@ -932,6 +934,7 @@ export function CaptureSettingsCard() {
     setSwMaxFail(String(data.sweep_max_consecutive_lookup_failures))
     setSwRetryLookup(String(data.sweep_retry_after_lookup_days))
     setSwRetryOther(String(data.sweep_retry_after_other_days))
+    setStoreAccessRefresh(String(data.store_access_refresh_below_seconds))
   }, [data])
 
   const num = (s: string) => (s.trim() === "" ? NaN : Number(s))
@@ -952,6 +955,7 @@ export function CaptureSettingsCard() {
     sweep_max_consecutive_lookup_failures: num(swMaxFail),
     sweep_retry_after_lookup_days: num(swRetryLookup),
     sweep_retry_after_other_days: num(swRetryOther),
+    store_access_refresh_below_seconds: num(storeAccessRefresh),
   }
   const error = data ? validateCaptureSettings(draft) : null
   const dirty = data !== undefined && (
@@ -970,7 +974,8 @@ export function CaptureSettingsCard() {
     draft.sweep_time_limit_seconds !== data.sweep_time_limit_seconds ||
     draft.sweep_max_consecutive_lookup_failures !== data.sweep_max_consecutive_lookup_failures ||
     draft.sweep_retry_after_lookup_days !== data.sweep_retry_after_lookup_days ||
-    draft.sweep_retry_after_other_days !== data.sweep_retry_after_other_days
+    draft.sweep_retry_after_other_days !== data.sweep_retry_after_other_days ||
+    draft.store_access_refresh_below_seconds !== data.store_access_refresh_below_seconds
   )
   const save = useMutation({
     mutationFn: () => api.put<CaptureSettings>("/settings/capture", draft),
@@ -1091,6 +1096,12 @@ export function CaptureSettingsCard() {
                 <Input id="capture-sweep-retry-other" type="number" min={SWEEP_RETRY_OTHER_MIN} max={SWEEP_RETRY_OTHER_MAX} step={1}
                   className="h-8 w-24 text-xs" value={swRetryOther} onChange={(e) => setSwRetryOther(e.target.value)} />
               </div>
+            </div>
+            <div className="space-y-1 border-t pt-3">
+              <Label htmlFor="capture-token-refresh" className="text-xs text-muted-foreground">Refresh store tokens when less than (seconds) remain</Label>
+              <Input id="capture-token-refresh" type="number" min={TOKEN_REFRESH_MIN} max={TOKEN_REFRESH_MAX} step={1}
+                className="h-8 w-28 text-xs" value={storeAccessRefresh} onChange={(e) => setStoreAccessRefresh(e.target.value)} />
+              <p className="text-xs text-muted-foreground">Only used when captures are stored in Google Cloud Storage without keys. 660–3000 seconds.</p>
             </div>
             {error && <p className="text-xs text-destructive">{error}</p>}
             <Button size="sm" className="h-8" aria-label="Save page capture settings"

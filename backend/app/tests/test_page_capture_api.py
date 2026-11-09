@@ -222,7 +222,8 @@ _KEYS = (pc.REVISIT_DAYS_KEY, pc.USER_AGENT_MODE_KEY, pc.IDENTIFYING_UA_KEY, pc.
          pc.QUEUE_TIMEOUT_KEY, pc.IMAGE_KEEP_COUNT_KEY, pc.PROXY_CONNECT_TIMEOUT_KEY,
          pc.PROXY_IDLE_TIMEOUT_KEY, pc.PROXY_MAX_CONNECTIONS_KEY, pc.ARCHIVE_FRESHNESS_DAYS_KEY,
          pc.SWEEP_PAUSE_KEY, pc.SWEEP_LOOKUP_BACKOFF_KEY, pc.SWEEP_TIME_LIMIT_KEY,
-         pc.SWEEP_MAX_LOOKUP_FAILURES_KEY, pc.SWEEP_RETRY_LOOKUP_KEY, pc.SWEEP_RETRY_OTHER_KEY)
+         pc.SWEEP_MAX_LOOKUP_FAILURES_KEY, pc.SWEEP_RETRY_LOOKUP_KEY, pc.SWEEP_RETRY_OTHER_KEY,
+         pc.STORE_ACCESS_REFRESH_BELOW_KEY)
 
 
 @pytest.fixture
@@ -385,7 +386,7 @@ def test_modes_literal_matches_the_model():
 _SWEEP_DEFAULTS = {
     "sweep_pause_seconds": 2, "sweep_lookup_backoff_seconds": 60, "sweep_time_limit_seconds": 600,
     "sweep_max_consecutive_lookup_failures": 3, "sweep_retry_after_lookup_days": 1,
-    "sweep_retry_after_other_days": 7,
+    "sweep_retry_after_other_days": 7, "store_access_refresh_below_seconds": 1800,
 }
 
 
@@ -418,6 +419,7 @@ def test_settings_get_defaults_and_permissions(w, cap_settings):
     {"sweep_max_consecutive_lookup_failures": 0}, {"sweep_max_consecutive_lookup_failures": 11},
     {"sweep_retry_after_lookup_days": 0}, {"sweep_retry_after_lookup_days": 8},
     {"sweep_retry_after_other_days": 0}, {"sweep_retry_after_other_days": 91},
+    {"store_access_refresh_below_seconds": 659}, {"store_access_refresh_below_seconds": 3001},
     {"identifying_user_agent": "café"}, {"identifying_user_agent": "a" * 257}, {"browse_revisit_days": "x"},
 ])
 def test_settings_put_bounds_are_422_and_write_nothing(w, cap_settings, bad):
@@ -556,7 +558,7 @@ def test_sweep_pacing_settings_round_trip_and_audit(w, cap_settings):
            "sweep_max_consecutive_lookup_failures": 4, "sweep_retry_after_lookup_days": 2,
            "sweep_retry_after_other_days": 14}
     with SessionLocal() as s:
-        for k in _KEYS[10:]:
+        for k in _KEYS[10:16]:
             row = s.get(AppSetting, k)
             if row is not None:
                 s.delete(row)
@@ -573,3 +575,19 @@ def test_sweep_pacing_settings_round_trip_and_audit(w, cap_settings):
     hit = [c for c in changes if c.get("capture_sweep_pause_seconds") == {"from": 2, "to": 5}]
     assert hit and hit[0]["capture_sweep_retry_after_other_days"] == {"from": 7, "to": 14}
     assert len({k for k in hit[0] if k.startswith("capture_sweep_")}) == 6
+
+
+def test_store_access_refresh_setting_round_trip_audit_and_non_admin(w, cap_settings):
+    h = w.headers()
+    assert client.get(S, headers=h).json()["store_access_refresh_below_seconds"] == 1800
+    assert client.put(S, headers=w.headers(role=VIEWER), json={"store_access_refresh_below_seconds": 2400}).status_code == 403
+    assert client.get(S, headers=h).json()["store_access_refresh_below_seconds"] == 1800
+    r = client.put(S, headers=h, json={"store_access_refresh_below_seconds": 2400})
+    assert r.status_code == 200 and r.json()["store_access_refresh_below_seconds"] == 2400
+    assert client.get(S, headers=h).json()["store_access_refresh_below_seconds"] == 2400
+    with SessionLocal() as s:
+        assert pc.store_access_refresh_below_s(s) == 2400
+        changes = [x.detail.get("changes", {}) for x in
+                   s.query(AuditLog).order_by(AuditLog.occurred_at.desc()).limit(30).all() if x.detail]
+    # named without "token" so the audit redactor keeps the values (audit.SECRET_KEY_HINTS)
+    assert any(c.get("capture_store_access_refresh_below_seconds") == {"from": 1800, "to": 2400} for c in changes)

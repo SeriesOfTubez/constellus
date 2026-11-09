@@ -11,6 +11,7 @@ const ok: CaptureSettings = {
   proxy_idle_timeout_seconds: 30, proxy_max_connections: 256, archive_freshness_days: 7,
   sweep_pause_seconds: 2, sweep_lookup_backoff_seconds: 60, sweep_time_limit_seconds: 600,
   sweep_max_consecutive_lookup_failures: 3, sweep_retry_after_lookup_days: 1, sweep_retry_after_other_days: 7,
+  store_access_refresh_below_seconds: 1800,
 }
 const v = (o: Partial<CaptureSettings>) => validateCaptureSettings({ ...ok, ...o })
 
@@ -101,6 +102,15 @@ describe("validateCaptureSettings", () => {
       expect(v({ [k]: lo + 0.5 })).not.toBeNull()
       expect(v({ [k]: NaN })).not.toBeNull()
     }
+  })
+  it("checks the token refresh bounds", () => {
+    expect(v({ store_access_refresh_below_seconds: 1800 })).toBeNull()
+    expect(v({ store_access_refresh_below_seconds: 660 })).toBeNull()
+    expect(v({ store_access_refresh_below_seconds: 3000 })).toBeNull()
+    expect(v({ store_access_refresh_below_seconds: 659 })).not.toBeNull()
+    expect(v({ store_access_refresh_below_seconds: 3001 })).not.toBeNull()
+    expect(v({ store_access_refresh_below_seconds: 900.5 })).not.toBeNull()
+    expect(v({ store_access_refresh_below_seconds: NaN })).not.toBeNull()
   })
   it("cross-field: identifying needs a UA", () => {
     expect(v({ user_agent_mode: "identifying", identifying_user_agent: "" })).toMatch(/User-Agent/)
