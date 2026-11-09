@@ -4,10 +4,11 @@
 # signBlob + getAccessToken role on itself only, bucket roles) is set up first. See "Keyless GCS" in
 # docs/deploy/kubernetes.md.
 #
-# The worker and the proxy still use HMAC keys (Secrets capture-store-worker and
-# capture-store-proxy) until slice 2b-3. Only the backend is keyless here. The backend now
-# also mints their downscoped tokens and publishes them in the Secret capture-store-tokens
-# (secret-capture-tokens.yaml, rbac-capture-tokens.yaml); nothing reads it until 2b-3.
+# The worker and the proxy are keyless too (slice 2b-3): the backend mints their downscoped
+# tokens and publishes them in the Secret capture-store-tokens (secret-capture-tokens.yaml,
+# rbac-capture-tokens.yaml), and each pod mounts only its own key of it (patch-capture.yaml).
+# The Secrets capture-store-backend, capture-store-worker and capture-store-proxy are NOT
+# created in this overlay. Neither pod holds a Google identity or reaches the metadata server.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: constellus
@@ -21,6 +22,7 @@ resources:
   # - networkpolicy-metadata-legacy.yaml
 patches:
   - path: patch-backend.yaml
+  - path: patch-capture.yaml
 configMapGenerator:
   - name: capture-store
     literals:
@@ -28,9 +30,11 @@ configMapGenerator:
       # Exactly this, no slash: gcs-wi refuses anything else at startup.
       - CAPTURE_S3_ENDPOINT=https://storage.googleapis.com
       - CAPTURE_S3_PATH_STYLE=true
-      # The worker and proxy sign SigV4 with HMAC keys until 2b-3; GCS accepts `auto`.
+      # Nobody signs SigV4 in gcs-wi (the backend signs URLs through IAM, the worker and proxy
+      # send Bearer tokens), but the clients still want a region value: `auto`.
       - CAPTURE_S3_REGION=auto
       - CAPTURE_S3_BUCKET_JOBS=<jobs-bucket>
       - CAPTURE_S3_BUCKET_PROXYLOG=<proxylog-bucket>
+      # The worker pins store URLs to this bucket as well as the host.
       - CAPTURE_S3_BUCKET_RESULTS=<results-bucket>
       - CAPTURE_S3_BUCKET_IMAGES=<images-bucket>

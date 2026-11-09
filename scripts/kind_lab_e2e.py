@@ -3,15 +3,14 @@
 Plays the backend: creates the lab buckets, presigns two PUTs (result.json and
 screenshot.webp) for the host the WORKER uses (http://rustfs:9000), derives the
 proxy credential, and puts N jobs into the jobs bucket. Then it waits for each
-result.json, and checks the screenshot (WebP magic), that the worker's claim
-deleted the job object, and that the proxy wrote a log whose records all carry
+result.json, and checks the screenshot (WebP magic) and that the proxy wrote a log whose records all carry
 the capture id. With --count N it reports, per capture, the seconds from enqueue
 to result.json, plus the browser pod's restart count: the measure of the
 kubelet's restart back-off between one-page-per-container captures.
 
 Every job also carries `store.claim_put`: a presigned conditional PUT (If-None-Match: *, also sent as `store.claim_headers`)
-of claims/<cid> in the results bucket, which the worker requires. The check asserts that
-claims/<cid> exists for every capture. With --workers N (N >= 2) it also reads the
+of e2e-claims/<cid> in the results bucket, which the worker requires. The check asserts that
+the marker exists for every capture, then deletes the job itself (the worker never does). With --workers N (N >= 2) it also reads the
 capture-browser pods' logs and asserts each capture has EXACTLY ONE "capture-worker:
 <cid>: claimed" line across them and that every pod claimed at least one capture
 (planning#323: the claim race really ran). The kubelet keeps one container log per
@@ -43,9 +42,12 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 PUBLIC = "http://rustfs:9000"  # what the worker and the proxy use
-# The live backend's ingest discards and deletes any result it does not know, so this
-# host-driven check uses its OWN results bucket, which the backend never scans.
-RESULTS = "lab-e2e-results"
+# The worker pins every store URL to its results bucket (CAPTURE_S3_BUCKET_RESULTS), so this
+# check writes there too. The live backend's ingest discards and deletes any result it does not
+# know under results/ (and sweeps claims/), so this check uses key prefixes the backend never
+# scans: the worker pins the bucket, not the key.
+RESULTS = "lab-results"
+RESULTS_PREFIX, CLAIMS_PREFIX = "e2e-results/", "e2e-claims/"
 JOBS, PROXYLOG = "lab-jobs", "lab-proxylog"
 RESULT_TIMEOUT_S = 150
 BASE_TTL_S = 900
@@ -200,11 +202,11 @@ def main():
             "max_image_bytes": 2097152, "webp_qualities": [80, 60, 40],
             "user_agent_mode": "stock",
             "store": {
-                "result_put": presign(f"results/{cid}/result.json"),
-                "screenshot_put": presign(f"results/{cid}/screenshot.webp"),
+                "result_put": presign(f"{RESULTS_PREFIX}{cid}/result.json"),
+                "screenshot_put": presign(f"{RESULTS_PREFIX}{cid}/screenshot.webp"),
                 "claim_headers": {"If-None-Match": "*"},
                 "claim_put": signer.generate_presigned_url(
-                    "put_object", Params={"Bucket": RESULTS, "Key": f"claims/{cid}", "IfNoneMatch": "*"},
+                    "put_object", Params={"Bucket": RESULTS, "Key": f"{CLAIMS_PREFIX}{cid}", "IfNoneMatch": "*"},
                     ExpiresIn=exp - int(time.time()), HttpMethod="PUT",
                 ),
                 "expires": exp,
@@ -220,7 +222,7 @@ def main():
         cid = cap["id"]
         raw = None
         while time.monotonic() < deadline:
-            raw = get_body(c, RESULTS, f"results/{cid}/result.json")
+            raw = get_body(c, RESULTS, f"{RESULTS_PREFIX}{cid}/result.json")
             if raw is not None:
                 cap["secs"] = time.monotonic() - cap["t0"]
                 break
@@ -233,13 +235,14 @@ def main():
         res = json.loads(raw)
         if res.get("status") is None or res.get("error"):
             problems.append("status missing or error set")
-        shot = get_body(c, RESULTS, f"results/{cid}/screenshot.webp")
+        shot = get_body(c, RESULTS, f"{RESULTS_PREFIX}{cid}/screenshot.webp")
         if not (shot and shot[:4] == b"RIFF" and shot[8:12] == b"WEBP"):
             problems.append("screenshot is not WebP")
-        if not exists(c, RESULTS, f"claims/{cid}"):
-            problems.append("claims/<cid> marker missing (the claim path was not used)")
-        if exists(c, JOBS, f"jobs/{cid}.json"):
-            problems.append("job object still present (claim did not delete it)")
+        if not exists(c, RESULTS, f"{CLAIMS_PREFIX}{cid}"):
+            problems.append("claim marker missing (the claim path was not used)")
+        # The worker never deletes the job (planning#322 2b-3); the backend does, so this check,
+        # playing the backend, removes it.
+        c.delete_object(Bucket=JOBS, Key=f"jobs/{cid}.json")
         cap["res"], cap["problems"], cap["shot"] = res, problems, shot
 
     time.sleep(4)  # the proxy flushes its log object about once a second

@@ -34,6 +34,7 @@ COPY --from=py-builder /install /usr/local
 COPY ip_blocklist.py .
 COPY proxy.py .
 COPY log_s3.py .
+COPY store_auth.py .
 
 RUN python -m pip uninstall -y --root-user-action=ignore pip setuptools wheel
 

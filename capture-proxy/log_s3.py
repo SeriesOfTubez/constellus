@@ -12,6 +12,11 @@ chunks exist per capture; after that no PUT is attempted and later records go
 to stdout only. The last slot is reserved: debounced flushes stop at seq 63,
 and only the byte-cap flush or shutdown may write seq 64.
 
+Auth (CAPTURE_S3_AUTH): `sigv4` signs with the configured keys (or botocore's default chain).
+`gcs-wi` is for GCS with keyless deploys: the proxy's access is a backend-published, downscoped,
+create-only token on `proxylog/`, read per request through `store_auth` (a mounted file the
+kubelet swaps atomically); there are no keys, no env fallback and no metadata server.
+
 This module calls `put_object` and nothing else. Nothing here may raise into
 the proxy: a failed PUT is logged (error code only, never credentials or the
 response body) and retried at the next record or at shutdown. stdout always has
@@ -36,6 +41,8 @@ import botocore.session
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+import store_auth
+
 LOG_MAX_BYTES = 4 * 1024 * 1024  # == proxy.LOG_FILE_MAX_BYTES (a test asserts)
 DEBOUNCE_S = 1.0
 MAX_BUFFERS = 16
@@ -57,6 +64,8 @@ class S3LogConfig:
     secret_key: str | None
     path_style: bool
     bucket: str
+    auth: str = "sigv4"
+    access_file: str | None = None
 
 
 def config_from_env(env=os.environ) -> S3LogConfig:
@@ -83,6 +92,12 @@ def config_from_env(env=os.environ) -> S3LogConfig:
     bucket = (env.get("CAPTURE_S3_BUCKET_PROXYLOG") or "").strip()
     if not bucket:
         raise S3ConfigError("CAPTURE_S3_BUCKET_PROXYLOG is required when CAPTURE_STORE=s3")
+    try:
+        auth, access_file = store_auth.auth_from_env(
+            env, endpoint=endpoint, path_style=ps == "true", allow_http=insecure, has_keys=access is not None
+        )
+    except store_auth.AuthConfigError as exc:
+        raise S3ConfigError(str(exc)) from exc
     return S3LogConfig(
         endpoint=endpoint,
         region=env.get("CAPTURE_S3_REGION") or "us-east-1",
@@ -90,10 +105,24 @@ def config_from_env(env=os.environ) -> S3LogConfig:
         secret_key=secret,
         path_style=ps == "true",
         bucket=bucket,
+        auth=auth,
+        access_file=access_file,
     )
 
 
-def make_client(cfg: S3LogConfig):
+def make_source(cfg: S3LogConfig):
+    """The access-file reader for gcs-wi (None in sigv4). One per process: the client's hook and the
+    sink's pre-flight check must share it, so build it once and pass it to both."""
+    if cfg.auth != "gcs-wi":
+        return None
+    return store_auth.AccessFile(cfg.access_file, who="capture-proxy")
+
+
+def make_client(cfg: S3LogConfig, source=None):
+    if cfg.auth == "gcs-wi":
+        if source is None:
+            raise ValueError("gcs-wi needs the shared access-file reader from make_source(cfg)")
+        return store_auth.make_gcs_client(cfg.region, source)
     return botocore.session.get_session().create_client(
         "s3",
         endpoint_url=cfg.endpoint,
@@ -150,8 +179,10 @@ class S3LogSink:
         max_buffers: int = MAX_BUFFERS,
         ttl_s: float = BUFFER_TTL_S,
         clock=time.monotonic,
+        source=None,
     ) -> None:
         self._c = client
+        self._source = source
         self._bucket = bucket
         self._debounce_s = debounce_s
         self._max_bytes = max_bytes
@@ -238,6 +269,16 @@ class S3LogSink:
                 break
 
     def _put(self, cid: str, buf: _Buffer, body: bytes) -> bool:
+        if self._source is not None:
+            # Pre-flight, before a seq is taken. A seq is consumed per ATTEMPT because a failed PUT may
+            # have landed; a pre-flight refusal provably sent nothing, and a token outage would
+            # otherwise burn all 64 slots in about a minute of debounced retries. AccessFile already
+            # logs state changes, so no _err here. A refusal raised INSIDE put_object (the hook, e.g.
+            # on a botocore retry after a sent attempt) keeps the behaviour below: seq consumed.
+            try:
+                self._source.bearer()
+            except store_auth.AccessUnavailable:
+                return False
         seq = buf.next_seq
         if seq > PROXYLOG_MAX_CHUNKS:
             if not buf.capped:

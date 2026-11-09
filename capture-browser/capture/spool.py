@@ -91,10 +91,18 @@ def _int_in(value: object, lo: int, hi: int, what: str) -> int:
     return value
 
 
-def _same_store_host(url_netloc: str, store_netloc: str) -> bool:
-    """The URL's host must be the store's host, or a bucket's virtual-hosted subdomain of it."""
-    got, want = url_netloc.lower(), store_netloc.lower()
-    return got == want or got.endswith("." + want)
+def _in_store_bucket(parts, netloc: str, bucket: str, path_style: bool) -> bool:
+    """The URL must be in exactly this bucket on exactly this store. Compared on the RAW path
+    (never unquoted): a `%` in the first segment is refused outright, so `%2F` and friends cannot
+    smuggle a different bucket past the prefix check."""
+    got, want = parts.netloc.lower(), netloc.lower()  # host[:port]; userinfo is already refused
+    path = parts.path
+    if "%" in path[1:].split("/", 1)[0]:
+        return False
+    if path_style:
+        prefix = "/" + bucket + "/"
+        return got == want and path.startswith(prefix) and len(path) > len(prefix)
+    return got == bucket.lower() + "." + want and len(path) > 1
 
 
 # The only claim preconditions the worker will send: S3/RustFS honour If-None-Match,
@@ -103,14 +111,20 @@ def _same_store_host(url_netloc: str, store_netloc: str) -> bool:
 ALLOWED_CLAIM_HEADERS = frozenset({("If-None-Match", "*"), ("x-goog-if-generation-match", "0")})
 
 
-def validate_store(obj: object, netloc: str | None, allow_http: bool) -> dict:
+def validate_store(
+    obj: object, netloc: str | None, allow_http: bool, *, bucket: str | None = None, path_style: bool = True
+) -> dict:
     """Validate the optional `store` object of an S3-mode job (presigned PUT URLs).
 
     `claim_put` and `claim_headers` are required: without them the job cannot be claimed
     safely, so it is invalid. `claim_headers` must be exactly one (name, value) pair from
     ALLOWED_CLAIM_HEADERS (case-sensitive, string values).
 
-    When `netloc` is given every URL must point at exactly that host."""
+    When `netloc` is given every URL must point at exactly that store AND the results `bucket`
+    (path-style: host == netloc and path under /<bucket>/<key>; virtual-hosted: host ==
+    <bucket>.<netloc>). `bucket` is then required: omitting it is a programming error."""
+    if netloc is not None and not bucket:
+        raise ValueError("bucket is required when netloc is given")
     if not isinstance(obj, dict):
         raise InvalidJob("bad store")
     out: dict[str, Any] = {}
@@ -126,8 +140,8 @@ def validate_store(obj: object, netloc: str | None, allow_http: bool) -> dict:
             raise InvalidJob(f"bad store.{k}")
         if not parts.netloc or "@" in parts.netloc:
             raise InvalidJob(f"bad store.{k}")
-        if netloc is not None and not _same_store_host(parts.netloc, netloc):
-            raise InvalidJob(f"bad store.{k} host")
+        if netloc is not None and not _in_store_bucket(parts, netloc, bucket, path_style):
+            raise InvalidJob(f"bad store.{k} bucket")
         out[k] = url
     headers = obj.get("claim_headers")
     if not isinstance(headers, dict) or len(headers) != 1:
@@ -150,6 +164,8 @@ def validate_job(
     store: str = "filesystem",
     store_netloc: str | None = None,
     allow_http: bool = False,
+    store_bucket: str | None = None,
+    store_path_style: bool = True,
 ) -> dict:
     """Parse + validate job bytes read from `claimed/<file_id>.json` (or the S3 job)."""
     if store not in ("filesystem", "s3"):
@@ -223,7 +239,9 @@ def validate_job(
         raise InvalidJob("user_agent not allowed in stock mode")
     store_obj: dict | None = None
     if store == "s3":
-        store_obj = validate_store(job.get("store"), store_netloc, allow_http)
+        store_obj = validate_store(
+            job.get("store"), store_netloc, allow_http, bucket=store_bucket, path_style=store_path_style
+        )
     elif "store" in job:
         raise InvalidJob("store not allowed in filesystem mode")
     return {
