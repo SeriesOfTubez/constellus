@@ -30,6 +30,13 @@ def root_logging():
         root.removeHandler(h)
     root.setLevel(logging.NOTSET)
     yield root
+    # setup_db_logging() starts the writer thread and enables the handler
+    # (planning#328); neither may leak into later tests.
+    app_logging.stop_db_logging()
+    app_logging.db_handler.disable()
+    while not app_logging.db_handler.queue.empty():
+        app_logging.db_handler.queue.get_nowait()
+    app_logging.db_handler.take_dropped()
     for h in list(root.handlers):
         root.removeHandler(h)
     for h in saved_handlers:
