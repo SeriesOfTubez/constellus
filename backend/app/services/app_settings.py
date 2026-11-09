@@ -94,6 +94,8 @@ DEFAULTS = {
     "discovery.rediscovery_due_batch": "200",
     "discovery.rediscovery_refresh_interval_days": "7",
     "discovery.rediscovery_failed_retry_days": "1",
+    # planning#329 - days of job run history kept (bounds in app.services.job_runs).
+    "jobs.run_history_days": "90",
 }
 
 

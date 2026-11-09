@@ -127,6 +127,7 @@ class Permission(StrEnum):
     LOGS_CONFIGURE = "logs.configure"
     LOGS_DELETE = "logs.delete"
     AUDIT_READ = "audit.read"
+    JOBS_READ = "jobs.read"  # planning#329
     SYSTEM_READ = "system.read"
 
     # tags

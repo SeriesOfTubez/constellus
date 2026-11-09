@@ -17,6 +17,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import update
 
 from app.core.database import SessionLocal
+from app.models.job_run import JobRun
 from app.models.org_entity import OrgEntity
 from app.models.scope_candidate import ScopeCandidate
 from app.services import hosting_classifier as hc
@@ -364,7 +365,19 @@ def test_capture_sweep_is_registered_hourly_at_40(sched):
     assert job.name == "Automatic page capture (hourly)"
 
 
-def test_run_wrapper_logs_and_swallows_a_failure(monkeypatch, caplog):
+@pytest.fixture
+def clean_job_runs():
+    """The scheduler wrappers now record a job_runs row; remove what the test wrote."""
+    def _wipe():
+        with SessionLocal() as s:
+            s.query(JobRun).delete(synchronize_session=False)
+            s.commit()
+    _wipe()
+    yield
+    _wipe()
+
+
+def test_run_wrapper_logs_and_swallows_a_failure(monkeypatch, caplog, clean_job_runs):
     monkeypatch.setattr(rolling, "run_rediscovery_tick", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     with caplog.at_level("ERROR"):
         scheduler._run_rediscovery_tick()  # must not raise

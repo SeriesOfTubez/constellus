@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 
 from app.api import connectors, scans, findings, assets, auth, users, saml, targets, logs, tags
 from app.api import audit
+from app.api import jobs
 from app.api import claims
 from app.api import edges
 from app.api import engagements
@@ -145,6 +146,7 @@ app.include_router(edges.router, prefix="/api/edges", tags=["edges"])
 app.include_router(claims.router, prefix="/api/claims", tags=["claims"])
 app.include_router(hygiene.router, prefix="/api/hygiene", tags=["hygiene"])
 app.include_router(audit.router, prefix="/api/audit", tags=["audit"])
+app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
 app.include_router(engagements.router, prefix="/api/engagements", tags=["engagements"])
 app.include_router(entities.router, prefix="/api/entities", tags=["entities"])
 app.include_router(organizations.router, prefix="/api/organizations", tags=["organizations"])

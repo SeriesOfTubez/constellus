@@ -12,7 +12,7 @@ from app.core.database import get_db
 
 from app.services import aggressiveness as aggr
 from app.services import app_settings as svc
-from app.services import audit, page_capture
+from app.services import audit, job_runs, page_capture
 from app.services.org_discovery import pacing as discovery_pacing
 
 router = APIRouter()
@@ -389,3 +389,44 @@ def put_discovery_settings(
     if changes:
         audit.record_detail(request, **changes)
     return _discovery_current(db)
+
+
+# ── job run history retention (planning#329) ────────────────────────────────
+
+
+class JobsSettings(BaseModel):
+    run_history_days: int
+
+
+class JobsSettingsUpdate(BaseModel):
+    run_history_days: int | None = Field(
+        default=None, ge=job_runs.RUN_HISTORY_DAYS_MIN, le=job_runs.RUN_HISTORY_DAYS_MAX
+    )
+
+
+def _jobs_current(db: Session) -> JobsSettings:
+    return JobsSettings(run_history_days=job_runs.run_history_days(db))
+
+
+@router.get("/jobs", response_model=JobsSettings)
+def get_jobs_settings(
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.SETTINGS_READ)),
+):
+    return _jobs_current(db)
+
+
+@router.put("/jobs", response_model=JobsSettings)
+def put_jobs_settings(
+    data: JobsSettingsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.SETTINGS_UPDATE)),
+):
+    """Set how many days of scheduler run history are kept, audited old -> new."""
+    before = job_runs.run_history_days(db)
+    after = data.run_history_days if data.run_history_days is not None else before
+    if before != after:
+        svc.set_value(db, job_runs.RUN_HISTORY_DAYS_KEY, str(after))
+        audit.record_detail(request, jobs_run_history_days={"from": before, "to": after})
+    return _jobs_current(db)
