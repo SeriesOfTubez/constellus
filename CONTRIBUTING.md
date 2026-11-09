@@ -59,8 +59,7 @@ because it had never been decided and that ambiguity was its own bug class.
    discarded by the *next* step's rollback.
 
 Migration is incomplete and new instances should not be added: several analyzer
-helpers still commit sessions they do not own, and `core/logging.py`'s
-`DBLogHandler` commits once per log record in the scan hot path.
+helpers still commit sessions they do not own.
 
 ---
 

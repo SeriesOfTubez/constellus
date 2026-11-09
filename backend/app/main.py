@@ -67,6 +67,9 @@ async def lifespan(app: FastAPI):
     yield
     task.cancel()
     scheduler.shutdown()
+    # Last, so the scheduler's final lines are written (planning#328).
+    from app.core.logging import stop_db_logging
+    stop_db_logging()
 
 
 async def _log_cleanup_loop() -> None:
