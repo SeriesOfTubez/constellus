@@ -482,20 +482,76 @@ def test_filesystem_job_result_has_store_none():
 
 
 def test_validate_store_happy_path_returns_exactly_the_five_keys():
-    out = spool.validate_store({**_store(), "extra": 1}, NETLOC, False)
+    out = spool.validate_store({**_store(), "extra": 1}, NETLOC, False, bucket="res")
     assert out == _store()
     assert sorted(out) == ["claim_headers", "claim_put", "expires", "result_put", "screenshot_put"]
 
 
 def test_validate_store_host_compare_is_case_insensitive():
-    assert spool.validate_store(_store(), NETLOC.upper(), False)["expires"] == EXP
+    assert spool.validate_store(_store(), NETLOC.upper(), False, bucket="res")["expires"] == EXP
 
 
-def test_validate_store_accepts_a_bucket_subdomain_of_the_store_host_only():
-    virtual = _store(result_put=PUT_R.replace(NETLOC, "res." + NETLOC))  # virtual-hosted style
-    assert spool.validate_store(virtual, NETLOC, False)["result_put"] == virtual["result_put"]
-    with pytest.raises(spool.InvalidJob, match="host"):  # a look-alike host without the dot
-        spool.validate_store(_store(result_put=PUT_R.replace(NETLOC, "evil" + NETLOC)), NETLOC, False)
+def test_validate_store_accepts_the_results_bucket_in_both_addressing_styles():
+    virtual = _store(
+        result_put=f"https://res.{NETLOC}/results/{ID}/result.json?s=1",
+        screenshot_put=f"https://res.{NETLOC}/results/{ID}/screenshot.webp?s=1",
+        claim_put=f"https://res.{NETLOC}/claims/{ID}?s=1",
+    )
+    out = spool.validate_store(virtual, NETLOC, False, bucket="res", path_style=False)
+    assert out["result_put"] == virtual["result_put"]
+    path = spool.validate_store(_store(), NETLOC, False, bucket="res", path_style=True)
+    assert path["claim_put"] == PUT_C
+    # and neither style accepts the other's shape (the validate reached the bucket check)
+    with pytest.raises(spool.InvalidJob, match="bucket"):
+        spool.validate_store(virtual, NETLOC, False, bucket="res", path_style=True)
+    with pytest.raises(spool.InvalidJob, match="bucket"):
+        spool.validate_store(_store(), NETLOC, False, bucket="res", path_style=False)
+
+
+def test_validate_store_requires_a_bucket_when_netloc_is_given():
+    with pytest.raises(ValueError):
+        spool.validate_store(_store(), NETLOC, False)
+
+
+@pytest.mark.parametrize("field", ["result_put", "screenshot_put", "claim_put"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/other/results/x",  # wrong bucket
+        "/res-evil/x",  # prefix trick
+        "/res",  # no key
+        "/res/",  # nothing after the slash
+        "/res%2Fx/y",  # encoded separator in the first segment
+        "/%72es/x",  # encoded bucket name
+        "/",
+    ],
+)
+def test_validate_store_path_style_rejects_the_wrong_bucket_for_every_url(field, path):
+    with pytest.raises(spool.InvalidJob, match=f"bad store.{field} bucket"):
+        spool.validate_store(_store(**{field: f"https://{NETLOC}{path}?s=1"}), NETLOC, False, bucket="res")
+
+
+@pytest.mark.parametrize("field", ["result_put", "screenshot_put", "claim_put"])
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"https://evil.res.{NETLOC}/x",
+        f"https://res.{NETLOC}.evil/x",
+        f"https://{NETLOC}/x",  # the bare store host, no bucket
+        f"https://res.{NETLOC}",  # no path
+        f"https://res.{NETLOC}/",
+        f"https://res.{NETLOC}/%2Fx",
+        f"https://other.{NETLOC}/x",
+    ],
+)
+def test_validate_store_virtual_host_rejects_the_wrong_host_for_every_url(field, url):
+    good = {
+        "result_put": f"https://res.{NETLOC}/r", "screenshot_put": f"https://res.{NETLOC}/s",
+        "claim_put": f"https://res.{NETLOC}/c",
+    }
+    good[field] = url
+    with pytest.raises(spool.InvalidJob, match=f"bad store.{field} bucket"):
+        spool.validate_store(_store(**good), NETLOC, False, bucket="res", path_style=False)
 
 
 @pytest.mark.parametrize(
@@ -526,7 +582,7 @@ def test_validate_store_rejects(obj, allow_http):
     if isinstance(obj, dict):
         obj = {k: v for k, v in obj.items() if v is not _ABSENT}
     with pytest.raises(spool.InvalidJob):
-        spool.validate_store(obj, NETLOC, allow_http)
+        spool.validate_store(obj, NETLOC, allow_http, bucket="res")
 
 
 @pytest.mark.parametrize(
@@ -545,7 +601,7 @@ def test_validate_store_rejects(obj, allow_http):
 def test_validate_store_claim_put_is_required_and_validated(claim, why):
     obj = {k: v for k, v in _store(claim_put=claim).items() if v is not _ABSENT}
     with pytest.raises(spool.InvalidJob, match="claim_put"):
-        spool.validate_store(obj, NETLOC, False)
+        spool.validate_store(obj, NETLOC, False, bucket="res")
 
 
 @pytest.mark.parametrize(
@@ -566,12 +622,12 @@ def test_validate_store_claim_put_is_required_and_validated(claim, why):
 def test_validate_store_claim_headers_is_required_and_an_exact_allowed_pair(headers):
     obj = {k: v for k, v in _store(claim_headers=headers).items() if v is not _ABSENT}
     with pytest.raises(spool.InvalidJob, match="claim_headers"):
-        spool.validate_store(obj, NETLOC, False)
+        spool.validate_store(obj, NETLOC, False, bucket="res")
 
 
 @pytest.mark.parametrize("pair", [{"If-None-Match": "*"}, {"x-goog-if-generation-match": "0"}])
 def test_validate_store_accepts_each_allowed_claim_header_pair(pair):
-    out = spool.validate_store(_store(claim_headers=pair), NETLOC, False)
+    out = spool.validate_store(_store(claim_headers=pair), NETLOC, False, bucket="res")
     assert out["claim_headers"] == pair and out["claim_headers"] is not pair
 
 
@@ -582,8 +638,8 @@ def test_validate_store_http_allowed_only_with_the_flag():
         claim_put=PUT_C.replace("https", "http"),
     )
     with pytest.raises(spool.InvalidJob):
-        spool.validate_store(http, NETLOC, False)
-    assert spool.validate_store(http, NETLOC, True) == http
+        spool.validate_store(http, NETLOC, False, bucket="res")
+    assert spool.validate_store(http, NETLOC, True, bucket="res") == http
 
 
 def test_validate_store_without_netloc_skips_the_host_check():
@@ -592,13 +648,13 @@ def test_validate_store_without_netloc_skips_the_host_check():
 
 
 def test_s3_job_carries_the_store():
-    j = spool.validate_job(job(store=_store()), ID, store="s3", store_netloc=NETLOC)
+    j = spool.validate_job(job(store=_store()), ID, store="s3", store_netloc=NETLOC, store_bucket="res")
     assert j["store"] == _store() and j["url"] == "https://example.com/"
 
 
 def test_s3_job_without_store_is_invalid():
     with pytest.raises(spool.InvalidJob):
-        spool.validate_job(job(), ID, store="s3", store_netloc=NETLOC)
+        spool.validate_job(job(), ID, store="s3", store_netloc=NETLOC, store_bucket="res")
 
 
 def test_unknown_store_mode_is_a_programming_error():

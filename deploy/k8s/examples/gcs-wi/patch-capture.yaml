@@ -1,0 +1,78 @@
+# Worker (capture-browser) and proxy (capture-proxy) without an HMAC key (slice 2b-3).
+# Each pod reads its own downscoped token from the Secret capture-store-tokens, published by
+# the backend. gcs-wi refuses static keys, so the key entries from the base go, and the Secrets
+# capture-store-worker and capture-store-proxy are not created.
+#
+# Each pod mounts ONLY its own key (`items:`), never the other consumer's: the proxy cannot
+# read the worker's token or the reverse.
+#
+# The volume is mounted as a DIRECTORY, never with subPath: the kubelet refreshes a Secret
+# volume by swapping a symlink, and a subPath mount never receives Secret updates (the token
+# would freeze and expire within the hour). The consumer re-checks the file on every request.
+#
+# File mode: both pods run as uid/gid 10001 with no fsGroup, and Secret files are owned by
+# root, so the file must be readable by "other" (0400 would lock the consumer out). 0444 says
+# that outright instead of relying on the 0644 default. If you add an fsGroup to a pod, use
+# 0440 instead. Anything running as that uid in the pod can read the file; in the worker that
+# includes the browser process (its renderers are sandboxed and cannot). What it holds is
+# bounded: that pod's own downscoped token (worker: read on jobs/; proxy: create on
+# proxylog/), at most an hour old.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capture-browser
+  namespace: constellus
+spec:
+  template:
+    spec:
+      containers:
+        - name: capture-browser
+          env:
+            - name: CAPTURE_S3_ACCESS_KEY
+              $patch: delete
+            - name: CAPTURE_S3_SECRET_KEY
+              $patch: delete
+            - name: CAPTURE_S3_TOKEN_FILE
+              value: /var/run/capture-store-access/worker.json
+          volumeMounts:
+            - name: store-access
+              mountPath: /var/run/capture-store-access
+              readOnly: true
+      volumes:
+        - name: store-access
+          secret:
+            secretName: capture-store-tokens
+            defaultMode: 0444
+            items:
+              - key: worker.json
+                path: worker.json
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capture-proxy
+  namespace: constellus
+spec:
+  template:
+    spec:
+      containers:
+        - name: capture-proxy
+          env:
+            - name: CAPTURE_S3_ACCESS_KEY
+              $patch: delete
+            - name: CAPTURE_S3_SECRET_KEY
+              $patch: delete
+            - name: CAPTURE_S3_TOKEN_FILE
+              value: /var/run/capture-store-access/proxy.json
+          volumeMounts:
+            - name: store-access
+              mountPath: /var/run/capture-store-access
+              readOnly: true
+      volumes:
+        - name: store-access
+          secret:
+            secretName: capture-store-tokens
+            defaultMode: 0444
+            items:
+              - key: proxy.json
+                path: proxy.json

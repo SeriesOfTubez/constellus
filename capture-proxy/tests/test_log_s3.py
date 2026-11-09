@@ -554,3 +554,136 @@ def test_records_arriving_during_the_slot_63_put_do_not_take_the_reserved_slot()
     _run(go())
     assert _keys(client)[-1] == f"proxylog/{A}/{CHUNK}.jsonl"
     assert client.put_object.call_args.kwargs["Body"].count(b"\n") == 2  # the final snapshot has the late record
+
+
+# ── gcs-wi (planning#322 2b-3) ───────────────────────────────────────────────
+
+import time as _time  # noqa: E402
+from botocore.awsrequest import AWSResponse  # noqa: E402
+
+import store_auth  # noqa: E402
+
+TOK = "tok-A" + "x" * 40
+GCS = "https://storage.googleapis.com"
+
+
+def _gcs_env(path, **patch):
+    env = {
+        "CAPTURE_S3_ENDPOINT": GCS,
+        "CAPTURE_S3_BUCKET_PROXYLOG": BUCKET,
+        "CAPTURE_S3_AUTH": "gcs-wi",
+        "CAPTURE_S3_TOKEN_FILE": str(path),
+    }
+    env.update(patch)
+    return {k: v for k, v in env.items() if v is not None}
+
+
+def _write_access(path, token=TOK, ttl=3600):
+    exp = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(_time.time() + ttl))
+    path.write_text(json.dumps({"token": token, "expires_at": exp, "boundary": "b" * 64}))
+
+
+def test_gcs_config_ok(tmp_path):
+    f = tmp_path / "proxy.json"
+    cfg = log_s3.config_from_env(_gcs_env(f))
+    assert (cfg.auth, cfg.access_file) == ("gcs-wi", str(f))
+    assert log_s3.config_from_env(GOOD_ENV).auth == "sigv4"
+
+
+@pytest.mark.parametrize(
+    "patch, var",
+    [
+        ({"CAPTURE_S3_ACCESS_KEY": "a", "CAPTURE_S3_SECRET_KEY": "s"}, "CAPTURE_S3_ACCESS_KEY"),
+        ({"CAPTURE_S3_ENDPOINT": "https://s3.example.test"}, "CAPTURE_S3_ENDPOINT"),
+        ({"CAPTURE_S3_ENDPOINT": GCS + "/"}, "CAPTURE_S3_ENDPOINT"),
+        ({"CAPTURE_S3_PATH_STYLE": "false"}, "CAPTURE_S3_PATH_STYLE"),
+        ({"CAPTURE_S3_TOKEN_FILE": None}, "CAPTURE_S3_TOKEN_FILE"),
+        ({"CAPTURE_S3_TOKEN_FILE": "rel/proxy.json"}, "CAPTURE_S3_TOKEN_FILE"),
+        ({"CAPTURE_S3_AUTH": "bogus"}, "CAPTURE_S3_AUTH"),
+    ],
+)
+def test_gcs_config_refusals_name_the_variable(tmp_path, patch, var):
+    with pytest.raises(log_s3.S3ConfigError, match=var):
+        log_s3.config_from_env(_gcs_env(tmp_path / "p.json", **patch))
+
+
+def test_gcs_config_refuses_insecure_http(tmp_path):
+    env = _gcs_env(tmp_path / "p.json", CAPTURE_S3_ENDPOINT="http://storage.googleapis.com",
+                   CAPTURE_S3_INSECURE_HTTP="1")
+    with pytest.raises(log_s3.S3ConfigError):
+        log_s3.config_from_env(env)
+
+
+def test_sigv4_refuses_a_token_file():
+    with pytest.raises(log_s3.S3ConfigError, match="CAPTURE_S3_TOKEN_FILE"):
+        log_s3.config_from_env({**GOOD_ENV, "CAPTURE_S3_TOKEN_FILE": "/x/proxy.json"})
+
+
+def _spy_client(client, seen):
+    class _Raw:
+        def stream(self, *a, **k):
+            return iter(())
+
+        def read(self, *a, **k):
+            return b""
+
+    def spy(request, **kw):
+        seen.append((request.url, dict(request.headers)))
+        return AWSResponse(request.url, 200, {}, _Raw())
+
+    client.meta.events.register("before-send.s3", spy)
+
+
+def _gcs_sink(tmp_path, sink_source=None):
+    f = tmp_path / "proxy.json"
+    cfg = log_s3.config_from_env(_gcs_env(f))
+    source = log_s3.make_source(cfg)
+    client = log_s3.make_client(cfg, source)
+    seen = []
+    _spy_client(client, seen)
+    return f, source, client, seen, log_s3.S3LogSink(client, BUCKET, source=source)
+
+
+def test_preflight_unavailable_consumes_no_seq_then_recovers(tmp_path, capsys):
+    f, source, client, seen, sink = _gcs_sink(tmp_path)  # file does not exist
+    calls = []
+    real = source.bearer
+    source.bearer = lambda: (calls.append(1), real())[1]
+    sink.add(_rec(A, 1))  # no running loop: synchronous flush
+    assert calls, "pre-flight was never reached"
+    assert seen == []  # nothing sent
+    buf = sink._buffers[A]
+    assert buf.next_seq == 1 and buf.dirty
+    err = capsys.readouterr().err
+    assert "upload failed" not in err
+    assert err.count("store access file") == 1 and TOK not in err
+    _write_access(f)
+    sink.add(_rec(A, 2))
+    assert len(seen) == 1
+    url, headers = seen[0]
+    assert url.endswith(f"/{BUCKET}/proxylog/{A}/1.jsonl")
+    assert headers["Authorization"] == "Bearer " + TOK
+    assert "AWS4-HMAC-SHA256" not in " ".join(str(v) for v in headers.values())
+    assert sink._buffers[A].next_seq == 2 and not sink._buffers[A].dirty
+    assert TOK not in capsys.readouterr().err
+
+
+def test_in_hook_failure_after_a_good_preflight_consumes_the_seq(tmp_path, capsys):
+    f, source, client, seen, sink = _gcs_sink(tmp_path)
+    _write_access(f)
+    real = source.bearer
+    n = []
+
+    def once_then_gone():
+        if not n:
+            n.append(1)
+            return real()
+        raise store_auth.AccessUnavailable()
+
+    source.bearer = once_then_gone
+    sink.add(_rec(A, 1))
+    assert n, "pre-flight was never reached"
+    assert seen == []  # the hook refused before the transport
+    buf = sink._buffers[A]
+    assert buf.next_seq == 2 and buf.dirty  # attempt consumed its seq
+    assert "upload failed" in capsys.readouterr().err

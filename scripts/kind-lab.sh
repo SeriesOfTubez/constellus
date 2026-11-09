@@ -263,8 +263,8 @@ scale_browser_back() {
   wait_browser_running 1 || true
 }
 
-# Create, idempotently, every bucket the lab uses (the backend needs its four to exist;
-# lab-e2e-results belongs to the host-driven e2e check).
+# Create, idempotently, every bucket the lab uses (the backend needs its four to exist; the
+# host-driven e2e check writes under e2e-* prefixes in lab-results, the worker's pinned bucket).
 ensure_buckets() {
   start_pf rustfs 9000 /health
   trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
@@ -285,7 +285,7 @@ c = botocore.session.get_session().create_client(
     aws_secret_access_key=os.environ["RUSTFS_SECRET_KEY"],
     config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
 )
-for b in ("lab-jobs", "lab-results", "lab-proxylog", "lab-images", "lab-e2e-results"):
+for b in ("lab-jobs", "lab-results", "lab-proxylog", "lab-images"):
     try:
         c.create_bucket(Bucket=b)
     except ClientError as e:

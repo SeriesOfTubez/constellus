@@ -110,7 +110,7 @@ When `CAPTURE_STORE=s3` the job also carries
 `"store": {"result_put": "<presigned PUT URL>", "screenshot_put": "<presigned PUT URL>", "expires": <int>}`.
 It is present only in S3 mode, so today's filesystem worker never sees it (it
 reads known keys only). The worker requires it in S3 mode and refuses a
-filesystem-mode job that carries it. Each URL must be `https` (`http` only with `CAPTURE_S3_INSECURE_HTTP=1`), at most 4096 characters, carry no credentials, and point at the host of the worker's own `CAPTURE_S3_ENDPOINT` (or at a bucket's virtual-hosted subdomain of it). `expires` follows the `proxy_expires` rule and is the proxy credential's `exp`: the URLs expire with the job's credential. A job whose `store` object is invalid gets no result at all (the worker logs it and the row times out), because there is nowhere to upload one.
+filesystem-mode job that carries it. Each URL must be `https` (`http` only with `CAPTURE_S3_INSECURE_HTTP=1`), at most 4096 characters, carry no credentials, and point at the host of the worker's own `CAPTURE_S3_ENDPOINT` (or at a bucket's virtual-hosted subdomain of it) and into the results bucket (`CAPTURE_S3_BUCKET_RESULTS`, required for the worker in S3 mode). `expires` follows the `proxy_expires` rule and is the proxy credential's `exp`: the URLs expire with the job's credential. A job whose `store` object is invalid gets no result at all (the worker logs it and the row times out), because there is nowhere to upload one.
 
 ## Worker loop (capture-browser)
 
@@ -144,12 +144,12 @@ filesystem-mode job that carries it. Each URL must be `https` (`http` only with 
    non-zero worker exit or a failed wipe makes the supervisor exit 1, and the
    restart policy takes over.
 
-**On S3 (`CAPTURE_STORE=s3`):** the worker holds a key with list, get and delete on the jobs bucket and nothing else; it requires an explicit `CAPTURE_S3_ENDPOINT` and never a spool volume.
+**On S3 (`CAPTURE_STORE=s3`):** the worker holds a key with list and get on the jobs bucket and nothing else (under `gcs-wi`, a downscoped Bearer token read from a mounted file instead of a key); it requires an explicit `CAPTURE_S3_ENDPOINT` and never a spool volume.
 
 That key can read every queued job (each carries a proxy token and presigned PUT URLs), so the worker drops every `CAPTURE_S3_*` variable from its environment right after reading its configuration, before Playwright starts, and marks itself non-dumpable (`prctl(PR_SET_DUMPABLE, 0)`, both modes; it refuses to start if that fails on Linux) so Chromium, which runs as the same uid, cannot read `/proc/<pid>/environ` or ptrace it. Chromium itself is launched with an allowlisted environment (`capture/browser_env.py`), not the worker's.
 
 1. List `jobs/` and sort by name.
-2. GET the job, then claim it: PUT an empty object to `store.claim_put`, a presigned URL for `claims/<id>` in the results bucket with `If-None-Match: *` signed in. **The conditional PUT is the claim** (planning#323): the first PUT gets 2xx and wins, any later one gets 412, so any number of workers can poll one bucket and exactly one runs each job. The winner logs `capture-worker: <id>: claimed`, then DELETEs the job as cleanup (its result is ignored: the marker already makes the job its alone). A 412 means another worker won: move on silently. Any other claim failure (403, 5xx, a network error) is logged once per job id per process, never with the URL, and the job is skipped. A crash after the claim leaves no retry, like a crashed filesystem worker's `claimed/` file: the row times out. There is no `claimed/` on S3.
+2. GET the job, then claim it: PUT an empty object to `store.claim_put`, a presigned URL for `claims/<id>` in the results bucket with `If-None-Match: *` signed in. **The conditional PUT is the claim** (planning#323): the first PUT gets 2xx and wins, any later one gets 412, so any number of workers can poll one bucket and exactly one runs each job. The winner logs `capture-worker: <id>: claimed`. The worker never deletes the job, in any mode: the backend deletes it (on ingest, discard, invalid job, or timeout). A 412 means another worker won: move on silently. Any other claim failure (403, 5xx, a network error) is logged once per job id per process, never with the URL, and the job is skipped. A crash after the claim leaves no retry, like a crashed filesystem worker's `claimed/` file: the row times out. There is no `claimed/` on S3.
    - **Marker lifetime.** The backend removes a `claims/<id>` marker only once its claim URL must have expired, `QUEUE_TIMEOUT_MAX + CREDENTIAL_RUN_MARGIN_S + CLAIM_SKEW_S` (3600 + 300 + 300 s) after the marker was written. Earlier removal would let a slow worker claim the same job again.
    - **Fail closed.** A job without a valid `store.claim_put` is never run (reported once, left for the backend to expire). Before issuing any S3 job the backend proves the store honours `If-None-Match: *` (two conditional PUTs to a probe key, the second must get 412; the probe key is deleted); if the probe fails, no S3 job is issued. On a store that does not honour it, captures stop and the queue timeout fails them.
 3. Validate as above, plus the `store` object. An invalid job still gets its `invalid_job` result through `store.result_put`.
@@ -212,8 +212,7 @@ rendered an arbitrary page.
 - Copy the screenshot to `/captures/<id>.webp`.
 - Read `/proxylog/<id>.jsonl` (on S3: the highest-numbered chunk `proxylog/<id>/<seq>.jsonl`).
 - Then delete `results/<id>/`, the proxy log and the job (`jobs/<id>.json`). On the
-  filesystem the worker already removed its claim; on S3 the worker already deleted the job when it claimed it, so this
-  delete is the backstop.
+  filesystem the worker already removed its claim; on S3 this is the only delete of the job, the worker never deletes it.
 
 On S3 a result is visible only once `results/<id>/result.json` exists (the
 commit marker); its LastModified is the result's time. A `result.json` whose
@@ -360,7 +359,7 @@ Four Google tokens, never interchanged. (1) The signing token (scope `https://ww
 
 The backend's service account needs (a) a custom role holding ONLY `iam.serviceAccounts.signBlob` and `iam.serviceAccounts.getAccessToken`, granted on itself (not `roles/iam.serviceAccountTokenCreator`, which also grants ID tokens, signJwt and implicit delegation), and (b) its bucket rights. The signer's rights are the ceiling of every URL it signs, and removing them revokes outstanding URLs. A rolling job (every 60 s) re-mints a consumer's token when less than 30 minutes remain and refuses to publish one with less than 10 minutes. Deploying it (the GCP IAM setup, the KSA annotation, backend-only metadata egress, store egress, the token Secret) is in "Keyless GCS" in [docs/deploy/kubernetes.md](../deploy/kubernetes.md), with the example overlay `deploy/k8s/examples/gcs-wi/`.
 
-The claim URL signs `x-goog-if-generation-match: 0` (GCS ignores `If-None-Match`), and the job's `store.claim_headers` carries the header the worker must send. Once per process, `ensure_conditional_writes` PUTs a real signed claim URL twice (2xx, then 412) and refuses to issue jobs otherwise. That probe now uses a signed URL in `sigv4` mode too (signed for the backend's own endpoint, not the public one). The worker and proxy still use HMAC keys until slice 2b-3. That slice moves them to downscoped Bearer tokens that the backend mints and publishes, so neither ever holds a Google identity or reaches the metadata server (planning#322, 2b decisions).
+The claim URL signs `x-goog-if-generation-match: 0` (GCS ignores `If-None-Match`), and the job's `store.claim_headers` carries the header the worker must send. Once per process, `ensure_conditional_writes` PUTs a real signed claim URL twice (2xx, then 412) and refuses to issue jobs otherwise. That probe now uses a signed URL in `sigv4` mode too (signed for the backend's own endpoint, not the public one). The worker and proxy run keyless under `gcs-wi`: they send the downscoped Bearer tokens that the backend mints and publishes (unsigned client, `Authorization: Bearer`, only to `storage.googleapis.com`), read from `CAPTURE_S3_TOKEN_FILE`. Each request re-checks the file (stat, re-read only on change) and checks expiry; a missing, expired or unparseable file fails that request, logs one line per state change, and never falls back. Neither holds a Google identity or reaches the metadata server (planning#322, 2b decisions).
 
 Worker and proxy (S1c):
 
@@ -382,7 +381,7 @@ Worker and proxy (S1c):
 - **Buckets.** The backend never creates buckets; the operator provisions them.
 - **Transport.** https is required unless `CAPTURE_S3_INSECURE_HTTP=1`, which
   is for the test profile only.
-- **IAM shape.** Backend: list/get/put/delete on its four prefixes. Worker: list, get and delete on the jobs bucket (the delete is its claim). Proxy: put on the proxylog bucket. Nobody but the backend reads results or images. Users never receive store URLs; the backend streams images.
+- **IAM shape.** Backend: list/get/put/delete on its four prefixes. Worker: list and get on the jobs bucket (its claim is the conditional PUT; the backend deletes jobs). Proxy: put on the proxylog bucket. Nobody but the backend reads results or images. Users never receive store URLs; the backend streams images.
 - **RustFS test profile.** The `capture-s3-test` compose profile runs RustFS,
   pinned by digest, for the S3 conformance tests (and a CI job) only. It is
   never a production default and is never exposed beyond `127.0.0.1`: the
