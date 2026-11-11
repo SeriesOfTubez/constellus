@@ -4,25 +4,73 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   CONSTELLUS TOKEN SYSTEM
+   CONSTELLUS TOKEN SYSTEM — identity D, "Ink type + Tide colour" (planning#337)
    ───────────────────────────────────────────────────────────────────────────
-   THEMEABLE  (org branding)  ──  --brand, --brand-dim, --logo-glow
-              Applied at boot via CSS var override from app_settings.
-              --brand must come from the curated accent palette (Design Decisions).
+   THEMEABLE  (org branding)  ──  --brand, --brand-dim, --logo-glow, --link
+              (--primary and --ring mirror --brand). Applied at boot by
+              applyBranding() in lib/branding.ts from app_settings. --brand must
+              come from ACCENT_PALETTE: five options at OKLCH L 0.80 / C 0.10
+              whose hues sit 40° or more from every severity hue, so one dark
+              --brand-fg serves all of them.
 
-   LOCKED     (never themeable)  ──  severity palette · graphite surfaces · text
-              Severity vars carry semantic meaning; recolouring them breaks the
-              at-a-glance risk read that is the whole point of the product.
+   LOCKED     (never themeable)  ──  severity palette · slate surfaces · text ·
+              type · radius. Severity vars carry semantic meaning; recolouring
+              them breaks the at-a-glance risk read that is the whole point of
+              the product.
 
-   shadcn/Radix components consume the standard --background/--foreground/etc.
-   vars in the section below, which are mapped from the locked graphite tokens.
+   Naming: the identity sheet's "accent" is --brand here, its "muted" text is
+   --fg-muted and its "border" is --line, because shadcn's --accent / --muted /
+   --border are SURFACE vars that components consume as bg-accent / bg-muted /
+   border-border. shadcn/Radix components consume the standard
+   --background/--foreground/etc. vars in the last block, mapped from the
+   locked tokens.
+
+   Reference: Obsidian Design Decisions → Visual Identity; planning#337
+   comments 6788119357 (token sheet) and 6788819370 (slice-2 decisions).
    ═══════════════════════════════════════════════════════════════════════════ */
 
-@theme inline {
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
+/* ── Fonts: Geist + Geist Mono, self-hosted (OFL; provenance in public/fonts/README.md).
+   No font CDN at runtime. ─────────────────────────────────────────────────── */
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
 
+/* ── LOCKED: type and radius (Tailwind theme tokens) ──────────────────────── */
+@theme {
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Type scale 12 / 13 / 15 / 20: meta and chips · body and table cells ·
+     flyout title and brand · page title and verdict. text-xs (12) and
+     text-xl (20) are Tailwind's own values; nothing under 12. Hierarchy comes
+     from weight (400 / 500 / 600, verdict 700) and muted colour, not size. */
+  --text-sm: 13px;
+  --text-sm--line-height: 20px;
+  --text-base: 15px;
+  --text-base--line-height: 22px;
+
+  --tracking-title: -0.01em;
+
+  /* Radius 4 / 6 / 8: chips · controls · cards. Nested elements go one step
+     smaller. Bare `rounded` is the chip step. */
+  --radius: 4px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}
+
+@theme inline {
   --color-background:              var(--background);
   --color-foreground:              var(--foreground);
   --color-card:                    var(--card);
@@ -42,6 +90,17 @@
   --color-border:                  var(--border);
   --color-input:                   var(--input);
   --color-ring:                    var(--ring);
+  --color-link:                    var(--link);
+
+  /* Severity utilities (text-sev-critical, bg-sev-low/10, border-sev-clean …)
+     so components stop hand-rolling Tailwind reds that drift from the locked
+     hexes (planning#96, design-token item). */
+  --color-sev-critical:            var(--sev-critical);
+  --color-sev-high:                var(--sev-high);
+  --color-sev-medium:              var(--sev-medium);
+  --color-sev-low:                 var(--sev-low);
+  --color-sev-unknown:             var(--sev-unknown);
+  --color-sev-clean:               var(--sev-clean);
 
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up:   accordion-up 0.2s ease-out;
@@ -56,11 +115,13 @@
   to   { height: 0; }
 }
 
-/* ── THEMEABLE: org branding ─────────────────────────────────────────────── */
+/* ── THEMEABLE: org branding (defaults; applyBranding() overrides at boot) ── */
 :root {
-  --brand:     #8b7bf0;                  /* placeholder violet — clears all severity hues */
-  --brand-dim: rgba(139, 123, 240, 0.14);
-  --logo-glow: #b3a8ff;
+  --brand:     #66d0df;                    /* cyan, OKLCH (0.80, 0.10, 208°): 44° from Clean, 46° from Low */
+  --brand-fg:  #070b0c;                    /* text on the accent — every curated option is L 0.80 */
+  --brand-dim: rgba(102, 208, 223, 0.10);  /* accent at 10%: selected row, active-tab wash */
+  --logo-glow: #a3e3ec;                    /* accent lightened 40% toward white */
+  --link:      #7fd8e5;                    /* accent lightened 15%: link text, 12:1 on --bg */
 }
 
 /* ── LOCKED: severity palette ────────────────────────────────────────────── */
@@ -73,21 +134,22 @@
   --sev-clean:    #34d399;
 }
 
-/* ── LOCKED: graphite surfaces ───────────────────────────────────────────── */
+/* ── LOCKED: slate surfaces (OKLCH hue 208, C 0.008 — tinted toward the accent) */
 :root {
-  --surface-bg:        #0b0c0e;
-  --surface-panel:     #131417;
-  --surface-panel-2:   #17191d;
-  --surface-hover:     #1c1f24;
-  --surface-line:      #23262c;
-  --surface-line-soft: #1a1d22;
+  --bg:          #070b0c;
+  --surface:     #0e1313;   /* cards, panels, table */
+  --raised:      #151b1b;   /* popovers, inputs, secondary buttons */
+  --hover:       #1c2222;   /* row hover, muted surfaces */
+  --line:        #252a2b;   /* 1px borders */
+  --line-strong: #33393a;   /* emphasised borders, dividers under headers */
 }
 
-/* ── LOCKED: text scale ──────────────────────────────────────────────────── */
+/* ── LOCKED: text ────────────────────────────────────────────────────────── */
 :root {
-  --text-default: #e7e9ee;
-  --text-dim:     #9aa0ab;
-  --text-faint:   #6b7280;
+  --fg:       #e5edee;   /* 16.6:1 on --bg */
+  --fg-2:     #b8bfc0;   /* secondary text */
+  --fg-muted: #919a9c;   /* 6.9:1 — labels, meta, muted-foreground */
+  --fg-faint: #6a7375;   /* 4.1:1 — decoration only; never text that carries information */
 }
 
 /* ── shadcn / Radix component vars ───────────────────────────────────────────
@@ -96,35 +158,33 @@
    ─────────────────────────────────────────────────────────────────────────── */
 :root,
 .dark {
-  --radius: 0.5rem;
+  --background:             var(--bg);
+  --foreground:             var(--fg);
 
-  --background:             #0b0c0e;
-  --foreground:             #e7e9ee;
+  --card:                   var(--surface);
+  --card-foreground:        var(--fg);
 
-  --card:                   #131417;
-  --card-foreground:        #e7e9ee;
+  --popover:                var(--raised);
+  --popover-foreground:     var(--fg);
 
-  --popover:                #17191d;
-  --popover-foreground:     #e7e9ee;
+  --primary:                var(--brand);
+  --primary-foreground:     var(--brand-fg);
 
-  --primary:                #8b7bf0;
-  --primary-foreground:     #ffffff;
+  --secondary:              var(--raised);
+  --secondary-foreground:   var(--fg-2);
 
-  --secondary:              #17191d;
-  --secondary-foreground:   #9aa0ab;
+  --muted:                  var(--hover);
+  --muted-foreground:       var(--fg-muted);
 
-  --muted:                  #1c1f24;
-  --muted-foreground:       #9aa0ab;
+  --accent:                 var(--hover);
+  --accent-foreground:      var(--fg);
 
-  --accent:                 #1c1f24;
-  --accent-foreground:      #e7e9ee;
-
-  --destructive:            #f04267;
+  --destructive:            var(--sev-critical);
   --destructive-foreground: #ffffff;
 
-  --border:                 #23262c;
-  --input:                  #17191d;
-  --ring:                   #8b7bf0;
+  --border:                 var(--line);
+  --input:                  var(--raised);
+  --ring:                   var(--brand);
 }
 
 @layer base {
@@ -133,5 +193,8 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+  h1, h2, h3 {
+    letter-spacing: var(--tracking-title);
   }
 }

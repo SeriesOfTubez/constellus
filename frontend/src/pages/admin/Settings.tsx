@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Loader2, Plus, Trash2, Clock, Bell, Gauge, AlertTriangle, Palette } from "lucide-react"
 import { AdminBreadcrumb } from "@/components/AdminBreadcrumb"
-import { ACCENT_PALETTE } from "@/lib/branding"
+import { ACCENT_PALETTE, BRANDING_DEFAULTS } from "@/lib/branding"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -750,7 +750,7 @@ function OrgBrandingCard() {
   const current = {
     org_name:         orgName    ?? settings?.org_name         ?? "Constellus",
     org_logo_url:     logoUrl    ?? settings?.org_logo_url     ?? "",
-    org_brand_accent: accent     ?? settings?.org_brand_accent ?? "#8b7bf0",
+    org_brand_accent: accent     ?? settings?.org_brand_accent ?? BRANDING_DEFAULTS.org_brand_accent,
     org_name_color:   nameColor  ?? settings?.org_name_color   ?? "",
   }
 

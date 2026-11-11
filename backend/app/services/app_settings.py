@@ -29,7 +29,7 @@ DEFAULTS = {
     # the curated accent palette and logo URL validation rules.
     "org.name": "Constellus",
     "org.logo_url": "",
-    "org.brand_accent": "#8b7bf0",
+    "org.brand_accent": "#66d0df",
     "org.name_color": "",
     # planning#224 item 5 — `llm.role_bindings` deliberately has NO default
     # here: model choice is config, not code. Until an admin saves bindings

@@ -8,17 +8,18 @@ export type OrgBranding = {
 export const BRANDING_DEFAULTS: OrgBranding = {
   org_name: "Constellus",
   org_logo_url: null,
-  org_brand_accent: "#8b7bf0",
+  org_brand_accent: "#66d0df",
   org_name_color: null,
 }
 
+// Curated, not a picker: all OKLCH L 0.80 / C 0.10 at hues 40 degrees or more from every
+// severity hue; the backend allowlist in api/settings.py holds the same five and a backend test keeps them equal.
 export const ACCENT_PALETTE: { name: string; value: string }[] = [
-  { name: "Violet",  value: "#8b7bf0" },
-  { name: "Indigo",  value: "#6366f1" },
-  { name: "Purple",  value: "#a855f7" },
-  { name: "Fuchsia", value: "#d946ef" },
-  { name: "Cyan",    value: "#06b6d4" },
-  { name: "Teal",    value: "#14b8a6" },
+  { name: "Cyan",    value: "#66d0df" },
+  { name: "Violet",  value: "#c7aff5" },
+  { name: "Orchid",  value: "#d2acee" },
+  { name: "Magenta", value: "#dba9e6" },
+  { name: "Pink",    value: "#e1a7df" },
 ]
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
@@ -28,20 +29,28 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
     : null
 }
 
-/** Apply org branding as CSS var overrides on :root. Safe to call multiple times. */
+/** Move each channel `amount` (0..1) of the way toward white; returns a 6-digit lowercase hex. */
+function lighten(rgb: { r: number; g: number; b: number }, amount: number): string {
+  const hex = [rgb.r, rgb.g, rgb.b]
+    .map((c) => Math.round(c + (255 - c) * amount).toString(16).padStart(2, "0"))
+    .join("")
+  return `#${hex}`
+}
+
+/**
+ * Apply org branding as CSS var overrides on :root. Safe to call multiple times.
+ * Sets --brand, --brand-dim, --logo-glow, --link, --primary, --ring and --org-name-color.
+ * --primary-foreground is deliberately static in CSS: every curated accent is L 0.80,
+ * so one dark foreground serves all of them.
+ */
 export function applyBranding(b: OrgBranding): void {
   const rgb = hexToRgb(b.org_brand_accent)
   if (!rgb) return
-  const { r, g, b: bv } = rgb
-  // Lighten 40% toward white for the logo glow
-  const glow = [r, g, bv]
-    .map((c) => Math.round(c + (255 - c) * 0.4).toString(16).padStart(2, "0"))
-    .join("")
-
   const root = document.documentElement
   root.style.setProperty("--brand", b.org_brand_accent)
-  root.style.setProperty("--brand-dim", `rgba(${r}, ${g}, ${bv}, 0.14)`)
-  root.style.setProperty("--logo-glow", `#${glow}`)
+  root.style.setProperty("--brand-dim", `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.1)`)
+  root.style.setProperty("--logo-glow", lighten(rgb, 0.4))
+  root.style.setProperty("--link", lighten(rgb, 0.15))
   // Shadcn --primary and --ring follow the brand accent so buttons/focus rings stay on-brand
   root.style.setProperty("--primary", b.org_brand_accent)
   root.style.setProperty("--ring", b.org_brand_accent)
