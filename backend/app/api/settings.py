@@ -19,15 +19,17 @@ router = APIRouter()
 
 SCAN_AUTH_MODES = ("strict", "acknowledge", "disabled")
 
-# Pre-vetted accent colours — all verified clear of severity hues (red/orange/amber/blue/green).
-# A raw hex picker would let orgs land on a severity colour; this set prevents that.
+# The accent set is curated: a raw picker could land on a severity hue. Every option is
+# OKLCH L 0.80 / C 0.10 with its hue 40 degrees or more from every severity hue, which
+# leaves only the bands 204-213 and 294-333; one dark --brand-fg therefore serves all of
+# them. The same five live in frontend/src/lib/branding.ts and
+# test_settings_branding.py keeps them equal.
 ACCENT_PALETTE = {
-    "#8b7bf0",  # violet  (default)
-    "#6366f1",  # indigo
-    "#a855f7",  # purple
-    "#d946ef",  # fuchsia
-    "#06b6d4",  # cyan
-    "#14b8a6",  # teal
+    "#66d0df",  # cyan  (default)
+    "#c7aff5",  # violet
+    "#d2acee",  # orchid
+    "#dba9e6",  # magenta
+    "#e1a7df",  # pink
 }
 
 _HTTPS_RE = re.compile(r"^https://\S+$")
@@ -60,7 +62,7 @@ def _branding(db: Session) -> OrgBrandingResponse:
     return OrgBrandingResponse(
         org_name=svc.get(db, "org.name") or "Constellus",
         org_logo_url=svc.get(db, "org.logo_url") or None,
-        org_brand_accent=svc.get(db, "org.brand_accent") or "#8b7bf0",
+        org_brand_accent=svc.get(db, "org.brand_accent") or svc.DEFAULTS["org.brand_accent"],
         org_name_color=name_color if name_color else None,
     )
 
