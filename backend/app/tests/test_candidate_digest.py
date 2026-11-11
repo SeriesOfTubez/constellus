@@ -846,6 +846,29 @@ def test_view_org_removal_withholds_the_narrative(oenv):
     assert v.narrative_reason == digest.ORG_NARRATIVE_WITHHELD
 
 
+def test_api_org_removal_withholds_the_narrative_fields(oenv, admin):
+    # The view is right only if the API passes all of it through (the planning#331
+    # walk caught `_apply_view` returning before the narrative fields for org digests).
+    e = oenv
+    dg, keep, hide, eng = _withheld_setup(e, narrative=False)
+    dg.narrative = {"statements": [{"text": "fake summary", "cites": []}], "returned": 1, "dropped": 0}
+    dg.narrative_status = "succeeded"
+    e.db.commit()
+    url = f"/api/notifications/digests/{dg.id}"
+    before = client.get(url, headers=admin).json()
+    assert before["narrative_status"] == "succeeded" and before["narrative"] is not None
+
+    _posture(e, eng, "pre_close")
+
+    after = client.get(url, headers=admin).json()
+    assert keep.value in str(after["body"]) and hide.value not in str(after["body"]), "the candidate was removed"
+    assert after["narrative"] is None and after["narrative_status"] == "skipped"
+    assert after["narrative_reason"] == digest.ORG_NARRATIVE_WITHHELD
+    listed = client.get("/api/notifications/digests?limit=100", headers=admin).json()
+    (mine,) = [d for d in listed if d["id"] == str(dg.id)]
+    assert mine["narrative_status"] == "skipped" and mine["narrative_reason"] == digest.ORG_NARRATIVE_WITHHELD
+
+
 def test_view_org_removal_without_a_narrative_does_not_claim_withholding(oenv):
     e = oenv
     dg, keep, hide, eng = _withheld_setup(e, narrative=False)
