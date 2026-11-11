@@ -10,8 +10,10 @@ sibling eligible candidate IS listed, or the finding rule DID get a dispatch).
 Run:  backend/scripts/test.sh app/tests/test_candidate_digest.py
 """
 
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,6 +23,7 @@ from app.main import app
 from app.models.alert_event import AlertDispatch
 from app.models.digest import Digest, DigestCandidate
 from app.models.engagement import Engagement
+from app.models.llm_call import LlmCall
 from app.models.notification_rule import NotificationRule
 from app.models.scope_candidate import ScopeCandidate, ScopeSignal
 from app.models.user import UserRole
@@ -33,6 +36,7 @@ from app.services.score_history import Promotion
 from app.tests._org_world import World
 from app.tests.test_alert_events import _Conn, _use_connectors
 from app.tests.test_digests import _asset, _dispatch, _digests, _finding, _rule, denv  # noqa: F401
+from app.tests.test_digests import _data_block, _narrative_response, llm
 from app.tests.test_edgar_ingest_api import _cleanup_user, _make_user
 
 client = TestClient(app)
@@ -51,6 +55,11 @@ def oenv(denv):  # noqa: F811
         # Digests and rules first (the claims cascade with the candidates).
         denv.db.rollback()
         like = f"%{denv.suffix}%"
+        # The AI ledger rows go too: `denv` finds them through the digests deleted here.
+        ids = [r[0] for r in denv.db.query(Digest.id).filter(Digest.rule_name.like(like)).all()]
+        if ids:
+            denv.db.query(LlmCall).filter(LlmCall.task.in_([f"{digest.TASK_PREFIX}:{i}" for i in ids])).delete(
+                synchronize_session=False)
         denv.db.query(Digest).filter(Digest.rule_name.like(like)).delete(synchronize_session=False)
         denv.db.query(NotificationRule).filter(NotificationRule.name.like(like)).delete(synchronize_session=False)
         denv.db.commit()
@@ -276,7 +285,7 @@ def test_claim_lists_grouped_ordered_and_writes_claim_rows(oenv):
     dg = _claim(e, rule)
 
     body = dg.body
-    assert dg.kind == "org_discovery" and dg.outcome == "pending" and dg.narrative_status == "skipped"
+    assert dg.kind == "org_discovery" and dg.outcome == "pending" and dg.narrative_status is None
     mine = [o for o in body["organizations"] if o["id"] in (str(org_a.id), str(org_b.id))]
     assert [o["name"] for o in mine] == [org_a.legal_name, org_b.legal_name]
     assert [c["value"] for c in mine[0]["candidates"]] == [ca1.value, ca2.value]
@@ -467,9 +476,9 @@ def test_retry_stale_resends_an_org_digest_through_the_filter(oenv, monkeypatch)
     assert hide.value not in mine[0]["text"] and deal.legal_name not in mine[0]["text"]
 
 
-# ── 6. run_due never summarises or embeds an org digest ──────────────────────
+# ── 6. run_due narrates an org digest but never embeds cluster write-ups ────
 
-def test_run_due_org_digest_skips_the_llm_and_cluster_embedding(oenv, monkeypatch):
+def test_run_due_narrates_an_org_digest_without_cluster_embedding(oenv, monkeypatch):
     e, w = oenv, oenv.w
     conn = _Conn("ok")
     _use_connectors(monkeypatch, [("c1", conn)])
@@ -503,11 +512,13 @@ def test_run_due_org_digest_skips_the_llm_and_cluster_embedding(oenv, monkeypatc
     (odg,) = _digests(e, orule)
     (fdg,) = _digests(e, frule)
     assert odg.outcome == "sent" and fdg.outcome == "sent", "precondition: both digests went through run_due"
-    assert cand.value in [m for m in conn.sent if e.suffix in m["subject"] and "org" in m["subject"].lower()][0]["text"]
-    assert narrated == ["finding"] and embedded == ["finding"], "only the finding digest is narrated/embedded"
-    assert llm_calls == ["is_configured"], "the LLM path was reached once, for the finding digest only"
-    assert odg.narrative_status == "skipped" and odg.narrative is None and odg.model is None
-    assert not any("AI summary" in m["text"] for m in conn.sent if "organization discovery" in m["subject"])
+    org_msgs = [m for m in conn.sent if e.suffix in m["subject"] and "org" in m["subject"].lower()]
+    assert cand.value in org_msgs[0]["text"]
+    assert sorted(narrated) == ["finding", "org_discovery"] and embedded == ["finding"]
+    assert llm_calls == ["is_configured", "is_configured"], "the LLM path was reached for both digests"
+    assert odg.narrative_status == "skipped" and odg.narrative_reason == "AI is not configured"
+    assert odg.narrative is None and odg.model is None
+    assert "AI summary unavailable: AI is not configured" in org_msgs[0]["text"]
 
 
 # ── 7. the API ───────────────────────────────────────────────────────────────
@@ -640,7 +651,7 @@ def test_render_escapes_html_and_pluralises():
     assert "&lt;b&gt;evil&lt;/b&gt;.example.com" in html1 and "<b>evil</b>" not in html1
     assert "Example <b>Org</b>" not in html1 and "Example &lt;b&gt;Org&lt;/b&gt;" in html1
     assert "Review them in Constellus" in text1 and "Review them in Constellus" in html1
-    assert "AI summary" not in text1 + html1
+    assert "AI summary unavailable: not generated" in text1 and "AI summary unavailable: not generated" in html1
 
     subject2, text2, _ = candidate_digest.render(
         _body([("domain", "a.example.com"), ("asn", "AS64500"), ("cidr", "192.0.2.0/24")]), "")
@@ -872,7 +883,7 @@ def test_api_org_removal_withholds_the_narrative_fields(oenv, admin):
 def test_view_org_removal_without_a_narrative_does_not_claim_withholding(oenv):
     e = oenv
     dg, keep, hide, eng = _withheld_setup(e, narrative=False)
-    assert dg.narrative is None and dg.narrative_status == "skipped" and dg.narrative_reason is None
+    assert dg.narrative is None and dg.narrative_status is None and dg.narrative_reason is None
     _posture(e, eng, "pre_close")
     v = digest.view(e.db, dg)
     assert keep.value in _listed(v.body) and hide.value not in _listed(v.body), "the candidate was removed"
@@ -921,3 +932,305 @@ def test_render_old_shape_body_has_no_shared_section():
     _, text, html = candidate_digest.render(_body([("domain", "a.fabrikam.com")]), "")
     assert "[domain] a.fabrikam.com" in text and "Strong" not in text
     assert "Shared by" not in text + html
+
+
+# ── 8. the AI summary (planning#331 slice 2) ─────────────────────────────────
+
+class _HtmlConn(_Conn):
+    """`_Conn` that also keeps the html part."""
+
+    def __init__(self, mode="ok"):
+        super().__init__(mode)
+        self.html: list[str] = []
+
+    def send(self, subject, body_text, recipients, config, body_html=None):
+        self.html.append(body_html or "")
+        return super().send(subject, body_text, recipients, config, body_html)
+
+
+_MATCHED = "example holdings alpha"
+_AI_LINE = "AI summary (each statement is tied to the candidates below):"
+
+
+def _org_index(body, org):
+    return next(i for i, o in enumerate(body["organizations"]) if o["id"] == str(org.id))
+
+
+def _cite(path, value):
+    return {"source_field": path, "value": str(value)}
+
+
+def _shared_pair(e):
+    """An ours root with a strong candidate `a` and a supporting candidate `b`
+    sharing one matched value, claimed into an org digest."""
+    ours = e.w.ours()
+    a = e.w.candidate(ours, value=f"a-{e.suffix}.example.com")
+    b = _sig(e, ours, f"b-{e.suffix}.example.com", "registrant_org_match", [_MATCHED])
+    _sig(e, ours, a.value, "registrant_org_match", [_MATCHED])
+    rule = _org_rule(e)
+    dg = _claim(e, rule)
+    assert digest.org_has_something_to_say(dg.body), "precondition: the body has a strong candidate and a group"
+    return ours, a, b, rule, dg
+
+
+def _five_statements(body, ours, a):
+    base = f"organizations[{_org_index(body, ours)}]"
+    s1 = f"{a.value} carries the strongest signals (strong)."
+    s2 = f"2 candidates share {_MATCHED}."
+    s3 = "Also seen on other.example.org."
+    s4 = f"{a.value} is probably not the organization's."
+    s5 = "9999 candidates stand out."
+    statements = [
+        {"text": s1, "cites": [_cite(f"{base}.candidates[0].value", a.value), _cite(f"{base}.candidates[0].strength", "strong")]},
+        # members[0] is a list-of-strings leaf: the path grounder must resolve it, or S2 is dropped.
+        {"text": s2, "cites": [
+            _cite(f"{base}.shared[0].count", 2), _cite(f"{base}.shared[0].value", _MATCHED),
+            _cite(f"{base}.shared[0].members[0]", a.value),
+        ]},
+        {"text": s3, "cites": [_cite(f"{base}.candidates[0].strength", "strong")]},
+        {"text": s4, "cites": [_cite(f"{base}.candidates[0].value", a.value)]},
+        {"text": s5, "cites": [_cite("totals.candidates", body["totals"]["candidates"])]},
+    ]
+    return statements, (s1, s2)
+
+
+def test_org_narrative_input_hides_ids_and_links_and_names_group_members(oenv):
+    e = oenv
+    ours, a, b, _rule_, dg = _shared_pair(e)
+    body = dg.body
+    stored = json.dumps(body, sort_keys=True)
+    data = digest.org_narrative_input(body)
+    dumped = json.dumps(data)
+    for key in ('"id"', '"url"', '"candidate_ids"'):
+        assert key not in dumped
+    mine = next(o for o in data["organizations"] if o["name"] == ours.legal_name)
+    src = _org_of(body, ours)
+    assert mine["shared"][0]["members"] == [a.value, b.value]
+    assert mine["shared"][0]["count"] == 2
+    assert mine["name"] == src["name"] and mine["candidate_count"] == src["candidate_count"]
+    assert [(c["kind"], c["value"], c["strength"], c["signals"]) for c in mine["candidates"]] == [
+        (c["kind"], c["value"], c["strength"], c["signals"]) for c in src["candidates"]]
+    assert data["totals"] == body["totals"] and data["period"] == body["period"]
+    assert json.dumps(body, sort_keys=True) == stored, "the stored body is unchanged"
+    assert "id" in src["candidates"][0] and "candidate_ids" in src["shared"][0] and "id" in body["rule"]
+
+
+def _cand(strength):
+    return {"kind": "domain", "value": "a.example.com", "strength": strength, "signals": []}
+
+
+@pytest.mark.parametrize("body, expected", [
+    ({"organizations": [{"candidates": [_cand("context")], "shared": []}]}, False),
+    ({"organizations": [{"candidates": [_cand("supporting")], "shared": []}]}, False),
+    ({"organizations": [{"candidates": [_cand("supporting"), _cand("strong")], "shared": []}]}, True),
+    ({"organizations": [{"candidates": [_cand("supporting")], "shared": [{"value": "x", "candidate_ids": ["1", "2"]}]}]}, True),
+    ({}, False),
+], ids=["context-only", "supporting-only", "one-strong", "shared-group", "empty"])
+def test_org_has_something_to_say(body, expected):
+    assert digest.org_has_something_to_say(body) is expected
+
+
+def test_narrate_org_skips_before_the_cap_when_nothing_stands_out(oenv, llm):
+    e = oenv
+    ours = e.w.ours()
+    cand = _sig(e, ours, f"s-{e.suffix}.example.com", "registrant_org_match", [_MATCHED])
+    rule = _org_rule(e)
+    dg = _claim(e, rule)
+    t = llm(lambda request: _narrative_response([]))
+    assert llmc.is_configured(e.db) and llmc.models_configured(e.db)
+    assert cand.value in _listed(dg.body) and not digest.org_has_something_to_say(dg.body), \
+        "precondition: only a supporting candidate, no group"
+    before = digest.narrative_count_today(e.db)
+
+    digest.narrate(e.db, dg)
+
+    e.db.expire_all()
+    dg = e.db.get(Digest, dg.id)
+    assert dg.narrative_status == "skipped" and dg.narrative_reason == digest.ORG_NOTHING_TO_SAY
+    assert t.requests == []
+    assert digest.narrative_count_today(e.db) == before, "no cap slot was used"
+
+
+def test_narrate_org_summary_is_grounded_stored_and_rendered(oenv, llm, monkeypatch):
+    e = oenv
+    conn = _HtmlConn("ok")
+    _use_connectors(monkeypatch, [("c1", conn)])
+    ours, a, b, rule, dg = _shared_pair(e)
+    statements, (s1, s2) = _five_statements(dg.body, ours, a)
+    t = llm(lambda request: _narrative_response(statements))
+
+    digest.narrate(e.db, dg)
+
+    e.db.expire_all()
+    dg = e.db.get(Digest, dg.id)
+    assert len(t.requests) == 1, "precondition: the model was called"
+    assert dg.narrative_status == "succeeded", dg.narrative_reason
+    assert [s["text"] for s in dg.narrative["statements"]] == [s1, s2]
+    assert dg.narrative["returned"] == 5 and dg.narrative["dropped"] == 3
+    assert dg.model and dg.forced_strict is False and dg.ledger_ids
+    request = t.requests[0]
+    system = json.loads(request.content)["messages"][0]["content"]
+    assert system.startswith("You summarise one organization discovery digest")
+    block = json.dumps(_data_block(request))
+    for key in ("candidate_ids", '"url"', '"id"'):
+        assert key not in block
+
+    digest.send(e.db, dg)
+
+    (text,) = _send_texts(conn, e) or [None]
+    assert text is not None, "precondition: the digest was sent"
+    assert _AI_LINE in text and "  - " + s1 in text and "  - " + s2 in text
+    html = next(h for h in conn.html if e.suffix in h)
+    assert "<li>" + notification_dispatcher._esc(s1) + "</li>" in html
+
+
+def test_narrate_org_with_nothing_grounded_says_so(oenv, llm, monkeypatch):
+    e = oenv
+    conn = _Conn("ok")
+    _use_connectors(monkeypatch, [("c1", conn)])
+    ours, a, _b, _rule_, dg = _shared_pair(e)
+    statements, _kept = _five_statements(dg.body, ours, a)
+    t = llm(lambda request: _narrative_response(statements[2:]))  # S3, S4, S5 only
+
+    digest.narrate(e.db, dg)
+
+    e.db.expire_all()
+    dg = e.db.get(Digest, dg.id)
+    assert len(t.requests) == 1, "precondition: the model was called"
+    assert dg.narrative_status == "failed"
+    assert dg.narrative_reason == "no AI statement could be tied to its records"
+    assert dg.narrative["statements"] == [] and dg.narrative["dropped"] == 3
+
+    digest.send(e.db, dg)
+
+    (text,) = _send_texts(conn, e) or [None]
+    assert text is not None, "precondition: the digest was sent"
+    assert "AI summary unavailable: no AI statement could be tied to its records" in text
+    assert _AI_LINE not in text
+
+
+E1, E2 = SimpleNamespace(id=uuid.uuid4()), SimpleNamespace(id=uuid.uuid4())
+
+
+@pytest.mark.parametrize("results, expected", [
+    ([(None, False), (None, False)], (None, False)),
+    ([(E1, False), (E1, False)], (E1.id, False)),
+    ([(E1, False), (E2, False)], (None, True)),
+    ([(None, False), (E1, False)], (None, True)),
+    ([(None, False), (None, True)], (None, True)),
+    ([], (None, True)),
+], ids=["all-estate", "same-engagement", "two-engagements", "estate-and-engagement", "one-strict", "no-orgs"])
+def test_org_scope_for_combines_per_org_scopes(monkeypatch, results, expected):
+    by_id = {uuid.uuid4(): r for r in results}
+    monkeypatch.setattr(digest.entity_relationship, "ai_scope", lambda db, entity_id: by_id[entity_id])
+    body = {"organizations": [{"id": str(i)} for i in by_id]}
+    assert digest.org_scope_for(None, body) == expected
+
+
+def test_narrate_org_under_one_deal_scopes_to_its_engagement(oenv, llm):
+    e = oenv
+    deal, eng = _live_deal(e, "day_0")
+    cand = e.w.candidate(deal, value=f"d-{e.suffix}.example.com")
+    rule = _org_rule(e)
+    dg = _claim(e, rule)
+    oi = _org_index(dg.body, deal)
+    statement = {"text": f"{cand.value} carries the strongest signals.",
+                 "cites": [_cite(f"organizations[{oi}].candidates[0].value", cand.value)]}
+    t = llm(lambda request: _narrative_response([statement]))
+
+    digest.narrate(e.db, dg)
+
+    e.db.expire_all()
+    dg = e.db.get(Digest, dg.id)
+    assert len(t.requests) == 1, "precondition: the model was called"
+    assert dg.narrative_status == "succeeded", dg.narrative_reason
+    assert dg.forced_strict is False
+    calls = e.db.query(LlmCall).filter(LlmCall.id.in_(dg.ledger_ids)).all()
+    assert calls, "precondition: the ledger has rows"
+    assert {c.engagement_id for c in calls} == {eng.id}
+
+
+def test_narrate_org_shares_the_daily_cap(oenv, llm):
+    e = oenv
+    digest.app_settings.set_value(e.db, digest.NARRATIVE_CAP_KEY, "1")
+    e.db.add(Digest(rule_id=None, rule_name=f"earlier-{e.suffix}", period_start=e.t1 - timedelta(days=1),
+                    period_end=e.t1, outcome="sent", narrative_status="succeeded"))
+    e.db.commit()
+    assert digest.narrative_count_today(e.db) >= 1, "precondition: a finding digest already used the slot"
+    _ours, _a, _b, _rule_, dg = _shared_pair(e)
+    t = llm(lambda request: _narrative_response([]))
+    assert digest.org_has_something_to_say(dg.body)
+
+    digest.narrate(e.db, dg)
+
+    e.db.expire_all()
+    dg = e.db.get(Digest, dg.id)
+    assert dg.narrative_status == "skipped" and dg.narrative_reason == "today's AI digest cap (1) is reached"
+    assert t.requests == []
+
+
+def test_view_withholds_a_real_org_summary_after_a_deal_goes_back_to_pre_close(oenv, llm, monkeypatch):
+    e, w = oenv, oenv.w
+    conn = _Conn("ok")
+    _use_connectors(monkeypatch, [("c1", conn)])
+    ours = w.ours()
+    deal, eng = _live_deal(e, "day_0")
+    keep = w.candidate(ours, value=f"keep-{e.suffix}.example.com")
+    hide = w.candidate(deal, value=f"hide-{e.suffix}.example.com")
+    rule = _org_rule(e)
+    dg = _claim(e, rule)
+    statements = []
+    for org, cand in ((ours, keep), (deal, hide)):
+        oi = _org_index(dg.body, org)
+        statements.append({
+            "text": f"{cand.value} carries a strong signal.",
+            "cites": [_cite(f"organizations[{oi}].candidates[0].value", cand.value)],
+        })
+    t = llm(lambda request: _narrative_response(statements))
+
+    digest.narrate(e.db, dg)
+
+    e.db.expire_all()
+    dg = e.db.get(Digest, dg.id)
+    assert len(t.requests) == 1 and dg.narrative_status == "succeeded", "precondition: a stored summary"
+    assert len(dg.narrative["statements"]) == 2
+
+    _posture(e, eng, "pre_close")
+    v = digest.view(e.db, dg)
+    assert keep.value in _listed(v.body) and hide.value not in _listed(v.body), "the candidate was removed"
+    assert v.narrative is None and v.narrative_status == "skipped"
+    assert v.narrative_reason == digest.ORG_NARRATIVE_WITHHELD
+    e.db.expire_all()
+    stored = e.db.get(Digest, dg.id)
+    assert stored.narrative_status == "succeeded" and len(stored.narrative["statements"]) == 2
+
+    digest.send(e.db, dg)
+
+    (text,) = _send_texts(conn, e) or [None]
+    assert text is not None, "precondition: the digest was sent"
+    assert "AI summary unavailable: it was withheld because candidates were removed from this digest after it was written" in text
+    assert hide.value not in text
+    assert not any(s["text"] in text for s in statements)
+    assert keep.value in text
+
+
+_DISMISSALS = [
+    "is not the organization's", "does not belong to", "doesn't belong", "is unrelated", "can be rejected",
+    "can be ignored", "no need to review", "can be skipped", "is probably not", "a coincidence",
+    "false positive", "low priority",
+]
+
+
+@pytest.mark.parametrize("phrase", _DISMISSALS)
+def test_org_dismissal_phrases_are_dropped(phrase):
+    data = {"organizations": [{"candidates": [{"value": "a.example.com", "strength": "strong"}]}]}
+    cites = [digest.Cite(source_field="organizations[0].candidates[0].value", value="a.example.com")]
+
+    def run(text):
+        out = digest.NarrativeOut(statements=[digest.Statement(text=text, cites=cites)])
+        return digest.ground(out, data, forbidden=digest._ORG_DISMISSAL)
+
+    kept, _returned, dropped = run("a.example.com carries the strongest signals of the group")
+    assert (len(kept["statements"]), dropped) == (1, 0), "control: the same cites without the phrase are kept"
+    narrative, returned, dropped = run(f"a.example.com {phrase} here")
+    assert (narrative["statements"], returned, dropped) == ([], 1, 1)

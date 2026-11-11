@@ -777,13 +777,17 @@ def _narrative_response(statements):
 
 def _scripted(request):
     """One grounded statement built from the DATA the model actually received,
-    and one whose number is nowhere in DATA."""
+    one whose number is nowhere in DATA, and one that is grounded but argues
+    for less attention (planning#331: only the FINDING phrase list drops it;
+    the org list has no "benign"/"overstated")."""
     data = _data_block(request)
     n, a = data["totals"]["findings"], data["totals"]["assets"]
     return _narrative_response([
         {"text": f"{n} findings across {a} assets need review.", "cites": [
             {"source_field": "totals.findings", "value": str(n)}, {"source_field": "totals.assets", "value": str(a)}]},
         {"text": "Also 9999 findings were fixed.", "cites": [{"source_field": "totals.findings", "value": str(n)}]},
+        {"text": f"These {n} findings look benign and overstated.", "cites": [
+            {"source_field": "totals.findings", "value": str(n)}]},
     ])
 
 
@@ -814,12 +818,13 @@ def test_a_successful_narrative_is_stored_grounded_and_rendered(denv, llm, monke
         assert forbidden not in block
     assert dg.narrative_status == "succeeded" and dg.narrative_reason is None
     assert dg.model == NARRATE_PRIMARY and dg.ledger_ids
-    assert dg.narrative["returned"] == 2 and dg.narrative["dropped"] == 1
+    assert dg.narrative["returned"] == 3 and dg.narrative["dropped"] == 2
     assert [s["text"] for s in dg.narrative["statements"]] == ["2 findings across 1 assets need review."]
     assert dg.outcome == "sent"
     (msg,) = [m for m in conn.sent if e.suffix in m["text"]]
     assert "2 findings across 1 assets need review." in msg["text"]
     assert "9999" not in msg["text"]
+    assert "benign" not in msg["text"], "the de-escalating statement was dropped by the finding phrase list"
     assert "AI summary (each statement is tied to the records below)" in msg["text"]
 
 

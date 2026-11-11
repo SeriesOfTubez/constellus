@@ -5,8 +5,8 @@ NEW OPEN organization discovery candidates since its previous digest, grouped
 by root organization. The body is deterministic: each candidate carries its
 strength and signal labels as they stood at the claim, and each organization
 lists the groups of its listed candidates that share one matched value (two
-domains on one nameserver, one registrant). An AI summary is planned
-(planning#331 slice 2) and will cite only these body fields.
+domains on one nameserver, one registrant). The AI summary (planning#331 slice 2,
+`digest.narrate`) cites only these body fields.
 
 What a notification may mention is decided in ONE place,
 `notification_scope`; this module never re-implements it. It is applied
@@ -221,11 +221,16 @@ def filter_body(db: Session, digest: Digest) -> dict:
     return out
 
 
-def render(body: dict, base_url: str) -> tuple[str, str, str]:
+def render(
+    body: dict, base_url: str, *, narrative_status: str | None = None, narrative: dict | None = None,
+    narrative_reason: str | None = None,
+) -> tuple[str, str, str]:
     """Plain-language (subject, text, html). The link in each organization is
     the one stored in the body when it was built (null when no base URL was
     set then); `base_url` is accepted so the call matches `digest.render` but
-    nothing here invents a link the body does not carry. No AI summary line."""
+    nothing here invents a link the body does not carry. The AI summary line
+    mirrors `digest.render`: the statements when the status is `succeeded`,
+    else one line saying why there is none."""
     from app.services import digest as digest_svc  # lazy: digest imports this module
 
     esc = notification_dispatcher._esc
@@ -244,6 +249,18 @@ def render(body: dict, base_url: str) -> tuple[str, str, str]:
         f"<p><strong>Rule:</strong> {esc(rule_name)}<br>"
         f"Period: {esc(body['period']['start'])} to {esc(body['period']['end'])}</p>",
     ]
+    statements = [s["text"] for s in (narrative or {}).get("statements", [])] if narrative_status == "succeeded" else []
+    if statements:
+        text.append("AI summary (each statement is tied to the candidates below):")
+        text.extend(f"  - {s}" for s in statements)
+        html.append("<p><strong>AI summary</strong> (each statement is tied to the candidates below):</p><ul>")
+        html.extend(f"<li>{esc(s)}</li>" for s in statements)
+        html.append("</ul>")
+    else:
+        unavailable = f"AI summary unavailable: {narrative_reason or 'not generated'}"
+        text.append(unavailable)
+        html.append(f"<p><em>{esc(unavailable)}</em></p>")
+    text.append("")
     for org in body["organizations"]:
         k = org["candidate_count"]
         header = f"{org['name']}: {k} new candidate{'s' if k != 1 else ''} to review"

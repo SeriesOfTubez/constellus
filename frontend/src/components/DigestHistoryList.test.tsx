@@ -101,6 +101,7 @@ describe("DigestBodyView", () => {
     // f-2 is still open: an open finding carries no "now" annotation.
     expect(html).not.toContain("(now open)")
     expect(html).toContain("(now excluded)")
+    expect(html).toContain("tied to the records below")
     expect(html).toContain("… and 5 more")
     expect(html).toContain('href="/findings?id=f-1"')
     expect(html).toContain("app.example.com")
@@ -129,10 +130,14 @@ describe("DigestBodyView", () => {
   })
 })
 
-function orgDetail(over: Partial<OrgDiscoveryDigestDetail["body"]> = {}): OrgDiscoveryDigestDetail {
+function orgDetail(
+  over: Partial<OrgDiscoveryDigestDetail["body"]> = {},
+  top: Partial<OrgDiscoveryDigestDetail> = {},
+): OrgDiscoveryDigestDetail {
   return {
     ...summary({ kind: "org_discovery", rule_name: "Org candidates daily", event_count: 5, finding_count: 0 }),
     kind: "org_discovery",
+    narrative: null, narrative_status: null, narrative_reason: null,
     body: {
       kind: "org_discovery",
       rule: { id: "r2", name: "Org candidates daily" },
@@ -148,11 +153,12 @@ function orgDetail(over: Partial<OrgDiscoveryDigestDetail["body"]> = {}): OrgDis
       }],
       ...over,
     },
+    ...top,
   }
 }
 
 describe("org discovery digest", () => {
-  it("renders org, counts, values, kind labels, overflow and an in-app link, with no AI summary", () => {
+  it("renders org, counts, values, kind labels, overflow and an in-app link, with no AI summary when none was generated", () => {
     const html = wrap(<DigestBodyView detail={orgDetail()} />)
     expect(html).toContain("Example Holdings A")
     expect(html).toContain("5 new candidates across 1 organization")
@@ -168,19 +174,65 @@ describe("org discovery digest", () => {
     expect(html).not.toContain("AI summary")
   })
 
+  it("renders the AI summary first, tied to the candidates", () => {
+    const html = wrap(<DigestBodyView detail={orgDetail({}, {
+      narrative_status: "succeeded",
+      narrative: {
+        statements: [
+          { text: "a.example.com carries the strongest signals.", cites: [] },
+          { text: "2 candidates share one registrant.", cites: [] },
+        ],
+        returned: 2, dropped: 0,
+      },
+    })} />)
+    const heading = "AI summary (each statement is tied to the candidates below)"
+    expect(html).toContain(heading)
+    expect(html).toContain("a.example.com carries the strongest signals.")
+    expect(html).toContain("2 candidates share one registrant.")
+    expect(html.indexOf(heading)).toBeGreaterThanOrEqual(0)
+    expect(html.indexOf(heading)).toBeLessThan(html.indexOf("new candidates across"))
+  })
+
+  it("says why the AI summary is missing", () => {
+    const html = wrap(<DigestBodyView detail={orgDetail({}, {
+      narrative: null, narrative_status: "skipped",
+      narrative_reason: "nothing stands out beyond the list (no strong candidate, nothing shared between candidates)",
+    })} />)
+    expect(html).toContain("AI summary unavailable: nothing stands out beyond the list")
+  })
+
+  it("a withheld summary shows the withholding reason and no statements", () => {
+    const reason = "it was withheld because candidates were removed from this digest after it was written"
+    const html = wrap(<DigestBodyView detail={orgDetail({}, {
+      narrative: null, narrative_status: "skipped", narrative_reason: reason,
+    })} />)
+    expect(html).toContain(reason)
+    expect(html).not.toContain("tied to the candidates")
+  })
+
   it("omits the overflow line when everything is listed", () => {
     const d = orgDetail()
     d.body.organizations[0].candidate_count = 3
     expect(wrap(<DigestBodyView detail={d} />)).not.toContain("more")
   })
 
-  it("list row says candidates, not findings, and shows no AI label", () => {
+  it("list row says candidates and shows the AI label", () => {
     const html = renderList([summary({
       kind: "org_discovery", event_count: 5, finding_count: 0, narrative_status: "succeeded",
     })])
     expect(html).toContain("5 candidates")
     expect(html).not.toContain("finding")
-    expect(html).not.toContain("AI summary")
+    expect(html).toContain("AI summary")
+    expect(html).not.toContain("No AI summary")
+  })
+
+  it("list row for a skipped org summary says No AI summary with the reason", () => {
+    const html = renderList([summary({
+      kind: "org_discovery", event_count: 5, finding_count: 0, narrative_status: "skipped",
+      narrative_reason: "nothing stands out beyond the list",
+    })])
+    expect(html).toContain("No AI summary")
+    expect(html).toContain('title="nothing stands out beyond the list"')
   })
 
   it("shows strength and signal labels per candidate", () => {
