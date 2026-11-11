@@ -24,7 +24,7 @@ from app.models.digest import Digest
 from app.models.finding_canonical import FindingCanonical
 from app.models.notification_rule import RULE_KIND_ORG_DISCOVERY, RULE_KINDS, RULE_MODES, NotificationRule
 
-from app.services import app_settings, audit, candidate_digest, digest as digest_svc
+from app.services import app_settings, audit, digest as digest_svc, notification_scope
 from app.services.notification_dispatcher import _SEVERITY_RANK
 
 log = logging.getLogger(__name__)
@@ -269,7 +269,9 @@ def list_alerts(
     _=Depends(require_permission(Permission.NOTIFICATIONS_READ)),
 ):
     """Newest-first alert history: what each rule selected and what became of
-    it. Three queries total (dispatches, events, deliveries), no N+1."""
+    it. Three queries (dispatches, events, deliveries) plus one eligibility
+    query, no N+1. Events whose finding is now under a restricting engagement
+    are dropped (planning#330), and so is a dispatch that had events and has none left."""
     dispatches = (
         db.query(AlertDispatch)
         .order_by(AlertDispatch.created_at.desc(), AlertDispatch.id.desc())
@@ -287,8 +289,12 @@ def list_alerts(
         .filter(AlertEvent.dispatch_id.in_(ids))
         .all()
     )
+    eligible = notification_scope.eligible_finding_ids(db, list({ev.finding_id for ev, _, _ in event_rows}))
+    had_events = {ev.dispatch_id for ev, _, _ in event_rows}
     events_by: dict[uuid.UUID, list] = {}
     for ev, title, asset_value in event_rows:
+        if ev.finding_id not in eligible:
+            continue
         events_by.setdefault(ev.dispatch_id, []).append((ev, title, asset_value))
 
     deliveries_by: dict[uuid.UUID, list] = {}
@@ -303,6 +309,8 @@ def list_alerts(
     out = []
     for d in dispatches:
         evs = events_by.get(d.id, [])
+        if d.id in had_events and not evs:
+            continue
         evs.sort(key=lambda t: (-_SEVERITY_RANK.get(t[0].severity or "info", 0), t[1] or ""))
         out.append(AlertDispatchOut(
             id=d.id, rule_id=d.rule_id, rule_name=d.rule_name, kind=d.kind,
@@ -362,11 +370,26 @@ def list_digests(
     out = []
     for row in rows:
         item = DigestOut.model_validate(row)
-        if row.kind == RULE_KIND_ORG_DISCOVERY:
-            # planning#319: re-filtered on read; the stored row is never written.
-            item.event_count = candidate_digest.filter_body(db, row)["totals"]["candidates"]
+        _apply_view(item, digest_svc.view(db, row), row)
         out.append(item)
     return out
+
+
+def _apply_view(item: DigestOut, v: digest_svc.DigestView, row: Digest) -> None:
+    """Counts and narrative status from the re-checked view. planning#319/#330:
+    re-checked on read; the stored row is never written. A body without totals
+    (an old shape) leaves the stored counts alone."""
+    totals = v.body.get("totals") or {}
+    if row.kind == RULE_KIND_ORG_DISCOVERY:
+        if "candidates" in totals:
+            item.event_count = totals["candidates"]
+        return
+    if "events" in totals:
+        item.event_count = totals["events"]
+    if "findings" in totals:
+        item.finding_count = totals["findings"]
+    item.narrative_status = v.narrative_status
+    item.narrative_reason = v.narrative_reason
 
 
 @router.get("/digests/{digest_id}", response_model=DigestDetailOut)
@@ -379,9 +402,10 @@ def get_digest(
     if row is None:
         raise HTTPException(status_code=404, detail="Digest not found")
     out = DigestDetailOut.model_validate(row)
-    if row.kind == RULE_KIND_ORG_DISCOVERY:
-        out.body = candidate_digest.filter_body(db, row)
-        out.event_count = out.body["totals"]["candidates"]
+    v = digest_svc.view(db, row)
+    _apply_view(out, v, row)
+    out.body = v.body
+    out.narrative = v.narrative
     return out
 
 

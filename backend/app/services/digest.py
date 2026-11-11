@@ -62,6 +62,8 @@ import json
 import logging
 import re
 import uuid
+from dataclasses import dataclass
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
 from pydantic import BaseModel
@@ -74,7 +76,7 @@ from app.models.asset_canonical import AssetCanonical
 from app.models.digest import Digest, DigestCandidate
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
 from app.models.notification_rule import RULE_KIND_ORG_DISCOVERY, NotificationRule
-from app.services import app_settings, candidate_digest, llm_connector, notification_dispatcher
+from app.services import app_settings, candidate_digest, llm_connector, notification_dispatcher, notification_scope
 from app.services.finding_writeup import _DEESCALATION, _FAILURES, _ledger, resolve_scopes
 from app.services.llm_grounding import check_path_grounding
 
@@ -235,6 +237,12 @@ def claim(db: Session, rule_id: uuid.UUID, now: datetime) -> Digest | None:
             .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
             .where(AlertEvent.dispatch_id.in_(dispatch_ids))
         ).all()
+
+    # planning#330: claimed dispatches stay claimed (never re-claimed), but a
+    # finding now under a restricting engagement is left out of the body entirely:
+    # not listed, not counted.
+    eligible = notification_scope.eligible_finding_ids(db, list({r[2].id for r in rows}))
+    rows = [r for r in rows if r[2].id in eligible]
 
     body = build_body(db, rule, rows, period_start=floor, period_end=now)
     digest = Digest(
@@ -692,32 +700,101 @@ def render(
 
 # ── send ─────────────────────────────────────────────────────────────────────
 
+NARRATIVE_WITHHELD = "it was withheld because findings were removed from this digest after it was written"
+
+
+@dataclass(frozen=True)
+class DigestView:
+    """What a stored digest may show or send NOW (planning#330/#319)."""
+    body: dict
+    narrative_status: str | None
+    narrative: dict | None
+    narrative_reason: str | None
+
+
+def _comparable(body: dict) -> dict:
+    """`body` without what legitimately differs from a fresh `build_body` of the
+    same events: embedded write-ups and the two "now" fields. Everything else is
+    compared, group labels included (an asset group whose items `LIST_CAP` cut
+    still names its host in `label`)."""
+    out = copy.deepcopy(body)
+    for group in out.get("groups", []):
+        group.pop("writeup", None)
+        for item in group.get("items", []):
+            item.pop("state_now", None)
+            item.pop("excluded_now", None)
+    return out
+
+
+def view(db: Session, digest: Digest) -> DigestView:
+    """The digest as it may be sent or read now. Never writes. Keyed on the
+    ROW's kind, never the body's: a body cannot opt out.
+
+    A finding digest is rebuilt from its claimed events whose finding is
+    eligible now. If that equals the stored body (`_comparable`), the stored
+    text names only findings eligible now, so it is used as stored (claim
+    already left restricted findings out, so comparing against ALL claimed
+    events would flag every such digest). Otherwise the rebuilt body is used,
+    without cluster write-ups, and the AI summary is withheld."""
+    stored = DigestView(digest.body, digest.narrative_status, digest.narrative, digest.narrative_reason)
+    if digest.kind == RULE_KIND_ORG_DISCOVERY:
+        return DigestView(
+            candidate_digest.filter_body(db, digest),
+            digest.narrative_status, digest.narrative, digest.narrative_reason,
+        )
+    body = digest.body or {}
+    rule = body.get("rule") or {"id": str(digest.rule_id), "name": digest.rule_name, "severity_threshold": None}
+    rows = db.execute(
+        select(AlertEvent, AlertDispatch.kind, FindingCanonical, AssetCanonical)
+        .join(AlertDispatch, AlertDispatch.id == AlertEvent.dispatch_id)
+        .join(FindingCanonical, FindingCanonical.id == AlertEvent.finding_id)
+        .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
+        .where(AlertDispatch.digest_id == digest.id)
+    ).all()
+    eligible = notification_scope.eligible_finding_ids(db, list({r[2].id for r in rows}))
+    rows = [r for r in rows if r[2].id in eligible]
+    rebuilt = build_body(
+        db, SimpleNamespace(**rule), rows, period_start=digest.period_start, period_end=digest.period_end,
+    )
+    if "totals" in body and "groups" in body:
+        if _comparable(rebuilt) == _comparable(body):
+            return stored
+    elif not rows:
+        return stored  # an old-shape body with nothing to show: nothing to leak
+    return DigestView(rebuilt, "skipped", None, NARRATIVE_WITHHELD)
+
+
 def send(db: Session, digest: Digest) -> None:
     """Send a pending digest and record the outcome. Owns `db`'s transaction.
     Everything the send needs is read BEFORE the single closing commit."""
     digest_id = digest.id
-    body, status, narrative, reason = digest.body, digest.narrative_status, digest.narrative, digest.narrative_reason
     org_digest = digest.kind == RULE_KIND_ORG_DISCOVERY
-    if org_digest:
-        # Re-checked at send: a stale digest is sent from its stored body, and a
-        # deal may have gone back to a restricting posture since it was built.
-        body = candidate_digest.filter_body(db, digest)
+    # Re-checked at send for both kinds: a stale digest is sent from its stored
+    # body, and a deal may have gone back to a restricting posture since it was built.
+    v = view(db, digest)
     rule = db.get(NotificationRule, digest.rule_id) if digest.rule_id else None
     recipients = [r for r in (rule.recipients or []) if r] if rule is not None else []
     deliveries: list[dict] = []
-    if org_digest and body["totals"]["candidates"] == 0:
+    totals = v.body.get("totals") or {}
+    if org_digest and totals.get("candidates") == 0:
         outcome = "empty"
     elif not recipients:
         outcome = "no_recipients"
+    elif totals.get("findings") == 0:
+        # A finding digest whose findings all closed up since it was built.
+        # After the recipients check: an empty-period digest keeps `no_recipients`.
+        outcome = "empty"
     else:
         connectors = notification_dispatcher._enabled_notification_connectors(db)
         if not connectors:
             outcome = "no_channel"
         else:
             if org_digest:
-                subject, text_body, html_body = candidate_digest.render(body, app_base_url(db))
+                subject, text_body, html_body = candidate_digest.render(v.body, app_base_url(db))
             else:
-                subject, text_body, html_body = render(body, status, narrative, reason, app_base_url(db))
+                subject, text_body, html_body = render(
+                    v.body, v.narrative_status, v.narrative, v.narrative_reason, app_base_url(db),
+                )
             for cid, connector, config in connectors:
                 try:
                     ok = connector.send(

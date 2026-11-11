@@ -5,7 +5,7 @@ NEW OPEN organization discovery candidates since its previous digest, grouped
 by root organization. Deterministic, no AI summary.
 
 What a notification may mention is decided in ONE place,
-`org_discovery.digest_scope`; this module never re-implements it. It is applied
+`notification_scope`; this module never re-implements it. It is applied
 when the body is built (`select_new`), when it is sent and when a stored body
 is read back through the API (`filter_body`), so a deal that returns to a
 restricting posture closes up in already-built digests by itself.
@@ -37,7 +37,7 @@ from app.models.notification_rule import NotificationRule
 from app.models.org_entity import OrgEntity
 from app.models.scope_candidate import ScopeCandidate
 from app.services import notification_dispatcher
-from app.services.org_discovery import digest_scope
+from app.services import notification_scope
 
 LIST_CAP = 50  # candidates listed per organization; counts stay exact
 
@@ -49,7 +49,7 @@ def select_new(
     db: Session, rule: NotificationRule, floor: datetime, now: datetime, *, grace: timedelta,
 ) -> list[tuple[ScopeCandidate, OrgEntity]]:
     """The candidates `rule` has not claimed yet that a notification may name:
-    open, created in `(floor - grace, now]`, eligible per `digest_scope`."""
+    open, created in `(floor - grace, now]`, eligible per `notification_scope`."""
     claimed = exists().where(DigestCandidate.rule_id == rule.id, DigestCandidate.candidate_id == ScopeCandidate.id)
     rows = db.execute(
         select(ScopeCandidate, OrgEntity)
@@ -59,7 +59,7 @@ def select_new(
             ScopeCandidate.created_at > floor - grace,
             ScopeCandidate.created_at <= now,
             ~claimed,
-            digest_scope.candidate_eligible_clause(ScopeCandidate, OrgEntity),
+            notification_scope.candidate_eligible_clause(ScopeCandidate, OrgEntity),
         )
         .order_by(OrgEntity.legal_name, OrgEntity.id, ScopeCandidate.kind, ScopeCandidate.value)
     ).all()
@@ -112,7 +112,7 @@ def filter_body(db: Session, digest: Digest) -> dict:
         .join(ScopeCandidate, ScopeCandidate.id == DigestCandidate.candidate_id)
         .where(DigestCandidate.digest_id == digest.id)
     ).all()
-    eligible = digest_scope.eligible_candidate_ids(db, [cid for cid, _root in claimed])
+    eligible = notification_scope.eligible_candidate_ids(db, [cid for cid, _root in claimed])
     per_org: dict[str, int] = {}
     for cid, root_id in claimed:
         if cid in eligible:
