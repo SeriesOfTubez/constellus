@@ -59,7 +59,7 @@ function OrgDiscoveryBodyView({ detail }: { detail: OrgDiscoveryDigestDetail }) 
                 <span className="text-xs text-muted-foreground shrink-0">{CANDIDATE_KIND_LABEL[c.kind] ?? c.kind}</span>
                 <span className="truncate">{c.value}</span>
                 {c.strength && (
-                  <span className={`inline-flex shrink-0 items-center rounded border px-1.5 py-0.5 text-[11px] font-medium ${tierChipClass(c.strength)}`}>
+                  <span className={`inline-flex shrink-0 items-center rounded border px-1.5 py-0.5 text-xs font-medium ${tierChipClass(c.strength)}`}>
                     {STRENGTH_LABEL[c.strength] ?? c.strength}
                   </span>
                 )}

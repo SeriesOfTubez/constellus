@@ -56,7 +56,7 @@ export default function Engagements() {
       <AdminBreadcrumb page="Engagements" />
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Engagements</h1>
+          <h1 className="text-xl tracking-title font-semibold">Engagements</h1>
           <p className="text-sm text-muted-foreground mt-1">
             M&A and diligence engagements — posture, member targets, and recorded authorisation.
           </p>

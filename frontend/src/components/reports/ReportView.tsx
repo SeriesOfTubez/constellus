@@ -188,7 +188,7 @@ export function ReportView({ report, engagementName, onDelete, onDownload }: Pro
   return (
     <div className="space-y-5">
       <header className="space-y-1">
-        <h2 className="text-lg font-semibold">{KIND_LABELS[report.kind]}</h2>
+        <h2 className="text-base font-semibold">{KIND_LABELS[report.kind]}</h2>
         <p className="text-sm text-muted-foreground">{engagementName}</p>
         {report.kind === "ma_brief" && report.facts?.subject && (
           <p className="text-sm text-muted-foreground">

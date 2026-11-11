@@ -45,7 +45,7 @@ function EvidenceButton({ id }: { id: string }) {
 function Section({ title, count, children }: { title: string; count?: number; children: ReactNode }) {
   return (
     <section className="space-y-2">
-      <h2 className="text-lg font-medium">
+      <h2 className="text-base font-medium">
         {title}
         {count !== undefined && <span className="ml-2 text-sm text-muted-foreground">({count})</span>}
       </h2>

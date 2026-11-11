@@ -51,7 +51,7 @@ export function ExposureOverrideBadge({ finding }: { finding: Finding }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium cursor-help ${cls}`}>
+        <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs font-medium cursor-help ${cls}`}>
           <Icon className="h-2.5 w-2.5" />{text}
         </span>
       </TooltipTrigger>
@@ -415,7 +415,7 @@ export function ImpactClassBadge({ finding }: { finding: Finding }) {
     <Link
       to={`/findings?impact_class=${impactClass}`}
       title={title}
-      className={`self-start inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide hover:opacity-80 transition-opacity ${IMPACT_CLASS_CLS}`}
+      className={`self-start inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide hover:opacity-80 transition-opacity ${IMPACT_CLASS_CLS}`}
     >
       {degree}{IMPACT_CLASS_LABEL[impactClass]}
     </Link>
@@ -447,9 +447,9 @@ export function SsvcEvidence({ finding }: { finding: Finding }) {
   return (
     <div className="rounded-md border p-4 space-y-2.5">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">SSVC</p>
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">SSVC</p>
         <span
-          className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium ${derived
+          className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium ${derived
             ? "border-border bg-muted/40 text-muted-foreground"
             : "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-400"}`}
           title={derived
@@ -557,7 +557,7 @@ export function BodSlaBadge({ finding }: { finding: Finding }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium cursor-help ${colorCls}`}>
+        <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium cursor-help ${colorCls}`}>
           {label}{sla.forensic_triage ? " + triage" : ""}
         </span>
       </TooltipTrigger>
@@ -879,7 +879,7 @@ function ConfidenceChip({ confidence }: { confidence?: "confirmed" | "potential"
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium cursor-help ${confirmed
+        <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium cursor-help ${confirmed
           ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
           : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"}`}>
           {confirmed ? "Confirmed" : "Potential"}
@@ -958,7 +958,7 @@ export function UpstreamEvidence({ finding }: { finding: Finding }) {
   return (
     <div className="rounded-md border p-4 space-y-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Provenance</p>
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Provenance</p>
         <ConfidenceChip confidence={finding.confidence} />
       </div>
 
@@ -967,7 +967,7 @@ export function UpstreamEvidence({ finding }: { finding: Finding }) {
         {port != null
           ? <PortBadge port={port} />
           : hostLevel
-          ? <span className="inline-flex items-center rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground" title="No port — Shodan attributes this at the host/IP level">host-level</span>
+          ? <span className="inline-flex items-center rounded border border-border bg-muted/50 px-1.5 py-0.5 text-xs font-medium text-muted-foreground" title="No port — Shodan attributes this at the host/IP level">host-level</span>
           : null}
       </div>
 

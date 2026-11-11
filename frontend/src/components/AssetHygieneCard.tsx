@@ -64,7 +64,7 @@ export function AssetHygieneCard({ asset }: { asset: Asset }) {
   if (isLoading) {
     return (
       <div className="space-y-2">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Asset Hygiene</p>
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Asset Hygiene</p>
         <div className="rounded-lg border p-4 text-xs text-muted-foreground italic">Loading…</div>
       </div>
     )
@@ -73,7 +73,7 @@ export function AssetHygieneCard({ asset }: { asset: Asset }) {
   if (isError || !data) {
     return (
       <div className="space-y-2">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Asset Hygiene</p>
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Asset Hygiene</p>
         <div className="rounded-lg border p-4 text-xs text-muted-foreground">Couldn't load hygiene score.</div>
       </div>
     )
@@ -83,7 +83,7 @@ export function AssetHygieneCard({ asset }: { asset: Asset }) {
     const excluded = data.reason === "excluded_not_ours"
     return (
       <div className="space-y-2">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Asset Hygiene</p>
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Asset Hygiene</p>
         <div className="rounded-lg border bg-muted/20 p-4 flex items-start gap-3">
           {excluded
             ? <ShieldQuestion className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
@@ -105,13 +105,13 @@ export function AssetHygieneCard({ asset }: { asset: Asset }) {
 
   return (
     <div className="space-y-3">
-      <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Asset Hygiene</p>
+      <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Asset Hygiene</p>
 
       {/* Hero — the ONE place the numeric score appears, explicitly labelled
           so it can't be mistaken for Risk Score (opposite polarity) sitting
           elsewhere on the same screen. */}
       <div className={`rounded-lg p-4 bg-gradient-to-br ${hero.bgCls} to-transparent space-y-1`}>
-        <p className={`text-lg font-bold leading-none ${hero.textCls}`}>
+        <p className={`text-xl font-bold leading-none ${hero.textCls}`}>
           {hero.label}
           <span className="ml-2 font-mono text-sm opacity-70">{data.score} / 100</span>
         </p>

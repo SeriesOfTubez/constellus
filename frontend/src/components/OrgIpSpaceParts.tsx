@@ -26,7 +26,7 @@ export function RegistryChangeBadge() {
   return (
     <span
       title={REGISTRY_CHANGE_TITLE}
-      className="ml-2 inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 align-middle font-sans text-[11px] font-medium text-muted-foreground"
+      className="ml-2 inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 align-middle font-sans text-xs font-medium text-muted-foreground"
     >
       <Info className="h-3 w-3" />Registry change
     </span>

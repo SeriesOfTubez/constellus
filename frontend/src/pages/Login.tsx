@@ -54,7 +54,7 @@ export default function Login() {
                 <Logo />
               </div>
             )}
-            <CardTitle className="text-2xl">Welcome back</CardTitle>
+            <CardTitle className="text-xl">Welcome back</CardTitle>
             <CardDescription>
               Sign in to {isCustomOrg ? `${org_name}'s` : "your"} Constellus account
             </CardDescription>

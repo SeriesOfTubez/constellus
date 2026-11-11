@@ -76,7 +76,7 @@ function RootList({ orgs, activeId }: { orgs: OrganizationSummary[]; activeId?: 
           >
             <div className="flex items-center justify-between gap-2">
               <span className="font-medium truncate">{o.name}</span>
-              <span className="rounded-full border px-1.5 text-[10px] text-muted-foreground shrink-0">{orgPill(o)}</span>
+              <span className="rounded-full border px-1.5 text-xs text-muted-foreground shrink-0">{orgPill(o)}</span>
             </div>
             <div className="text-xs text-muted-foreground">{o.proposed} to review</div>
           </Link>
@@ -97,8 +97,8 @@ function TreeList({
         const inner = (
           <>
             <span className="truncate">{node.name}</span>
-            {node.status === "proposed" && <span className="ml-1 text-[10px] text-muted-foreground">proposed</span>}
-            {note && <span className="block text-[11px] text-muted-foreground">{note}</span>}
+            {node.status === "proposed" && <span className="ml-1 text-xs text-muted-foreground">proposed</span>}
+            {note && <span className="block text-xs text-muted-foreground">{note}</span>}
           </>
         )
         return (
@@ -151,8 +151,8 @@ function Kpi({ label, value, hint }: { label: string; value: React.ReactNode; hi
   return (
     <div className="rounded-lg border bg-card px-3 py-2 min-w-[120px]">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="text-lg font-semibold tabular-nums">{value}</div>
-      {hint && <div className="text-[10px] text-muted-foreground">{hint}</div>}
+      <div className="text-xl font-semibold tabular-nums">{value}</div>
+      {hint && <div className="text-xs text-muted-foreground">{hint}</div>}
     </div>
   )
 }

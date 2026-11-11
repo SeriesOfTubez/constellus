@@ -8,7 +8,7 @@ const TITLE_TIP = "Page title of the redirect destination, not of this endpoint"
 export function RedirectChain({ chain, compact }: { chain: RedirectHop[]; compact?: boolean }) {
   if (chain.length === 0) return null
   return (
-    <div className={compact ? "text-[10px] text-muted-foreground/80" : "text-xs text-muted-foreground"}>
+    <div className={compact ? "text-xs text-muted-foreground/80" : "text-xs text-muted-foreground"}>
       {chain.map((hop, i) => {
         const url = hop.hop_asset_id ? (
           <Link

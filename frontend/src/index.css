@@ -54,11 +54,18 @@
   /* Type scale 12 / 13 / 15 / 20: meta and chips · body and table cells ·
      flyout title and brand · page title and verdict. text-xs (12) and
      text-xl (20) are Tailwind's own values; nothing under 12. Hierarchy comes
-     from weight (400 / 500 / 600, verdict 700) and muted colour, not size. */
+     from weight (400 / 500 / 600, verdict 700) and muted colour, not size.
+     Call sites were swept onto this scale in planning#337 slice 3; the
+     typescale test keeps them there. */
   --text-sm: 13px;
   --text-sm--line-height: 20px;
   --text-base: 15px;
   --text-base--line-height: 22px;
+
+  /* Display: the dashboard's hero numbers only (planning#337 slice 3). It is
+     not a fifth text step; nothing else may use it (typescale.test.ts). */
+  --text-display: 24px;
+  --text-display--line-height: 28px;
 
   --tracking-title: -0.01em;
 

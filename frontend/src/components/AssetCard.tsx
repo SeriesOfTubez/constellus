@@ -62,12 +62,12 @@ export function AssetCard({
         <div className="flex items-center gap-2 flex-wrap">
           <p className="font-mono text-sm font-medium break-all">{displayName(asset.value)}</p>
           {isNew && (
-            <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+            <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
               <Sparkles className="h-2.5 w-2.5" />New
             </span>
           )}
           {stale && (
-            <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+            <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
               <Clock className="h-2.5 w-2.5" />stale {daysSince(asset.last_seen_at)}d
             </span>
           )}
@@ -93,7 +93,7 @@ export function AssetCard({
       )}
 
       {/* Footer */}
-      <p className="text-[11px] text-muted-foreground">seen {relativeTime(asset.last_seen_at)}</p>
+      <p className="text-xs text-muted-foreground">seen {relativeTime(asset.last_seen_at)}</p>
     </div>
   )
 }

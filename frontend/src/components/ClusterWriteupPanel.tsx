@@ -11,7 +11,7 @@ import { relativeTime } from "@/lib/time"
 // planning#233 slice 2b — AI write-up for a cross-asset finding cluster.
 // Same rule as the per-finding panel: all model output is plain text.
 
-const SECTION = "text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
+const SECTION = "text-xs font-semibold uppercase tracking-widest text-muted-foreground"
 
 export function ClusterWriteupBody({
   data, canGenerate, busy, onGenerate, assetCount,
@@ -99,7 +99,7 @@ export function ClusterWriteupBody({
             <div className="rounded-md border px-3 py-2 space-y-0.5">
               <p className="text-xs font-medium">Priority note (AI)</p>
               <p className="text-sm whitespace-pre-wrap">{w.priority_note}</p>
-              <p className="text-[11px] text-muted-foreground">Never changes severity or score.</p>
+              <p className="text-xs text-muted-foreground">Never changes severity or score.</p>
             </div>
           )}
 
@@ -112,13 +112,13 @@ export function ClusterWriteupBody({
                 {w.context.map((c, i) => (
                   <li key={i} className="text-sm space-y-0.5">
                     <p className="whitespace-pre-wrap">{c.statement}</p>
-                    <p className="text-[11px] font-mono text-muted-foreground break-all">source: {c.source_field}</p>
+                    <p className="text-xs font-mono text-muted-foreground break-all">source: {c.source_field}</p>
                   </li>
                 ))}
               </ul>
             )}
             {!!w.statements_dropped && (
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 {w.statements_dropped} of {w.statements_returned} statements dropped: they cited a field that is not in what Constellus holds.
               </p>
             )}
@@ -127,7 +127,7 @@ export function ClusterWriteupBody({
           {w.fix_steps.length > 0 && (
             <div className="space-y-2">
               <p className={SECTION}>General guidance</p>
-              <p className="text-[11px] text-muted-foreground">Typical remediation for this kind of issue, not a fact about these assets.</p>
+              <p className="text-xs text-muted-foreground">Typical remediation for this kind of issue, not a fact about these assets.</p>
               <ol className="list-decimal pl-5 space-y-1 text-sm">
                 {w.fix_steps.map((s, i) => <li key={i} className="whitespace-pre-wrap">{s}</li>)}
               </ol>

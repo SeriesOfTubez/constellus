@@ -113,7 +113,7 @@ function CategoryCard({
                   <ItemIcon className="h-4 w-4 text-muted-foreground shrink-0" />
                   <span className="flex-1 text-sm text-muted-foreground">{item.label}</span>
                   {item.future && (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">Soon</Badge>
+                    <Badge variant="outline" className="text-xs px-1.5 py-0 h-4">Soon</Badge>
                   )}
                 </div>
               )
@@ -160,7 +160,7 @@ export default function Admin() {
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">Admin</h1>
+        <h1 className="text-xl tracking-title font-semibold">Admin</h1>
         <p className="text-sm text-muted-foreground mt-1">Manage your Constellus deployment</p>
       </div>
 

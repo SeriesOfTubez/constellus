@@ -64,7 +64,7 @@ function LinkRow({ url, label, date, tags }: { url: string; label: string; date?
         <span className="truncate">{label}</span>
       </a>
       {tags?.slice(0, 2).map(t => (
-        <span key={t} className="shrink-0 rounded bg-muted px-1 py-0 text-[10px] text-muted-foreground">{t}</span>
+        <span key={t} className="shrink-0 rounded bg-muted px-1 py-0 text-xs text-muted-foreground">{t}</span>
       ))}
       {date && <span className="text-muted-foreground shrink-0 ml-auto">{date}</span>}
     </div>
@@ -94,7 +94,7 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
       <button onClick={() => setOpen(o => !o)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/40 transition-colors">
         {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
-        <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">About this vulnerability</span>
+        <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">About this vulnerability</span>
         {finding.cve_id && <span className="ml-auto font-mono text-xs text-muted-foreground">{finding.cve_id}</span>}
       </button>
 
@@ -104,7 +104,7 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
             <div className={`rounded border-l-2 px-3 py-2 ${
               override.kind === "tag" ? "border-l-amber-500 bg-amber-500/5" : "border-l-sky-500 bg-sky-500/5"
             }`}>
-              <p className={`text-[10px] font-semibold uppercase tracking-wider flex items-center gap-1 ${
+              <p className={`text-xs font-semibold uppercase tracking-wider flex items-center gap-1 ${
                 override.kind === "tag" ? "text-amber-700 dark:text-amber-400" : "text-sky-700 dark:text-sky-400"
               }`}>
                 {override.kind === "tag"
@@ -131,13 +131,13 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
           {(intel?.is_remote || intel?.is_auth !== undefined) && (
             <div className="flex items-center gap-1.5 flex-wrap">
               {intel?.is_remote && (
-                <span className="inline-flex items-center rounded border border-orange-500/40 bg-orange-500/10 px-1.5 py-0.5 text-[10px] font-medium text-orange-600 dark:text-orange-400">Remotely exploitable</span>
+                <span className="inline-flex items-center rounded border border-orange-500/40 bg-orange-500/10 px-1.5 py-0.5 text-xs font-medium text-orange-600 dark:text-orange-400">Remotely exploitable</span>
               )}
               {intel?.is_auth === false && (
-                <span className="inline-flex items-center rounded border border-orange-500/40 bg-orange-500/10 px-1.5 py-0.5 text-[10px] font-medium text-orange-600 dark:text-orange-400">No auth required</span>
+                <span className="inline-flex items-center rounded border border-orange-500/40 bg-orange-500/10 px-1.5 py-0.5 text-xs font-medium text-orange-600 dark:text-orange-400">No auth required</span>
               )}
               {intel?.is_auth === true && (
-                <span className="inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">Auth required</span>
+                <span className="inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">Auth required</span>
               )}
             </div>
           )}
@@ -148,7 +148,7 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
 
           {intel?.impact && (
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Impact</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Impact</p>
               <p className="text-sm mt-0.5 text-muted-foreground leading-relaxed">{intel.impact}</p>
             </div>
           )}
@@ -157,7 +157,7 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
             <div className="rounded bg-muted/50 px-3 py-2 space-y-2">
               {intel?.required_action && (
                 <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
                     <ShieldAlert className="h-3 w-3" />CISA required action
                   </p>
                   <p className="text-sm mt-0.5">{intel.required_action}</p>
@@ -165,7 +165,7 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
               )}
               {remediation && (
                 <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Recommended remediation</p>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Recommended remediation</p>
                   <p className="text-sm mt-0.5">{remediation}</p>
                 </div>
               )}
@@ -184,7 +184,7 @@ type IntelItem = { url: string; label: string; date?: string; tags?: string[] }
 function FilterChip({ active, label, count, onClick }: { active: boolean; label: string; count: number; onClick: () => void }) {
   return (
     <button onClick={onClick}
-      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors ${
+      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium transition-colors ${
         active ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"
       }`}>
       {label}<span className="tabular-nums opacity-70">{count}</span>

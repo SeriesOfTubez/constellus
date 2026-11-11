@@ -30,7 +30,7 @@ function Placeholder() {
     <div className="flex flex-col items-center justify-center h-full gap-4 text-center p-8">
       <Network className="h-12 w-12 text-muted-foreground/40" />
       <div className="space-y-1">
-        <h2 className="text-lg font-semibold">Graph Explorer</h2>
+        <h2 className="text-base font-semibold">Graph Explorer</h2>
         <p className="text-sm text-muted-foreground max-w-sm">
           Point-and-click query builder over the attack-surface graph — coming soon.
         </p>
@@ -42,7 +42,7 @@ function Placeholder() {
 function Problem({ children }: { children: React.ReactNode }) {
   return (
     <div className="p-6 space-y-2">
-      <h1 className="text-lg font-semibold">Explore</h1>
+      <h1 className="text-xl tracking-title font-semibold">Explore</h1>
       <div className="text-sm text-muted-foreground">{children}</div>
     </div>
   )
@@ -92,7 +92,7 @@ function QueryResults({ q, raw }: { q: QueryObject; raw: string }) {
   return (
     <div className="p-6 space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-lg font-semibold">Explore</h1>
+        <h1 className="text-xl tracking-title font-semibold">Explore</h1>
         <span className="rounded border px-1.5 py-0.5 text-xs text-muted-foreground">From chat</span>
         <span className="font-mono text-xs text-muted-foreground truncate max-w-[50ch]" title={summariseQuery(q)}>
           {summariseQuery(q)}

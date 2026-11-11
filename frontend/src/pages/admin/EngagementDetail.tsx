@@ -169,7 +169,7 @@ export default function EngagementDetail() {
       <Separator />
 
       <div className="space-y-2">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
           Member targets ({engagement.member_targets.length})
         </p>
         {engagement.member_targets.length === 0 ? (

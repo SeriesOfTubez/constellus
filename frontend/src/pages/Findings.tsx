@@ -229,7 +229,7 @@ function FindingDetailSheet({
 
                 {hasEnrichment && (
                   <div className="rounded-md border p-4 space-y-2.5">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Enrichment</p>
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Enrichment</p>
                     {finding.cve_id && (
                       <div className="flex items-center gap-3 text-sm">
                         <span className="text-xs text-muted-foreground w-20 shrink-0">CVE</span>
@@ -281,14 +281,14 @@ function FindingDetailSheet({
 
                 {matchedAt && (
                   <div className="space-y-1.5">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Matched URL</p>
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Matched URL</p>
                     <p className="text-xs font-mono break-all bg-muted rounded px-3 py-2">{matchedAt}</p>
                   </div>
                 )}
 
                 {extracted.length > 0 && (
                   <div className="space-y-1.5">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Extracted</p>
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Extracted</p>
                     <div className="space-y-1">
                       {extracted.map((r, i) => <p key={i} className="text-xs font-mono bg-muted rounded px-3 py-1.5 break-all">{r}</p>)}
                     </div>
@@ -297,14 +297,14 @@ function FindingDetailSheet({
 
                 {curlCmd && (
                   <div className="space-y-1.5">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Curl command</p>
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Curl command</p>
                     <pre className="text-xs font-mono bg-muted/60 rounded p-3 overflow-x-auto whitespace-pre-wrap break-all">{curlCmd}</pre>
                   </div>
                 )}
 
                 {tags.length > 0 && (
                   <div className="space-y-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Scanner tags</p>
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Scanner tags</p>
                     <div className="flex flex-wrap gap-1">
                       {tags.map(tag => (
                         <span key={tag} className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-xs font-mono text-muted-foreground">{tag}</span>
@@ -315,7 +315,7 @@ function FindingDetailSheet({
 
                 <Separator />
                 <div className="space-y-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Tags</p>
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Tags</p>
                   <TagEditor tags={finding.tags ?? []} entityType="finding" onChange={t => tagMutation.mutate(t)} />
                 </div>
               </div>
@@ -944,13 +944,13 @@ export default function Findings() {
             {f.cve_id && <span className="font-mono text-xs text-muted-foreground shrink-0">{f.cve_id}</span>}
             <ExposureOverrideBadge finding={f} />
             {isNew(f) && (
-              <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+              <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
                 <Sparkles className="h-2.5 w-2.5" />New
               </span>
             )}
             {isStale(f.last_seen_at) && (
               <span
-                className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400"
+                className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
                 title={`Last seen ${relativeTime(f.last_seen_at)} — not observed in recent scans`}
               >
                 <Clock className="h-2.5 w-2.5" />stale {daysSince(f.last_seen_at)}d
@@ -992,7 +992,7 @@ export default function Findings() {
   const writeupButton = (g: Group) => g.cluster ? (
     <Button
       type="button" size="sm" variant="ghost"
-      className="h-6 px-1.5 text-[11px] normal-case tracking-normal"
+      className="h-6 px-1.5 text-xs normal-case tracking-normal"
       aria-expanded={writeupOpen.has(g.key)}
       onClick={e => { e.stopPropagation(); toggleWriteup(g.key) }}
     >

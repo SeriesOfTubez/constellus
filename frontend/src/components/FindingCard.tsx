@@ -75,7 +75,7 @@ export function FindingCard({
         {f.cve_id && <span className="font-mono text-xs text-muted-foreground shrink-0">{f.cve_id}</span>}
         <ExposureOverrideBadge finding={f} />
         {isNew && (
-          <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary shrink-0">
+          <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary shrink-0">
             <Sparkles className="h-2.5 w-2.5" />New
           </span>
         )}
@@ -94,7 +94,7 @@ export function FindingCard({
         </div>
       )}
 
-      <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+      <p className="flex items-center gap-1 text-xs text-muted-foreground">
         {stale ? (
           <><Clock className="h-3 w-3 text-amber-500" /> stale {daysSince(f.last_seen_at)}d</>
         ) : (

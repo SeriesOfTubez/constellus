@@ -552,13 +552,13 @@ function NotificationRulesCard() {
                       {r.name}
                     </button>
                     {r.kind === "org_discovery" && (
-                      <Badge variant="secondary" className="text-[10px]">Org discovery</Badge>
+                      <Badge variant="secondary" className="text-xs">Org discovery</Badge>
                     )}
                     {r.kind !== "org_discovery" && (
-                      <Badge variant="outline" className="text-[10px] uppercase">{r.severity_threshold}+</Badge>
+                      <Badge variant="outline" className="text-xs uppercase">{r.severity_threshold}+</Badge>
                     )}
                     {r.kind !== "org_discovery" && r.mode && r.mode !== "immediate" && (
-                      <Badge variant="secondary" className="text-[10px] text-muted-foreground">
+                      <Badge variant="secondary" className="text-xs text-muted-foreground">
                         {r.mode === "digest" ? "Digest" : "Immediate + digest"}
                       </Badge>
                     )}
@@ -1303,7 +1303,7 @@ export default function Settings() {
     <div className="p-6 max-w-5xl mx-auto space-y-6">
       <AdminBreadcrumb page="Organization" />
       <div>
-        <h1 className="text-2xl font-semibold">Settings</h1>
+        <h1 className="text-xl tracking-title font-semibold">Settings</h1>
         <p className="text-sm text-muted-foreground mt-1">System information and configuration</p>
       </div>
 

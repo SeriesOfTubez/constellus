@@ -40,7 +40,7 @@ export type AiWriteupState = {
   last_failure: { error: string | null; finished_at: string | null } | null
 }
 
-const SECTION = "text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
+const SECTION = "text-xs font-semibold uppercase tracking-widest text-muted-foreground"
 
 export function AiWriteupPanel({ findingId }: { findingId: string }) {
   const qc = useQueryClient()
@@ -117,7 +117,7 @@ export function AiWriteupPanel({ findingId }: { findingId: string }) {
             <div className="rounded-md border px-3 py-2 space-y-0.5">
               <p className="text-xs font-medium">Priority note (AI)</p>
               <p className="text-sm whitespace-pre-wrap">{w.priority_note}</p>
-              <p className="text-[11px] text-muted-foreground">Never changes severity or score.</p>
+              <p className="text-xs text-muted-foreground">Never changes severity or score.</p>
             </div>
           )}
 
@@ -130,13 +130,13 @@ export function AiWriteupPanel({ findingId }: { findingId: string }) {
                 {w.context.map((c, i) => (
                   <li key={i} className="text-sm space-y-0.5">
                     <p className="whitespace-pre-wrap">{c.statement}</p>
-                    <p className="text-[11px] font-mono text-muted-foreground break-all">source: {c.source_field}</p>
+                    <p className="text-xs font-mono text-muted-foreground break-all">source: {c.source_field}</p>
                   </li>
                 ))}
               </ul>
             )}
             {!!w.statements_dropped && (
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 {w.statements_dropped} of {w.statements_returned} statements dropped: they cited a field that is not in what Constellus holds.
               </p>
             )}
@@ -145,7 +145,7 @@ export function AiWriteupPanel({ findingId }: { findingId: string }) {
           {w.fix_steps.length > 0 && (
             <div className="space-y-2">
               <p className={SECTION}>General guidance</p>
-              <p className="text-[11px] text-muted-foreground">Typical remediation for this kind of issue, not a fact about this asset.</p>
+              <p className="text-xs text-muted-foreground">Typical remediation for this kind of issue, not a fact about this asset.</p>
               <ol className="list-decimal pl-5 space-y-1 text-sm">
                 {w.fix_steps.map((s, i) => <li key={i} className="whitespace-pre-wrap">{s}</li>)}
               </ol>

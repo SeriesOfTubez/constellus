@@ -51,8 +51,12 @@ describe("RedirectChain", () => {
     expect(html.indexOf(">then<")).toBeLessThan(html.indexOf("b.fabrikam"))
   })
 
-  it("compact and full variants differ in size class", () => {
-    expect(render([hop()], true)).toContain("text-[10px]")
-    expect(render([hop()])).toContain("text-xs")
+  it("compact and full variants share the 12px floor and differ only in colour", () => {
+    const compact = render([hop()], true)
+    const full = render([hop()])
+    expect(compact).toContain("text-xs")
+    expect(full).toContain("text-xs")
+    expect(compact).toContain("text-muted-foreground/80")
+    expect(full).not.toContain("text-muted-foreground/80")
   })
 })

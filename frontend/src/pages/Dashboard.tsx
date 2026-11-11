@@ -48,7 +48,7 @@ function SeverityStrip({ findings, loading, error }: { findings?: Finding[]; loa
           <div className="flex flex-wrap items-end gap-x-8 gap-y-4">
             {/* Total */}
             <div className="text-center min-w-[2.5rem]">
-              <p className="text-3xl font-bold tabular-nums leading-none">{total}</p>
+              <p className="text-display font-bold tabular-nums leading-none">{total}</p>
               <p className="text-xs text-muted-foreground mt-1">Total</p>
             </div>
 
@@ -57,7 +57,7 @@ function SeverityStrip({ findings, loading, error }: { findings?: Finding[]; loa
             {/* Per-verdict counts (Constellus Risk Score band, not raw CVSS severity) */}
             {RISK_BAND_ORDER.filter(b => counts[b] > 0).map(b => (
               <Link key={b} to={`/findings?band=${b}`} className="text-center min-w-[2.5rem] group">
-                <p className="text-3xl font-bold tabular-nums leading-none group-hover:opacity-80 transition-opacity"
+                <p className="text-display font-bold tabular-nums leading-none group-hover:opacity-80 transition-opacity"
                   style={{ color: BAND_VAR[b] }}>
                   {counts[b]}
                 </p>
@@ -108,7 +108,7 @@ function SsvcStrip({ findings, loading, error }: { findings?: Finding[]; loading
 
   const stat = (to: string, n: number, label: string) => (
     <Link to={to} className="text-center min-w-[2.5rem] group">
-      <p className="text-2xl font-bold tabular-nums leading-none group-hover:opacity-80 transition-opacity">{n}</p>
+      <p className="text-display font-bold tabular-nums leading-none group-hover:opacity-80 transition-opacity">{n}</p>
       <p className="text-xs text-muted-foreground mt-1">{label}</p>
     </Link>
   )
@@ -124,7 +124,7 @@ function SsvcStrip({ findings, loading, error }: { findings?: Finding[]; loading
           <div className="flex flex-wrap items-end gap-x-8 gap-y-3">
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground self-center cursor-help leading-tight">SSVC<br />posture</span>
+                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground self-center cursor-help leading-tight">SSVC<br />posture</span>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-xs">
                 CISA SSVC structural signals (Vulnrichment or derived). Automatable = mass-scriptable exploitation; Technical Impact = control gained if exploited.
@@ -216,7 +216,7 @@ function ScoreGauge({ score, color }: { score: number; color: string }) {
         style={{ transition: "stroke-dashoffset 600ms ease" }}
       />
       <text x="100" y="92" textAnchor="middle" className="font-bold tabular-nums" fontSize="40" fill={color}>{score}</text>
-      <text x="100" y="108" textAnchor="middle" fontSize="11" fill="var(--muted-foreground)">/ 100</text>
+      <text x="100" y="108" textAnchor="middle" fontSize="12" fill="var(--muted-foreground)">/ 100</text>
     </svg>
   )
 }
@@ -274,7 +274,7 @@ function SecurityScoreGauge({ data, loading, error }: { data?: SecurityScore; lo
             <ScoreGauge score={data?.score ?? 0} color={color} />
 
             {/* Verdict at org scope */}
-            <p className="text-lg font-bold -mt-1" style={{ color }}>
+            <p className="text-xl font-bold -mt-1" style={{ color }}>
               {isSecure ? "Secure Posture ✓" : label}
             </p>
 
@@ -303,7 +303,7 @@ function SecurityScoreGauge({ data, loading, error }: { data?: SecurityScore; lo
             {/* Top contributors */}
             {data && data.breakdown.length > 0 && (
               <div className="w-full mt-4 pt-3 border-t space-y-1.5">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Top contributors</p>
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Top contributors</p>
                 {data.breakdown.slice(0, 3).map(f => (
                   <Link key={f.id} to={`/findings/${f.id}`}
                     className="flex items-center gap-2 -mx-1 px-1 py-1 rounded hover:bg-accent/40 transition-colors">
@@ -402,7 +402,7 @@ function RecentActivity({ scans, loading, error }: { scans?: ScanRun[]; loading:
                       {r.name ?? (r.scope.domains?.[0] ? displayName(r.scope.domains[0]) : null) ?? "Unnamed run"}
                     </p>
                     <Badge variant={STATUS_VARIANT[r.status]}>{r.status}</Badge>
-                    <Badge variant="outline" className="text-[10px]">{KIND_LABEL[r.kind]}</Badge>
+                    <Badge variant="outline" className="text-xs">{KIND_LABEL[r.kind]}</Badge>
                     {r.status === "running" && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
                   </div>
                   <p className="mt-0.5 text-xs text-muted-foreground">
@@ -465,7 +465,7 @@ export default function Dashboard() {
   return (
     <div className="p-6 space-y-5">
       <div>
-        <h1 className="text-2xl font-semibold">Dashboard</h1>
+        <h1 className="text-xl tracking-title font-semibold">Dashboard</h1>
         <p className="text-sm text-muted-foreground mt-1">Welcome back, {user?.full_name}</p>
       </div>
 
@@ -479,8 +479,8 @@ export default function Dashboard() {
             </CardHeader>
             <CardContent>
               {tLoading ? <Skeleton className="h-8 w-12" /> : tError ? (
-                <div className="text-2xl font-bold" style={{ color: "var(--sev-unknown)" }} title="Couldn't load — data may be incomplete">?</div>
-              ) : <div className="text-2xl font-bold">{targets?.length ?? "—"}</div>}
+                <div className="text-display font-bold" style={{ color: "var(--sev-unknown)" }} title="Couldn't load — data may be incomplete">?</div>
+              ) : <div className="text-display font-bold">{targets?.length ?? "—"}</div>}
             </CardContent>
           </Card>
         </Link>
@@ -493,8 +493,8 @@ export default function Dashboard() {
             </CardHeader>
             <CardContent>
               {aLoading ? <Skeleton className="h-8 w-12" /> : aError ? (
-                <div className="text-2xl font-bold" style={{ color: "var(--sev-unknown)" }} title="Couldn't load — data may be incomplete">?</div>
-              ) : <div className="text-2xl font-bold">{assets?.length ?? "—"}</div>}
+                <div className="text-display font-bold" style={{ color: "var(--sev-unknown)" }} title="Couldn't load — data may be incomplete">?</div>
+              ) : <div className="text-display font-bold">{assets?.length ?? "—"}</div>}
             </CardContent>
           </Card>
         </Link>
@@ -507,8 +507,8 @@ export default function Dashboard() {
             </CardHeader>
             <CardContent>
               {fLoading ? <Skeleton className="h-8 w-12" /> : fError ? (
-                <div className="text-2xl font-bold" style={{ color: "var(--sev-unknown)" }} title="Couldn't load — data may be incomplete">?</div>
-              ) : <div className="text-2xl font-bold">{openFindings?.length ?? "—"}</div>}
+                <div className="text-display font-bold" style={{ color: "var(--sev-unknown)" }} title="Couldn't load — data may be incomplete">?</div>
+              ) : <div className="text-display font-bold">{openFindings?.length ?? "—"}</div>}
             </CardContent>
           </Card>
         </Link>
@@ -521,8 +521,8 @@ export default function Dashboard() {
             </CardHeader>
             <CardContent>
               {fLoading ? <Skeleton className="h-8 w-12" /> : fError ? (
-                <div className="text-2xl font-bold" style={{ color: "var(--sev-unknown)" }} title="Couldn't load — data may be incomplete">?</div>
-              ) : <div className="text-2xl font-bold">{newThisWeek}</div>}
+                <div className="text-display font-bold" style={{ color: "var(--sev-unknown)" }} title="Couldn't load — data may be incomplete">?</div>
+              ) : <div className="text-display font-bold">{newThisWeek}</div>}
             </CardContent>
           </Card>
         </Link>

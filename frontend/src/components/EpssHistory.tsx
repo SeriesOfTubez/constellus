@@ -122,7 +122,7 @@ function EpssSparkline({
             x={toX(i)}
             y={H + LABEL_H - 2}
             textAnchor={i === 0 ? "start" : "end"}
-            fontSize="9"
+            fontSize="12"
             fill="currentColor"
             className="text-muted-foreground"
             opacity="0.6"
@@ -235,7 +235,7 @@ export function EpssSparklineSection({
 
   if (isLoading) return (
     <div className="space-y-1.5">
-      <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">EPSS trend</p>
+      <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">EPSS trend</p>
       <div className="h-10 bg-muted/40 rounded animate-pulse" />
     </div>
   )
@@ -244,7 +244,7 @@ export function EpssSparklineSection({
 
   return (
     <div className="space-y-1.5">
-      <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+      <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
         EPSS trend · {data.history.length}w
       </p>
       <EpssSparkline
