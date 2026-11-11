@@ -264,6 +264,7 @@ def _claim_org_discovery(db: Session, rule: NotificationRule, floor: datetime, n
     pairs = candidate_digest.select_new(db, rule, floor, now, grace=GRACE)
     body = candidate_digest.build_body(
         rule, pairs, period_start=floor, period_end=now, base_url=app_base_url(db),
+        signals=candidate_digest.candidate_signals(db, [c.id for c, _org in pairs]),
     )
     digest = Digest(
         kind=RULE_KIND_ORG_DISCOVERY, rule_id=rule.id, rule_name=rule.name, period_start=floor, period_end=now,
@@ -701,6 +702,7 @@ def render(
 # ── send ─────────────────────────────────────────────────────────────────────
 
 NARRATIVE_WITHHELD = "it was withheld because findings were removed from this digest after it was written"
+ORG_NARRATIVE_WITHHELD = "it was withheld because candidates were removed from this digest after it was written"
 
 
 @dataclass(frozen=True)
@@ -730,6 +732,11 @@ def view(db: Session, digest: Digest) -> DigestView:
     """The digest as it may be sent or read now. Never writes. Keyed on the
     ROW's kind, never the body's: a body cannot opt out.
 
+    An org-discovery digest is its stored body through `filter_body`. If that
+    removed nothing it is used as stored, narrative fields included; if it
+    removed candidates, any stored AI summary may have named them, so it is
+    withheld (the reason only says so when a summary existed).
+
     A finding digest is rebuilt from its claimed events whose finding is
     eligible now. If that equals the stored body (`_comparable`), the stored
     text names only findings eligible now, so it is used as stored (claim
@@ -738,10 +745,11 @@ def view(db: Session, digest: Digest) -> DigestView:
     without cluster write-ups, and the AI summary is withheld."""
     stored = DigestView(digest.body, digest.narrative_status, digest.narrative, digest.narrative_reason)
     if digest.kind == RULE_KIND_ORG_DISCOVERY:
-        return DigestView(
-            candidate_digest.filter_body(db, digest),
-            digest.narrative_status, digest.narrative, digest.narrative_reason,
-        )
+        filtered = candidate_digest.filter_body(db, digest)
+        if filtered == (digest.body or {}):
+            return stored
+        reason = ORG_NARRATIVE_WITHHELD if digest.narrative is not None else digest.narrative_reason
+        return DigestView(filtered, "skipped", None, reason)
     body = digest.body or {}
     rule = body.get("rule") or {"id": str(digest.rule_id), "name": digest.rule_name, "severity_threshold": None}
     rows = db.execute(
