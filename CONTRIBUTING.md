@@ -61,6 +61,38 @@ because it had never been decided and that ambiguity was its own bug class.
 Migration is incomplete and new instances should not be added: several analyzer
 helpers still commit sessions they do not own.
 
+### UI quality
+Every UI change (page, component, mockup) is checked against these seven questions
+before it ships. They are what separates a product from stock AI-generated UI:
+
+1. **Focal point.** What is this view for, and is that the most obvious thing on it?
+   One primary action per view; everything else secondary. The fix usually removes things.
+2. **Spacing.** Every gap on the 4px scale (Tailwind `1`, `2`, `3`, `4`, `6`, `8`…).
+   Related things sit closer together than unrelated things. Half-steps (`1.5`, `2.5`)
+   need a reason.
+3. **Hierarchy from weight and colour, not size.** Use the type scale, not arbitrary
+   `text-[10px]`. Secondary text is `text-muted-foreground`, not smaller. Nothing under 11px.
+4. **Colour.** Neutrals everywhere; the brand accent only on the primary action, focus,
+   links and selection. The severity palette is meaning, not decoration: only where
+   severity is shown.
+5. **Real content.** No lorem ipsum, `foo` or `example.com` in UI, fixtures or mockups.
+   Mockups use believable *synthetic* data (documentation IP ranges, real CVE IDs,
+   invented organisations), never real customer data.
+6. **Details.** Radius from the `--radius` scale (nested elements one step smaller);
+   1px subtle borders; elevation by surface shade, not heavy shadows; icons at a fixed
+   size per context (inline with text vs. in a button), never mixed.
+7. **Motion.** Menus and popovers grow from their trigger; toasts slide in and stack;
+   short ease-out, close faster than open. Skeletons for loading content; spinners only
+   for an action in progress.
+
+**Use the library, don't hand-roll:** shadcn/Radix for foundations (restyled through the
+tokens in `frontend/src/index.css`, never per-component overrides), Sonner for toasts.
+New libraries pass the dependency check above. Decorative animation libraries are out of
+scope: at most one standout moment per page.
+
+PRs that touch UI include before/after screenshots and say which of the seven they
+checked.
+
 ---
 
 ## Getting started
