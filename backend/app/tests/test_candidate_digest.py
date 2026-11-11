@@ -1,5 +1,5 @@
 """Coverage for planning#319: the organization discovery digest
-(`app.services.candidate_digest`, `org_discovery.digest_scope`, migration
+(`app.services.candidate_digest`, `notification_scope`, migration
 0099, the dispatcher's kind filter, the rule/digest API).
 
 Synthetic values only (`.example.com`, `Example Holdings ...`). The connector
@@ -26,7 +26,7 @@ from app.models.scope_candidate import ScopeCandidate
 from app.models.user import UserRole
 from app.services import candidate_digest, digest, notification_dispatcher
 from app.services import llm_connector as llmc
-from app.services.org_discovery import digest_scope
+from app.services import notification_scope
 from app.services.score_history import Promotion
 from app.tests._org_world import World
 from app.tests.test_alert_events import _Conn, _use_connectors
@@ -128,8 +128,8 @@ def test_eligible_roots(oenv):
     day0, _ = _live_deal(e, "day_0")
     integ, _ = _live_deal(e, "integrated")
     cands = [w.candidate(r) for r in (ours, day0, integ)]
-    assert digest_scope.eligible_candidate_ids(e.db, [c.id for c in cands]) == {c.id for c in cands}
-    assert digest_scope.eligible_candidate_ids(e.db, []) == set()
+    assert notification_scope.eligible_candidate_ids(e.db, [c.id for c in cands]) == {c.id for c in cands}
+    assert notification_scope.eligible_candidate_ids(e.db, []) == set()
 
 
 def _x_pre_close(e):
@@ -215,7 +215,7 @@ def test_excluded_candidates(oenv, case):
     e = oenv
     good = e.w.candidate(e.w.ours())
     bad = _EXCLUDED[case](e)
-    got = digest_scope.eligible_candidate_ids(e.db, [good.id, bad.id])
+    got = notification_scope.eligible_candidate_ids(e.db, [good.id, bad.id])
     assert good.id in got, "precondition: the eligible sibling is returned"
     assert bad.id not in got
 

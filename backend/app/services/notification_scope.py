@@ -1,13 +1,15 @@
-"""Which organization discovery candidates a notification may mention
-(planning#319, Jason 2026-10-31, #319 6551740956).
+"""What a notification (free-text recipients) may mention: org discovery
+candidates (planning#319) and findings (planning#330).
 
 Rule recipients are free-typed email addresses with no link to a user, so
-nothing under a pre-close or abandoned engagement may reach them: not an
-organization's name, not a candidate, not a count. This module is the ONE
-predicate for that. The digest applies it when it builds a body, again when it
-sends one (a stale digest is sent later from its stored body), and again when
-a stored body is read back through the API, so a deal that goes back to a
-restricting posture closes up in old digests by itself.
+nothing under a pre-close or abandoned engagement may reach them. This module
+is the ONE home of both predicates.
+
+CANDIDATES (planning#319, Jason 2026-10-31, #319 6551740956). Not an
+organization's name, not a candidate, not a count. The digest applies it when
+it builds a body, again when it sends one (a stale digest is sent later from its
+stored body), and again when a stored body is read back through the API, so a
+deal that goes back to a restricting posture closes up in old digests by itself.
 
 A candidate is eligible when its root organization is
 - `ours`, or
@@ -23,6 +25,14 @@ KNOWN LIMIT: the check looks at the root and the candidate's affiliate, not at
 every entity between them. `read_scope.entity_clause` does not restrict
 entities yet (planning#261's entity slice); when it does, this predicate should
 take the same tree rule.
+
+FINDINGS (planning#330). A finding is eligible when ITS OWN asset (joined on
+`asset_canonical_id`) does not fall under (`target_scope.asset_falls_under`) any
+target whose engagement is in `RESTRICTING_POSTURES`. Strictest wins: one
+restricting engagement on any covering target excludes it, whatever else covers
+it. This is `read_scope._asset_rule` with "closed" = every restricting
+engagement (there is no user to open any). Applied at dispatch, at digest claim,
+at send and on read-back.
 """
 
 from __future__ import annotations
@@ -31,14 +41,18 @@ import uuid
 from typing import Any
 
 from sqlalchemy import and_, exists, func, inspect, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.models.asset_canonical import AssetCanonical
 from app.models.engagement import Engagement, EngagementPosture
+from app.models.finding_canonical import FindingCanonical
 from app.models.org_entity import RELATIONSHIP_MA_TARGET, RELATIONSHIP_OURS, OrgEntity
 from app.models.scope_candidate import ScopeCandidate
+from app.models.target import Target
 from app.services.org_discovery import strength as strength_sql
 from app.services.posture import RESTRICTING_POSTURES
+from app.services.target_scope import asset_falls_under
 
 
 def _restricting_subject(entity_id_col: Any) -> ColumnElement[bool]:
@@ -92,3 +106,27 @@ def eligible_candidate_ids(db: Session, candidate_ids: list[uuid.UUID]) -> set[u
             .where(ScopeCandidate.id.in_(candidate_ids), candidate_eligible_clause(ScopeCandidate, OrgEntity))
         ).scalars()
     )
+
+
+def asset_eligible_clause(asset: Any) -> ColumnElement[bool]:
+    """A boolean over an `AssetCanonical` entity or alias: may a notification name this asset?"""
+    t = aliased(Target)
+    e = aliased(Engagement)
+    # correlate_except: nested inside a caller's EXISTS, auto-correlation looks one
+    # level up only and would pull `asset` into this FROM ("ANY asset under a deal").
+    return ~exists().where(
+        t.engagement_id == e.id,
+        e.posture.in_(RESTRICTING_POSTURES),
+        asset_falls_under(asset, t),
+    ).correlate_except(t, e)
+
+
+def eligible_finding_ids(db: Session, finding_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+    """The subset of `finding_ids` a notification may mention now (decided on each finding's own asset)."""
+    if not finding_ids:
+        return set()
+    return set(db.execute(
+        select(FindingCanonical.id)
+        .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
+        .where(FindingCanonical.id.in_(finding_ids), asset_eligible_clause(AssetCanonical))
+    ).scalars())

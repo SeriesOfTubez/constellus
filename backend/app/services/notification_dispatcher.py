@@ -36,15 +36,17 @@ loaded here: both entrypoints select finding rules only, and the digest
 service handles the other kind.
 
 Ownership gating is IDENTICAL across both entrypoints, and must stay that
-way. Each applies two independent filters in the same order: the
+way. Each applies three independent filters in the same order: the
 finding-level `EXCLUDED_VERIFICATIONS` exclusion, then the asset-level
-`not_ours` gate (`_drop_not_ours`). They catch different routes to the same
+`not_ours` gate (`_drop_not_ours`), then the engagement-posture gate
+(`_drop_restricted`, planning#330: nothing under a pre-close or abandoned
+deal reaches rule recipients). The first two catch different routes to the same
 "don't page anyone about this" verdict and neither subsumes the other — see
 `_drop_not_ours`'s docstring for the two routes.
 
 Two notification channels with different answers to "is this asset ours"
 is a bug waiting to happen, which is why the gate went into both rather
-than only the newer one. A future third entrypoint gets both filters too.
+than only the newer one. A future third entrypoint gets all three filters too.
 """
 
 import logging
@@ -57,7 +59,7 @@ from app.core.database import SessionLocal
 from app.models.alert_event import AlertDelivery, AlertDispatch, AlertEvent
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
 from app.models.notification_rule import RULE_KIND_FINDING, NotificationRule
-from app.services import claims_query
+from app.services import claims_query, notification_scope
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +120,10 @@ def _dispatch(db: Session, new_finding_ids: list[uuid.UUID]) -> None:
     if not findings:
         return
 
+    findings = _drop_restricted(db, findings)
+    if not findings:
+        return
+
     _select_record_send(db, rules, findings, kind="new")
 
 
@@ -174,6 +180,10 @@ def _dispatch_promotions(db: Session, promotions: list) -> None:
         return
 
     findings = _drop_not_ours(db, findings)
+    if not findings:
+        return
+
+    findings = _drop_restricted(db, findings)
     if not findings:
         return
 
@@ -334,6 +344,16 @@ def _select_record_send(
                 log.exception("notification_dispatcher: connector %s send raised", cid)
                 _delivery(rule_id, cid, "raised", len(recipients))
     _flush_deliveries()
+
+
+def _drop_restricted(db: Session, findings: list[FindingCanonical]) -> list[FindingCanonical]:
+    """planning#330: drop findings on assets under an engagement in a restricting
+    posture (`notification_scope`). Rule recipients are free-typed addresses with no
+    user to check membership against, so nothing under a pre-close or abandoned
+    deal may reach them. Dropped before anything is recorded: no dispatch, no
+    event, no deferred digest entry."""
+    eligible = notification_scope.eligible_finding_ids(db, [f.id for f in findings])
+    return [f for f in findings if f.id in eligible]
 
 
 def _drop_not_ours(db: Session, findings: list[FindingCanonical]) -> list[FindingCanonical]:
