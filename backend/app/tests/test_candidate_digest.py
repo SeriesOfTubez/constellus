@@ -22,11 +22,13 @@ from app.models.alert_event import AlertDispatch
 from app.models.digest import Digest, DigestCandidate
 from app.models.engagement import Engagement
 from app.models.notification_rule import NotificationRule
-from app.models.scope_candidate import ScopeCandidate
+from app.models.scope_candidate import ScopeCandidate, ScopeSignal
 from app.models.user import UserRole
 from app.services import candidate_digest, digest, notification_dispatcher
 from app.services import llm_connector as llmc
 from app.services import notification_scope
+from app.services.org_discovery import candidates as org_candidates
+from app.services.org_discovery.tiers import SIGNALS
 from app.services.score_history import Promotion
 from app.tests._org_world import World
 from app.tests.test_alert_events import _Conn, _use_connectors
@@ -674,3 +676,248 @@ def test_filter_body_keys_on_the_row_kind_not_the_body(oenv):
 
     out = candidate_digest.filter_body(e.db, dg)
     assert out["organizations"] == [] and out["totals"] == {"candidates": 0, "organizations": 0}
+
+
+# ── 10. planning#331 slice 1: strength, signals and shared groups in the body ─
+
+def _sig(e, root, value, signal_type, matched=None):
+    """Record one more signal for (root, value) through the service (creates the
+    candidate when `signal_type` is Strong/Supporting). Returns the candidate."""
+    ev = e.w.evidence_row()
+    out = org_candidates.record_signal(
+        e.db, root_entity_id=root.id, value=value, signal_type=signal_type, anchor_kind="person",
+        via_entity_id=root.id, evidence_id=ev.id, quote=f"Our site is {value}.", matched_values=matched,
+    )
+    e.db.commit()
+    return out.candidate
+
+
+def _item(body, cand):
+    return next(c for o in body["organizations"] for c in o["candidates"] if c["id"] == str(cand.id))
+
+
+def _org_of(body, org):
+    return next(o for o in body["organizations"] if o["id"] == str(org.id))
+
+
+def test_claim_items_carry_strength_and_ordered_signals(oenv):
+    e, w = oenv, oenv.w
+    rule = _org_rule(e)
+    ours = w.ours()
+    strong = w.candidate(ours, value=f"s-{e.suffix}.fabrikam.com")  # person_evidence
+    _sig(e, ours, strong.value, "registrant_org_match", ["example holdings a"])
+    supp = _sig(e, ours, f"p-{e.suffix}.fabrikam.com", "registrant_org_match", ["example holdings a"])
+    _sig(e, ours, supp.value, "spf_sender_shared", ["mail.contoso.com"])
+    bare = w.candidate(ours, value=f"n-{e.suffix}.fabrikam.com")
+    e.db.query(ScopeSignal).filter(ScopeSignal.candidate_id == bare.id).delete(synchronize_session=False)
+    e.db.commit()
+
+    dg = _claim(e, rule)
+
+    a, b, c = (_item(dg.body, x) for x in (strong, supp, bare))
+    assert a["strength"] == "strong"
+    assert [s["type"] for s in a["signals"]] == ["person_evidence", "registrant_org_match"]
+    assert a["signals"][0] == {"type": "person_evidence", "label": SIGNALS["person_evidence"].label}
+    assert b["strength"] == "supporting"
+    assert [s["label"] for s in b["signals"]] == sorted(SIGNALS[t].label for t in ("registrant_org_match", "spf_sender_shared"))
+    assert c["strength"] == "context" and c["signals"] == []
+
+
+def test_strongest_candidate_is_listed_first_and_survives_the_cap(oenv, monkeypatch):
+    e, w = oenv, oenv.w
+    rule = _org_rule(e)
+    org = w.entity(legal_name=f"Example Ordered {e.suffix}")
+    w.ours(org)
+    weak = _sig(e, org, f"a-{e.suffix}.fabrikam.com", "registrant_org_match", ["x"])
+    strong = w.candidate(org, value=f"z-{e.suffix}.fabrikam.com")
+    dg = _claim(e, rule)
+    mine = _org_of(dg.body, org)
+    assert [c["id"] for c in mine["candidates"]] == [str(strong.id), str(weak.id)]
+    assert weak.id in _claim_rows(e, rule) and mine["candidate_count"] == 2
+
+    monkeypatch.setattr(candidate_digest, "LIST_CAP", 1)
+    rule2 = _org_rule(e, "two")
+    dg2 = _claim(e, rule2)
+    mine2 = _org_of(dg2.body, org)
+    assert [c["id"] for c in mine2["candidates"]] == [str(strong.id)] and mine2["candidate_count"] == 2
+
+
+def test_shared_groups_per_org_and_cap(oenv, monkeypatch):
+    e, w = oenv, oenv.w
+    rule = _org_rule(e)
+    o1, o2 = w.entity(legal_name=f"Example One {e.suffix}"), w.entity(legal_name=f"Example Two {e.suffix}")
+    w.ours(o1)
+    w.ours(o2)
+    t = "registrant_org_match"
+    a = _sig(e, o1, f"a-{e.suffix}.fabrikam.com", t, ["example holdings a", "solo-a"])
+    b = _sig(e, o1, f"b-{e.suffix}.fabrikam.com", t, ["example holdings a"])
+    # the same value under a different org's candidates must not group across orgs
+    _sig(e, o1, f"c-{e.suffix}.fabrikam.com", t, ["cross-org"])
+    _sig(e, o2, f"d-{e.suffix}.fabrikam.com", t, ["cross-org"])
+
+    dg = _claim(e, rule)
+
+    g1 = _org_of(dg.body, o1)["shared"]
+    assert g1 == [{
+        "type": t, "label": SIGNALS[t].label, "value": "example holdings a",
+        "candidate_ids": [str(a.id), str(b.id)],
+    }]
+    assert _org_of(dg.body, o2)["shared"] == []
+    assert len(_org_of(dg.body, o1)["candidates"]) == 3, "precondition: the cross-org candidate was listed"
+
+    # a member beyond the cap is not in the group
+    monkeypatch.setattr(candidate_digest, "LIST_CAP", 1)
+    dg2 = _claim(e, _org_rule(e, "capped"))
+    assert [c["id"] for c in _org_of(dg2.body, o1)["candidates"]] == [str(a.id)]
+    assert _org_of(dg2.body, o1)["shared"] == []
+
+
+def test_filter_body_prunes_groups(oenv):
+    e, w = oenv, oenv.w
+    rule = _org_rule(e)
+    deal, eng = _live_deal(e, "day_0")
+    t = "registrant_org_match"
+    a = _sig(e, deal, f"a-{e.suffix}.fabrikam.com", t, ["example holdings a"])
+    b = _sig(e, deal, f"b-{e.suffix}.fabrikam.com", t, ["example holdings a"])
+    c = _sig(e, deal, f"c-{e.suffix}.fabrikam.com", t, ["example holdings a"])
+    dg = _claim(e, rule)
+    org = _org_of(dg.body, deal)
+    assert len(org["shared"]) == 1 and len(org["shared"][0]["candidate_ids"]) == 3, "precondition"
+    assert candidate_digest.filter_body(e.db, dg) == dg.body, "nothing removed: identical"
+
+    # Make exactly one member ineligible: its own engagement is pre_close.
+    pre = w.engagement("pre_close")
+    _decide(e, c, "claimed", accepted_into="engagement", engagement_id=pre.id)
+    out = _org_of(candidate_digest.filter_body(e.db, dg), deal)
+    assert [x["id"] for x in out["candidates"]] == [str(a.id), str(b.id)]
+    assert out["shared"][0]["candidate_ids"] == [str(a.id), str(b.id)]
+
+    pre2 = w.engagement("pre_close")
+    _decide(e, b, "claimed", accepted_into="engagement", engagement_id=pre2.id)
+    out = _org_of(candidate_digest.filter_body(e.db, dg), deal)
+    assert [x["id"] for x in out["candidates"]] == [str(a.id)] and out["shared"] == []
+
+
+def test_filter_body_passes_an_old_shape_body_through(oenv):
+    e, w = oenv, oenv.w
+    rule = _org_rule(e)
+    cand = w.candidate(w.ours())
+    dg = _claim(e, rule)
+    old = {k: v for k, v in dg.body.items()}
+    old["organizations"] = [
+        {k: v for k, v in o.items() if k != "shared"} | {
+            "candidates": [{"id": c["id"], "kind": c["kind"], "value": c["value"]} for c in o["candidates"]]}
+        for o in dg.body["organizations"]
+    ]
+    dg.body = old
+    e.db.commit()
+    assert cand.value in _listed(old), "precondition: the candidate is in the old-shape body"
+    assert candidate_digest.filter_body(e.db, dg) == old
+
+
+def _withheld_setup(e, narrative):
+    rule = _org_rule(e)
+    ours, (deal, eng) = e.w.ours(), _live_deal(e, "day_0")
+    keep, hide = e.w.candidate(ours), e.w.candidate(deal)
+    dg = _claim(e, rule)
+    if narrative:
+        dg.narrative = {"summary": "fake summary"}
+        dg.narrative_status = "succeeded"
+        dg.narrative_reason = None
+        e.db.commit()
+    return dg, keep, hide, eng
+
+
+def test_view_org_unchanged_keeps_the_narrative(oenv):
+    e = oenv
+    dg, keep, hide, _eng = _withheld_setup(e, narrative=True)
+    v = digest.view(e.db, dg)
+    assert v.body == dg.body and v.narrative == {"summary": "fake summary"} and v.narrative_status == "succeeded"
+    assert hide.value in _listed(v.body), "precondition: nothing was removed"
+
+
+def test_view_org_removal_withholds_the_narrative(oenv):
+    e = oenv
+    dg, keep, hide, eng = _withheld_setup(e, narrative=True)
+    _posture(e, eng, "pre_close")
+    v = digest.view(e.db, dg)
+    assert keep.value in _listed(v.body) and hide.value not in _listed(v.body), "the candidate was removed"
+    assert v.narrative is None and v.narrative_status == "skipped"
+    assert v.narrative_reason == digest.ORG_NARRATIVE_WITHHELD
+
+
+def test_api_org_removal_withholds_the_narrative_fields(oenv, admin):
+    # The view is right only if the API passes all of it through (the planning#331
+    # walk caught `_apply_view` returning before the narrative fields for org digests).
+    e = oenv
+    dg, keep, hide, eng = _withheld_setup(e, narrative=False)
+    dg.narrative = {"statements": [{"text": "fake summary", "cites": []}], "returned": 1, "dropped": 0}
+    dg.narrative_status = "succeeded"
+    e.db.commit()
+    url = f"/api/notifications/digests/{dg.id}"
+    before = client.get(url, headers=admin).json()
+    assert before["narrative_status"] == "succeeded" and before["narrative"] is not None
+
+    _posture(e, eng, "pre_close")
+
+    after = client.get(url, headers=admin).json()
+    assert keep.value in str(after["body"]) and hide.value not in str(after["body"]), "the candidate was removed"
+    assert after["narrative"] is None and after["narrative_status"] == "skipped"
+    assert after["narrative_reason"] == digest.ORG_NARRATIVE_WITHHELD
+    listed = client.get("/api/notifications/digests?limit=100", headers=admin).json()
+    (mine,) = [d for d in listed if d["id"] == str(dg.id)]
+    assert mine["narrative_status"] == "skipped" and mine["narrative_reason"] == digest.ORG_NARRATIVE_WITHHELD
+
+
+def test_view_org_removal_without_a_narrative_does_not_claim_withholding(oenv):
+    e = oenv
+    dg, keep, hide, eng = _withheld_setup(e, narrative=False)
+    assert dg.narrative is None and dg.narrative_status == "skipped" and dg.narrative_reason is None
+    _posture(e, eng, "pre_close")
+    v = digest.view(e.db, dg)
+    assert keep.value in _listed(v.body) and hide.value not in _listed(v.body), "the candidate was removed"
+    assert v.narrative is None and v.narrative_status == "skipped" and v.narrative_reason is None
+
+
+def test_render_shows_strength_signals_and_shared_groups():
+    body = _body([("domain", "a.fabrikam.com"), ("domain", "b.fabrikam.com")])
+    org = body["organizations"][0]
+    ids = [c["id"] for c in org["candidates"]]
+    org["candidates"][0].update(strength="strong", signals=[{"type": "admin_seed", "label": "Admin seed"},
+                                                            {"type": "registrant_org_match", "label": "Registrant org match"}])
+    org["candidates"][1].update(strength="lead", signals=[])
+    org["shared"] = [{"type": "registrant_org_match", "label": "Registrant org match",
+                      "value": "<b>x</b>", "candidate_ids": ids}]
+
+    _, text, html = candidate_digest.render(body, "")
+
+    assert "  [domain] a.fabrikam.com: Strong (Admin seed, Registrant org match)" in text
+    assert "  [domain] b.fabrikam.com: Lead\n" in text
+    assert "  Shared by several candidates:" in text
+    assert "    Registrant org match: <b>x</b> (2 candidates: a.fabrikam.com, b.fabrikam.com)" in text
+    assert ": Strong (Admin seed, Registrant org match)</li>" in html and "Shared by several candidates" in html
+    assert "&lt;b&gt;x&lt;/b&gt;" in html and "<b>x</b>" not in html
+
+
+def test_render_escapes_the_strength_note_in_html():
+    # Labels are snapshots of SIGNALS today, but the body is stored data: escape it anyway.
+    body = _body([("domain", "a.fabrikam.com")])
+    body["organizations"][0]["candidates"][0].update(
+        strength="strong", signals=[{"type": "admin_seed", "label": "<i>seed</i>"}],
+    )
+    _, text, html = candidate_digest.render(body, "")
+    assert "a.fabrikam.com: Strong (<i>seed</i>)" in text
+    assert "Strong (&lt;i&gt;seed&lt;/i&gt;)" in html and "<i>seed</i>" not in html
+
+
+def test_signal_list_orders_by_tier_before_label():
+    # Alphabetical by type would put the context signal first.
+    assert SIGNALS["name_similarity"].tier != SIGNALS["person_evidence"].tier
+    listed = candidate_digest._signal_list(("name_similarity", "person_evidence"))
+    assert [s["type"] for s in listed] == ["person_evidence", "name_similarity"]
+
+
+def test_render_old_shape_body_has_no_shared_section():
+    _, text, html = candidate_digest.render(_body([("domain", "a.fabrikam.com")]), "")
+    assert "[domain] a.fabrikam.com" in text and "Strong" not in text
+    assert "Shared by" not in text + html

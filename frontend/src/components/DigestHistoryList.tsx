@@ -7,6 +7,7 @@ import {
   type OrgDiscoveryDigestDetail,
 } from "@/lib/api"
 import { SeverityBadge } from "@/components/finding-badges"
+import { STRENGTH_LABEL, tierChipClass } from "@/lib/organizations"
 
 /** What is on record, no more. */
 export const DIGEST_OUTCOME_LABEL: Record<DigestOutcome, string> = {
@@ -57,12 +58,43 @@ function OrgDiscoveryBodyView({ detail }: { detail: OrgDiscoveryDigestDetail }) 
               <div key={c.id} className="flex items-center gap-2 min-w-0">
                 <span className="text-xs text-muted-foreground shrink-0">{CANDIDATE_KIND_LABEL[c.kind] ?? c.kind}</span>
                 <span className="truncate">{c.value}</span>
+                {c.strength && (
+                  <span className={`inline-flex shrink-0 items-center rounded border px-1.5 py-0.5 text-[11px] font-medium ${tierChipClass(c.strength)}`}>
+                    {STRENGTH_LABEL[c.strength] ?? c.strength}
+                  </span>
+                )}
+                {c.signals && c.signals.length > 0 && (
+                  <span className="text-xs text-muted-foreground truncate">
+                    {c.signals.map(s => s.label).join(", ")}
+                  </span>
+                )}
               </div>
             ))}
             {o.candidate_count > o.candidates.length && (
               <p className="text-xs text-muted-foreground">and {o.candidate_count - o.candidates.length} more</p>
             )}
           </div>
+          {o.shared && o.shared.length > 0 && (
+            <div className="space-y-0.5 pl-4">
+              <p className="text-xs text-muted-foreground">Shared by several candidates</p>
+              {o.shared.map(g => {
+                const members = g.candidate_ids
+                  .map(id => o.candidates.find(c => c.id === id)?.value)
+                  .filter((v): v is string => v !== undefined)
+                const rest = members.slice(2)
+                return (
+                  <div key={`${g.type}:${g.value}`} className="flex items-center gap-2 min-w-0 text-xs">
+                    <span className="truncate">{g.label}: {g.value}</span>
+                    <span className="text-muted-foreground shrink-0">· {g.candidate_ids.length} candidates</span>
+                    <span className="text-muted-foreground truncate">{members.slice(0, 2).join(", ")}</span>
+                    {rest.length > 0 && (
+                      <span className="text-muted-foreground shrink-0" title={rest.join(", ")}>+{rest.length}</span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
       ))}
     </div>

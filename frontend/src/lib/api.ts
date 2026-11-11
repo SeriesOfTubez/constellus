@@ -1,4 +1,5 @@
 import { useAuthStore } from "@/lib/auth"
+import type { Strength } from "@/lib/organizations"
 
 const BASE = "/api"
 
@@ -782,7 +783,16 @@ export type OrgDiscoveryDigestBody = {
     name: string
     candidate_count: number
     url: string | null
-    candidates: { id: string; kind: "domain" | "asn" | "cidr"; value: string }[]
+    candidates: {
+      id: string
+      kind: "domain" | "asn" | "cidr"
+      value: string
+      /** Absent on digests stored before signals were recorded. */
+      strength?: Strength
+      signals?: { type: string; label: string }[]
+    }[]
+    /** Groups of 2+ listed candidates sharing one matched value. Absent on older digests. */
+    shared?: { type: string; label: string; value: string; candidate_ids: string[] }[]
   }[]
 }
 

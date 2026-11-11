@@ -182,4 +182,40 @@ describe("org discovery digest", () => {
     expect(html).not.toContain("finding")
     expect(html).not.toContain("AI summary")
   })
+
+  it("shows strength and signal labels per candidate", () => {
+    const d = orgDetail()
+    d.body.organizations[0].candidates[0] = {
+      id: "c1", kind: "domain", value: "a.example.com", strength: "strong",
+      signals: [{ type: "registrant_org", label: "Same registrant" }, { type: "ns", label: "Shared name server" }],
+    }
+    const html = wrap(<DigestBodyView detail={d} />)
+    expect(html).toContain("Strong")
+    expect(html).toContain("Same registrant, Shared name server")
+    expect(html).not.toContain("registrant_org")
+  })
+
+  it("shows a shared group with count, two members and +n overflow", () => {
+    const d = orgDetail()
+    const o = d.body.organizations[0]
+    o.candidates = [
+      { id: "c1", kind: "domain", value: "a.example.com" },
+      { id: "c2", kind: "domain", value: "b.example.com" },
+      { id: "c3", kind: "domain", value: "c.example.com" },
+    ]
+    o.shared = [{ type: "ns", label: "Name server", value: "ns1.contoso.com", candidate_ids: ["c1", "c2", "c3"] }]
+    const html = wrap(<DigestBodyView detail={d} />)
+    expect(html).toContain("Shared by several candidates")
+    expect(html).toContain("Name server: ns1.contoso.com")
+    expect(html).toContain("· 3 candidates")
+    expect(html).toContain("a.example.com, b.example.com")
+    expect(html).toContain(">+1<")
+    expect(html).toContain('title="c.example.com"')
+  })
+
+  it("old-shape body still renders values and no shared heading", () => {
+    const html = wrap(<DigestBodyView detail={orgDetail()} />)
+    expect(html).toContain("a.example.com")
+    expect(html).not.toContain("Shared by several candidates")
+  })
 })

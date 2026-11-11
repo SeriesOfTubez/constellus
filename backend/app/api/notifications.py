@@ -378,7 +378,11 @@ def list_digests(
 def _apply_view(item: DigestOut, v: digest_svc.DigestView, row: Digest) -> None:
     """Counts and narrative status from the re-checked view. planning#319/#330:
     re-checked on read; the stored row is never written. A body without totals
-    (an old shape) leaves the stored counts alone."""
+    (an old shape) leaves the stored counts alone. The narrative fields are
+    taken from the view for BOTH kinds (planning#331: an org summary is
+    withheld when candidates were removed)."""
+    item.narrative_status = v.narrative_status
+    item.narrative_reason = v.narrative_reason
     totals = v.body.get("totals") or {}
     if row.kind == RULE_KIND_ORG_DISCOVERY:
         if "candidates" in totals:
@@ -388,8 +392,6 @@ def _apply_view(item: DigestOut, v: digest_svc.DigestView, row: Digest) -> None:
         item.event_count = totals["events"]
     if "findings" in totals:
         item.finding_count = totals["findings"]
-    item.narrative_status = v.narrative_status
-    item.narrative_reason = v.narrative_reason
 
 
 @router.get("/digests/{digest_id}", response_model=DigestDetailOut)
