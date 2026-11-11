@@ -20,10 +20,12 @@ import logging
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Callable, TypeVar
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.scan import ScanKind, ScanRun, ScanStatus
@@ -33,6 +35,47 @@ from app.services import tenancy_enricher
 from app.services import tenancy_tls
 
 log = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+def _trigger(job: str):
+    """The APScheduler trigger for a recorded job, from its cadence: one source
+    for the registration and the missed-slot computation (planning#336)."""
+    c = job_runs.CADENCE[job]
+    if c.kind == "hourly_at":
+        return CronTrigger(minute=c.minute, timezone="UTC")
+    if c.kind == "daily_at":
+        return CronTrigger(hour=c.hour, minute=c.minute, timezone="UTC")
+    return IntervalTrigger(seconds=int(c.every.total_seconds()))
+
+
+def _with_session(work: Callable[[Session], T], commit: bool = False) -> Callable[[], T]:
+    """Give `work` a session of its own. It commits only when asked (most
+    services commit themselves), rolls back on failure and always closes."""
+    def run() -> T:
+        db = SessionLocal()
+        try:
+            result = work(db)
+            if commit:
+                db.commit()
+            return result
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+    return run
+
+
+def _recorded(job: str, fn: Callable[[], T], to_outcome: Callable[[T], job_runs.RunOutcome],
+              done: str, failed: str) -> None:
+    """Run a recorded job from the scheduler: log the outcome or the failure. Never raises."""
+    try:
+        result = job_runs.run_recorded(job, fn, to_outcome)
+        log.info("%s — %s", done, result)
+    except Exception:
+        log.error(failed, exc_info=True)
 
 _scheduler: BackgroundScheduler | None = None
 _lock = threading.Lock()
@@ -187,7 +230,7 @@ def _register_epss_refresher() -> None:
         return
     _scheduler.add_job(
         _run_epss_refresh,
-        trigger=IntervalTrigger(hours=12),
+        trigger=_trigger("epss_refresher"),
         id="epss_refresher",
         name="EPSS history 12h refresh",
         replace_existing=True,
@@ -200,22 +243,38 @@ def _register_epss_refresher() -> None:
 def _run_epss_refresh() -> None:
     from app.services import epss_history_service
 
-    db = SessionLocal()
-    try:
-        count = epss_history_service.refresh_all_active(db)
-        log.info("EPSS history refresh complete — %d rows upserted", count)
-    except Exception:
-        log.error("EPSS history refresh failed", exc_info=True)
-    # Retention runs even when the refresh failed — an upstream FIRST.org
-    # outage must not let the table grow unbounded. Its own session because a
-    # failed refresh may have left this one needing a rollback.
-    try:
-        db.rollback()
-        epss_history_service.prune_expired(db)
-    except Exception:
-        log.error("EPSS history retention failed", exc_info=True)
-    finally:
-        db.close()
+    def refresh_and_prune() -> dict:
+        db = SessionLocal()
+        failure: Exception | None = None
+        upserted = 0
+        try:
+            try:
+                upserted = epss_history_service.refresh_all_active(db)
+            except Exception as exc:
+                failure = exc
+            # Retention runs even when the refresh failed — an upstream FIRST.org
+            # outage must not let the table grow unbounded. Its own transaction
+            # because a failed refresh may have left this session needing a rollback.
+            db.rollback()
+            try:
+                pruned = epss_history_service.prune_expired(db)
+            except Exception:
+                if failure is None:
+                    raise
+                # The refresh failure is the run's error; a retention failure on
+                # top of it is logged here, since nothing else would see it.
+                log.error("EPSS history retention also failed after a failed refresh", exc_info=True)
+                raise failure
+        finally:
+            db.close()
+        if failure is not None:
+            raise failure
+        return {"upserted": upserted, "pruned": pruned}
+
+    _recorded(
+        "epss_refresher", refresh_and_prune, job_runs.epss_outcome,
+        "EPSS history refresh complete", "EPSS history refresh failed",
+    )
 
 
 def _register_cpe_index_refresher() -> None:
@@ -228,7 +287,7 @@ def _register_cpe_index_refresher() -> None:
         return
     _scheduler.add_job(
         _run_cpe_index_refresh,
-        trigger=IntervalTrigger(hours=24),
+        trigger=_trigger("cpe_index_refresher"),
         id="cpe_index_refresher",
         name="CPE→CVE index daily refresh",
         replace_existing=True,
@@ -242,14 +301,10 @@ def _register_cpe_index_refresher() -> None:
 def _run_cpe_index_refresh() -> None:
     from app.services import cpe_cve_sync
 
-    db = SessionLocal()
-    try:
-        stats = cpe_cve_sync.refresh(db)
-        log.info("CPE index refresh complete — %s", stats)
-    except Exception:
-        log.error("CPE index refresh failed", exc_info=True)
-    finally:
-        db.close()
+    _recorded(
+        "cpe_index_refresher", _with_session(cpe_cve_sync.refresh), job_runs.cpe_index_outcome,
+        "CPE index refresh complete", "CPE index refresh failed",
+    )
 
 
 def _register_cloud_ranges_refresher() -> None:
@@ -262,7 +317,7 @@ def _register_cloud_ranges_refresher() -> None:
         return
     _scheduler.add_job(
         _run_cloud_ranges_refresh,
-        trigger=IntervalTrigger(hours=24),
+        trigger=_trigger("cloud_ranges_refresher"),
         id="cloud_ranges_refresher",
         name="Cloud provider range mirror daily refresh",
         replace_existing=True,
@@ -276,14 +331,16 @@ def _register_cloud_ranges_refresher() -> None:
 def _run_cloud_ranges_refresh() -> None:
     from app.services import cloud_ranges
 
-    db = SessionLocal()
-    try:
-        result = cloud_ranges.refresh(db)
-        log.info("Cloud ranges refresh complete — %s", result)
-    except Exception:
-        log.error("Cloud ranges refresh failed", exc_info=True)
-    finally:
-        db.close()
+    def refresh(db: Session) -> "cloud_ranges.RefreshResult":
+        r = cloud_ranges.refresh(db)
+        if not r.ok:
+            raise cloud_ranges.RefreshFailed(r.reason or "unknown")
+        return r
+
+    _recorded(
+        "cloud_ranges_refresher", _with_session(refresh), job_runs.cloud_ranges_outcome,
+        "Cloud ranges refresh complete", "Cloud ranges refresh failed",
+    )
 
 
 def _register_tenancy_enricher() -> None:
@@ -345,7 +402,7 @@ def _register_partition_maintenance() -> None:
         return
     _scheduler.add_job(
         _run_partition_maintenance,
-        trigger=IntervalTrigger(hours=24),
+        trigger=_trigger("partition_maintenance"),
         id="partition_maintenance",
         name="Partitioned-table maintenance",
         replace_existing=True,
@@ -359,14 +416,10 @@ def _register_partition_maintenance() -> None:
 def _run_partition_maintenance() -> None:
     from app.services import partition_maintenance
 
-    db = SessionLocal()
-    try:
-        stats = partition_maintenance.run(db)
-        log.info("Partitioned-table maintenance complete — %s", stats)
-    except Exception:
-        log.error("Partitioned-table maintenance failed", exc_info=True)
-    finally:
-        db.close()
+    _recorded(
+        "partition_maintenance", _with_session(partition_maintenance.run), job_runs.partition_outcome,
+        "Partitioned-table maintenance complete", "Partitioned-table maintenance failed",
+    )
 
 
 def _register_hygiene_scoring() -> None:
@@ -384,7 +437,7 @@ def _register_hygiene_scoring() -> None:
         return
     _scheduler.add_job(
         _run_hygiene_scoring,
-        trigger=IntervalTrigger(hours=24),
+        trigger=_trigger("hygiene_scoring"),
         id="hygiene_scoring",
         name="Asset hygiene scoring",
         replace_existing=True,
@@ -398,14 +451,10 @@ def _register_hygiene_scoring() -> None:
 def _run_hygiene_scoring() -> None:
     from app.services import hygiene_scorer
 
-    db = SessionLocal()
-    try:
-        stats = hygiene_scorer.run(db)
-        log.info("Asset hygiene scoring complete — %s", stats)
-    except Exception:
-        log.error("Asset hygiene scoring failed", exc_info=True)
-    finally:
-        db.close()
+    _recorded(
+        "hygiene_scoring", _with_session(hygiene_scorer.run), job_runs.hygiene_outcome,
+        "Asset hygiene scoring complete", "Asset hygiene scoring failed",
+    )
 
 
 def _register_nightly_rescore() -> None:
@@ -425,7 +474,7 @@ def _register_nightly_rescore() -> None:
         return
     _scheduler.add_job(
         _run_nightly_rescore,
-        trigger=CronTrigger(hour=3, minute=0, timezone="UTC"),
+        trigger=_trigger("nightly_rescore"),
         id="nightly_rescore",
         name="Nightly risk re-scoring",
         replace_existing=True,
@@ -438,14 +487,10 @@ def _register_nightly_rescore() -> None:
 def _run_nightly_rescore() -> None:
     from app.services import nightly_rescore
 
-    db = SessionLocal()
-    try:
-        stats = nightly_rescore.run(db)
-        log.info("Nightly risk re-scoring complete — %s", stats)
-    except Exception:
-        log.error("Nightly risk re-scoring failed", exc_info=True)
-    finally:
-        db.close()
+    _recorded(
+        "nightly_rescore", _with_session(nightly_rescore.run), job_runs.rescore_outcome,
+        "Nightly risk re-scoring complete", "Nightly risk re-scoring failed",
+    )
 
 
 def _register_capture_sweep() -> None:
@@ -459,24 +504,21 @@ def _register_capture_sweep() -> None:
         return
     _scheduler.add_job(
         _run_capture_sweep,
-        trigger=CronTrigger(minute=job_runs.CADENCE_MINUTE["capture_sweep"], timezone="UTC"),
+        trigger=_trigger("capture_sweep"),
         id="capture_sweep",
         name="Automatic page capture (hourly)",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
     )
-    log.info("Scheduled capture_sweep (hourly at :%02d UTC)", job_runs.CADENCE_MINUTE["capture_sweep"])
+    log.info("Scheduled capture_sweep (hourly at :%02d UTC)", job_runs.CADENCE["capture_sweep"].minute)
 
 
 def _run_capture_sweep() -> None:
-    try:
-        stats = job_runs.run_recorded(
-            "capture_sweep", page_capture.run_automatic_sweep, job_runs.capture_outcome
-        )
-        log.info("Automatic page capture complete — %s", stats)
-    except Exception:
-        log.error("Automatic page capture failed", exc_info=True)
+    _recorded(
+        "capture_sweep", page_capture.run_automatic_sweep, job_runs.capture_outcome,
+        "Automatic page capture complete", "Automatic page capture failed",
+    )
 
 
 def _register_rediscovery_tick() -> None:
@@ -490,25 +532,23 @@ def _register_rediscovery_tick() -> None:
         return
     _scheduler.add_job(
         _run_rediscovery_tick,
-        trigger=CronTrigger(minute=job_runs.CADENCE_MINUTE["rediscovery_tick"], timezone="UTC"),
+        trigger=_trigger("rediscovery_tick"),
         id="rediscovery_tick",
         name="Org discovery: rolling re-discovery (hourly)",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
     )
-    log.info("Scheduled rediscovery_tick (hourly at :%02d UTC)", job_runs.CADENCE_MINUTE["rediscovery_tick"])
+    log.info("Scheduled rediscovery_tick (hourly at :%02d UTC)", job_runs.CADENCE["rediscovery_tick"].minute)
 
 
 def _run_rediscovery_tick() -> None:
-    try:
-        from app.services.org_discovery import rolling
-        result = job_runs.run_recorded(
-            "rediscovery_tick", rolling.run_rediscovery_tick, job_runs.rediscovery_outcome
-        )
-        log.info("Org-discovery rolling re-discovery complete — %s", result)
-    except Exception:
-        log.error("Org-discovery rolling re-discovery failed", exc_info=True)
+    from app.services.org_discovery import rolling
+
+    _recorded(
+        "rediscovery_tick", rolling.run_rediscovery_tick, job_runs.rediscovery_outcome,
+        "Org-discovery rolling re-discovery complete", "Org-discovery rolling re-discovery failed",
+    )
 
 
 def _register_job_run_purger() -> None:
@@ -518,7 +558,7 @@ def _register_job_run_purger() -> None:
         return
     _scheduler.add_job(
         _run_job_run_purge,
-        trigger=IntervalTrigger(hours=24),
+        trigger=_trigger("job_run_purger"),
         id="job_run_purger",
         name="Job run history daily retention",
         replace_existing=True,
@@ -530,16 +570,10 @@ def _register_job_run_purger() -> None:
 
 
 def _run_job_run_purge() -> None:
-    db = SessionLocal()
-    try:
-        deleted = job_runs.purge(db)
-        db.commit()
-        log.info("Job run history retention complete — %d run(s) deleted", deleted)
-    except Exception:
-        db.rollback()
-        log.error("Job run history retention failed", exc_info=True)
-    finally:
-        db.close()
+    _recorded(
+        "job_run_purger", _with_session(job_runs.purge, commit=True), job_runs.int_outcome("deleted"),
+        "Job run history retention complete", "Job run history retention failed",
+    )
 
 
 def _register_alert_digests() -> None:
@@ -551,7 +585,7 @@ def _register_alert_digests() -> None:
         return
     _scheduler.add_job(
         _run_alert_digests,
-        trigger=CronTrigger(minute=5, timezone="UTC"),
+        trigger=_trigger("alert_digests"),
         id="alert_digests",
         name="Alert digests (hourly check)",
         replace_existing=True,
@@ -564,7 +598,10 @@ def _register_alert_digests() -> None:
 def _run_alert_digests() -> None:
     from app.services import digest
 
-    digest.run_due()
+    _recorded(
+        "alert_digests", digest.run_due, job_runs.int_outcome("digests_created"),
+        "Alert digests complete", "Alert digests failed",
+    )
 
 
 _reaper_started = False
@@ -583,7 +620,7 @@ def _register_run_reaper() -> None:
         return
     _scheduler.add_job(
         _run_run_reaper,
-        trigger=IntervalTrigger(hours=1),
+        trigger=_trigger("run_reaper"),
         id="run_reaper",
         name="Stranded scan-run reaper",
         replace_existing=True,
@@ -597,37 +634,45 @@ def _register_run_reaper() -> None:
 def _run_run_reaper() -> None:
     from app.services import run_reaper
 
-    global _reaper_started
+    def reap() -> dict:
+        global _reaper_started
+        db = SessionLocal()
+        try:
+            # Module-level flag, not a DB flag or lease: the job is
+            # max_instances=1 on a single-threaded APScheduler, so there is no
+            # race between the flag check and the first run actually executing.
+            #
+            # The flag is set BEFORE the call, deliberately, so a failed startup
+            # sweep is never retried on the next tick. `reap_at_startup` fails
+            # every unfinished run unconditionally — that is only sound in the
+            # first seconds of a process, when no run can legitimately be in
+            # flight. An hour later it would reap scans that started *since*
+            # boot. Do not "fix" this by moving the assignment after the call:
+            # a missed startup sweep is harmless (reap_stale catches the same
+            # rows once they age out), whereas a retried one destroys live runs.
+            startup = not _reaper_started
+            if startup:
+                _reaper_started = True
+                n_runs = run_reaper.reap_at_startup(db)
+                log.info("Startup stranded-run sweep reaped %d run(s)", n_runs)
+                n_ingest = run_reaper.reap_ingest_runs_at_startup(db)
+                log.info("Startup stranded-ingest sweep reaped %d run(s)", n_ingest)
+            else:
+                n_runs = run_reaper.reap_stale(db)
+                log.info("Stale-run sweep reaped %d run(s)", n_runs)
+                n_ingest = run_reaper.reap_stale_ingest_runs(db)
+                log.info("Stale-ingest sweep reaped %d run(s)", n_ingest)
+            return {"startup": startup, "runs": n_runs, "ingest_runs": n_ingest}
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
-    db = SessionLocal()
-    try:
-        # Module-level flag, not a DB flag or lease: the job is
-        # max_instances=1 on a single-threaded APScheduler, so there is no
-        # race between the flag check and the first run actually executing.
-        #
-        # The flag is set BEFORE the call, deliberately, so a failed startup
-        # sweep is never retried on the next tick. `reap_at_startup` fails
-        # every unfinished run unconditionally — that is only sound in the
-        # first seconds of a process, when no run can legitimately be in
-        # flight. An hour later it would reap scans that started *since*
-        # boot. Do not "fix" this by moving the assignment after the call:
-        # a missed startup sweep is harmless (reap_stale catches the same
-        # rows once they age out), whereas a retried one destroys live runs.
-        if not _reaper_started:
-            _reaper_started = True
-            n = run_reaper.reap_at_startup(db)
-            log.info("Startup stranded-run sweep reaped %d run(s)", n)
-            n = run_reaper.reap_ingest_runs_at_startup(db)
-            log.info("Startup stranded-ingest sweep reaped %d run(s)", n)
-        else:
-            n = run_reaper.reap_stale(db)
-            log.info("Stale-run sweep reaped %d run(s)", n)
-            n = run_reaper.reap_stale_ingest_runs(db)
-            log.info("Stale-ingest sweep reaped %d run(s)", n)
-    except Exception:
-        log.error("Stranded scan-run reaper failed", exc_info=True)
-    finally:
-        db.close()
+    _recorded(
+        "run_reaper", reap, job_runs.reaper_outcome,
+        "Stranded scan-run reaper complete", "Stranded scan-run reaper failed",
+    )
 
 
 def _register_llm_ledger_pruner() -> None:
@@ -643,7 +688,7 @@ def _register_llm_ledger_pruner() -> None:
         return
     _scheduler.add_job(
         _run_llm_ledger_prune,
-        trigger=IntervalTrigger(hours=24),
+        trigger=_trigger("llm_ledger_pruner"),
         id="llm_ledger_pruner",
         name="LLM call ledger daily retention",
         replace_existing=True,
@@ -657,14 +702,10 @@ def _register_llm_ledger_pruner() -> None:
 def _run_llm_ledger_prune() -> None:
     from app.services import llm_connector
 
-    db = SessionLocal()
-    try:
-        deleted = llm_connector.prune_ledger(db)
-        log.info("LLM call ledger retention complete — %d row(s) deleted", deleted)
-    except Exception:
-        log.error("LLM call ledger retention failed", exc_info=True)
-    finally:
-        db.close()
+    _recorded(
+        "llm_ledger_pruner", _with_session(llm_connector.prune_ledger), job_runs.int_outcome("deleted"),
+        "LLM call ledger retention complete", "LLM call ledger retention failed",
+    )
 
 
 def _register_chat_transcript_purger() -> None:
@@ -675,7 +716,7 @@ def _register_chat_transcript_purger() -> None:
         return
     _scheduler.add_job(
         _run_chat_transcript_purge,
-        trigger=IntervalTrigger(hours=24),
+        trigger=_trigger("chat_transcript_purger"),
         id="chat_transcript_purger",
         name="Chat transcript daily retention",
         replace_existing=True,
@@ -689,16 +730,10 @@ def _register_chat_transcript_purger() -> None:
 def _run_chat_transcript_purge() -> None:
     from app.services import chat
 
-    db = SessionLocal()
-    try:
-        deleted = chat.purge_transcripts(db)
-        db.commit()
-        log.info("Chat transcript retention complete — %d conversation(s) deleted", deleted)
-    except Exception:
-        db.rollback()
-        log.error("Chat transcript retention failed", exc_info=True)
-    finally:
-        db.close()
+    _recorded(
+        "chat_transcript_purger", _with_session(chat.purge_transcripts, commit=True), job_runs.int_outcome("deleted"),
+        "Chat transcript retention complete", "Chat transcript retention failed",
+    )
 
 
 def _register_report_purger() -> None:
@@ -708,7 +743,7 @@ def _register_report_purger() -> None:
         return
     _scheduler.add_job(
         _run_report_purge,
-        trigger=IntervalTrigger(hours=24),
+        trigger=_trigger("report_purger"),
         id="report_purger",
         name="Report daily retention",
         replace_existing=True,
@@ -722,15 +757,10 @@ def _register_report_purger() -> None:
 def _run_report_purge() -> None:
     from app.services import reports
 
-    db = SessionLocal()
-    try:
-        deleted = reports.purge_reports(db)
-        log.info("Report retention complete - %d report(s) deleted", deleted)
-    except Exception:
-        db.rollback()
-        log.error("Report retention failed", exc_info=True)
-    finally:
-        db.close()
+    _recorded(
+        "report_purger", _with_session(reports.purge_reports), job_runs.int_outcome("deleted"),
+        "Report retention complete", "Report retention failed",
+    )
 
 
 def _register_llm_models_refresher() -> None:
@@ -745,7 +775,7 @@ def _register_llm_models_refresher() -> None:
         return
     _scheduler.add_job(
         _run_llm_models_refresh,
-        trigger=IntervalTrigger(hours=24),
+        trigger=_trigger("llm_models_refresher"),
         id="llm_models_refresher",
         name="OpenRouter allowed-models daily refresh",
         replace_existing=True,
@@ -759,17 +789,16 @@ def _register_llm_models_refresher() -> None:
 def _run_llm_models_refresh() -> None:
     from app.services import llm_connector
 
-    db = SessionLocal()
-    try:
+    def refresh(db: Session) -> int | None:
         if not llm_connector.is_configured(db):
             log.info("OpenRouter allowed-models refresh skipped — connector not configured")
-            return
-        allowed = llm_connector.refresh_allowed_models(db)
-        log.info("OpenRouter allowed-models refresh complete — %d model(s)", len(allowed.entries))
-    except Exception:
-        log.error("OpenRouter allowed-models refresh failed", exc_info=True)
-    finally:
-        db.close()
+            return None
+        return len(llm_connector.refresh_allowed_models(db).entries)
+
+    _recorded(
+        "llm_models_refresher", _with_session(refresh), job_runs.llm_models_outcome,
+        "OpenRouter allowed-models refresh complete", "OpenRouter allowed-models refresh failed",
+    )
 
 
 def shutdown() -> None:

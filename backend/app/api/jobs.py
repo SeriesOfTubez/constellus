@@ -61,18 +61,22 @@ def jobs_status(
     db: Session = Depends(get_db),
     _=Depends(require_permission(Permission.JOBS_READ)),
 ):
-    """Per job: the latest recorded run and the hourly slots with no run recorded.
+    """Per job: its cadence, the latest recorded run and the expected starts with no run recorded.
 
-    A missed slot means no run is RECORDED for that hour. It may be that the
-    backend was down, the previous run overran, or the record write failed;
-    this does not claim which.
+    One rule for every cadence kind: a slot is covered by a run that STARTS within
+    the hour after it, and is judged once that hour ends. Hourly and daily jobs
+    have clock slots (UTC); interval jobs have none (they are anchored at process
+    start), so their slots are the last recorded run + k*every, and an early run
+    after a restart is never a miss. A missed slot means no run is RECORDED for
+    it: the backend may have been down, the previous run may have overrun, or the
+    record write may have failed; this does not claim which.
     """
     return {
         "window_hours": hours,
         "jobs": [
             {
                 "job": s.job,
-                "cadence_minute": s.cadence_minute,
+                "cadence": s.cadence.to_dict(),
                 "last_run": _serialize(s.last_run) if s.last_run else None,
                 "recorded_since": s.recorded_since.isoformat() if s.recorded_since else None,
                 "missed_slots": [m.isoformat() for m in s.missed_slots],

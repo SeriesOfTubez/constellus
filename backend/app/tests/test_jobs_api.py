@@ -95,15 +95,16 @@ def test_runs_validation(w):
 def test_status_empty(w):
     body = client.get(STATUS, headers=w.headers()).json()
     assert body["window_hours"] == 24
-    assert [j["job"] for j in body["jobs"]] == list(job_runs.CADENCE_MINUTE)
+    assert [j["job"] for j in body["jobs"]] == list(job_runs.CADENCE)
     for j in body["jobs"]:
         assert j["last_run"] is None and j["recorded_since"] is None and j["missed_slots"] == []
-        assert j["cadence_minute"] == job_runs.CADENCE_MINUTE[j["job"]]
+        assert j["cadence"] == job_runs.CADENCE[j["job"]].to_dict()
+        assert "cadence_minute" not in j
 
 
 def test_status_missed_slot_and_last_run(w):
     h = w.headers()
-    m = job_runs.CADENCE_MINUTE["rediscovery_tick"]
+    m = job_runs.CADENCE["rediscovery_tick"].minute
     # runs at 6,5,3,2 hours back; the slot 4 hours back is deliberately missing
     slot = {back: _hour_slot(back, m) for back in (6, 5, 4, 3, 2)}  # once: an hour may tick mid-test
     for back in (6, 5, 3, 2):
@@ -120,6 +121,20 @@ def test_status_missed_slot_and_last_run(w):
     assert client.get(STATUS, headers=h, params={"hours": 0}).status_code == 422
     assert client.get(STATUS, headers=h, params={"hours": 169}).status_code == 422
     assert client.get(STATUS, headers=h, params={"hours": 168}).status_code == 200
+
+
+def test_status_daily_and_interval_through_the_api(w):
+    # No `now` parameter on the API: insert relative to the real clock, assert counts only.
+    base = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    _add("nightly_rescore", (base - timedelta(days=2)).replace(hour=3))
+    _add("cpe_index_refresher", base - timedelta(hours=50))
+    body = client.get(STATUS, headers=w.headers(), params={"hours": 48}).json()
+    jobs = {j["job"]: j for j in body["jobs"]}
+    daily, interval = jobs["nightly_rescore"], jobs["cpe_index_refresher"]
+    assert len(daily["missed_slots"]) >= 1
+    assert len(interval["missed_slots"]) == 2
+    for m in daily["missed_slots"] + interval["missed_slots"]:
+        datetime.fromisoformat(m)
 
 
 def _audit_changes(user_id):

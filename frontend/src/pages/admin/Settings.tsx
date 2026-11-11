@@ -1256,7 +1256,7 @@ export function ScheduledJobsCard() {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm">Scheduled jobs</CardTitle>
-        <CardDescription className="text-xs">When the hourly background jobs last ran and how each run ended.</CardDescription>
+        <CardDescription className="text-xs">When each background job last ran and how the run ended.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         {statusQ.isError ? (
