@@ -9,10 +9,13 @@
 
 import { useId } from "react"
 import { useQuery } from "@tanstack/react-query"
+import { ParentSize } from "@visx/responsive"
 import { TrendingUp, TrendingDown, Minus, Info } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { api, type EpssHistoryData } from "@/lib/api"
 import { relativeTime } from "@/lib/time"
+import { cn } from "@/lib/utils"
+import { PercentileBar } from "@/components/charts/PercentileBar"
 
 // ── shared query ──────────────────────────────────────────────────────────────
 
@@ -44,6 +47,25 @@ function DeltaChip({ delta }: { delta: number | null }) {
     <span className="inline-flex items-center gap-1 text-xs text-sev-clean">
       <TrendingDown className="size-3.5" />−{pct}%
     </span>
+  )
+}
+
+// ── percentile bar ────────────────────────────────────────────────────────────
+
+function EpssPercentile({
+  percentile, score, className,
+}: {
+  percentile: number
+  score: number
+  className?: string
+}) {
+  return (
+    // 12 bar + 4 gap + 16 sentence, held so the row does not jump when measured
+    <div className={cn("h-8 max-w-80", className)}>
+      <ParentSize>
+        {({ width }) => <PercentileBar percentile={percentile} score={score} width={width} />}
+      </ParentSize>
+    </div>
   )
 }
 
@@ -138,8 +160,9 @@ function EpssSparkline({
 // ── public exports ────────────────────────────────────────────────────────────
 
 /**
- * Replaces the plain EPSS enrichment table row. Shows score + percentile +
- * a daily delta indicator. Falls back to the raw Finding fields while loading.
+ * Replaces the plain EPSS enrichment table row. Shows score + a daily delta
+ * indicator, with the percentile bar under it. Falls back to the raw Finding
+ * fields while loading.
  */
 export function EpssRow({
   findingId,
@@ -158,23 +181,24 @@ export function EpssRow({
   if (score === null) return null
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2">
-      <span className="text-muted-foreground w-24 shrink-0">EPSS</span>
-      <span className="font-mono">{(score * 100).toFixed(2)}%</span>
-      {pct != null && (
-        <span className="text-xs text-muted-foreground">{(pct * 100).toFixed(0)}th percentile</span>
-      )}
-      {data && <DeltaChip delta={data.delta} />}
-      {data?.score_changed_date && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Info className="size-3.5 text-muted-foreground/60 cursor-default shrink-0" />
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            Score last changed {relativeTime(data.score_changed_date)} ({data.score_changed_date})
-          </TooltipContent>
-        </Tooltip>
-      )}
+    <div className="space-y-2 px-3 py-2">
+      <div className="flex items-center gap-3">
+        <span className="text-muted-foreground w-24 shrink-0">EPSS</span>
+        <span className="font-mono">{(score * 100).toFixed(2)}%</span>
+        {data && <DeltaChip delta={data.delta} />}
+        {data?.score_changed_date && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Info className="size-3.5 text-muted-foreground/60 cursor-default shrink-0" />
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              Score last changed {relativeTime(data.score_changed_date)} ({data.score_changed_date})
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </div>
+      {/* w-24 label + gap-3 */}
+      {pct != null && <EpssPercentile percentile={pct} score={score} className="ml-27" />}
     </div>
   )
 }
@@ -199,23 +223,24 @@ export function EpssRowCompact({
   if (score === null) return null
 
   return (
-    <div className="flex items-center gap-3 text-sm">
-      <span className="text-xs text-muted-foreground w-20 shrink-0">EPSS</span>
-      <span className="font-mono">{(score * 100).toFixed(2)}%</span>
-      {pct != null && (
-        <span className="text-xs text-muted-foreground">{(pct * 100).toFixed(0)}th percentile</span>
-      )}
-      {data && <DeltaChip delta={data.delta} />}
-      {data?.score_changed_date && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Info className="size-3.5 text-muted-foreground/60 cursor-default shrink-0" />
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            Score last changed {relativeTime(data.score_changed_date)} ({data.score_changed_date})
-          </TooltipContent>
-        </Tooltip>
-      )}
+    <div className="space-y-2">
+      <div className="flex items-center gap-3 text-sm">
+        <span className="text-xs text-muted-foreground w-20 shrink-0">EPSS</span>
+        <span className="font-mono">{(score * 100).toFixed(2)}%</span>
+        {data && <DeltaChip delta={data.delta} />}
+        {data?.score_changed_date && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Info className="size-3.5 text-muted-foreground/60 cursor-default shrink-0" />
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              Score last changed {relativeTime(data.score_changed_date)} ({data.score_changed_date})
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </div>
+      {/* w-20 label + gap-3 */}
+      {pct != null && <EpssPercentile percentile={pct} score={score} className="ml-23" />}
     </div>
   )
 }

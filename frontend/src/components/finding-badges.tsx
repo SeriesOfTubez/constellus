@@ -8,7 +8,7 @@ import {
 import { type Finding } from "@/lib/api"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { OverflowCell } from "@/components/ui/overflow-cell"
-import { CHIP, SEV_CHIP } from "@/components/ui/chip"
+import { CHIP, SEV_CHIP, type SevTone } from "@/components/ui/chip"
 import { cn } from "@/lib/utils"
 
 // CVE findings with no NVD-curated name fall back to the bare CVE id as their
@@ -555,11 +555,17 @@ export function cvssColor(score: number): string {
 // EPSS scores are heavily right-skewed: ~90% of CVEs are below 1%.
 // Thresholds are set at meaningful exploit-probability inflection points,
 // not evenly spaced like CVSS.
+// The one EPSS colour rule: the chip and the percentile bar both read it.
+export function epssTone(score: number): SevTone | null {
+  if (score >= 0.50) return "critical"
+  if (score >= 0.10) return "high"
+  if (score >= 0.01) return "medium"
+  return null
+}
+
 export function epssColor(score: number): string {
-  if (score >= 0.50) return SEV_CHIP.critical
-  if (score >= 0.10) return SEV_CHIP.high
-  if (score >= 0.01) return SEV_CHIP.medium
-  return ""
+  const tone = epssTone(score)
+  return tone ? SEV_CHIP[tone] : ""
 }
 
 // KEV-family chips (CISA KEV, VC-KEV, ransomware): solid critical fill.
