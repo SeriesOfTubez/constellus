@@ -799,7 +799,8 @@ export type OrgDiscoveryDigestBody = {
 export type OrgDiscoveryDigestDetail = DigestSummary & {
   kind: "org_discovery"
   body: OrgDiscoveryDigestBody
-  narrative?: null
+  /** planning#331 slice 2: a grounded AI summary that cites only body fields; null when none. */
+  narrative: DigestNarrative | null
 }
 
 export type DigestDetail = FindingDigestDetail | OrgDiscoveryDigestDetail

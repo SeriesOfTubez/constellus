@@ -34,10 +34,31 @@ const fmt = (iso: string) => new Date(iso).toLocaleString()
 
 const CANDIDATE_KIND_LABEL: Record<string, string> = { domain: "domain", asn: "ASN", cidr: "IP range" }
 
+function NarrativeBlock({ detail, noun }: { detail: DigestDetail; noun: "records" | "candidates" }) {
+  const { narrative } = detail
+  return (
+    <>
+      {narrative && narrative.statements.length > 0 ? (
+        <div className="space-y-1">
+          <p className="text-xs font-medium">AI summary (each statement is tied to the {noun} below)</p>
+          <ul className="list-disc pl-5 space-y-0.5">
+            {narrative.statements.map((s, i) => <li key={i}>{s.text}</li>)}
+          </ul>
+        </div>
+      ) : detail.narrative_status && detail.narrative_status !== "succeeded" ? (
+        <p className="text-xs text-muted-foreground">
+          AI summary unavailable: {detail.narrative_reason ?? detail.narrative_status}
+        </p>
+      ) : null}
+    </>
+  )
+}
+
 function OrgDiscoveryBodyView({ detail }: { detail: OrgDiscoveryDigestDetail }) {
   const { totals, organizations } = detail.body
   return (
     <div className="space-y-3 text-sm">
+      <NarrativeBlock detail={detail} noun="candidates" />
       <p className="text-xs text-muted-foreground">
         {totals.candidates} new candidate{totals.candidates === 1 ? "" : "s"} across{" "}
         {totals.organizations} organization{totals.organizations === 1 ? "" : "s"}
@@ -107,22 +128,11 @@ export function DigestBodyView({ detail }: { detail: DigestDetail }) {
 }
 
 function FindingDigestBodyView({ detail }: { detail: FindingDigestDetail }) {
-  const { body, narrative } = detail
+  const { body } = detail
   const t = body.totals
   return (
     <div className="space-y-3 text-sm">
-      {narrative && narrative.statements.length > 0 ? (
-        <div className="space-y-1">
-          <p className="text-xs font-medium">AI summary (each statement is tied to the records below)</p>
-          <ul className="list-disc pl-5 space-y-0.5">
-            {narrative.statements.map((s, i) => <li key={i}>{s.text}</li>)}
-          </ul>
-        </div>
-      ) : detail.narrative_status && detail.narrative_status !== "succeeded" ? (
-        <p className="text-xs text-muted-foreground">
-          AI summary unavailable: {detail.narrative_reason ?? detail.narrative_status}
-        </p>
-      ) : null}
+      <NarrativeBlock detail={detail} noun="records" />
       <p className="text-xs text-muted-foreground">
         {t.findings} finding{t.findings === 1 ? "" : "s"} on {t.assets} asset{t.assets === 1 ? "" : "s"}
         {" · "}{t.new} new · {t.promotions} risk escalation{t.promotions === 1 ? "" : "s"}
@@ -199,8 +209,8 @@ function DigestRow({ d }: { d: DigestSummary }) {
         </span>
         <span className="block w-64 shrink-0 space-y-0.5 text-xs">
           <span className={`block ${outcomeTone(d.outcome)}`}>{digestOutcomeLabel(d.outcome)}</span>
-          {d.kind !== "org_discovery" && d.narrative_status === "succeeded" && <span className="block">AI summary</span>}
-          {d.kind !== "org_discovery" && (d.narrative_status === "skipped" || d.narrative_status === "failed") && (
+          {d.narrative_status === "succeeded" && <span className="block">AI summary</span>}
+          {(d.narrative_status === "skipped" || d.narrative_status === "failed") && (
             <span className="block text-muted-foreground" title={d.narrative_reason ?? undefined}>No AI summary</span>
           )}
         </span>
