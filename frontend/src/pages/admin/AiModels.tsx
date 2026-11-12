@@ -359,7 +359,7 @@ function StatusCards({ status }: { status: LlmStatus | undefined }) {
               <Link to="/admin/connectors" className="underline underline-offset-2 hover:text-foreground">Configure it</Link>.
             </p>
           ) : key_error ? (
-            <p className="text-sm text-amber-600 dark:text-amber-400 flex items-start gap-2">
+            <p className="text-sm text-destructive flex items-start gap-2">
               <AlertTriangle className="size-3.5 shrink-0 mt-1" />
               <span>Couldn't read the key status: {key_error}</span>
             </p>
@@ -403,7 +403,7 @@ function ModelFlags({ id, model, cachePresent, structuredRole }: {
       )}
       {isAlias(id) && (
         <Tooltip>
-          <TooltipTrigger asChild><Badge variant="warning">floats</Badge></TooltipTrigger>
+          <TooltipTrigger asChild><Badge variant="outline">floats</Badge></TooltipTrigger>
           <TooltipContent className="max-w-xs">A floating alias: OpenRouter can change the model behind it without notice.</TooltipContent>
         </Tooltip>
       )}
@@ -450,7 +450,7 @@ function RoleEditor({ role, binding, onChange, byId, cachePresent, choices }: {
 
       <div className="space-y-2 min-w-0">
         {binding.models.length === 0 && (
-          <p className="text-xs text-amber-600 dark:text-amber-400">No model bound. Add at least one.</p>
+          <p className="text-xs text-sev-medium">No model bound. Add at least one.</p>
         )}
         {binding.models.map((id, i) => (
           <div key={id} className="flex items-center gap-2 rounded-md border px-2 py-1">
@@ -576,8 +576,8 @@ export default function AiModels() {
       <AutoWebClassificationsCard auto={status?.auto_web_classifications} />
 
       {saved && !saved.configured && (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm flex items-start gap-2">
-          <AlertTriangle className="size-3.5 text-amber-600 dark:text-amber-400 shrink-0 mt-1" />
+        <div className="rounded-md border border-sev-medium/40 bg-sev-medium/10 px-4 py-3 text-sm flex items-start gap-2">
+          <AlertTriangle className="size-3.5 text-sev-medium shrink-0 mt-1" />
           <div>
             <div className="font-medium">AI models aren't configured</div>
             <div className="text-muted-foreground">
@@ -678,14 +678,14 @@ export default function AiModels() {
                 {visibleModels.map(m => (
                   <TableRow key={m.id}>
                     <TableCell className="font-mono text-xs">
-                      <span className="flex items-center gap-2">{m.id}{isAlias(m.id) && <Badge variant="warning">floats</Badge>}</span>
+                      <span className="flex items-center gap-2">{m.id}{isAlias(m.id) && <Badge variant="outline">floats</Badge>}</span>
                     </TableCell>
-                    <TableCell>{supportsStructured(m) ? <Badge variant="success">Yes</Badge> : <span className="text-xs text-muted-foreground">No</span>}</TableCell>
+                    <TableCell>{supportsStructured(m) ? <Badge variant="outline">Yes</Badge> : <span className="text-xs text-muted-foreground">No</span>}</TableCell>
                     <TableCell className="text-xs tabular-nums">
                       {m.zdr_endpoints === null || m.zdr_endpoints === undefined
                         ? <span className="text-muted-foreground">unknown</span>
                         : m.zdr_endpoints === 0
-                          ? <span className="text-amber-600 dark:text-amber-400">none</span>
+                          ? <span className="text-sev-medium">none</span>
                           : <>{m.zdr_endpoints} <span className="text-muted-foreground">({m.zdr_structured_endpoints ?? 0} structured)</span></>}
                     </TableCell>
                     <TableCell className="text-right text-xs tabular-nums">{formatPerMillion(m.pricing?.prompt)}</TableCell>

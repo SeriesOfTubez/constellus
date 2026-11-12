@@ -27,7 +27,7 @@ export function RegistryChangeBadge() {
   return (
     <span
       title={REGISTRY_CHANGE_TITLE}
-      className={cn(CHIP, "ml-2 border bg-muted/40 align-middle font-sans font-medium text-muted-foreground")}
+      className={cn(CHIP, "ml-2 bg-muted/40 align-middle font-sans text-muted-foreground")}
     >
       <Info className="size-3.5" />Registry change
     </span>

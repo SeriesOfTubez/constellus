@@ -20,10 +20,10 @@ const KIND_LABEL: Record<ScanRun["kind"], string> = {
   recheck:           "Recheck",
   manual:            "Manual",
 }
-const STATUS_VARIANT: Record<ScanRun["status"], "default" | "outline" | "success" | "warning" | "destructive"> = {
+const STATUS_VARIANT: Record<ScanRun["status"], "outline" | "destructive"> = {
   pending:   "outline",
-  running:   "warning",
-  completed: "success",
+  running:   "outline",
+  completed: "outline",
   failed:    "destructive",
   cancelled: "outline",
 }
@@ -303,7 +303,7 @@ function SecurityScoreGauge({ data, loading, error }: { data?: SecurityScore; lo
                     className="flex items-center gap-2 -mx-1 px-1 py-1 rounded hover:bg-accent/40 transition-colors">
                     <span className="font-mono text-xs tabular-nums w-7 shrink-0 text-right" style={{ color }}>{f.risk_score ?? "—"}</span>
                     <span className="flex-1 text-xs truncate">{f.title}</span>
-                    {f.building_velocity && <span className="text-amber-500 shrink-0" title="Building Velocity">⚡</span>}
+                    {f.building_velocity && <span className="text-sev-medium shrink-0" title="Building Velocity">⚡</span>}
                   </Link>
                 ))}
               </div>

@@ -222,7 +222,7 @@ export default function FindingDetail() {
                 {finding.cvss_score != null && (
                   <div className="flex items-start gap-3 px-3 py-2">
                     <span className="text-muted-foreground w-24 shrink-0">CVSS</span>
-                    <span className={cn(CHIP, "border font-mono", cvssColor(finding.cvss_score))}>
+                    <span className={cn(CHIP, "font-mono", cvssColor(finding.cvss_score))}>
                       {finding.cvss_version && <span className="opacity-60 mr-1">v{finding.cvss_version}</span>}
                       {finding.cvss_score.toFixed(1)}
                     </span>
@@ -239,7 +239,7 @@ export default function FindingDetail() {
                   <div className="flex items-center gap-3 px-3 py-2">
                     <span className="text-muted-foreground w-24 shrink-0">KEV</span>
                     <Link to="/findings?kev=true" className="hover:opacity-80 transition-opacity" title="Show all KEV findings">
-                      <span className={cn(CHIP, "border font-bold bg-red-500 text-white border-red-600")}>KEV</span>
+                      <span className={cn(CHIP, "border-sev-critical bg-sev-critical font-semibold text-destructive-foreground")}>KEV</span>
                     </Link>
                     {finding.kev_date_added && (
                       <span className="text-xs text-muted-foreground">Added {finding.kev_date_added}</span>

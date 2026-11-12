@@ -30,14 +30,14 @@ describe("JobStatusRow", () => {
     expect(out).not.toContain("TimeoutError")
     expect(out).not.toContain(">error<")
     expect(out).not.toContain('"error"')
-    expect(out).toContain("text-amber-600")
+    expect(out).toContain("text-sev-medium")
   })
   it("never renders the raw reason code", () => {
     for (const reason of ["done", "time_limit", "lookup_failures", "rate_limited", "not_configured", "mystery_code"]) {
       expect(row(status({ last_run: run({ finish_reason: reason }) }))).not.toContain(reason === "done" ? ">done<" : reason)
     }
   })
-  it("done run is not amber", () => expect(row(status())).not.toContain("text-amber-600"))
+  it("done run is not amber", () => expect(row(status())).not.toContain("text-sev-medium"))
   it("unknown job shows a generic name, not the raw one", () => {
     const out = row(status({ job: "secret_new_job", last_run: run({ job: "secret_new_job" }) }))
     expect(out).toContain("Other scheduled job")

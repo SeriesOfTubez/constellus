@@ -95,7 +95,7 @@ function QueryResults({ q, raw }: { q: QueryObject; raw: string }) {
     <div className="p-6 space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl tracking-title font-semibold">Explore</h1>
-        <span className={cn(CHIP, "border text-muted-foreground")}>From chat</span>
+        <span className={cn(CHIP, "text-muted-foreground")}>From chat</span>
         <span className="font-mono text-xs text-muted-foreground truncate max-w-[50ch]" title={summariseQuery(q)}>
           {summariseQuery(q)}
         </span>

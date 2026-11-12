@@ -79,7 +79,7 @@ export function WebClassificationSummary({
       {flags.map(f => (
         <p
           key={f.key}
-          className={`text-xs ${f.tone === "warn" ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}
+          className={`text-xs ${f.tone === "warn" ? "text-sev-medium" : "text-muted-foreground"}`}
         >
           {f.text}
         </p>

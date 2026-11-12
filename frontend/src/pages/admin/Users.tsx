@@ -147,7 +147,7 @@ export default function Users() {
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    <Badge variant={u.is_active ? "success" : "outline"}>
+                    <Badge variant="outline">
                       {u.is_active ? "Active" : "Disabled"}
                     </Badge>
                   </TableCell>

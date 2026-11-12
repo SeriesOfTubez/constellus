@@ -3,6 +3,7 @@ import { ShieldQuestion, Clock3 } from "lucide-react"
 import { api, type Asset, type HygieneBand, type HygieneDetail } from "@/lib/api"
 import { relativeTime } from "@/lib/time"
 import { HygieneGradeChip } from "@/components/hygiene-badges"
+import { Skeleton } from "@/components/ui/skeleton"
 
 /**
  * Asset hygiene drill-down — the sibling of AssetRiskCard for the OPPOSITE
@@ -46,11 +47,11 @@ const DIMENSION_LABEL: Record<(typeof DIMENSION_ORDER)[number], string> = {
 // hue-by-meaning ramp as HYGIENE_BAND_COLOR, just expressed as gradient hero
 // classes the way AssetRiskCard's BAND_HERO does for the Risk Score axis.
 const HYGIENE_BAND_HERO: Record<HygieneBand, { label: string; textCls: string; bgCls: string }> = {
-  critical:  { label: "Critical",  textCls: "text-red-500",     bgCls: "from-red-500/[0.07]" },
-  poor:      { label: "Poor",      textCls: "text-orange-500",  bgCls: "from-orange-500/[0.07]" },
-  fair:      { label: "Fair",      textCls: "text-yellow-600 dark:text-yellow-400", bgCls: "from-amber-500/[0.07]" },
-  good:      { label: "Good",      textCls: "text-blue-500",    bgCls: "from-blue-500/[0.07]" },
-  excellent: { label: "Excellent", textCls: "text-emerald-500", bgCls: "from-emerald-500/[0.07]" },
+  critical:  { label: "Critical",  textCls: "text-sev-critical", bgCls: "from-sev-critical/[0.07]" },
+  poor:      { label: "Poor",      textCls: "text-sev-high",     bgCls: "from-sev-high/[0.07]" },
+  fair:      { label: "Fair",      textCls: "text-sev-medium",   bgCls: "from-sev-medium/[0.07]" },
+  good:      { label: "Good",      textCls: "text-sev-low",      bgCls: "from-sev-low/[0.07]" },
+  excellent: { label: "Excellent", textCls: "text-sev-clean",    bgCls: "from-sev-clean/[0.07]" },
 }
 
 export function AssetHygieneCard({ asset }: { asset: Asset }) {
@@ -65,7 +66,11 @@ export function AssetHygieneCard({ asset }: { asset: Asset }) {
     return (
       <div className="space-y-2">
         <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Asset Hygiene</p>
-        <div className="rounded-lg border p-4 text-xs text-muted-foreground italic">Loading…</div>
+        <div role="status" aria-label="Loading" className="space-y-3 rounded-lg border p-4">
+          <Skeleton className="h-6 w-1/3" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-2/3" />
+        </div>
       </div>
     )
   }

@@ -28,18 +28,18 @@ import {
 
 // Verdict hero styling, keyed directly on the Risk Score band (the verdict axis).
 const BAND_HERO: Record<string, { label: string; textCls: string; bgCls: string }> = {
-  imminent_compromise: { label: "Imminent Threat",     textCls: "text-red-500",     bgCls: "from-red-500/[0.07]" },
-  high:                { label: "High Risk",           textCls: "text-orange-500",  bgCls: "from-orange-500/[0.07]" },
-  elevated:            { label: "Elevated Risk",       textCls: "text-yellow-500",  bgCls: "from-amber-500/[0.07]" },
-  low:                 { label: "Low Risk",            textCls: "text-blue-500",    bgCls: "from-blue-500/[0.07]" },
-  secure:              { label: "Secure Posture",      textCls: "text-emerald-500", bgCls: "from-emerald-500/[0.07]" },
+  imminent_compromise: { label: "Imminent Threat",     textCls: "text-sev-critical", bgCls: "from-sev-critical/[0.07]" },
+  high:                { label: "High Risk",           textCls: "text-sev-high",     bgCls: "from-sev-high/[0.07]" },
+  elevated:            { label: "Elevated Risk",       textCls: "text-sev-medium",   bgCls: "from-sev-medium/[0.07]" },
+  low:                 { label: "Low Risk",            textCls: "text-sev-low",      bgCls: "from-sev-low/[0.07]" },
+  secure:              { label: "Secure Posture",      textCls: "text-sev-clean",    bgCls: "from-sev-clean/[0.07]" },
 }
 
 const SPOTLIGHT_CLS: Record<string, string> = {
-  imminent_compromise: "border-l-4 border-l-red-500",
-  high:                "border-l-4 border-l-orange-500",
-  elevated:            "border-l-4 border-l-yellow-500",
-  low:                 "border-l-4 border-l-blue-500",
+  imminent_compromise: "border-l-4 border-l-sev-critical",
+  high:                "border-l-4 border-l-sev-high",
+  elevated:            "border-l-4 border-l-sev-medium",
+  low:                 "border-l-4 border-l-sev-low",
   secure:              "border-l-4 border-l-border",
 }
 
@@ -109,7 +109,7 @@ export function AssetRiskCard({ asset, findings, href }: { asset: Asset; finding
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Top finding</span>
             {(topFinding.kev || topFinding.vulncheck_kev) && (
-              <span className="inline-flex items-center rounded border px-1 py-0 text-xs font-bold bg-red-500 text-white border-red-600">KEV</span>
+              <span className="inline-flex items-center rounded border px-1 py-0 text-xs font-semibold bg-sev-critical text-destructive-foreground border-sev-critical">KEV</span>
             )}
           </div>
           <p className="text-sm font-medium leading-snug">{topFinding.title}</p>

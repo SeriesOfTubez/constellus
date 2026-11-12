@@ -64,7 +64,7 @@ export function WorkspaceShell({
             {tab.label}
             {tab.count !== undefined && (
               <span className={cn(
-                CHIP, "font-semibold tabular-nums",
+                CHIP, "tabular-nums",
                 activeTab === tab.key
                   ? "bg-primary/15 text-primary"
                   : "bg-muted text-muted-foreground"

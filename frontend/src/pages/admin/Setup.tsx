@@ -78,9 +78,9 @@ function ConnectorSetupCard({
             )}
           </div>
           <p className="text-xs text-muted-foreground">{connector.description}</p>
-          {copy && <p className="text-xs text-amber-600 dark:text-amber-400">{copy.short}</p>}
+          {copy && <p className="text-xs text-sev-medium">{copy.short}</p>}
         </div>
-        {status === "saved" && <Badge variant="success">Connected</Badge>}
+        {status === "saved" && <Badge variant="outline">Connected</Badge>}
         {status === "skipped" && <Badge variant="outline">Skipped — configure later</Badge>}
       </div>
 
@@ -147,9 +147,9 @@ function ConnectSourcesStep({ onContinue }: { onContinue: () => void }) {
       <Card>
         <CardHeader>
           <CardTitle className="text-xl">Connect data sources</CardTitle>
-          <CardDescription>Loading available connectors…</CardDescription>
+          <Skeleton className="h-4 w-48" />
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent role="status" aria-label="Loading" className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-24 w-full" />)}
         </CardContent>
       </Card>
@@ -385,7 +385,7 @@ export default function Setup() {
           {step === 4 && (
             <Card>
               <CardHeader className="items-center text-center">
-                <CheckCircle2 className="h-12 w-12 text-emerald-500 mb-2" />
+                <CheckCircle2 className="h-12 w-12 text-sev-clean mb-2" />
                 <CardTitle className="text-xl">You're all set</CardTitle>
                 <CardDescription>
                   Your admin account is created and you're signed in. Head to the dashboard to

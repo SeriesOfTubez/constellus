@@ -177,7 +177,7 @@ export function PivotTable({ rows, mode, onAssetClick, emptyMessage }: PivotTabl
                     {row.versions.length === 0 ? (
                       <span className="text-xs text-muted-foreground">—</span>
                     ) : row.hasDrift ? (
-                      <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-500">
+                      <span className="inline-flex items-center gap-1 text-xs font-medium text-sev-medium">
                         <AlertTriangle className="size-3.5 shrink-0" />
                         {row.versions.length} versions
                       </span>

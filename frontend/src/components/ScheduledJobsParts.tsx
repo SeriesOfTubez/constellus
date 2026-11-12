@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 
 const reasonClass = (reason: string) =>
-  isProblem(reason) ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"
+  isProblem(reason) ? "text-sev-medium" : "text-muted-foreground"
 
 export function JobStatusRow({ status, windowHours, expanded, onToggle }: {
   status: JobStatus

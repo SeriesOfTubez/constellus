@@ -93,9 +93,9 @@ export function CaptureImage({ candidateId, captureId, domain }: { candidateId: 
 // About the record, not the page: the proxy log may have landed later (planning#325).
 const NO_PROXY_RECORD = "No proxy record was found when this capture was processed"
 
-const STATUS_BADGE: Record<string, { variant: "secondary" | "success" | "outline"; label: string }> = {
+const STATUS_BADGE: Record<string, { variant: "secondary" | "outline"; label: string }> = {
   queued: { variant: "secondary", label: "Queued" },
-  done: { variant: "success", label: "Done" },
+  done: { variant: "outline", label: "Done" },
   failed: { variant: "outline", label: "Failed" },
 }
 

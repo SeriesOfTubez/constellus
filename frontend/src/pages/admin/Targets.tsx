@@ -21,7 +21,6 @@ import { TagBadge } from "@/components/ui/tag-badge"
 import { TagEditor } from "@/components/ui/tag-editor"
 import { OverflowCell } from "@/components/ui/overflow-cell"
 import { CHIP } from "@/components/ui/chip"
-import { cn } from "@/lib/utils"
 
 const TIER_LABEL: Record<AggressivenessTier, string> = {
   stealth: "Stealth",
@@ -31,15 +30,15 @@ const TIER_LABEL: Record<AggressivenessTier, string> = {
 }
 const TIERS: AggressivenessTier[] = ["stealth", "polite", "standard", "aggressive"]
 
-const TYPE_META: Record<Target["type"], { label: string; icon: React.ElementType; color: string }> = {
-  domain: { label: "Domain", icon: Globe,   color: "bg-blue-500/10 text-blue-600 dark:text-blue-400" },
-  ip:     { label: "IP",     icon: Server,  color: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" },
-  cidr:   { label: "CIDR",   icon: Network, color: "bg-purple-500/10 text-purple-600 dark:text-purple-400" },
+const TYPE_META: Record<Target["type"], { label: string; icon: React.ElementType }> = {
+  domain: { label: "Domain", icon: Globe },
+  ip:     { label: "IP",     icon: Server },
+  cidr:   { label: "CIDR",   icon: Network },
 }
 
 function TypeBadge({ type }: { type: Target["type"] }) {
-  const { label, color } = TYPE_META[type]
-  return <span className={cn(CHIP, "font-medium", color)}>{label}</span>
+  const { label } = TYPE_META[type]
+  return <span className={CHIP}>{label}</span>
 }
 
 function TargetDeleteDialog({
@@ -448,7 +447,7 @@ export default function Targets() {
               className="font-mono"
               autoFocus
             />
-            <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/5 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-400">
+            <div className="flex items-start gap-2 rounded-md border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
               <AlertTriangle className="size-3.5 mt-1 shrink-0" />
               <p>Only add targets that you own or are authorised to scan and monitor.</p>
             </div>
