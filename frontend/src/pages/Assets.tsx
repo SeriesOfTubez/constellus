@@ -482,7 +482,7 @@ function AssetDetailSheet({
               <TabsTrigger value="findings"      className={FLY_TRIGGER}>
                 Findings
                 {activeFindings.length > 0 && (
-                  <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-semibold">
+                  <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 text-xs font-semibold">
                     {activeFindings.length}
                   </span>
                 )}
@@ -529,11 +529,11 @@ function AssetDetailSheet({
 
                 {sources.length > 0 && (
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Sources</span>
+                    <span className="text-xs uppercase tracking-wider text-muted-foreground">Sources</span>
                     {sources.map(src => {
                       const meta = SOURCE_META[src] ?? { label: src.slice(0, 2).toUpperCase(), color: "bg-muted text-muted-foreground", description: src }
                       return (
-                        <span key={src} className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold cursor-default ${meta.color}`} title={meta.description}>
+                        <span key={src} className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold cursor-default ${meta.color}`} title={meta.description}>
                           {meta.label}
                         </span>
                       )
@@ -542,13 +542,13 @@ function AssetDetailSheet({
                 )}
 
                 <div className="space-y-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Tags</p>
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Tags</p>
                   <TagEditor tags={asset.tags ?? []} entityType="asset" onChange={tags => tagMutation.mutate(tags)} />
                 </div>
 
                 {(networkRows.length > 0 || showNetworkLookup || showNetworkEmpty) && (
                   <div className="space-y-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Network</p>
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Network</p>
                     {showNetworkLookup ? (
                       <p className="text-xs text-muted-foreground italic">Looking up…</p>
                     ) : showNetworkEmpty ? (
@@ -560,7 +560,7 @@ function AssetDetailSheet({
                             <span className="text-muted-foreground shrink-0 w-24">{row.label}</span>
                             <span className={`flex-1 break-all text-foreground ${row.mono ? "font-mono" : ""}`}>{row.value}</span>
                             {row.source !== "asset" && (
-                              <span className="text-[10px] uppercase tracking-wider text-muted-foreground shrink-0">{row.source}</span>
+                              <span className="text-xs uppercase tracking-wider text-muted-foreground shrink-0">{row.source}</span>
                             )}
                           </div>
                         ))}
@@ -586,7 +586,7 @@ function AssetDetailSheet({
 
                 {eolServices.length > 0 && (
                   <div className="space-y-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Software Inventory</p>
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Software Inventory</p>
                     <div className="rounded-md border divide-y text-xs">
                       {eolServices.map((svc, i) => (
                         <div key={i} className="flex items-center gap-2 px-3 py-2">
@@ -594,11 +594,11 @@ function AssetDetailSheet({
                           <span className="font-medium capitalize flex-1">{svc.product}</span>
                           <span className="text-muted-foreground font-mono">{svc.version}</span>
                           {svc.is_eol ? (
-                            <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold bg-amber-500/10 text-amber-500 border-amber-500/30 shrink-0">
+                            <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold bg-amber-500/10 text-amber-500 border-amber-500/30 shrink-0">
                               EOL{svc.days_past_eol !== null ? ` · ${svc.days_past_eol}d` : ""}
                             </span>
                           ) : (
-                            <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 border-emerald-500/30 shrink-0">
+                            <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold bg-emerald-500/10 text-emerald-600 border-emerald-500/30 shrink-0">
                               Supported
                             </span>
                           )}
@@ -610,12 +610,12 @@ function AssetDetailSheet({
 
                 {signals.length > 0 && (
                   <div className="space-y-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Signals</p>
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Signals</p>
                     <div className="rounded-md border px-3 py-2 flex flex-wrap gap-1">
                       {signals.map(s => (
                         <span key={`${s.value}-${s.source}`} className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ${s.severity === "critical" ? "bg-destructive/15 text-destructive" : "bg-muted text-foreground"}`}>
                           {s.value}
-                          <span className="text-[9px] uppercase tracking-wider opacity-60">{s.source}</span>
+                          <span className="text-xs uppercase tracking-wider opacity-60">{s.source}</span>
                         </span>
                       ))}
                     </div>
@@ -624,7 +624,7 @@ function AssetDetailSheet({
 
                 {domainForWhois && (
                   <div className="space-y-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Domain Registration</p>
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Domain Registration</p>
                     {domainWhoisLoading ? (
                       <p className="text-xs text-muted-foreground italic">Looking up…</p>
                     ) : hasDomainData ? (
@@ -1274,13 +1274,13 @@ export default function Assets() {
                             <span className="inline-flex items-center gap-2">
                               {displayName(asset.value)}
                               {isNew(asset) && (
-                                <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                                <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
                                   <Sparkles className="h-2.5 w-2.5" />New
                                 </span>
                               )}
                               {isStale(asset.last_seen_at) && (
                                 <span
-                                  className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400"
+                                  className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
                                   title={`Last seen ${relativeTime(asset.last_seen_at)} — not observed in recent monitoring runs`}
                                 >
                                   <Clock className="h-2.5 w-2.5" />

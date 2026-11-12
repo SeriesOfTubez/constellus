@@ -129,7 +129,7 @@ export function WebClassificationControls({ assetId, state }: { assetId: string;
                 onChange={e => setReason(e.target.value)}
                 className="text-sm"
               />
-              <p className="text-right text-[10px] text-muted-foreground tabular-nums">
+              <p className="text-right text-xs text-muted-foreground tabular-nums">
                 {reason.length}/{REASON_MAX}
               </p>
             </div>

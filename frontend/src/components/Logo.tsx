@@ -14,7 +14,7 @@ export function Logo({ className, showWordmark = true }: LogoProps) {
     isCustomOrg ? (
       <span className="text-base font-semibold truncate" style={{ color: "var(--org-name-color)" }}>{org_name}</span>
     ) : (
-      <span className="text-lg font-bold tracking-tight bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
+      <span className="text-base font-semibold tracking-title bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
         Constellus
       </span>
     )

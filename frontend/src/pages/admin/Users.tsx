@@ -111,7 +111,7 @@ export default function Users() {
       <AdminBreadcrumb page="Users" />
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Users</h1>
+          <h1 className="text-xl tracking-title font-semibold">Users</h1>
           <p className="text-sm text-muted-foreground mt-1">Manage user accounts and role assignments</p>
         </div>
         <Button onClick={() => setCreating(true)}>

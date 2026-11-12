@@ -259,7 +259,7 @@ export function OpenPortsPanel({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
           {merged.length > 0 ? `Open ports (${merged.length})` : "Open ports"}
         </p>
         <div className="flex items-center gap-2">
@@ -279,7 +279,7 @@ export function OpenPortsPanel({
           )}
           {lastScanAt && (
             <span
-              className="text-[10px] text-muted-foreground"
+              className="text-xs text-muted-foreground"
               title={new Date(lastScanAt).toLocaleString()}
             >
               scanned {relativeTime(lastScanAt)}
@@ -340,7 +340,7 @@ function PortRow({ entry, web, assetId }: { entry: OpenPortEntry; web?: WebEndpo
         {unverified && (
           <Badge
             variant="outline"
-            className="h-4 px-1.5 py-0 text-[9px] font-normal text-muted-foreground shrink-0"
+            className="h-4 px-1.5 py-0 text-xs font-normal text-muted-foreground shrink-0"
             title="Seen by Shodan; not yet confirmed by our scanners"
           >
             unverified
@@ -356,7 +356,7 @@ function PortRow({ entry, web, assetId }: { entry: OpenPortEntry; web?: WebEndpo
             </TooltipTrigger>
             <TooltipContent side="left" className="max-w-xs">
               <div className="space-y-1">
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                   Signals
                 </p>
                 {sources.map(s => (
@@ -368,7 +368,7 @@ function PortRow({ entry, web, assetId }: { entry: OpenPortEntry; web?: WebEndpo
         )}
         {entry.last_seen_at && (
           <span
-            className="text-[10px] text-muted-foreground shrink-0 w-28 text-right"
+            className="text-xs text-muted-foreground shrink-0 w-28 text-right"
             title={new Date(entry.last_seen_at).toLocaleString()}
           >
             {shodanOnly ? `Shodan · ${relativeTime(entry.last_seen_at)}` : relativeTime(entry.last_seen_at)}
@@ -377,14 +377,14 @@ function PortRow({ entry, web, assetId }: { entry: OpenPortEntry; web?: WebEndpo
       </div>
       {secondary && (
         <div
-          className="font-mono text-[10px] text-muted-foreground/80 truncate pl-[5.75rem]"
+          className="font-mono text-xs text-muted-foreground/80 truncate pl-[5.75rem]"
           title={secondary}
         >
           {secondary}
         </div>
       )}
       {(httpTitle || httpStatus != null) && (
-        <div className="flex items-center gap-2 text-[10px] text-muted-foreground/80 pl-[5.75rem]">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground/80 pl-[5.75rem]">
           {httpStatus != null && <span className="shrink-0 tabular-nums">HTTP {httpStatus}</span>}
           {httpTitle && <span className="truncate" title={httpTitle}>{httpTitle}</span>}
         </div>
@@ -401,14 +401,14 @@ function PortRow({ entry, web, assetId }: { entry: OpenPortEntry; web?: WebEndpo
       {entry.tech_stack && entry.tech_stack.length > 0 && (
         <div className="flex flex-wrap gap-1 pl-[5.75rem]">
           {entry.tech_stack.map(t => (
-            <Badge key={t} variant="outline" className="h-4 px-1.5 py-0 text-[9px] font-normal">
+            <Badge key={t} variant="outline" className="h-4 px-1.5 py-0 text-xs font-normal">
               {t}
             </Badge>
           ))}
         </div>
       )}
       {certIssuer && (
-        <div className="font-mono text-[10px] text-muted-foreground/80 truncate pl-[5.75rem]">
+        <div className="font-mono text-xs text-muted-foreground/80 truncate pl-[5.75rem]">
           {certIssuer}
           {cert?.not_after && (
             <span className={certExpired ? "text-destructive font-medium" : certExpiringSoon ? "text-orange-500 font-medium" : ""}>

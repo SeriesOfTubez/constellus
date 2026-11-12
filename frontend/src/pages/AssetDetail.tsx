@@ -255,7 +255,7 @@ function AssetDetailBody({
             const meta = SOURCE_META[src] ?? { label: src.slice(0, 2).toUpperCase(), color: "bg-muted text-muted-foreground", description: src }
             return (
               <span key={src}
-                className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold cursor-default ${meta.color}`}
+                className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold cursor-default ${meta.color}`}
                 title={meta.description}
               >{meta.label}</span>
             )
@@ -304,7 +304,7 @@ function AssetDetailBody({
             <TabsTrigger value="findings" className={TAB}>
               Findings
               {activeFindings.length > 0 && (
-                <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-semibold">{activeFindings.length}</span>
+                <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 text-xs font-semibold">{activeFindings.length}</span>
               )}
             </TabsTrigger>
             {hasCerts && <TabsTrigger value="tls" className={TAB}>TLS</TabsTrigger>}
@@ -323,14 +323,14 @@ function AssetDetailBody({
           {/* Network */}
           {networkRows.length > 0 && (
             <div className="space-y-2">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Network</p>
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Network</p>
               <div className="rounded-md border divide-y text-sm">
                 {networkRows.map(row => (
                   <div key={row.label} className="flex items-start gap-3 px-3 py-2">
                     <span className="text-muted-foreground shrink-0 w-28">{row.label}</span>
                     <span className={`flex-1 break-all text-foreground ${row.mono ? "font-mono" : ""}`}>{row.value}</span>
                     {row.source !== "asset" && (
-                      <span className="text-[10px] uppercase tracking-wider text-muted-foreground shrink-0">{row.source}</span>
+                      <span className="text-xs uppercase tracking-wider text-muted-foreground shrink-0">{row.source}</span>
                     )}
                   </div>
                 ))}
@@ -356,7 +356,7 @@ function AssetDetailBody({
           {/* Software inventory (EOL) */}
           {eolServices.length > 0 && (
             <div className="space-y-2">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Software inventory</p>
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Software inventory</p>
               <div className="rounded-md border divide-y text-xs">
                 {eolServices.map((svc, i) => (
                   <div key={i} className="flex items-center gap-2 px-3 py-2">
@@ -364,11 +364,11 @@ function AssetDetailBody({
                     <span className="font-medium capitalize flex-1">{svc.product}</span>
                     <span className="text-muted-foreground font-mono">{svc.version}</span>
                     {svc.is_eol ? (
-                      <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold bg-amber-500/10 text-amber-500 border-amber-500/30 shrink-0">
+                      <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold bg-amber-500/10 text-amber-500 border-amber-500/30 shrink-0">
                         EOL{svc.days_past_eol !== null ? ` · ${svc.days_past_eol}d` : ""}
                       </span>
                     ) : (
-                      <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 border-emerald-500/30 shrink-0">
+                      <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold bg-emerald-500/10 text-emerald-600 border-emerald-500/30 shrink-0">
                         Supported
                       </span>
                     )}
@@ -381,7 +381,7 @@ function AssetDetailBody({
           {/* Signals */}
           {signals.length > 0 && (
             <div className="space-y-2">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Signals</p>
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Signals</p>
               <div className="rounded-md border px-3 py-2 flex flex-wrap gap-1">
                 {signals.map(s => (
                   <span
@@ -389,7 +389,7 @@ function AssetDetailBody({
                     className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ${s.severity === "critical" ? "bg-destructive/15 text-destructive" : "bg-muted text-foreground"}`}
                   >
                     {s.value}
-                    <span className="text-[9px] uppercase tracking-wider opacity-60">{s.source}</span>
+                    <span className="text-xs uppercase tracking-wider opacity-60">{s.source}</span>
                   </span>
                 ))}
               </div>
@@ -399,7 +399,7 @@ function AssetDetailBody({
           {/* Domain registration */}
           {domainForWhois && hasDomainData && (
             <div className="space-y-2">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Domain registration</p>
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Domain registration</p>
               <div className="rounded-md border divide-y text-sm">
                 <div className="flex items-start gap-3 px-3 py-2">
                   <span className="text-muted-foreground shrink-0 w-32">Domain</span>
@@ -443,14 +443,14 @@ function AssetDetailBody({
 
           {/* Tags */}
           <div className="space-y-2">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Tags</p>
+            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Tags</p>
             <TagEditor tags={asset.tags ?? []} entityType="asset" onChange={onTagChange} />
           </div>
 
           {/* Sources */}
           {sources.length > 0 && (
             <div className="space-y-2">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Sources</p>
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Sources</p>
               <SourceBadges metadata={asset.asset_metadata} />
             </div>
           )}

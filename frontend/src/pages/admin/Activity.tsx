@@ -84,7 +84,7 @@ function ScanDetailSheet({ run, onClose }: { run: ScanRun; onClose: () => void }
               { label: "Duration", value: duration(run) },
             ].map(({ label, value }) => (
               <div key={label} className="rounded-md border p-3 text-center">
-                <p className="text-lg font-semibold">{value}</p>
+                <p className="text-xl font-semibold">{value}</p>
                 <p className="text-xs text-muted-foreground">{label}</p>
               </div>
             ))}
@@ -103,7 +103,7 @@ function ScanDetailSheet({ run, onClose }: { run: ScanRun; onClose: () => void }
           )}
 
           <div className="space-y-2">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Scope</p>
+            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Scope</p>
             <div className="rounded-md border divide-y text-xs font-mono max-h-48 overflow-y-auto">
               {run.scope.domains.map(d => (
                 <div key={d} className="px-3 py-2 flex items-center gap-2" title={d}>
@@ -123,7 +123,7 @@ function ScanDetailSheet({ run, onClose }: { run: ScanRun; onClose: () => void }
 
           <Separator />
           <div className="space-y-2">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Timeline</p>
+            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Timeline</p>
             <div className="space-y-2">
               {timeline.map(({ label, value, icon: Icon }) => (
                 <div key={label} className="flex items-center gap-3 text-xs">
@@ -139,7 +139,7 @@ function ScanDetailSheet({ run, onClose }: { run: ScanRun; onClose: () => void }
             <>
               <Separator />
               <div className="space-y-2">
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Connectors used</p>
+                <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Connectors used</p>
                 <div className="flex flex-wrap gap-1.5">
                   {run.connectors_used.map(c => (
                     <span key={c} className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-mono">{c}</span>
@@ -153,7 +153,7 @@ function ScanDetailSheet({ run, onClose }: { run: ScanRun; onClose: () => void }
             <>
               <Separator />
               <div className="space-y-2">
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-destructive">Error</p>
+                <p className="text-xs font-semibold uppercase tracking-widest text-destructive">Error</p>
                 <pre className="text-xs font-mono bg-destructive/5 border border-destructive/20 rounded p-3 whitespace-pre-wrap break-all text-destructive">{run.error}</pre>
               </div>
             </>
@@ -191,7 +191,7 @@ function ScanRow({ run, onDetail }: { run: ScanRun; onDetail: (run: ScanRun) => 
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-medium truncate">{run.name ?? run.scope.domains.map(displayName).join(", ") ?? "Unnamed scan"}</p>
             <Badge variant={badge.variant}>{badge.label}</Badge>
-            <Badge variant="outline" className="text-[10px]">{KIND_LABEL[run.kind]}</Badge>
+            <Badge variant="outline" className="text-xs">{KIND_LABEL[run.kind]}</Badge>
             {run.status === "running" && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
           </div>
           {run.scope.domains.length > 0 && (
@@ -478,7 +478,7 @@ function SystemLogsPanel() {
           reversed.map(entry => (
             <div key={entry.id}
               className={`flex gap-3 px-4 py-0.5 hover:bg-white/5 border-b border-white/5 ${LEVEL_BG[entry.level] ?? ""}`}>
-              <span className="text-[11px] text-muted-foreground shrink-0 w-44 tabular-nums">
+              <span className="text-xs text-muted-foreground shrink-0 w-44 tabular-nums">
                 {fmtLogTime(entry.created_at)}
               </span>
               <span className={`shrink-0 w-16 ${LEVEL_COLOR[entry.level] ?? "text-foreground"}`}>
@@ -570,7 +570,7 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
       </span>
       <span className="w-56 shrink-0">
         <div className="font-medium">{entry.action}</div>
-        {entry.resource_type && <div className="text-muted-foreground text-[11px]">{entry.resource_type}</div>}
+        {entry.resource_type && <div className="text-muted-foreground text-xs">{entry.resource_type}</div>}
       </span>
       <span className="w-16 shrink-0">
         <Badge variant={auditOutcomeVariant(statusCode)}>{statusCode ?? "—"}</Badge>
@@ -579,10 +579,10 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
         {changes ? (
           Object.entries(changes).map(([field, value]) => <AuditChangeLine key={field} field={field} value={value} />)
         ) : path ? (
-          <span className="text-muted-foreground font-mono text-[11px]">{path}</span>
+          <span className="text-muted-foreground font-mono text-xs">{path}</span>
         ) : null}
       </span>
-      <span className="w-32 shrink-0 text-muted-foreground font-mono text-[11px] text-right">
+      <span className="w-32 shrink-0 text-muted-foreground font-mono text-xs text-right">
         {entry.ip_address ?? "—"}
       </span>
     </div>

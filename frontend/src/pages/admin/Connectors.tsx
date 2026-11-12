@@ -829,7 +829,7 @@ export default function Connectors() {
     <div className="p-6 max-w-5xl mx-auto space-y-8">
       <AdminBreadcrumb page="Connectors" />
       <div>
-        <h1 className="text-2xl font-semibold">Connectors</h1>
+        <h1 className="text-xl tracking-title font-semibold">Connectors</h1>
         <p className="text-sm text-muted-foreground mt-1">
           Enable and configure integrations. Credentials are stored encrypted in the database.
         </p>

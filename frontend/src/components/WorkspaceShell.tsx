@@ -40,7 +40,7 @@ export function WorkspaceShell({
       {/* Header */}
       <div className="px-6 pt-6 pb-4 flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">{title}</h1>
+          <h1 className="text-xl tracking-title font-semibold">{title}</h1>
           {subtitle && <p className="text-sm text-muted-foreground mt-0.5">{subtitle}</p>}
           {headerExtra && <div className="mt-3">{headerExtra}</div>}
         </div>
@@ -63,7 +63,7 @@ export function WorkspaceShell({
             {tab.label}
             {tab.count !== undefined && (
               <span className={cn(
-                "rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums",
+                "rounded-full px-1.5 py-0.5 text-xs font-semibold tabular-nums",
                 activeTab === tab.key
                   ? "bg-primary/15 text-primary"
                   : "bg-muted text-muted-foreground"

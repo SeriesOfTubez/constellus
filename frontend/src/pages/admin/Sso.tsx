@@ -97,7 +97,7 @@ export default function Sso() {
       <AdminBreadcrumb page="SSO" />
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">SAML SSO</h1>
+          <h1 className="text-xl tracking-title font-semibold">SAML SSO</h1>
           <p className="text-sm text-muted-foreground mt-1">Configure single sign-on via SAML 2.0</p>
         </div>
         {config && (

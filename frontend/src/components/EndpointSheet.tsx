@@ -29,7 +29,7 @@ export function EndpointSheet({ row, onClose }: { row: WebEndpointState; onClose
           <EndpointHttpSummary row={row} />
           <WebClassificationSummary state={row} />
           {row.ai && (
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               {row.source === "user" ? `AI's own classification: ${!row.ai.kind || row.ai.kind === "unknown" || row.ai.downgraded ? "Unclassified" : KIND_LABELS[row.ai.kind]} · ` : ""}
               {row.ai.model ? `Model: ${row.ai.model}` : "Model: unknown"}
               {row.ai.cost_usd !== null ? ` · Cost: $${row.ai.cost_usd.toFixed(4)}` : ""}

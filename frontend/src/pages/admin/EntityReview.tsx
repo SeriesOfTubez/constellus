@@ -53,7 +53,7 @@ export default function EntityReview() {
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       <AdminBreadcrumb page="Entity Review" />
       <div>
-        <h1 className="text-2xl font-semibold">Entity Review</h1>
+        <h1 className="text-xl tracking-title font-semibold">Entity Review</h1>
         <p className="text-sm text-muted-foreground mt-1">
           Proposed corporate-entity relationships awaiting a decision. An AI-sourced ("AI" badge)
           relation can never auto-confirm — it always lands here.

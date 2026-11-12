@@ -472,7 +472,7 @@ export default function TargetDetail() {
         <>
           <Separator />
           <div className="space-y-2">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">WHOIS</p>
+            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">WHOIS</p>
             <div className="rounded-md border divide-y text-sm">
               {target.whois_org && (
                 <div className="flex items-start gap-3 px-3 py-2">
@@ -496,7 +496,7 @@ export default function TargetDetail() {
         <>
           <Separator />
           <div className="space-y-2">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">TXT verification</p>
+            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">TXT verification</p>
             <p className="text-sm text-muted-foreground">
               Add this TXT record to <span className="font-mono text-foreground">_constellus-verify.{target.value}</span> and press
               <span className="font-medium text-foreground"> Verify TXT</span> above.

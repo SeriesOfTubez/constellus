@@ -71,7 +71,7 @@ export function AssetRiskCard({ asset, findings, href }: { asset: Asset; finding
 
       {/* Risk verdict hero */}
       <div className={`rounded-lg p-4 bg-gradient-to-br ${hero.bgCls} to-transparent space-y-1`}>
-        <p className={`text-lg font-bold leading-none ${hero.textCls}`}>
+        <p className={`text-xl font-bold leading-none ${hero.textCls}`}>
           {hero.label}
           {asset.risk_score != null && (
             <span className="ml-2 font-mono text-sm opacity-70">{asset.risk_score}</span>
@@ -97,7 +97,7 @@ export function AssetRiskCard({ asset, findings, href }: { asset: Asset; finding
               }`}
             >
               <p className="text-base font-bold leading-none mb-0.5">{count}</p>
-              <p className="text-[10px] uppercase tracking-wider">{RISK_BAND_SHORT[b]}</p>
+              <p className="text-xs uppercase tracking-wider">{RISK_BAND_SHORT[b]}</p>
             </Link>
           )
         })}
@@ -107,9 +107,9 @@ export function AssetRiskCard({ asset, findings, href }: { asset: Asset; finding
       {topFinding && (
         <div className={`rounded-md border bg-muted/20 p-3.5 space-y-2 ${SPOTLIGHT_CLS[effectiveBand(topFinding)] ?? ""}`}>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Top finding</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Top finding</span>
             {(topFinding.kev || topFinding.vulncheck_kev) && (
-              <span className="inline-flex items-center rounded border px-1 py-0 text-[10px] font-bold bg-red-500 text-white border-red-600">KEV</span>
+              <span className="inline-flex items-center rounded border px-1 py-0 text-xs font-bold bg-red-500 text-white border-red-600">KEV</span>
             )}
           </div>
           <p className="text-sm font-medium leading-snug">{topFinding.title}</p>

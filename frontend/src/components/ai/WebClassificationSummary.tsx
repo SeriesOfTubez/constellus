@@ -8,8 +8,8 @@ import { ENV_LABELS, KIND_LABELS, effectiveLabel, endpointFlags, type Citation, 
 
 function CitationChip({ c }: { c: Citation }) {
   return (
-    <span className="text-[11px] text-muted-foreground">
-      <span className="font-mono text-[10px]">{c.source_field}</span>
+    <span className="text-xs text-muted-foreground">
+      <span className="font-mono text-xs">{c.source_field}</span>
       {` "${c.value}"`}
     </span>
   )
@@ -51,7 +51,7 @@ export function WebClassificationSummary({
       {showCitations && (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
           {state.source !== "ai" && (
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               AI cited{state.ai?.kind ? ` (for ${KIND_LABELS[state.ai.kind]})` : ""}:
             </span>
           )}
@@ -59,7 +59,7 @@ export function WebClassificationSummary({
           {rest.length > 0 && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="text-[11px] text-muted-foreground cursor-help">+{rest.length}</span>
+                <span className="text-xs text-muted-foreground cursor-help">+{rest.length}</span>
               </TooltipTrigger>
               <TooltipContent side="top" className="max-w-xs">
                 <div className="space-y-0.5">
@@ -71,15 +71,15 @@ export function WebClassificationSummary({
         </div>
       )}
       {state.product && (
-        <p className="text-[11px] text-muted-foreground">Product (AI guess): {state.product}</p>
+        <p className="text-xs text-muted-foreground">Product (AI guess): {state.product}</p>
       )}
       {!compact && state.source === "user" && state.override?.reason && (
-        <p className="text-[11px] text-muted-foreground">Reason: {state.override.reason}</p>
+        <p className="text-xs text-muted-foreground">Reason: {state.override.reason}</p>
       )}
       {flags.map(f => (
         <p
           key={f.key}
-          className={`text-[11px] ${f.tone === "warn" ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}
+          className={`text-xs ${f.tone === "warn" ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}
         >
           {f.text}
         </p>

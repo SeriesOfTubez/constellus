@@ -106,7 +106,7 @@ export function TlsPanel({
 
   return (
     <div className="space-y-3">
-      <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+      <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
         TLS certificates ({certs.length})
       </p>
       {certs.map(card => (
@@ -142,7 +142,7 @@ function CertCardView({
         <span className="font-mono font-medium break-all">{cert.subject_cn ?? "(no subject CN)"}</span>
         <div className="flex items-center gap-1">
           {ports.sort((a, b) => a - b).map(p => (
-            <Badge key={p} variant="outline" className="h-4 px-1.5 py-0 text-[9px] font-normal font-mono">:{p}</Badge>
+            <Badge key={p} variant="outline" className="h-4 px-1.5 py-0 text-xs font-normal font-mono">:{p}</Badge>
           ))}
         </div>
       </div>
@@ -190,17 +190,17 @@ function CertCardView({
           <span className="text-xs text-muted-foreground w-20 shrink-0">Crypto</span>
           <div className="flex items-center gap-1.5 flex-wrap">
             {cert.tls_version && (
-              <Badge variant="outline" className={`h-4 px-1.5 py-0 text-[9px] font-normal ${isWeakTls ? "border-destructive/50 text-destructive" : ""}`}>
+              <Badge variant="outline" className={`h-4 px-1.5 py-0 text-xs font-normal ${isWeakTls ? "border-destructive/50 text-destructive" : ""}`}>
                 {cert.tls_version}
               </Badge>
             )}
             {cert.cipher && (
-              <span className={`font-mono text-[10px] ${isWeakCipher ? "text-destructive" : "text-muted-foreground"}`}>{cert.cipher}</span>
+              <span className={`font-mono text-xs ${isWeakCipher ? "text-destructive" : "text-muted-foreground"}`}>{cert.cipher}</span>
             )}
             {(isWeakTls || isWeakCipher) && (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="inline-flex items-center gap-1 rounded border border-destructive/50 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive cursor-help">
+                  <span className="inline-flex items-center gap-1 rounded border border-destructive/50 bg-destructive/10 px-1.5 py-0.5 text-xs font-medium text-destructive cursor-help">
                     <ShieldAlert className="h-2.5 w-2.5" />weak
                   </span>
                 </TooltipTrigger>
@@ -221,11 +221,11 @@ function CertCardView({
           <span className="text-xs text-muted-foreground w-20 shrink-0">Fingerprint</span>
           <div className="space-y-0.5 min-w-0">
             {cert.fingerprint && (
-              <p className="font-mono text-[10px] text-muted-foreground break-all" title={cert.fingerprint}>
+              <p className="font-mono text-xs text-muted-foreground break-all" title={cert.fingerprint}>
                 <Fingerprint className="inline h-2.5 w-2.5 mr-1" />{cert.fingerprint.slice(0, 32)}…
               </p>
             )}
-            <div className="flex items-center gap-2 flex-wrap text-[10px] text-muted-foreground/80 font-mono">
+            <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground/80 font-mono">
               {cert.ja3 && <span title="JA3 client hash">ja3:{cert.ja3.slice(0, 12)}</span>}
               {cert.ja3s && <span title="JA3S server hash">ja3s:{cert.ja3s.slice(0, 12)}</span>}
               {card.jarm && <span title="JARM fingerprint">jarm:{card.jarm.slice(0, 12)}</span>}
@@ -241,7 +241,7 @@ function CertCardView({
           {sources.map(s => (
             <Tooltip key={s}>
               <TooltipTrigger asChild>
-                <Badge variant="outline" className="h-4 px-1.5 py-0 text-[9px] font-normal capitalize cursor-help">{s}</Badge>
+                <Badge variant="outline" className="h-4 px-1.5 py-0 text-xs font-normal capitalize cursor-help">{s}</Badge>
               </TooltipTrigger>
               <TooltipContent side="top">{SOURCE_LABELS[s] ?? s}</TooltipContent>
             </Tooltip>
@@ -249,12 +249,12 @@ function CertCardView({
           {others.length > 0 && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="inline-flex items-center gap-1 rounded border border-violet-500/40 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 cursor-help">
+                <span className="inline-flex items-center gap-1 rounded border border-violet-500/40 bg-violet-500/10 px-1.5 py-0.5 text-xs font-medium text-violet-600 dark:text-violet-400 cursor-help">
                   <Network className="h-2.5 w-2.5" />also on {others.length} other asset{others.length === 1 ? "" : "s"}
                 </span>
               </TooltipTrigger>
               <TooltipContent side="top" className="max-w-xs">
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1">Same certificate</p>
+                <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-1">Same certificate</p>
                 <div className="space-y-0.5">
                   {others.slice(0, 12).map(([id, value]) => <div key={id} className="font-mono text-xs break-all">{displayName(value)}</div>)}
                   {others.length > 12 && <div className="text-xs text-muted-foreground">+{others.length - 12} more</div>}

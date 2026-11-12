@@ -250,7 +250,7 @@ export default function Targets() {
       <AdminBreadcrumb page="Targets" />
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Targets</h1>
+          <h1 className="text-xl tracking-title font-semibold">Targets</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Domains, IPs, and CIDRs in scope for monitoring.
           </p>
@@ -383,7 +383,7 @@ export default function Targets() {
                       <span>{displayName(t.value)}</span>
                       {t.aggressiveness && (
                         <span
-                          className="inline-flex items-center rounded-md border px-1.5 py-0 text-[10px] font-medium uppercase text-muted-foreground"
+                          className="inline-flex items-center rounded-md border px-1.5 py-0 text-xs font-medium uppercase text-muted-foreground"
                           title={`Aggressiveness override: ${t.aggressiveness}`}
                         >
                           {t.aggressiveness}
@@ -508,7 +508,7 @@ export default function Targets() {
 
               <Separator />
               <div className="space-y-2">
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Tags</p>
+                <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Tags</p>
                 <TagEditor
                   tags={detailTarget.tags ?? []}
                   entityType="target"

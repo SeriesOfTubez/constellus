@@ -71,7 +71,7 @@ function ConnectorSetupCard({
           <div className="flex items-center gap-2">
             <p className="font-medium text-sm">{connector.name}</p>
             {connector.core && (
-              <Badge variant="outline" className="border-primary/40 text-primary gap-1 text-[10px]">
+              <Badge variant="outline" className="border-primary/40 text-primary gap-1 text-xs">
                 <Zap className="h-2.5 w-2.5" />
                 Core
               </Badge>
@@ -146,7 +146,7 @@ function ConnectSourcesStep({ onContinue }: { onContinue: () => void }) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Connect data sources</CardTitle>
+          <CardTitle className="text-xl">Connect data sources</CardTitle>
           <CardDescription>Loading available connectors…</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -180,7 +180,7 @@ function ConnectSourcesStep({ onContinue }: { onContinue: () => void }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Connect data sources</CardTitle>
+        <CardTitle className="text-xl">Connect data sources</CardTitle>
         <CardDescription>
           These power what Constellus can actually find and tell you. You can configure or change
           any of them later from Admin → Connectors — nothing here is permanent or required to continue.
@@ -285,7 +285,7 @@ export default function Setup() {
           {step === 0 && (
             <Card>
               <CardHeader>
-                <CardTitle className="text-2xl">Welcome to Constellus</CardTitle>
+                <CardTitle className="text-xl">Welcome to Constellus</CardTitle>
                 <CardDescription>
                   Let's get you set up. This wizard creates your first admin account. You'll
                   configure connectors, SSO, and secrets from the admin portal afterward.
@@ -311,7 +311,7 @@ export default function Setup() {
           {step === 1 && (
             <Card>
               <CardHeader>
-                <CardTitle>Create your admin account</CardTitle>
+                <CardTitle className="text-xl">Create your admin account</CardTitle>
                 <CardDescription>
                   This is the first and only account with full admin access. You can invite other
                   users from the admin portal.
@@ -386,7 +386,7 @@ export default function Setup() {
             <Card>
               <CardHeader className="items-center text-center">
                 <CheckCircle2 className="h-12 w-12 text-emerald-500 mb-2" />
-                <CardTitle className="text-2xl">You're all set</CardTitle>
+                <CardTitle className="text-xl">You're all set</CardTitle>
                 <CardDescription>
                   Your admin account is created and you're signed in. Head to the dashboard to
                   start configuring Constellus.

@@ -29,7 +29,7 @@ export function AiInferredBadge({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium cursor-help ${cls} ${className}`}>
+        <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs font-medium cursor-help ${cls} ${className}`}>
           <Icon className="h-2.5 w-2.5" />{text}
         </span>
       </TooltipTrigger>

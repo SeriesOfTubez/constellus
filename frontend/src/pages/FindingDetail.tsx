@@ -134,7 +134,7 @@ export default function FindingDetail() {
           <StateBadge state={finding.state} />
           <SourceBadges finding={finding} />
         </div>
-        <h1 className="text-2xl font-semibold leading-snug">{finding.title}</h1>
+        <h1 className="text-xl tracking-title font-semibold leading-snug">{finding.title}</h1>
         <Link
           to={`/assets/${finding.asset_canonical_id}`}
           className="inline-flex items-center gap-1 font-mono text-sm text-muted-foreground hover:text-foreground"
@@ -208,7 +208,7 @@ export default function FindingDetail() {
 
           {hasEnrichment && (
             <div className="space-y-2">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Enrichment</p>
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Enrichment</p>
               <div className="flex flex-wrap gap-1.5 pb-1"><EnrichmentBadges finding={finding} /></div>
               <div className="rounded-md border divide-y text-sm">
                 {finding.cve_id && (
@@ -262,14 +262,14 @@ export default function FindingDetail() {
 
           {finding.cvss_vector && (
             <div className="space-y-2">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">CVSS breakdown</p>
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">CVSS breakdown</p>
               <CvssBreakdown vector={finding.cvss_vector} version={finding.cvss_version} score={finding.cvss_score} />
             </div>
           )}
 
           {(matchedAt || extracted.length > 0 || curlCmd) && (
             <div className="space-y-3">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Match details</p>
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Match details</p>
               {matchedAt && (
                 <div className="space-y-1">
                   <p className="text-xs text-muted-foreground">Matched URL</p>
@@ -297,7 +297,7 @@ export default function FindingDetail() {
 
           {detailTags.length > 0 && (
             <div className="space-y-2">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Tags from source</p>
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Tags from source</p>
               <div className="flex flex-wrap gap-1">
                 {detailTags.map(tag => (
                   <span key={tag} className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-xs font-mono text-muted-foreground">
@@ -309,7 +309,7 @@ export default function FindingDetail() {
           )}
 
           <div className="space-y-2">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Tags</p>
+            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Tags</p>
             <TagEditor
               tags={finding.tags ?? []}
               entityType="finding"

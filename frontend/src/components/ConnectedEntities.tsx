@@ -44,10 +44,10 @@ export function ConnectedEntities({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
           Connected entities
         </p>
-        <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+        <div className="flex items-center gap-1 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5">
             <Box className="h-2.5 w-2.5" />List
           </span>
@@ -101,7 +101,7 @@ function ObservedNamesBlock({ names }: { names: ObservedName[] }) {
         <span className="font-medium">Other names observed</span>
         <span className="text-muted-foreground">({total})</span>
         <span
-          className="ml-auto text-[10px] text-muted-foreground"
+          className="ml-auto text-xs text-muted-foreground"
           title="Names seen by enrichment sources that aren't tracked assets in Constellus"
         >
           unmonitored
@@ -111,7 +111,7 @@ function ObservedNamesBlock({ names }: { names: ObservedName[] }) {
         {[...bySource.entries()].map(([source, values]) => (
           <div key={source} className="px-3 py-2 text-xs space-y-1">
             <div className="flex items-center gap-2">
-              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">via {source}</span>
+              <span className="text-xs uppercase tracking-wider text-muted-foreground">via {source}</span>
             </div>
             <div className="font-mono space-y-0.5 break-all">
               {values.map(v => <div key={v}>{v}</div>)}
@@ -142,7 +142,7 @@ function EdgeGroupBlock({
         <span className="font-medium">{verb}</span>
         <span className="text-muted-foreground">({total})</span>
         {tag && (
-          <span className="ml-auto text-[10px] text-muted-foreground">{tag}</span>
+          <span className="ml-auto text-xs text-muted-foreground">{tag}</span>
         )}
       </div>
       <div className="divide-y">
@@ -189,22 +189,22 @@ function TypeChip({ item }: { item: EdgeNode }) {
     const sev = item.severity ?? "info"
     const cls = SEV_COLOR[sev]
     return (
-      <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>
+      <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium ${cls}`}>
         {item.kev && <ShieldAlert className="h-2.5 w-2.5" />}
         {sev.toUpperCase()}
       </span>
     )
   }
   if (item.node_type === "target") {
-    return <span className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-foreground">target</span>
+    return <span className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-foreground">target</span>
   }
   // asset_canonical
   const meta = item.edge_metadata
   if (item.asset_type === "dns_record" && typeof meta.record_type === "string") {
-    return <span className="inline-flex items-center rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 text-[10px] font-mono font-semibold">{String(meta.record_type)}</span>
+    return <span className="inline-flex items-center rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 text-xs font-mono font-semibold">{String(meta.record_type)}</span>
   }
   const label = (item.asset_type ?? "asset").replace(/_/g, " ")
-  return <span className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">{label}</span>
+  return <span className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">{label}</span>
 }
 
 function EdgeMetaChips({ item }: { item: EdgeNode }) {
@@ -227,7 +227,7 @@ function EdgeMetaChips({ item }: { item: EdgeNode }) {
   return (
     <div className="flex items-center gap-1 shrink-0">
       {chips.map(c => (
-        <span key={c} className="inline-flex items-center rounded bg-muted/60 px-1 py-0.5 text-[10px] font-mono text-muted-foreground">{c}</span>
+        <span key={c} className="inline-flex items-center rounded bg-muted/60 px-1 py-0.5 text-xs font-mono text-muted-foreground">{c}</span>
       ))}
     </div>
   )

@@ -262,7 +262,7 @@ function ConversationView() {
           aria-label="Question"
           className="w-full resize-none rounded-md border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
         />
-        <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+        <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
           <span>Read-only · Enter to send, Shift+Enter for a new line</span>
           <span className="ml-auto font-mono">{draft.length} / {MAX_QUESTION_CHARS}</span>
         </div>

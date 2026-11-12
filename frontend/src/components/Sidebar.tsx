@@ -190,7 +190,7 @@ export function Sidebar() {
                 <DropdownMenuTrigger asChild>
                   <button className={itemClass(collapsed)}>
                     <Avatar className="h-5 w-5 shrink-0">
-                      <AvatarFallback className="text-[10px] bg-primary/10 text-primary">
+                      <AvatarFallback className="text-xs bg-primary/10 text-primary">
                         {initials}
                       </AvatarFallback>
                     </Avatar>

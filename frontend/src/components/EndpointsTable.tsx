@@ -100,7 +100,7 @@ function GroupRows({
                   <TooltipTrigger asChild>
                     <span className="inline-flex items-center gap-1 cursor-help" aria-label={`${warn.length} flags`}>
                       <span className="h-2 w-2 rounded-full bg-amber-500" />
-                      <span className="text-[10px] text-muted-foreground">{warn.length}</span>
+                      <span className="text-xs text-muted-foreground">{warn.length}</span>
                     </span>
                   </TooltipTrigger>
                   <TooltipContent side="left" className="max-w-xs">

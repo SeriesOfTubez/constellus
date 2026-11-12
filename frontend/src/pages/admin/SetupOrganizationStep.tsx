@@ -18,7 +18,7 @@ export function SetupOrganizationStep({ onContinue }: { onContinue: () => void }
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Your company</CardTitle>
+        <CardTitle className="text-xl">Your company</CardTitle>
         <CardDescription>
           {created
             ? "Your organization is added. Everything discovered stays proposed for you to review."

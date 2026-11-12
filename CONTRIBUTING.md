@@ -71,7 +71,7 @@ before it ships. They are what separates a product from stock AI-generated UI:
    Related things sit closer together than unrelated things. Half-steps (`1.5`, `2.5`)
    need a reason.
 3. **Hierarchy from weight and colour, not size.** Use the type scale, not arbitrary
-   `text-[10px]`. Secondary text is `text-muted-foreground`, not smaller. Nothing under 11px.
+   `text-[10px]`. Secondary text is `text-muted-foreground`, not smaller. Nothing under 12px.
 4. **Colour.** Neutrals everywhere; the brand accent only on the primary action, focus,
    links and selection. The severity palette is meaning, not decoration: only where
    severity is shown.
