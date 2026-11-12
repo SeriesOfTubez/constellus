@@ -12,14 +12,14 @@ export function EndpointSheet({ row, onClose }: { row: WebEndpointState; onClose
   return (
     <Sheet open onOpenChange={o => !o && onClose()}>
       <SheetContent className="w-[480px] sm:max-w-[480px] flex flex-col gap-0 p-0">
-        <SheetHeader className="px-6 pt-5 pb-3 border-b space-y-1.5 shrink-0">
+        <SheetHeader className="px-6 pt-5 pb-3 border-b space-y-2 shrink-0">
           <div className="flex items-center gap-2">
             <Link
               to={`/assets/${row.asset_id}`}
               className="ml-auto mr-6 text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
               title="Open asset"
             >
-              Open asset<SquareArrowOutUpRight className="h-3.5 w-3.5" />
+              Open asset<SquareArrowOutUpRight className="size-3.5" />
             </Link>
           </div>
           <SheetTitle className="font-mono text-sm break-all leading-relaxed" title={endpoint}>{endpoint}</SheetTitle>
@@ -47,7 +47,7 @@ export function EndpointSheet({ row, onClose }: { row: WebEndpointState; onClose
  *  renderToStaticMarkup). A hop title is never the endpoint's title. */
 export function EndpointHttpSummary({ row }: { row: WebEndpointState }) {
   return (
-    <div className="space-y-0.5 text-xs">
+    <div className="space-y-1 text-xs">
       <p className="break-words">{row.http_title ?? "No page title recorded"}</p>
       {row.http_status !== null && <p className="text-muted-foreground">HTTP status {row.http_status}</p>}
       <RedirectChain chain={row.redirect_chain} />

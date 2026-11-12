@@ -49,7 +49,7 @@ function severityLabel(score: number, isV2: boolean): { label: string; cls: stri
 
 function Row({ label, value, mono, valueCls }: { label: string; value: string; mono?: boolean; valueCls?: string }) {
   return (
-    <div className="flex items-baseline gap-3 px-3 py-1.5">
+    <div className="flex items-baseline gap-3 px-3 py-2">
       <span className="text-xs text-muted-foreground w-44 shrink-0">{label}</span>
       <span className={`text-sm ${mono ? "font-mono break-all" : ""} ${valueCls ?? ""}`}>{value}</span>
     </div>

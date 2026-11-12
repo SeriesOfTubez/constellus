@@ -42,7 +42,7 @@ export default function Login() {
         {/* Org branding — shown above the card when a custom org is configured */}
         {isCustomOrg && (
           <div className="flex flex-col items-center gap-3">
-            <Logo showWordmark={false} className="[&_img]:h-12 [&_svg]:h-12 [&_svg]:w-12" />
+            <Logo showWordmark={false} className="[&_img]:h-12 [&_svg]:size-12" />
             <span className="text-xl font-semibold">{org_name}</span>
           </div>
         )}
@@ -96,7 +96,7 @@ export default function Login() {
         {isCustomOrg ? (
           <>Powered by <span className="font-medium">Constellus</span></>
         ) : (
-          <Logo className="justify-center [&_svg]:h-4 [&_svg]:w-4 [&_span]:text-xs" />
+          <Logo className="justify-center [&_svg]:size-4 [&_span]:text-xs" />
         )}
       </footer>
     </div>

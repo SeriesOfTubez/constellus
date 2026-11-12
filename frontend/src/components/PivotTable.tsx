@@ -7,6 +7,7 @@ import { SeverityBadge } from "@/components/finding-badges"
 import { type Finding } from "@/lib/api"
 import { relativeTime } from "@/lib/time"
 import { displayName } from "@/lib/apex"
+import { CHIP } from "@/components/ui/chip"
 
 // Port numbers from risky_exposures.yaml that warrant a lock flag even with zero findings.
 export const SENSITIVE_PORTS = new Set<number>([
@@ -111,8 +112,8 @@ export function PivotTable({ rows, mode, onAssetClick, emptyMessage }: PivotTabl
                 >
                   <TableCell className="w-8 pl-3">
                     {isOpen
-                      ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-                      : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                      ? <ChevronDown className="size-3.5 text-muted-foreground" />
+                      : <ChevronRight className="size-3.5 text-muted-foreground" />}
                   </TableCell>
 
                   {/* Port number / service name */}
@@ -120,7 +121,7 @@ export function PivotTable({ rows, mode, onAssetClick, emptyMessage }: PivotTabl
                     <div className="flex items-center gap-2">
                       {row.isSensitive && (
                         <span title="Sensitive service — high risk if internet-exposed" className="inline-flex shrink-0">
-                          <Lock className="h-3 w-3 text-muted-foreground" />
+                          <Lock className="size-3.5 text-muted-foreground" />
                         </span>
                       )}
                       <span className="font-mono font-semibold text-primary">{row.label}</span>
@@ -153,7 +154,7 @@ export function PivotTable({ rows, mode, onAssetClick, emptyMessage }: PivotTabl
                             <span
                               key={i}
                               className={cn(
-                                "font-mono text-xs px-1.5 py-0.5 rounded",
+                                CHIP, "font-mono",
                                 SENSITIVE_PORTS.has(p)
                                   ? "bg-primary/10 text-primary"
                                   : "bg-muted text-muted-foreground",
@@ -177,7 +178,7 @@ export function PivotTable({ rows, mode, onAssetClick, emptyMessage }: PivotTabl
                       <span className="text-xs text-muted-foreground">—</span>
                     ) : row.hasDrift ? (
                       <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-500">
-                        <AlertTriangle className="h-3 w-3 shrink-0" />
+                        <AlertTriangle className="size-3.5 shrink-0" />
                         {row.versions.length} versions
                       </span>
                     ) : (

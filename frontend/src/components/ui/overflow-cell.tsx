@@ -41,7 +41,7 @@ export function OverflowCell<T>({
             </span>
           </TooltipTrigger>
           <TooltipContent side="top" className="max-w-sm">
-            <div className="space-y-1.5 text-xs">
+            <div className="space-y-2 text-xs">
               {overflow.map((item, i) => (
                 <div key={i}>{renderOverflowItem ? renderOverflowItem(item, i) : getLabel(item)}</div>
               ))}

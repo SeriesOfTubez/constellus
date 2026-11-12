@@ -20,6 +20,8 @@ import { displayName } from "@/lib/apex"
 import { TagBadge } from "@/components/ui/tag-badge"
 import { TagEditor } from "@/components/ui/tag-editor"
 import { OverflowCell } from "@/components/ui/overflow-cell"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 const TIER_LABEL: Record<AggressivenessTier, string> = {
   stealth: "Stealth",
@@ -37,7 +39,7 @@ const TYPE_META: Record<Target["type"], { label: string; icon: React.ElementType
 
 function TypeBadge({ type }: { type: Target["type"] }) {
   const { label, color } = TYPE_META[type]
-  return <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${color}`}>{label}</span>
+  return <span className={cn(CHIP, "font-medium", color)}>{label}</span>
 }
 
 function TargetDeleteDialog({
@@ -68,7 +70,7 @@ function TargetDeleteDialog({
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-1.5 py-1">
+        <div className="space-y-2 py-1">
           <Label className="text-sm">
             Type <span className="font-mono font-semibold">{confirmPhrase}</span> to acknowledge
           </Label>
@@ -86,8 +88,8 @@ function TargetDeleteDialog({
           <Button variant="outline" onClick={onCancel} disabled={isPending}>Cancel</Button>
           <Button variant="destructive" disabled={!isValid || isPending} onClick={onConfirm}>
             {isPending
-              ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
-              : <Trash2 className="h-4 w-4 mr-1.5" />}
+              ? <Loader2 className="size-4 animate-spin mr-2" />
+              : <Trash2 className="size-4 mr-2" />}
             {confirmLabel}
           </Button>
         </DialogFooter>
@@ -115,7 +117,7 @@ function IndeterminateCheckbox({
       type="checkbox"
       checked={checked}
       onChange={e => onChange(e.target.checked)}
-      className="h-4 w-4 rounded border border-border cursor-pointer accent-primary"
+      className="size-4 rounded border border-border cursor-pointer accent-primary"
     />
   )
 }
@@ -256,13 +258,13 @@ export default function Targets() {
           </p>
         </div>
         <Button size="sm" onClick={() => setAddOpen(true)}>
-          <Plus className="h-4 w-4 mr-1.5" />Add Target
+          <Plus className="size-4 mr-2" />Add Target
         </Button>
       </div>
 
       {monitoring && (monitoring.last_run_at || monitoring.next_run_at) && (
         <div className="flex flex-wrap items-center gap-4 rounded-md border bg-muted/30 px-4 py-2 text-xs">
-          <Clock className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          <Clock className="size-3.5 text-muted-foreground shrink-0" />
           <div>
             <span className="text-muted-foreground">Last monitoring run: </span>
             {monitoring.last_run_at && monitoring.last_run_id ? (
@@ -293,8 +295,8 @@ export default function Targets() {
               <DropdownMenuTrigger asChild>
                 <Button size="sm" variant="outline" disabled={bulkAggressivenessMutation.isPending}>
                   {bulkAggressivenessMutation.isPending
-                    ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                    : <Gauge className="h-3.5 w-3.5 mr-1.5" />}
+                    ? <Loader2 className="size-4 mr-2 animate-spin" />
+                    : <Gauge className="size-4 mr-2" />}
                   Set aggressiveness
                 </Button>
               </DropdownMenuTrigger>
@@ -319,15 +321,15 @@ export default function Targets() {
               disabled={bulkRecheckMutation.isPending}
               onClick={() => bulkRecheckMutation.mutate([...selectedIds])}>
               {bulkRecheckMutation.isPending
-                ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                : <RefreshCw className="h-3.5 w-3.5 mr-1.5" />}
+                ? <Loader2 className="size-4 mr-2 animate-spin" />
+                : <RefreshCw className="size-4 mr-2" />}
               Recheck
             </Button>
             <Button size="sm" variant="outline"
               className="text-destructive hover:text-destructive"
               disabled={bulkDeleteMutation.isPending}
               onClick={() => setBulkDeleteOpen(true)}>
-              <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+              <Trash2 className="size-4 mr-2" />
               Remove
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
@@ -383,7 +385,7 @@ export default function Targets() {
                       <span>{displayName(t.value)}</span>
                       {t.aggressiveness && (
                         <span
-                          className="inline-flex items-center rounded-md border px-1.5 py-0 text-xs font-medium uppercase text-muted-foreground"
+                          className="inline-flex items-center rounded-md border px-2 py-0 text-xs font-medium uppercase text-muted-foreground"
                           title={`Aggressiveness override: ${t.aggressiveness}`}
                         >
                           {t.aggressiveness}
@@ -420,7 +422,7 @@ export default function Targets() {
                       disabled={deleteMutation.isPending}
                       onClick={() => setPendingDelete(t)}
                       title="Remove">
-                      <Trash2 className="h-3.5 w-3.5" />
+                      <Trash2 className="size-4" />
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -447,14 +449,14 @@ export default function Targets() {
               autoFocus
             />
             <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/5 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-400">
-              <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <AlertTriangle className="size-3.5 mt-1 shrink-0" />
               <p>Only add targets that you own or are authorised to scan and monitor.</p>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
             <Button disabled={!newValue || addMutation.isPending} onClick={() => addMutation.mutate(newValue)}>
-              {addMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}Add
+              {addMutation.isPending && <Loader2 className="size-4 animate-spin mr-2" />}Add
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -471,28 +473,28 @@ export default function Targets() {
 
             <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
               <div className="grid grid-cols-2 gap-4 text-xs">
-                <div className="space-y-0.5">
+                <div className="space-y-1">
                   <p className="text-muted-foreground">Source</p>
                   <p>{sourceLabel(detailTarget)}</p>
                 </div>
-                <div className="space-y-0.5">
+                <div className="space-y-1">
                   <p className="text-muted-foreground">Added</p>
                   <p>{new Date(detailTarget.created_at).toLocaleString()}</p>
                 </div>
-                <div className="space-y-0.5">
+                <div className="space-y-1">
                   <p className="text-muted-foreground">Last scanned</p>
                   <p title={detailTarget.last_scanned_at ? new Date(detailTarget.last_scanned_at).toLocaleString() : undefined}>
                     {detailTarget.last_scanned_at ? relativeTime(detailTarget.last_scanned_at) : "never"}
                   </p>
                 </div>
-                <div className="space-y-0.5">
+                <div className="space-y-1">
                   <p className="text-muted-foreground">Next scan</p>
                   <p title={detailTarget.next_scan_at ? new Date(detailTarget.next_scan_at).toLocaleString() : undefined}>
                     {detailTarget.next_scan_at ? relativeFuture(detailTarget.next_scan_at) : "—"}
                   </p>
                 </div>
                 {detailTarget.notes && (
-                  <div className="col-span-2 space-y-0.5">
+                  <div className="col-span-2 space-y-1">
                     <p className="text-muted-foreground">Notes</p>
                     <p>{detailTarget.notes}</p>
                   </div>
@@ -520,7 +522,7 @@ export default function Targets() {
             <div className="px-6 py-4 border-t flex gap-2">
               <Button size="sm" variant="destructive" disabled={deleteMutation.isPending}
                 onClick={() => setPendingDelete(detailTarget)}>
-                <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                <Trash2 className="size-4 mr-2" />
                 Remove
               </Button>
             </div>

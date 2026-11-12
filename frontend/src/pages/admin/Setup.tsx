@@ -72,7 +72,7 @@ function ConnectorSetupCard({
             <p className="font-medium text-sm">{connector.name}</p>
             {connector.core && (
               <Badge variant="outline" className="border-primary/40 text-primary gap-1 text-xs">
-                <Zap className="h-2.5 w-2.5" />
+                <Zap className="size-3.5" />
                 Core
               </Badge>
             )}
@@ -89,11 +89,11 @@ function ConnectorSetupCard({
           <ConnectorConfigFields schema={connector.config_schema} values={values} onChange={onChange} />
           <div className="flex justify-end gap-2">
             <Button variant="ghost" size="sm" onClick={onSkip} disabled={saving}>
-              <SkipForward className="h-3.5 w-3.5" />
+              <SkipForward className="size-4" />
               Skip
             </Button>
             <Button size="sm" onClick={onSave} disabled={saving}>
-              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              {saving ? <Loader2 className="size-4 animate-spin" /> : null}
               Save
             </Button>
           </div>
@@ -189,8 +189,8 @@ function ConnectSourcesStep({ onContinue }: { onContinue: () => void }) {
       <CardContent className="space-y-6">
         {core.length > 0 && (
           <div className="space-y-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
-              <Zap className="h-3 w-3 text-primary" />
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground flex items-center gap-2">
+              <Zap className="size-3.5 text-primary" />
               Core capabilities — results are noticeably thinner without these
             </p>
             <div className="space-y-3">{core.map(renderCard)}</div>
@@ -212,7 +212,7 @@ function ConnectSourcesStep({ onContinue }: { onContinue: () => void }) {
             Skip all for now — I'll configure these later
           </button>
           <Button onClick={onContinue}>
-            Continue <ChevronRight className="h-4 w-4" />
+            Continue <ChevronRight className="size-4" />
           </Button>
         </div>
       </CardContent>
@@ -301,7 +301,7 @@ export default function Setup() {
                   </ul>
                 </div>
                 <Button className="w-full" onClick={() => setStep(1)}>
-                  Get started <ChevronRight className="h-4 w-4" />
+                  Get started <ChevronRight className="size-4" />
                 </Button>
               </CardContent>
             </Card>

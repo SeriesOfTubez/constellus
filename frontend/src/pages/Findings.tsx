@@ -48,6 +48,8 @@ import {
   IMPACT_CLASS_LABEL,
   findingTitle,
 } from "@/components/finding-badges"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 const NEW_FINDING_DAYS = 7
 
@@ -131,10 +133,10 @@ function DanglingDnsSiblingLink({ finding }: { finding: Finding }) {
   return (
     <Link
       to={`/findings/${sibling.id}`}
-      className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-opacity"
+      className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-opacity"
       title="This origin also has a dangling-DNS finding"
     >
-      <SquareArrowOutUpRight className="h-3 w-3" />
+      <SquareArrowOutUpRight className="size-3.5" />
       Related dangling-DNS finding on this origin
     </Link>
   )
@@ -171,7 +173,7 @@ function FindingDetailSheet({
   return (
     <Sheet open onOpenChange={(o) => !o && onClose()}>
       <SheetContent className={`w-[540px] sm:max-w-[540px] flex flex-col gap-0 p-0 border-t-2 ${borderCls}`}>
-        <SheetHeader className="px-6 pt-5 pb-3 border-b space-y-1.5 shrink-0">
+        <SheetHeader className="px-6 pt-5 pb-3 border-b space-y-2 shrink-0">
           <ImpactClassBadge finding={finding} />
           <div className="flex items-center gap-2 flex-wrap">
             {finding.risk_band
@@ -192,7 +194,7 @@ function FindingDetailSheet({
             <StateBadge state={finding.state} />
             <SourceBadges finding={finding} />
             <Link to={`/findings/${finding.id}`} className="ml-auto mr-6 text-muted-foreground hover:text-foreground" title="Open full finding view">
-              <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+              <SquareArrowOutUpRight className="size-4" />
             </Link>
           </div>
           <SheetTitle className="text-base leading-snug">{finding.title}</SheetTitle>
@@ -228,7 +230,7 @@ function FindingDetailSheet({
                 <DanglingDnsSiblingLink finding={finding} />
 
                 {hasEnrichment && (
-                  <div className="rounded-md border p-4 space-y-2.5">
+                  <div className="rounded-md border p-4 space-y-3">
                     <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Enrichment</p>
                     {finding.cve_id && (
                       <div className="flex items-center gap-3 text-sm">
@@ -240,7 +242,7 @@ function FindingDetailSheet({
                       <div className="flex items-start gap-3 text-sm">
                         <span className="text-xs text-muted-foreground w-20 shrink-0">CVSS</span>
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-mono ${cvssColor(finding.cvss_score)}`}>
+                          <span className={cn(CHIP, "border font-mono", cvssColor(finding.cvss_score))}>
                             {finding.cvss_version && <span className="opacity-60 mr-1">v{finding.cvss_version}</span>}
                             {finding.cvss_score.toFixed(1)}
                           </span>
@@ -259,7 +261,7 @@ function FindingDetailSheet({
                       <div className="flex items-center gap-3 text-sm">
                         <span className="text-xs text-muted-foreground w-20 shrink-0">KEV</span>
                         <Link to="/findings?kev=true" className="hover:opacity-80 transition-opacity" title="Show all KEV findings">
-                          <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-bold bg-red-500 text-white border-red-600">KEV</span>
+                          <span className={cn(CHIP, "border font-bold bg-red-500 text-white border-red-600")}>KEV</span>
                         </Link>
                         {finding.kev_date_added && <span className="text-xs text-muted-foreground">Added {finding.kev_date_added}</span>}
                       </div>
@@ -280,23 +282,23 @@ function FindingDetailSheet({
                 )}
 
                 {matchedAt && (
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Matched URL</p>
                     <p className="text-xs font-mono break-all bg-muted rounded px-3 py-2">{matchedAt}</p>
                   </div>
                 )}
 
                 {extracted.length > 0 && (
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Extracted</p>
                     <div className="space-y-1">
-                      {extracted.map((r, i) => <p key={i} className="text-xs font-mono bg-muted rounded px-3 py-1.5 break-all">{r}</p>)}
+                      {extracted.map((r, i) => <p key={i} className="text-xs font-mono bg-muted rounded px-3 py-2 break-all">{r}</p>)}
                     </div>
                   </div>
                 )}
 
                 {curlCmd && (
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Curl command</p>
                     <pre className="text-xs font-mono bg-muted/60 rounded p-3 overflow-x-auto whitespace-pre-wrap break-all">{curlCmd}</pre>
                   </div>
@@ -307,7 +309,7 @@ function FindingDetailSheet({
                     <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Scanner tags</p>
                     <div className="flex flex-wrap gap-1">
                       {tags.map(tag => (
-                        <span key={tag} className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-xs font-mono text-muted-foreground">{tag}</span>
+                        <span key={tag} className={cn(CHIP, "bg-muted font-mono text-muted-foreground")}>{tag}</span>
                       ))}
                     </div>
                   </div>
@@ -335,13 +337,13 @@ function FindingDetailSheet({
                   to={`/assets/${finding.asset_canonical_id}`}
                   className="flex items-center gap-3 rounded-md border p-3 hover:bg-muted/50 transition-colors"
                 >
-                  <div className="flex-1 min-w-0 space-y-0.5">
+                  <div className="flex-1 min-w-0 space-y-1">
                     <p className="font-mono text-sm break-all">{displayName(finding.asset_value)}</p>
                     {finding.asset_parent_value && (
                       <p className="text-xs text-muted-foreground font-mono break-all">{displayName(finding.asset_parent_value)}</p>
                     )}
                   </div>
-                  <SquareArrowOutUpRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <SquareArrowOutUpRight className="size-3.5 shrink-0 text-muted-foreground" />
                 </Link>
                 <div className="text-xs text-muted-foreground space-y-1">
                   <p>Source: <span className="text-foreground capitalize">{finding.source}</span></p>
@@ -371,7 +373,7 @@ function FindingDetailSheet({
                 ].filter(Boolean).map((ev, i) => (
                   <div key={i} className="flex items-start gap-3 pb-4">
                     <div className="mt-1 h-2 w-2 rounded-full border-2 border-primary bg-background shrink-0" />
-                    <div className="space-y-0.5 text-sm">
+                    <div className="space-y-1 text-sm">
                       <p className="font-medium">{ev!.label}</p>
                       <p className="text-xs text-muted-foreground">
                         {new Date(ev!.date).toLocaleString()} · {relativeTime(ev!.date)}
@@ -398,21 +400,21 @@ function FindingDetailSheet({
             {finding.state === "open" && (
               <>
                 <Button size="sm" variant="outline" onClick={() => onStateChange(finding.id, "acknowledged")}>
-                  <ShieldCheck className="h-3.5 w-3.5 mr-1.5" />Acknowledge
+                  <ShieldCheck className="size-4 mr-2" />Acknowledge
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => { onClose(); onSuppress(finding) }}>
-                  <ShieldOff className="h-3.5 w-3.5 mr-1.5" />Suppress
+                  <ShieldOff className="size-4 mr-2" />Suppress
                 </Button>
               </>
             )}
             {(finding.state === "open" || finding.state === "acknowledged") && (
               <Button size="sm" variant="outline" onClick={() => onVerify(finding.id)}>
-                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />Re-verify
+                <RefreshCw className="size-4 mr-2" />Re-verify
               </Button>
             )}
             {finding.state === "suppressed" && (
               <Button size="sm" variant="outline" onClick={() => onStateChange(finding.id, "open")}>
-                <ChevronDown className="h-3.5 w-3.5 mr-1.5 rotate-180" />Reopen
+                <ChevronDown className="size-4 mr-2 rotate-180" />Reopen
               </Button>
             )}
           </div>
@@ -457,7 +459,7 @@ function SuppressDialog({ finding, onClose }: { finding: Finding; onClose: () =>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button disabled={mutation.isPending} onClick={() => mutation.mutate()}>
-            {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}Suppress
+            {mutation.isPending && <Loader2 className="size-4 animate-spin mr-2" />}Suppress
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -761,11 +763,11 @@ export default function Findings() {
   // ── Risk verdict pills (header primary action) ───────────────────────────────
 
   const severityPills = findings && findings.length > 0 ? (
-    <div className="flex items-center gap-1.5 flex-wrap">
+    <div className="flex items-center gap-2 flex-wrap">
       {bandFilter !== "all" && (
         <button
           onClick={() => setBandFilter("all")}
-          className="rounded border px-2 py-0.5 text-xs font-semibold text-muted-foreground border-border hover:text-foreground transition-colors"
+          className="rounded border px-2 py-1 text-xs font-semibold text-muted-foreground border-border hover:text-foreground transition-colors"
         >
           All
         </button>
@@ -775,7 +777,7 @@ export default function Findings() {
         return (
           <button key={b}
             onClick={() => setBandFilter(isActive ? "all" : b)}
-            className={`rounded border px-2 py-0.5 text-xs font-semibold transition-all ${RISK_BAND_COLOR[b]} ${bandFilter !== "all" && !isActive ? "opacity-30" : ""} ${isActive ? "ring-2 ring-offset-1 ring-offset-background ring-current" : ""}`}>
+            className={`rounded border px-2 py-1 text-xs font-semibold transition-all ${RISK_BAND_COLOR[b]} ${bandFilter !== "all" && !isActive ? "opacity-30" : ""} ${isActive ? "ring-2 ring-offset-1 ring-offset-background ring-current" : ""}`}>
             {counts[b]} {RISK_BAND_SHORT[b]}
           </button>
         )
@@ -788,7 +790,7 @@ export default function Findings() {
   const toolbar = (
     <>
       <div className="relative flex-1 min-w-48 max-w-sm">
-        <Filter className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+        <Filter className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
         <Input className="pl-8 h-9 text-sm" placeholder="Search title or asset…"
           value={search} onChange={e => setSearch(e.target.value)} />
       </div>
@@ -839,13 +841,13 @@ export default function Findings() {
         <button onClick={() => setAssetFilter("")}
           className="inline-flex items-center gap-1 rounded border border-border bg-muted/40 px-2 h-9 text-xs font-medium hover:opacity-80 transition-opacity">
           <span className="text-muted-foreground">Asset:</span>
-          <span className="font-mono">{displayName(assetFilter)}</span> <X className="h-3 w-3" />
+          <span className="font-mono">{displayName(assetFilter)}</span> <X className="size-3.5" />
         </button>
       )}
       {sinceFilter && (
         <button onClick={() => setSinceFilter("")}
           className="inline-flex items-center gap-1 rounded border border-primary/40 bg-primary/10 px-2 h-9 text-xs font-medium text-primary hover:opacity-80 transition-opacity">
-          <Sparkles className="h-3 w-3" /> New ({sinceFilter}) <X className="h-3 w-3" />
+          <Sparkles className="size-3.5" /> New ({sinceFilter}) <X className="size-3.5" />
         </button>
       )}
 
@@ -853,37 +855,37 @@ export default function Findings() {
       {kevFilter && (
         <button onClick={() => setKevFilter(false)}
           className="inline-flex items-center gap-1 rounded border border-red-500/40 bg-red-500/10 px-2 h-9 text-xs font-medium text-red-600 dark:text-red-400 hover:opacity-80 transition-opacity">
-          In KEV <X className="h-3 w-3" />
+          In KEV <X className="size-3.5" />
         </button>
       )}
       {exploitFilter && (
         <button onClick={() => setExploitFilter(false)}
           className="inline-flex items-center gap-1 rounded border border-orange-500/40 bg-orange-500/10 px-2 h-9 text-xs font-medium text-orange-600 dark:text-orange-400 hover:opacity-80 transition-opacity">
-          Public exploit <X className="h-3 w-3" />
+          Public exploit <X className="size-3.5" />
         </button>
       )}
       {impactClassFilter !== "all" && (
         <button onClick={() => setImpactClassFilter("all")}
           className="inline-flex items-center gap-1 rounded border border-border bg-muted/40 px-2 h-9 text-xs font-medium hover:opacity-80 transition-opacity">
-          {IMPACT_CLASS_LABEL[impactClassFilter as keyof typeof IMPACT_CLASS_LABEL] ?? impactClassFilter} <X className="h-3 w-3" />
+          {IMPACT_CLASS_LABEL[impactClassFilter as keyof typeof IMPACT_CLASS_LABEL] ?? impactClassFilter} <X className="size-3.5" />
         </button>
       )}
       {automatableFilter && (
         <button onClick={() => setAutomatableFilter(false)}
           className="inline-flex items-center gap-1 rounded border border-border bg-muted/40 px-2 h-9 text-xs font-medium hover:opacity-80 transition-opacity">
-          Automatable <X className="h-3 w-3" />
+          Automatable <X className="size-3.5" />
         </button>
       )}
       {techImpactFilter !== "all" && (
         <button onClick={() => setTechImpactFilter("all")}
           className="inline-flex items-center gap-1 rounded border border-border bg-muted/40 px-2 h-9 text-xs font-medium hover:opacity-80 transition-opacity">
-          {techImpactFilter === "total" ? "Total control" : "Partial control"} <X className="h-3 w-3" />
+          {techImpactFilter === "total" ? "Total control" : "Partial control"} <X className="size-3.5" />
         </button>
       )}
       {bodFilter !== "all" && (
         <button onClick={() => setBodFilter("all")}
           className="inline-flex items-center gap-1 rounded border border-border bg-muted/40 px-2 h-9 text-xs font-medium hover:opacity-80 transition-opacity">
-          BOD: {bodFilter} <X className="h-3 w-3" />
+          BOD: {bodFilter} <X className="size-3.5" />
         </button>
       )}
 
@@ -905,11 +907,11 @@ export default function Findings() {
       <div className="flex items-center gap-2 ml-auto">
         <Button size="sm" variant="outline" disabled={bulkStateMutation.isPending}
           onClick={() => bulkStateMutation.mutate({ state: "acknowledged" })}>
-          <ShieldCheck className="h-3.5 w-3.5 mr-1.5" />Acknowledge
+          <ShieldCheck className="size-4 mr-2" />Acknowledge
         </Button>
         <Button size="sm" variant="outline" disabled={bulkStateMutation.isPending}
           onClick={() => setBulkSuppressOpen(true)}>
-          <ShieldOff className="h-3.5 w-3.5 mr-1.5" />Suppress
+          <ShieldOff className="size-4 mr-2" />Suppress
         </Button>
         <Button size="sm" variant="outline" disabled={bulkStateMutation.isPending}
           onClick={() => bulkStateMutation.mutate({ state: "open" })}>
@@ -938,22 +940,22 @@ export default function Findings() {
       </TableCell>
       <TableCell className="hidden sm:table-cell"><CategoryBadge category={f.category} /></TableCell>
       <TableCell>
-        <div className="space-y-0.5">
+        <div className="space-y-1">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-medium leading-tight">{findingTitle(f)}</p>
             {f.cve_id && <span className="font-mono text-xs text-muted-foreground shrink-0">{f.cve_id}</span>}
             <ExposureOverrideBadge finding={f} />
             {isNew(f) && (
-              <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
-                <Sparkles className="h-2.5 w-2.5" />New
+              <span className={cn(CHIP, "bg-primary/10 font-medium text-primary")}>
+                <Sparkles className="size-3.5" />New
               </span>
             )}
             {isStale(f.last_seen_at) && (
               <span
-                className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+                className={cn(CHIP, "bg-amber-500/10 font-medium text-amber-700 dark:text-amber-400")}
                 title={`Last seen ${relativeTime(f.last_seen_at)} — not observed in recent scans`}
               >
-                <Clock className="h-2.5 w-2.5" />stale {daysSince(f.last_seen_at)}d
+                <Clock className="size-3.5" />stale {daysSince(f.last_seen_at)}d
               </span>
             )}
           </div>
@@ -992,11 +994,11 @@ export default function Findings() {
   const writeupButton = (g: Group) => g.cluster ? (
     <Button
       type="button" size="sm" variant="ghost"
-      className="h-6 px-1.5 text-xs normal-case tracking-normal"
+      className="h-6 px-2 text-xs normal-case tracking-normal"
       aria-expanded={writeupOpen.has(g.key)}
       onClick={e => { e.stopPropagation(); toggleWriteup(g.key) }}
     >
-      <Sparkles className="h-3 w-3" /><span className="ml-1">AI write-up</span>
+      <Sparkles className="size-4" /><span className="ml-1">AI write-up</span>
     </Button>
   ) : null
 
@@ -1013,8 +1015,8 @@ export default function Findings() {
     return (
       <TableRow key={`__hdr_${g.key}`} className="bg-muted/30 border-t cursor-pointer" onClick={() => toggleGroup(g.key)}>
         <TableCell colSpan={9} className="py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          <span className="inline-flex items-center gap-1.5">
-            {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+          <span className="inline-flex items-center gap-2">
+            {isCollapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
             {g.label} <span className="text-muted-foreground/60">· {g.items.length}</span>
             {clusterBadge(g)}
             {writeupButton(g)}
@@ -1090,9 +1092,9 @@ export default function Findings() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => toggleGroup(g.key)}
-                  className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+                  className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
                 >
-                  {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                  {isCollapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
                   {g.label} <span className="text-muted-foreground/60">· {g.items.length}</span>
                   {clusterBadge(g)}
                 </button>

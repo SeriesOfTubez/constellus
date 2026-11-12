@@ -45,7 +45,7 @@ function MetricsTable({ report }: { report: Report }) {
                 aria-label={`Open ${m.label} in Explore`}
                 className="text-muted-foreground hover:text-foreground"
               >
-                <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+                <SquareArrowOutUpRight className="size-4" />
               </Link>
             </TableCell>
           </TableRow>
@@ -65,7 +65,7 @@ function StatementView({ statement, report, first }: { statement: Statement; rep
         const href = citationHref(c, report)
         const title = `${c.path} = ${c.value}`
         return (
-          <sup key={i} className="ml-0.5 text-xs">
+          <sup key={i} className="ml-1 text-xs">
             {href ? (
               <Link to={href} title={title} className="text-primary hover:underline">[{first + i}]</Link>
             ) : (
@@ -90,9 +90,9 @@ function Narrative({ report }: { report: Report }) {
         const items = statements.filter(s => s.section === section)
         if (!items.length) return null
         return (
-          <section key={section} className="space-y-1.5">
+          <section key={section} className="space-y-2">
             <h3 className="text-sm font-semibold">{label}</h3>
-            <ul className="list-disc pl-5 space-y-1.5">
+            <ul className="list-disc pl-5 space-y-2">
               {items.map((s, i) => {
                 const first = next
                 next += s.citations.length
@@ -124,7 +124,7 @@ function FactLists({ report }: { report: Report }) {
                 aria-label={`Open ${list.label} in Explore`}
                 className="text-muted-foreground hover:text-foreground"
               >
-                <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+                <SquareArrowOutUpRight className="size-4" />
               </Link>
             </h3>
             {list.rows.length === 0 ? (
@@ -162,7 +162,7 @@ function TopFindings({ report }: { report: Report }) {
       {findings.length === 0 ? (
         <p className="text-sm text-muted-foreground">No open findings recorded for this engagement.</p>
       ) : (
-        <ul className="space-y-1.5">
+        <ul className="space-y-2">
           {findings.map(f => {
             const href = `/findings/${f.id}`
             return (
@@ -207,7 +207,7 @@ export function ReportView({ report, engagementName, onDelete, onDownload }: Pro
 
       {inFlight && (
         <p className="text-sm text-muted-foreground flex items-center gap-2">
-          <Loader2 className="h-4 w-4 animate-spin" />
+          <Loader2 className="size-3.5 animate-spin" />
           {report.status === "queued" ? "Queued…" : "Generating…"}
         </p>
       )}
@@ -244,12 +244,12 @@ export function ReportView({ report, engagementName, onDelete, onDownload }: Pro
       <div className="flex gap-2">
         {report.status === "done" && onDownload && (
           <Button variant="outline" size="sm" onClick={onDownload}>
-            <Download className="h-4 w-4 mr-1.5" />Download markdown
+            <Download className="size-4 mr-2" />Download markdown
           </Button>
         )}
         {onDelete && !inFlight && (
           <Button variant="outline" size="sm" onClick={onDelete}>
-            <Trash2 className="h-4 w-4 mr-1.5" />Delete
+            <Trash2 className="size-4 mr-2" />Delete
           </Button>
         )}
       </div>

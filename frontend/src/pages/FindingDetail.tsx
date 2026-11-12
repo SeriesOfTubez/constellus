@@ -31,6 +31,8 @@ import { EpssRow, EpssSparklineSection } from "@/components/EpssHistory"
 import { api, type Finding } from "@/lib/api"
 import { displayName } from "@/lib/apex"
 import { relativeTime } from "@/lib/time"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 const SUPPRESS_OPTIONS = [
   { label: "7 days",  days: 7 },
@@ -87,7 +89,7 @@ export default function FindingDetail() {
   if (isError || !finding) return (
     <div className="max-w-4xl mx-auto px-6 py-8 space-y-4">
       <Link to="/findings" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ChevronLeft className="h-4 w-4" />Findings
+        <ChevronLeft className="size-3.5" />Findings
       </Link>
       <div className="rounded-md border bg-card p-6 text-sm text-muted-foreground">
         Finding not found.
@@ -110,7 +112,7 @@ export default function FindingDetail() {
   return (
     <div className="max-w-4xl mx-auto px-6 py-8 space-y-6">
       <Link to="/findings" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ChevronLeft className="h-4 w-4" />Findings
+        <ChevronLeft className="size-3.5" />Findings
       </Link>
 
       {/* Header */}
@@ -150,10 +152,10 @@ export default function FindingDetail() {
               <Button size="sm" variant="outline"
                 disabled={stateMutation.isPending}
                 onClick={() => stateMutation.mutate("acknowledged")}>
-                <ShieldCheck className="h-3.5 w-3.5 mr-1.5" />Acknowledge
+                <ShieldCheck className="size-4 mr-2" />Acknowledge
               </Button>
               <Button size="sm" variant="outline" onClick={() => setSuppressOpen(true)}>
-                <ShieldOff className="h-3.5 w-3.5 mr-1.5" />Suppress
+                <ShieldOff className="size-4 mr-2" />Suppress
               </Button>
             </>
           )}
@@ -168,7 +170,7 @@ export default function FindingDetail() {
             <Button size="sm" variant="outline"
               disabled={stateMutation.isPending}
               onClick={() => stateMutation.mutate("open")}>
-              <ChevronDown className="h-3.5 w-3.5 mr-1.5 rotate-180" />Reopen
+              <ChevronDown className="size-4 mr-2 rotate-180" />Reopen
             </Button>
           )}
           {(finding.state === "open" || finding.state === "acknowledged") && (
@@ -176,8 +178,8 @@ export default function FindingDetail() {
               disabled={verifyMutation.isPending}
               onClick={() => verifyMutation.mutate()}>
               {verifyMutation.isPending
-                ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                : <RefreshCw className="h-3.5 w-3.5 mr-1.5" />}
+                ? <Loader2 className="size-4 mr-2 animate-spin" />
+                : <RefreshCw className="size-4 mr-2" />}
               Re-verify
             </Button>
           )}
@@ -209,7 +211,7 @@ export default function FindingDetail() {
           {hasEnrichment && (
             <div className="space-y-2">
               <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Enrichment</p>
-              <div className="flex flex-wrap gap-1.5 pb-1"><EnrichmentBadges finding={finding} /></div>
+              <div className="flex flex-wrap gap-2 pb-1"><EnrichmentBadges finding={finding} /></div>
               <div className="rounded-md border divide-y text-sm">
                 {finding.cve_id && (
                   <div className="flex items-center gap-3 px-3 py-2">
@@ -220,7 +222,7 @@ export default function FindingDetail() {
                 {finding.cvss_score != null && (
                   <div className="flex items-start gap-3 px-3 py-2">
                     <span className="text-muted-foreground w-24 shrink-0">CVSS</span>
-                    <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-mono ${cvssColor(finding.cvss_score)}`}>
+                    <span className={cn(CHIP, "border font-mono", cvssColor(finding.cvss_score))}>
                       {finding.cvss_version && <span className="opacity-60 mr-1">v{finding.cvss_version}</span>}
                       {finding.cvss_score.toFixed(1)}
                     </span>
@@ -237,7 +239,7 @@ export default function FindingDetail() {
                   <div className="flex items-center gap-3 px-3 py-2">
                     <span className="text-muted-foreground w-24 shrink-0">KEV</span>
                     <Link to="/findings?kev=true" className="hover:opacity-80 transition-opacity" title="Show all KEV findings">
-                      <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-bold bg-red-500 text-white border-red-600">KEV</span>
+                      <span className={cn(CHIP, "border font-bold bg-red-500 text-white border-red-600")}>KEV</span>
                     </Link>
                     {finding.kev_date_added && (
                       <span className="text-xs text-muted-foreground">Added {finding.kev_date_added}</span>
@@ -281,7 +283,7 @@ export default function FindingDetail() {
                   <p className="text-xs text-muted-foreground">Extracted</p>
                   <div className="space-y-1">
                     {extracted.map((r, i) => (
-                      <p key={i} className="text-xs font-mono bg-muted rounded px-3 py-1.5 break-all">{r}</p>
+                      <p key={i} className="text-xs font-mono bg-muted rounded px-3 py-2 break-all">{r}</p>
                     ))}
                   </div>
                 </div>
@@ -300,7 +302,7 @@ export default function FindingDetail() {
               <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Tags from source</p>
               <div className="flex flex-wrap gap-1">
                 {detailTags.map(tag => (
-                  <span key={tag} className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-xs font-mono text-muted-foreground">
+                  <span key={tag} className={cn(CHIP, "bg-muted font-mono text-muted-foreground")}>
                     {tag}
                   </span>
                 ))}
@@ -337,13 +339,13 @@ export default function FindingDetail() {
               to={`/assets/${finding.asset_canonical_id}`}
               className="flex items-center gap-3 rounded-md border p-3 hover:bg-muted/50 transition-colors"
             >
-              <div className="flex-1 min-w-0 space-y-0.5">
+              <div className="flex-1 min-w-0 space-y-1">
                 <p className="font-mono text-sm break-all">{displayName(finding.asset_value)}</p>
                 {finding.asset_parent_value && (
                   <p className="text-xs text-muted-foreground font-mono break-all">{displayName(finding.asset_parent_value)}</p>
                 )}
               </div>
-              <SquareArrowOutUpRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <SquareArrowOutUpRight className="size-3.5 shrink-0 text-muted-foreground" />
             </Link>
             <div className="text-xs text-muted-foreground space-y-2">
               <div className="flex items-center gap-2 flex-wrap">
@@ -363,15 +365,15 @@ export default function FindingDetail() {
         {/* ── Timeline ── */}
         <TabsContent value="timeline" className="pt-5">
           <div className="grid grid-cols-2 gap-4 text-sm text-muted-foreground">
-            <div className="space-y-0.5">
+            <div className="space-y-1">
               <p>Source</p>
               <p className="text-foreground capitalize">{finding.source}</p>
             </div>
-            <div className="space-y-0.5">
+            <div className="space-y-1">
               <p>First seen</p>
               <p className="text-foreground">{finding.first_seen_at && new Date(finding.first_seen_at).toLocaleString()}</p>
             </div>
-            <div className="space-y-0.5">
+            <div className="space-y-1">
               <p>Last seen</p>
               <p className="text-foreground">
                 {finding.last_seen_at && new Date(finding.last_seen_at).toLocaleString()}
@@ -379,19 +381,19 @@ export default function FindingDetail() {
               </p>
             </div>
             {finding.acknowledged_at && (
-              <div className="space-y-0.5">
+              <div className="space-y-1">
                 <p>Acknowledged</p>
                 <p className="text-foreground">{new Date(finding.acknowledged_at).toLocaleString()}</p>
               </div>
             )}
             {finding.suppressed_until && (
-              <div className="space-y-0.5">
+              <div className="space-y-1">
                 <p>Suppressed until</p>
                 <p className="text-foreground">{new Date(finding.suppressed_until).toLocaleDateString()}</p>
               </div>
             )}
             {finding.resolved_at && (
-              <div className="space-y-0.5">
+              <div className="space-y-1">
                 <p>Resolved</p>
                 <p className="text-foreground">{new Date(finding.resolved_at).toLocaleString()}</p>
               </div>
@@ -457,7 +459,7 @@ function SuppressDialog({ finding, onClose }: { finding: Finding; onClose: () =>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button disabled={mutation.isPending} onClick={() => mutation.mutate()}>
-            {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}
+            {mutation.isPending && <Loader2 className="size-4 animate-spin mr-2" />}
             Suppress
           </Button>
         </DialogFooter>

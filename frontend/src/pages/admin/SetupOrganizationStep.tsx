@@ -30,7 +30,7 @@ export function SetupOrganizationStep({ onContinue }: { onContinue: () => void }
           <div className="space-y-4">
             <div className="rounded-lg border p-4 text-sm space-y-1">
               <p className="flex items-center gap-2 font-medium">
-                <CheckCircle2 className="h-4 w-4" />{created.name} added
+                <CheckCircle2 className="size-3.5" />{created.name} added
               </p>
               <p className="text-muted-foreground pl-6">Seed domain claimed. Discovery is queued.</p>
             </div>
@@ -52,7 +52,7 @@ export function SetupOrganizationStep({ onContinue }: { onContinue: () => void }
                   Open organization
                 </Link>
               </Button>
-              <Button onClick={onContinue}>Continue <ChevronRight className="h-4 w-4" /></Button>
+              <Button onClick={onContinue}>Continue <ChevronRight className="size-4" /></Button>
             </div>
           </div>
         ) : (

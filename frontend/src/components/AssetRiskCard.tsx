@@ -65,7 +65,7 @@ export function AssetRiskCard({ asset, findings, href }: { asset: Asset; finding
         >
           <AssetTypeBadge type={asset.asset_type} />
           <span className="font-mono text-sm font-medium truncate">{displayName(asset.value)}</span>
-          <SquareArrowOutUpRight className="ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover/title:text-primary transition-colors" />
+          <SquareArrowOutUpRight className="ml-auto size-3.5 shrink-0 text-muted-foreground group-hover/title:text-primary transition-colors" />
         </Link>
       )}
 
@@ -96,7 +96,7 @@ export function AssetRiskCard({ asset, findings, href }: { asset: Asset; finding
                 count > 0 ? `${RISK_BAND_COLOR[b]} hover:opacity-80` : "border-border/40 opacity-30 pointer-events-none"
               }`}
             >
-              <p className="text-base font-bold leading-none mb-0.5">{count}</p>
+              <p className="text-base font-bold leading-none mb-1">{count}</p>
               <p className="text-xs uppercase tracking-wider">{RISK_BAND_SHORT[b]}</p>
             </Link>
           )
@@ -105,7 +105,7 @@ export function AssetRiskCard({ asset, findings, href }: { asset: Asset; finding
 
       {/* Top finding spotlight */}
       {topFinding && (
-        <div className={`rounded-md border bg-muted/20 p-3.5 space-y-2 ${SPOTLIGHT_CLS[effectiveBand(topFinding)] ?? ""}`}>
+        <div className={`rounded-md border bg-muted/20 p-4 space-y-2 ${SPOTLIGHT_CLS[effectiveBand(topFinding)] ?? ""}`}>
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Top finding</span>
             {(topFinding.kev || topFinding.vulncheck_kev) && (
@@ -120,7 +120,7 @@ export function AssetRiskCard({ asset, findings, href }: { asset: Asset; finding
             to={`/findings/${topFinding.id}`}
             className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
           >
-            View finding <SquareArrowOutUpRight className="h-3 w-3" />
+            View finding <SquareArrowOutUpRight className="size-3.5" />
           </Link>
         </div>
       )}

@@ -209,7 +209,7 @@ describe("ReportView ma_brief", () => {
     expect(i.every(n => n > -1)).toBe(true)
     expect(i[0]).toBeLessThan(i[1])
     expect(i[1]).toBeLessThan(i[2])
-    expect(html).not.toContain(">Acquisitions</h3><ul class=\"list-disc pl-5 space-y-1.5\"")  // no statements for it
+    expect(html).not.toContain(">Acquisitions</h3><ul class=\"list-disc pl-5 space-y-2\"")  // no statements for it
     expect(html).toContain("Example Holdings B (subsidiary)")
     expect(html).toContain("Example Holdings A acquired Example Holdings B (2020-01-01)")
     expect(html).toContain("fabrikam.com (Example Holdings B)")

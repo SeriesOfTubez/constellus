@@ -8,6 +8,8 @@ import {
 import { type Finding } from "@/lib/api"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { OverflowCell } from "@/components/ui/overflow-cell"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 // CVE findings with no NVD-curated name fall back to the bare CVE id as their
 // title (see vulncheck_enrichment.py) — show that as "-" rather than repeating
@@ -51,8 +53,8 @@ export function ExposureOverrideBadge({ finding }: { finding: Finding }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs font-medium cursor-help ${cls}`}>
-          <Icon className="h-2.5 w-2.5" />{text}
+        <span className={cn(CHIP, "border font-medium cursor-help", cls)}>
+          <Icon className="size-3.5" />{text}
         </span>
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-xs">{tip}</TooltipContent>
@@ -90,7 +92,7 @@ export function ExposureClassBadge({ finding }: { finding: Finding }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium cursor-help ${EXPOSURE_CLASS_COLOR[cls]}`}>
+        <span className={cn(CHIP, "border font-medium cursor-help", EXPOSURE_CLASS_COLOR[cls])}>
           {EXPOSURE_CLASS_LABEL[cls]}
         </span>
       </TooltipTrigger>
@@ -132,7 +134,7 @@ export function DetectionLayerBadge({ finding }: { finding: Finding }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium cursor-help ${DETECTION_LAYER_COLOR[layer]}`}>
+        <span className={cn(CHIP, "border font-medium cursor-help", DETECTION_LAYER_COLOR[layer])}>
           {DETECTION_LAYER_LABEL[layer]}
         </span>
       </TooltipTrigger>
@@ -165,7 +167,7 @@ export function VerificationBadge({ finding }: { finding: Finding }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium cursor-help border-slate-500/40 bg-slate-500/10 text-slate-600 dark:text-slate-400">
+        <span className={cn(CHIP, "border font-medium cursor-help border-slate-500/40 bg-slate-500/10 text-slate-600 dark:text-slate-400")}>
           {VERIFICATION_LABEL[v]}
         </span>
       </TooltipTrigger>
@@ -211,7 +213,7 @@ export function VerificationEvidencePanel({ finding }: { finding: Finding }) {
   if (lines.length === 0) return null
 
   return (
-    <div className="rounded border border-border bg-muted/30 p-3 text-sm space-y-1.5">
+    <div className="rounded border border-border bg-muted/30 p-3 text-sm space-y-2">
       <div className="font-medium text-muted-foreground">Why this was excluded</div>
       {lines.map((line, i) => <div key={i} className="text-muted-foreground">{line}</div>)}
     </div>
@@ -230,7 +232,7 @@ export const SEVERITY_ORDER: Finding["severity"][] = ["critical", "high", "mediu
 
 export function SeverityBadge({ severity }: { severity: Finding["severity"] }) {
   return (
-    <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold capitalize ${SEVERITY_COLOR[severity]}`}>
+    <span className={cn(CHIP, "border font-semibold capitalize", SEVERITY_COLOR[severity])}>
       {severity}
     </span>
   )
@@ -292,7 +294,7 @@ export function effectiveBand(f: Finding): RiskBand {
 export function RiskBandBadge({ band, score }: { band: Finding["risk_band"]; score: number | null }) {
   if (!band) return null
   return (
-    <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs font-semibold ${RISK_BAND_COLOR[band]}`}>
+    <span className={cn(CHIP, "border font-semibold", RISK_BAND_COLOR[band])}>
       {RISK_BAND_LABEL[band]}
       {score != null && <span className="font-mono opacity-70">{score}</span>}
     </span>
@@ -315,7 +317,7 @@ export function BuildingVelocityBadge({ active }: { active: boolean | null | und
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="inline-flex items-center gap-0.5 rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400 cursor-help animate-pulse">
+        <span className={cn(CHIP, "border border-amber-500/40 bg-amber-500/15 font-semibold text-amber-600 dark:text-amber-400 cursor-help animate-pulse")}>
           <span aria-hidden>⚡</span> Building Velocity
         </span>
       </TooltipTrigger>
@@ -355,7 +357,7 @@ export function CategoryBadge({ category }: { category: string | null }) {
   const label = CATEGORY_LABEL[category] ?? category
   const color = CATEGORY_COLOR[category] ?? "bg-muted text-muted-foreground"
   return (
-    <span className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-xs font-medium ${color}`}>
+    <span className={cn(CHIP, "font-medium", color)}>
       {label}
     </span>
   )
@@ -415,7 +417,7 @@ export function ImpactClassBadge({ finding }: { finding: Finding }) {
     <Link
       to={`/findings?impact_class=${impactClass}`}
       title={title}
-      className={`self-start inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide hover:opacity-80 transition-opacity ${IMPACT_CLASS_CLS}`}
+      className={cn(CHIP, "self-start font-semibold uppercase tracking-wide hover:opacity-80 transition-opacity", IMPACT_CLASS_CLS)}
     >
       {degree}{IMPACT_CLASS_LABEL[impactClass]}
     </Link>
@@ -445,13 +447,13 @@ export function SsvcEvidence({ finding }: { finding: Finding }) {
   const auto = finding.ssvc_automatable
   const expl = finding.ssvc_exploitation
   return (
-    <div className="rounded-md border p-4 space-y-2.5">
+    <div className="rounded-md border p-4 space-y-3">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">SSVC</p>
         <span
-          className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium ${derived
+          className={cn(CHIP, "border font-medium", derived
             ? "border-border bg-muted/40 text-muted-foreground"
-            : "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-400"}`}
+            : "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-400")}
           title={derived
             ? "Inferred from the CVSS vector — CISA Vulnrichment hasn't scored this CVE"
             : "Scored by CISA Vulnrichment"}
@@ -495,7 +497,7 @@ export function ExploitTypeBadges({ types, impactClass }: { types: string[] | nu
   const shown = dupLabel ? types.filter(t => t.replace(/-/g, " ").toLowerCase() !== dupLabel) : types
   if (shown.length === 0) return null
   const chip = (t: string) => (
-    <span key={t} className="inline-flex items-center rounded border border-purple-500/30 bg-purple-500/10 px-1.5 py-0.5 text-xs font-medium text-purple-600 dark:text-purple-400 capitalize">
+    <span key={t} className={cn(CHIP, "border border-purple-500/30 bg-purple-500/10 font-medium text-purple-600 dark:text-purple-400 capitalize")}>
       {t.replace(/-/g, " ")}
     </span>
   )
@@ -557,7 +559,7 @@ export function BodSlaBadge({ finding }: { finding: Finding }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium cursor-help ${colorCls}`}>
+        <span className={cn(CHIP, "border font-medium cursor-help", colorCls)}>
           {label}{sla.forensic_triage ? " + triage" : ""}
         </span>
       </TooltipTrigger>
@@ -575,7 +577,7 @@ const STATE_COLOR: Record<Finding["state"], string> = {
 
 export function StateBadge({ state }: { state: Finding["state"] }) {
   return (
-    <span className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-xs font-medium capitalize ${STATE_COLOR[state]}`}>
+    <span className={cn(CHIP, "font-medium capitalize", STATE_COLOR[state])}>
       {state}
     </span>
   )
@@ -704,7 +706,7 @@ export function EnrichmentBadges({ finding }: { finding: Finding }) {
       renderItem={(item) => (
         <Tooltip key={item.key}>
           <TooltipTrigger asChild>
-            <span className={`inline-flex items-center rounded border px-1 py-0.5 text-xs font-mono cursor-help ${item.badgeClass}`}>
+            <span className={cn(CHIP, "border font-mono cursor-help", item.badgeClass)}>
               {item.label}
             </span>
           </TooltipTrigger>
@@ -716,10 +718,10 @@ export function EnrichmentBadges({ finding }: { finding: Finding }) {
       // Rich hover card: each hidden signal as its colored badge + what it means.
       renderOverflowItem={(item) => (
         <div className="flex items-start gap-2">
-          <span className={`inline-flex items-center rounded border px-1 py-0.5 text-xs font-mono shrink-0 ${item.badgeClass}`}>
+          <span className={cn(CHIP, "border font-mono shrink-0", item.badgeClass)}>
             {item.label}
           </span>
-          <span className="text-muted-foreground whitespace-pre-line leading-snug pt-0.5">{item.tooltip}</span>
+          <span className="text-muted-foreground whitespace-pre-line leading-snug pt-1">{item.tooltip}</span>
         </div>
       )}
       getLabel={(item) => item.label}
@@ -836,9 +838,9 @@ export function SourceBadge({ source }: { source: string }) {
         <Link
           to={`/findings?source=${encodeURIComponent(source)}`}
           title={`Show ${label} findings`}
-          className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs font-medium hover:opacity-80 transition-opacity ${cls}`}
+          className={cn(CHIP, "border font-medium hover:opacity-80 transition-opacity", cls)}
         >
-          <Icon className="h-3 w-3" />{label}
+          <Icon className="size-3.5" />{label}
         </Link>
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-xs">{blurb}</TooltipContent>
@@ -864,7 +866,7 @@ export function PortBadge({ port }: { port: number | null }) {
     <Link
       to={`/findings?port=${port}`}
       title="Show findings on this port"
-      className="inline-flex items-center rounded border border-border bg-muted/50 px-1.5 py-0.5 text-xs font-mono text-muted-foreground hover:opacity-80 transition-opacity"
+      className={cn(CHIP, "border border-border bg-muted/50 font-mono text-muted-foreground hover:opacity-80 transition-opacity")}
     >
       :{port}
     </Link>
@@ -879,9 +881,9 @@ function ConfidenceChip({ confidence }: { confidence?: "confirmed" | "potential"
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium cursor-help ${confirmed
+        <span className={cn(CHIP, "border font-medium cursor-help", confirmed
           ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-          : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"}`}>
+          : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400")}>
           {confirmed ? "Confirmed" : "Potential"}
         </span>
       </TooltipTrigger>
@@ -962,12 +964,12 @@ export function UpstreamEvidence({ finding }: { finding: Finding }) {
         <ConfidenceChip confidence={finding.confidence} />
       </div>
 
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-2">
         <SourceBadges finding={finding} />
         {port != null
           ? <PortBadge port={port} />
           : hostLevel
-          ? <span className="inline-flex items-center rounded border border-border bg-muted/50 px-1.5 py-0.5 text-xs font-medium text-muted-foreground" title="No port — Shodan attributes this at the host/IP level">host-level</span>
+          ? <span className={cn(CHIP, "border border-border bg-muted/50 font-medium text-muted-foreground")} title="No port — Shodan attributes this at the host/IP level">host-level</span>
           : null}
       </div>
 
@@ -988,7 +990,7 @@ export function UpstreamEvidence({ finding }: { finding: Finding }) {
       )}
 
       {rows.length > 0 && (
-        <div className="space-y-1.5 pt-1">
+        <div className="space-y-2 pt-1">
           {rows.map((r, i) => (
             <div key={i} className="flex items-start gap-3 text-sm">
               <span className="text-xs text-muted-foreground w-24 shrink-0">{r.label}</span>

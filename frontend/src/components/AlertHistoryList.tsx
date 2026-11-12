@@ -41,7 +41,7 @@ export function AlertHistoryList({ dispatches }: { dispatches: AlertDispatch[] }
         const shown = d.events.slice(0, SHOWN_EVENTS)
         const more = d.event_count - shown.length
         return (
-          <div key={d.id} className="flex items-start gap-3 px-3 py-2.5 text-sm">
+          <div key={d.id} className="flex items-start gap-3 px-3 py-3 text-sm">
             <div className="w-44 shrink-0 min-w-0">
               <p className="font-medium truncate">{d.rule_name}</p>
               <p className="text-xs text-muted-foreground">
@@ -60,7 +60,7 @@ export function AlertHistoryList({ dispatches }: { dispatches: AlertDispatch[] }
               ))}
               {more > 0 && <span className="text-xs text-muted-foreground">+{more}</span>}
             </div>
-            <div className="w-64 shrink-0 space-y-0.5 text-xs">
+            <div className="w-64 shrink-0 space-y-1 text-xs">
               {d.deliveries.map((dl, i) => (
                 <p key={i} className={deliveryTone(dl)}>{deliveryLabel(dl)}</p>
               ))}

@@ -57,7 +57,7 @@ export function JobStatusRow({ status, windowHours, expanded, onToggle }: {
         </p>
       )}
       <Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs" aria-expanded={expanded} onClick={onToggle}>
-        <Chevron className="h-3 w-3 mr-1" />
+        <Chevron className="size-4 mr-1" />
         {expanded ? "Hide recent runs" : "Recent runs"}
       </Button>
     </div>
@@ -73,7 +73,7 @@ export function JobRunsList({ runs, isLoading }: { runs: JobRun[] | undefined; i
       {runs.map((r) => {
         const counts = runCountsText(r)
         return (
-        <li key={r.id} className="px-3 py-2 space-y-0.5">
+        <li key={r.id} className="px-3 py-2 space-y-1">
           <div>
             <span title={formatExactTime(r.started_at)}>{relativeTime(r.started_at)}</span>
             <span className="text-muted-foreground"> · {formatDuration(r.duration_seconds)}</span>

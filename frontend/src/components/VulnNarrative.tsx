@@ -2,6 +2,8 @@ import { useState } from "react"
 import { ChevronDown, ChevronRight, ExternalLink, ShieldAlert, ArrowDownCircle, SlidersHorizontal } from "lucide-react"
 import { type Finding } from "@/lib/api"
 import { exposureOverride } from "@/components/finding-badges"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 /** Narrative captured from VulnCheck KEV + NVD2 during enrichment, stashed in
  *  finding.detail.cve_intel. Structured (not one growing text blob) so future
@@ -57,10 +59,10 @@ export function hasVulnIntel(f: Finding): boolean {
 
 function LinkRow({ url, label, date, tags }: { url: string; label: string; date?: string; tags?: string[] }) {
   return (
-    <div className="flex items-center gap-1.5 text-xs">
+    <div className="flex items-center gap-2 text-xs">
       <a href={url} target="_blank" rel="noopener noreferrer"
-        className="flex items-center gap-1.5 text-blue-500 hover:underline min-w-0">
-        <ExternalLink className="h-3 w-3 shrink-0" />
+        className="flex items-center gap-2 text-blue-500 hover:underline min-w-0">
+        <ExternalLink className="size-3.5 shrink-0" />
         <span className="truncate">{label}</span>
       </a>
       {tags?.slice(0, 2).map(t => (
@@ -93,7 +95,7 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
     <div className="rounded-md border">
       <button onClick={() => setOpen(o => !o)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/40 transition-colors">
-        {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+        {open ? <ChevronDown className="size-3.5 text-muted-foreground" /> : <ChevronRight className="size-3.5 text-muted-foreground" />}
         <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">About this vulnerability</span>
         {finding.cve_id && <span className="ml-auto font-mono text-xs text-muted-foreground">{finding.cve_id}</span>}
       </button>
@@ -108,14 +110,14 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
                 override.kind === "tag" ? "text-amber-700 dark:text-amber-400" : "text-sky-700 dark:text-sky-400"
               }`}>
                 {override.kind === "tag"
-                  ? <><ArrowDownCircle className="h-3 w-3" />Downgraded to {sevLabel} by tag</>
-                  : <><SlidersHorizontal className="h-3 w-3" />Severity adjusted to {sevLabel}</>}
+                  ? <><ArrowDownCircle className="size-3.5" />Downgraded to {sevLabel} by tag</>
+                  : <><SlidersHorizontal className="size-3.5" />Severity adjusted to {sevLabel}</>}
               </p>
               <p className="text-sm mt-1 text-muted-foreground leading-relaxed">
                 {override.kind === "tag" ? (
                   <>
                     This asset is tagged{" "}
-                    <code className="font-mono text-xs bg-muted px-1 py-0.5 rounded">{override.tag}</code>
+                    <code className="font-mono text-xs bg-muted px-1 py-0 rounded">{override.tag}</code>
                     , so the default severity was lowered. {override.label}
                   </>
                 ) : override.kind === "banner" ? (
@@ -129,15 +131,15 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
           {intel?.name && <p className="text-sm font-semibold leading-snug">{intel.name}</p>}
 
           {(intel?.is_remote || intel?.is_auth !== undefined) && (
-            <div className="flex items-center gap-1.5 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
               {intel?.is_remote && (
-                <span className="inline-flex items-center rounded border border-orange-500/40 bg-orange-500/10 px-1.5 py-0.5 text-xs font-medium text-orange-600 dark:text-orange-400">Remotely exploitable</span>
+                <span className={cn(CHIP, "border border-orange-500/40 bg-orange-500/10 font-medium text-orange-600 dark:text-orange-400")}>Remotely exploitable</span>
               )}
               {intel?.is_auth === false && (
-                <span className="inline-flex items-center rounded border border-orange-500/40 bg-orange-500/10 px-1.5 py-0.5 text-xs font-medium text-orange-600 dark:text-orange-400">No auth required</span>
+                <span className={cn(CHIP, "border border-orange-500/40 bg-orange-500/10 font-medium text-orange-600 dark:text-orange-400")}>No auth required</span>
               )}
               {intel?.is_auth === true && (
-                <span className="inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">Auth required</span>
+                <span className={cn(CHIP, "border border-border bg-muted font-medium text-muted-foreground")}>Auth required</span>
               )}
             </div>
           )}
@@ -149,7 +151,7 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
           {intel?.impact && (
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Impact</p>
-              <p className="text-sm mt-0.5 text-muted-foreground leading-relaxed">{intel.impact}</p>
+              <p className="text-sm mt-1 text-muted-foreground leading-relaxed">{intel.impact}</p>
             </div>
           )}
 
@@ -158,15 +160,15 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
               {intel?.required_action && (
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                    <ShieldAlert className="h-3 w-3" />CISA required action
+                    <ShieldAlert className="size-3.5" />CISA required action
                   </p>
-                  <p className="text-sm mt-0.5">{intel.required_action}</p>
+                  <p className="text-sm mt-1">{intel.required_action}</p>
                 </div>
               )}
               {remediation && (
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Recommended remediation</p>
-                  <p className="text-sm mt-0.5">{remediation}</p>
+                  <p className="text-sm mt-1">{remediation}</p>
                 </div>
               )}
             </div>
@@ -184,9 +186,8 @@ type IntelItem = { url: string; label: string; date?: string; tags?: string[] }
 function FilterChip({ active, label, count, onClick }: { active: boolean; label: string; count: number; onClick: () => void }) {
   return (
     <button onClick={onClick}
-      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium transition-colors ${
-        active ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"
-      }`}>
+      className={cn(CHIP, "border font-medium transition-colors",
+        active ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground")}>
       {label}<span className="tabular-nums opacity-70">{count}</span>
     </button>
   )
@@ -216,10 +217,10 @@ function IntelLinkPanel({ title, subtitle, items, tagFilter = false, pageSize = 
 
   return (
     <div className="rounded-lg border bg-card">
-      <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b">
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b">
         <div>
           <p className="text-sm font-medium">{title}</p>
-          {subtitle && <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>}
+          {subtitle && <p className="text-xs text-muted-foreground mt-1">{subtitle}</p>}
         </div>
         <span className="text-xs text-muted-foreground tabular-nums shrink-0">
           {tag ? `${filtered.length} of ${items.length}` : items.length}
@@ -227,7 +228,7 @@ function IntelLinkPanel({ title, subtitle, items, tagFilter = false, pageSize = 
       </div>
 
       {tagFilter && tagCounts.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 px-4 py-2.5 border-b">
+        <div className="flex flex-wrap gap-2 px-4 py-3 border-b">
           <FilterChip active={tag === null} label="All" count={items.length} onClick={() => { setTag(null); setPage(0) }} />
           {tagCounts.map(([t, c]) => (
             <FilterChip key={t} active={tag === t} label={t} count={c} onClick={() => { setTag(t); setPage(0) }} />
@@ -235,7 +236,7 @@ function IntelLinkPanel({ title, subtitle, items, tagFilter = false, pageSize = 
         </div>
       )}
 
-      <div className="px-4 py-2.5 space-y-1.5">
+      <div className="px-4 py-3 space-y-2">
         {slice.map((it, i) => <LinkRow key={i} url={it.url} label={it.label} date={it.date} tags={it.tags} />)}
       </div>
 
@@ -244,9 +245,9 @@ function IntelLinkPanel({ title, subtitle, items, tagFilter = false, pageSize = 
           <span>Page {safePage + 1} of {pageCount}</span>
           <div className="flex items-center gap-1">
             <button disabled={safePage === 0} onClick={() => setPage(safePage - 1)}
-              className="rounded border px-2 py-0.5 disabled:opacity-40 hover:text-foreground transition-colors">Prev</button>
+              className="rounded border px-2 py-1 disabled:opacity-40 hover:text-foreground transition-colors">Prev</button>
             <button disabled={safePage >= pageCount - 1} onClick={() => setPage(safePage + 1)}
-              className="rounded border px-2 py-0.5 disabled:opacity-40 hover:text-foreground transition-colors">Next</button>
+              className="rounded border px-2 py-1 disabled:opacity-40 hover:text-foreground transition-colors">Next</button>
           </div>
         </div>
       )}

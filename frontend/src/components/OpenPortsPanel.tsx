@@ -267,7 +267,7 @@ export function OpenPortsPanel({
             <>
               <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
                 disabled={classify.isPending} onClick={() => classify.mutate(false)}>
-                <Sparkles className="h-3 w-3" />Classify
+                <Sparkles className="size-4" />Classify
               </Button>
               {allClassified && (
                 <Button variant="ghost" size="sm" className="h-6 text-xs"
@@ -329,7 +329,7 @@ function PortRow({ entry, web, assetId }: { entry: OpenPortEntry; web?: WebEndpo
     certExpiryState(cert?.not_after)
 
   return (
-    <div className="px-3 py-1.5 space-y-0.5">
+    <div className="px-3 py-2 space-y-1">
       <div className="flex items-center gap-3">
         <span className="font-mono text-foreground w-20 shrink-0">
           {entry.port}/{proto}
@@ -340,7 +340,7 @@ function PortRow({ entry, web, assetId }: { entry: OpenPortEntry; web?: WebEndpo
         {unverified && (
           <Badge
             variant="outline"
-            className="h-4 px-1.5 py-0 text-xs font-normal text-muted-foreground shrink-0"
+            className="h-4 px-2 py-0 text-xs font-normal text-muted-foreground shrink-0"
             title="Seen by Shodan; not yet confirmed by our scanners"
           >
             unverified
@@ -351,7 +351,7 @@ function PortRow({ entry, web, assetId }: { entry: OpenPortEntry; web?: WebEndpo
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="shrink-0 inline-flex items-center justify-center text-muted-foreground hover:text-foreground cursor-help">
-                <Radio className="h-3 w-3" />
+                <Radio className="size-3.5" />
               </span>
             </TooltipTrigger>
             <TooltipContent side="left" className="max-w-xs">
@@ -401,7 +401,7 @@ function PortRow({ entry, web, assetId }: { entry: OpenPortEntry; web?: WebEndpo
       {entry.tech_stack && entry.tech_stack.length > 0 && (
         <div className="flex flex-wrap gap-1 pl-[5.75rem]">
           {entry.tech_stack.map(t => (
-            <Badge key={t} variant="outline" className="h-4 px-1.5 py-0 text-xs font-normal">
+            <Badge key={t} variant="outline" className="h-4 px-2 py-0 text-xs font-normal">
               {t}
             </Badge>
           ))}

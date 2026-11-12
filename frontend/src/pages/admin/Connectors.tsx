@@ -96,27 +96,27 @@ function InstanceButtons({
   return (
     <div className="flex gap-2 flex-wrap justify-end">
       <Button variant="outline" size="sm" onClick={() => test.mutate()} disabled={test.isPending || !instance.configured}>
-        {test.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <FlaskConical className="h-3 w-3" />}
+        {test.isPending ? <Loader2 className="size-4 animate-spin" /> : <FlaskConical className="size-4" />}
         Test
       </Button>
       {hasZones(type) && (
         <Button variant="outline" size="sm" onClick={() => sync.mutate()} disabled={sync.isPending || !canSync(type, instance)}>
-          {sync.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+          {sync.isPending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
           Sync
         </Button>
       )}
       {type.id === "openrouter" && (
         <Button variant="outline" size="sm" asChild>
-          <Link to="/admin/ai-models"><Bot className="h-3 w-3" />AI models</Link>
+          <Link to="/admin/ai-models"><Bot className="size-4" />AI models</Link>
         </Button>
       )}
       <Button variant="outline" size="sm" onClick={() => onConfigure(type, instance)}>
-        <Plug className="h-3 w-3" />
+        <Plug className="size-4" />
         Configure
       </Button>
       {onDelete && (
         <Button variant="outline" size="sm" onClick={() => onDelete(type, instance)} aria-label={`Delete ${instance.name}`}>
-          <Trash2 className="h-3 w-3" />
+          <Trash2 className="size-4" />
         </Button>
       )}
     </div>
@@ -129,7 +129,7 @@ function CoreBadge({ type }: { type: ConnectorTypeSummary }) {
     <Tooltip>
       <TooltipTrigger asChild>
         <Badge variant="outline" className="border-primary/40 text-primary gap-1">
-          <Zap className="h-3 w-3" />
+          <Zap className="size-3.5" />
           Core capability
         </Badge>
       </TooltipTrigger>
@@ -194,7 +194,7 @@ function SetUpBody({
           <Badge variant="outline">Not set up</Badge>
         </div>
         <Button variant="outline" size="sm" onClick={() => create.mutate()} disabled={create.isPending}>
-          {create.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plug className="h-3 w-3" />}
+          {create.isPending ? <Loader2 className="size-4 animate-spin" /> : <Plug className="size-4" />}
           Set up
         </Button>
       </div>
@@ -223,15 +223,15 @@ export function ClashesSection({ instance }: { instance: ConnectorInstanceSummar
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
       >
-        <Chevron className="h-3.5 w-3.5" />
+        <Chevron className="size-3.5" />
         Clashes ({n})
       </button>
       {open && (
-        <div className="mt-1.5 space-y-1.5">
+        <div className="mt-2 space-y-2">
           {isLoading && <Skeleton className="h-8 w-full" />}
           {error && <p className="text-destructive">{(error as ApiError).message || "Could not load clashes"}</p>}
           {data?.map((c) => (
-            <div key={c.id} className="rounded border border-amber-500/30 px-2 py-1.5">
+            <div key={c.id} className="rounded border border-amber-500/30 px-2 py-2">
               <p><span className="font-mono">{c.zone}</span> <span className="text-muted-foreground">{clashReasonLabel(c.reason)}</span></p>
               <p className="text-muted-foreground">
                 first seen {new Date(c.first_seen_at).toLocaleDateString()} · last seen {new Date(c.last_seen_at).toLocaleDateString()}
@@ -298,7 +298,7 @@ function AccountRow({
           <p className="text-sm font-medium truncate">{instance.name}</p>
           <div className="flex items-center gap-2 flex-wrap">
             <Badge variant="outline" className="gap-1">
-              <Building2 className="h-3 w-3" />
+              <Building2 className="size-3.5" />
               {instance.bound_entity_name ?? "No organization"}
             </Badge>
             <ConfiguredBadges type={type} instance={instance} />
@@ -307,8 +307,8 @@ function AccountRow({
         <Switch checked={instance.enabled} onCheckedChange={(v) => toggle.mutate(v)} disabled={toggle.isPending} />
       </div>
       {warning && (
-        <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
-          <TriangleAlert className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+        <p className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400">
+          <TriangleAlert className="size-3.5 mt-1 shrink-0" />
           {warning}
         </p>
       )}
@@ -345,7 +345,7 @@ export function ConnectorTypeCard({
             </ul>
           )}
           <Button variant="outline" size="sm" onClick={() => onAdd(type)}>
-            <Plus className="h-3 w-3" />
+            <Plus className="size-4" />
             {type.instances.length > 0 ? "Add another" : "Add"}
           </Button>
         </CardContent>
@@ -438,7 +438,7 @@ function ZonesTab({ instanceId }: { instanceId: string }) {
       </div>
 
       <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
         <Input className="pl-8 h-9 text-sm" placeholder="Search zones..."
           value={search} onChange={e => { setSearch(e.target.value); setPage(1) }} />
       </div>
@@ -447,12 +447,12 @@ function ZonesTab({ instanceId }: { instanceId: string }) {
         {paginated.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-muted-foreground">No zones match your search.</div>
         ) : paginated.map(zone => (
-          <label key={zone.name} className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/40 cursor-pointer">
+          <label key={zone.name} className="flex items-center gap-3 px-4 py-3 hover:bg-muted/40 cursor-pointer">
             <input
               type="checkbox"
               checked={!zone.excluded}
               onChange={() => toggleZone(zone.name)}
-              className="h-4 w-4 rounded border border-border accent-primary cursor-pointer"
+              className="size-4 rounded border border-border accent-primary cursor-pointer"
             />
             <span className="font-mono text-sm">{zone.name}</span>
             {zone.excluded && <span className="ml-auto text-xs text-muted-foreground">excluded</span>}
@@ -474,11 +474,11 @@ function ZonesTab({ instanceId }: { instanceId: string }) {
 
       <div className="flex justify-end gap-2">
         <Button variant="outline" onClick={() => syncMutation.mutate()} disabled={syncMutation.isPending || saveMutation.isPending}>
-          {syncMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <RefreshCw className="h-4 w-4 mr-1.5" />}
+          {syncMutation.isPending ? <Loader2 className="size-4 animate-spin mr-2" /> : <RefreshCw className="size-4 mr-2" />}
           Sync Now
         </Button>
         <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !dirty}>
-          {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <Save className="h-4 w-4 mr-1.5" />}
+          {saveMutation.isPending ? <Loader2 className="size-4 animate-spin mr-2" /> : <Save className="size-4 mr-2" />}
           Save Zones{dirty ? " *" : ""}
         </Button>
       </div>
@@ -539,7 +539,7 @@ function OrganizationField({
       {hasZones(type) && (
         <>
           <Button type="button" variant="outline" size="sm" onClick={() => suggest.mutate()} disabled={suggest.isPending}>
-            {suggest.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wand2 className="h-3 w-3" />}
+            {suggest.isPending ? <Loader2 className="size-4 animate-spin" /> : <Wand2 className="size-4" />}
             Find matching organization
           </Button>
           {suggestion && <p className="text-xs text-muted-foreground">{suggestionCopy(suggestion)}</p>}
@@ -558,7 +558,7 @@ export function AddInstanceButton({
   const control = bindingControl(accountScoped, useCan()("entities.decide_candidate"))
   return (
     <Button onClick={onClick} disabled={disabled || control === "blocked"}>
-      {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+      {pending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
       Add
     </Button>
   )
@@ -607,7 +607,7 @@ function AddInstanceSheet({ type, onClose }: { type: ConnectorTypeSummary | null
           <SheetDescription>One instance per account. Each is bound to the organization that owns it.</SheetDescription>
         </SheetHeader>
         <div className="py-6 space-y-5">
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <Label htmlFor="instance-name">Name</Label>
             <Input id="instance-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Example Holdings A" />
           </div>
@@ -700,14 +700,14 @@ function ConfigSheet({
       <div className="py-6 space-y-5">
         {type.account_scoped && (
           <>
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <Label htmlFor="instance-name">Name</Label>
               <Input id="instance-name" value={name} onChange={(e) => setName(e.target.value)} />
             </div>
             <InstanceBindingControl type={type} instance={instance} org={org} onChange={setOrg} getConfig={() => values} />
             {bindingWarning(instance) && (
-              <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
-                <TriangleAlert className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <p className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400">
+                <TriangleAlert className="size-3.5 mt-1 shrink-0" />
                 {bindingWarning(instance)}
               </p>
             )}
@@ -725,7 +725,7 @@ function ConfigSheet({
       <SheetFooter>
         <Button variant="outline" onClick={onClose}>Cancel</Button>
         <Button onClick={() => { setError(null); save.mutate() }} disabled={save.isPending || (type.account_scoped && !name.trim())}>
-          {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          {save.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
           Save
         </Button>
       </SheetFooter>
@@ -745,7 +745,7 @@ function ConfigSheet({
             <TabsList className="w-full">
               <TabsTrigger value="credentials" className="flex-1">Credentials</TabsTrigger>
               <TabsTrigger value="zones" className="flex-1">
-                <Globe className="h-3.5 w-3.5 mr-1.5" />Zones
+                <Globe className="size-3.5 mr-2" />Zones
               </TabsTrigger>
             </TabsList>
             <TabsContent value="credentials">{credentialsContent}</TabsContent>
@@ -797,7 +797,7 @@ function DeleteDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button variant="destructive" onClick={() => del.mutate()} disabled={del.isPending}>
-            {del.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+            {del.isPending ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
             Delete
           </Button>
         </DialogFooter>

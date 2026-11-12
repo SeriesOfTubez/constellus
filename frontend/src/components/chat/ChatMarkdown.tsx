@@ -41,7 +41,7 @@ const components: Components = {
   p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
   ul: ({ children }) => <ul className="my-2 ml-5 list-disc space-y-1">{children}</ul>,
   ol: ({ children }) => <ol className="my-2 ml-5 list-decimal space-y-1">{children}</ol>,
-  code: ({ children }) => <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">{children}</code>,
+  code: ({ children }) => <code className="rounded bg-muted px-1 py-0 font-mono text-[0.85em]">{children}</code>,
   pre: ({ children }) => <pre className="my-2 overflow-x-auto rounded bg-muted p-2 text-xs [&>code]:bg-transparent [&>code]:p-0">{children}</pre>,
   blockquote: ({ children }) => <blockquote className="my-2 border-l-2 border-border pl-3 text-muted-foreground">{children}</blockquote>,
   h1: ({ children }) => <p className="mt-3 mb-1 font-semibold">{children}</p>,

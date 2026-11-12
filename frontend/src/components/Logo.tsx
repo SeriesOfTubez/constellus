@@ -22,7 +22,7 @@ export function Logo({ className, showWordmark = true }: LogoProps) {
 
   if (org_logo_url) {
     return (
-      <div className={cn("flex items-center gap-2.5", className)}>
+      <div className={cn("flex items-center gap-3", className)}>
         {/* Fixed square slot — keeps sidebar layout stable regardless of logo aspect ratio.
             Recommend a square logo (64×64px min, transparent bg, PNG or SVG). */}
         <img
@@ -36,7 +36,7 @@ export function Logo({ className, showWordmark = true }: LogoProps) {
   }
 
   return (
-    <div className={cn("flex items-center gap-2.5", className)}>
+    <div className={cn("flex items-center gap-3", className)}>
       <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 shrink-0">
         <defs>
           <linearGradient id="logo-g" x1="8" y1="4" x2="40" y2="44" gradientUnits="userSpaceOnUse">

@@ -52,15 +52,15 @@ export function ClusterWriteupBody({
         </div>
         {canGenerate && !w && !pending && (
           <Button size="sm" variant="outline" disabled={busy} onClick={() => onGenerate(false)}>
-            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-            <span className="ml-1.5">Write up this issue with AI</span>
+            {busy ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+            <span className="ml-2">Write up this issue with AI</span>
           </Button>
         )}
       </div>
 
       {pending && (
-        <p className="text-sm text-muted-foreground inline-flex items-center gap-1.5">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating…
+        <p className="text-sm text-muted-foreground inline-flex items-center gap-2">
+          <Loader2 className="size-3.5 animate-spin" /> Generating…
         </p>
       )}
       {!canGenerate && !w && !pending && (
@@ -71,7 +71,7 @@ export function ClusterWriteupBody({
           <p className="text-sm text-destructive">Last attempt failed: {data.last_failure!.error}</p>
           {canGenerate && (
             <Button size="sm" variant="outline" disabled={busy} onClick={() => onGenerate(!!w)}>
-              <RefreshCw className="h-3.5 w-3.5" /><span className="ml-1.5">Retry</span>
+              <RefreshCw className="size-4" /><span className="ml-2">Retry</span>
             </Button>
           )}
         </div>
@@ -81,7 +81,7 @@ export function ClusterWriteupBody({
           <p className="text-xs text-amber-600 dark:text-amber-400">Membership changed since this write-up</p>
           {canGenerate && !pending && (
             <Button size="sm" variant="outline" disabled={busy} onClick={() => onGenerate(true)}>
-              <RefreshCw className="h-3.5 w-3.5" /><span className="ml-1.5">Regenerate</span>
+              <RefreshCw className="size-4" /><span className="ml-2">Regenerate</span>
             </Button>
           )}
         </div>
@@ -96,7 +96,7 @@ export function ClusterWriteupBody({
           ) : null}
 
           {w.priority_note && (
-            <div className="rounded-md border px-3 py-2 space-y-0.5">
+            <div className="rounded-md border px-3 py-2 space-y-1">
               <p className="text-xs font-medium">Priority note (AI)</p>
               <p className="text-sm whitespace-pre-wrap">{w.priority_note}</p>
               <p className="text-xs text-muted-foreground">Never changes severity or score.</p>
@@ -110,7 +110,7 @@ export function ClusterWriteupBody({
             ) : (
               <ul className="space-y-2">
                 {w.context.map((c, i) => (
-                  <li key={i} className="text-sm space-y-0.5">
+                  <li key={i} className="text-sm space-y-1">
                     <p className="whitespace-pre-wrap">{c.statement}</p>
                     <p className="text-xs font-mono text-muted-foreground break-all">source: {c.source_field}</p>
                   </li>

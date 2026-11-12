@@ -6,6 +6,8 @@ import { RecordTypeBadge, AssetTypeBadge, SourceBadges } from "@/components/asse
 import { RiskBandBadge, SeverityBadge } from "@/components/finding-badges"
 import { TagBadge } from "@/components/ui/tag-badge"
 import { IndeterminateCheckbox } from "@/components/ui/indeterminate-checkbox"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 const NEW_ASSET_DAYS = 7
 
@@ -40,7 +42,7 @@ export function AssetCard({
       role="button"
       tabIndex={0}
       onKeyDown={e => { if (e.key === "Enter") onOpen() }}
-      className={`rounded-lg border bg-card p-3.5 space-y-2.5 cursor-pointer transition-colors hover:bg-accent/40 ${
+      className={`rounded-lg border bg-card p-4 space-y-3 cursor-pointer transition-colors hover:bg-accent/40 ${
         asset.ignored ? "opacity-50" : ""
       } ${selected ? "ring-2 ring-primary" : ""}`}
     >
@@ -58,17 +60,17 @@ export function AssetCard({
       </div>
 
       {/* Identity */}
-      <div className="space-y-0.5">
+      <div className="space-y-1">
         <div className="flex items-center gap-2 flex-wrap">
           <p className="font-mono text-sm font-medium break-all">{displayName(asset.value)}</p>
           {isNew && (
-            <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
-              <Sparkles className="h-2.5 w-2.5" />New
+            <span className={cn(CHIP, "bg-primary/10 font-medium text-primary")}>
+              <Sparkles className="size-3.5" />New
             </span>
           )}
           {stale && (
-            <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
-              <Clock className="h-2.5 w-2.5" />stale {daysSince(asset.last_seen_at)}d
+            <span className={cn(CHIP, "bg-amber-500/10 font-medium text-amber-700 dark:text-amber-400")}>
+              <Clock className="size-3.5" />stale {daysSince(asset.last_seen_at)}d
             </span>
           )}
         </div>
@@ -79,7 +81,7 @@ export function AssetCard({
       <div className="flex items-center gap-2 flex-wrap">
         {portCount > 0 && (
           <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-            <Network className="h-3 w-3" />{portCount} port{portCount !== 1 ? "s" : ""}
+            <Network className="size-3.5" />{portCount} port{portCount !== 1 ? "s" : ""}
           </span>
         )}
         <SourceBadges metadata={asset.asset_metadata} />

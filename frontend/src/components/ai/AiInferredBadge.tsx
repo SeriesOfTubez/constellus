@@ -1,5 +1,7 @@
 import { Sparkles, UserCheck } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 // Shared provenance badge for AI-inferred values. Under the planning#225 rule,
 // low-impact AI values (such as a web endpoint's kind) are applied
@@ -29,13 +31,13 @@ export function AiInferredBadge({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs font-medium cursor-help ${cls} ${className}`}>
-          <Icon className="h-2.5 w-2.5" />{text}
+        <span className={cn(CHIP, "border font-medium cursor-help", cls, className)}>
+          <Icon className="size-3.5" />{text}
         </span>
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-xs">
         {isAi ? (
-          <div className="space-y-0.5">
+          <div className="space-y-1">
             <p>An AI model inferred this from the endpoint's own signals. It is applied as-is; an admin can correct it.</p>
             {model && <p className="text-muted-foreground">Model: {model}</p>}
           </div>

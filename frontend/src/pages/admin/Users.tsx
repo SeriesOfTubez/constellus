@@ -77,7 +77,7 @@ function CreateUserDialog({ open, onClose }: { open: boolean; onClose: () => voi
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={createMutation.isPending}>
-              {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {createMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
               Create user
             </Button>
           </DialogFooter>
@@ -115,7 +115,7 @@ export default function Users() {
           <p className="text-sm text-muted-foreground mt-1">Manage user accounts and role assignments</p>
         </div>
         <Button onClick={() => setCreating(true)}>
-          <UserPlus className="h-4 w-4" /> Invite user
+          <UserPlus className="size-4" /> Invite user
         </Button>
       </div>
 
@@ -158,7 +158,7 @@ export default function Users() {
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon" className="h-8 w-8">
-                          <MoreHorizontal className="h-4 w-4" />
+                          <MoreHorizontal className="size-4" />
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">

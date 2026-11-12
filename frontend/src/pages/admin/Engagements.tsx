@@ -62,7 +62,7 @@ export default function Engagements() {
           </p>
         </div>
         <Button size="sm" onClick={() => setCreateOpen(true)}>
-          <Plus className="h-4 w-4 mr-1.5" />New Engagement
+          <Plus className="size-4 mr-2" />New Engagement
         </Button>
       </div>
 
@@ -109,7 +109,7 @@ export default function Engagements() {
                       className="inline-flex items-center text-muted-foreground hover:text-primary transition-colors"
                       title="Open full view"
                     >
-                      <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+                      <SquareArrowOutUpRight className="size-4" />
                     </Link>
                   </TableCell>
                 </TableRow>
@@ -135,7 +135,7 @@ export default function Engagements() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
             <Button disabled={!newName.trim() || createMutation.isPending} onClick={() => createMutation.mutate(newName.trim())}>
-              {createMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}Create
+              {createMutation.isPending && <Loader2 className="size-4 animate-spin mr-2" />}Create
             </Button>
           </DialogFooter>
         </DialogContent>

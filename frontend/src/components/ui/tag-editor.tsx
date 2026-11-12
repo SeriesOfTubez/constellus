@@ -67,7 +67,7 @@ export function TagEditor({
   return (
     <div className="tag-editor-root relative">
       <div
-        className="flex flex-wrap gap-1.5 rounded-md border border-input bg-background px-2 py-1.5 text-sm min-h-9 cursor-text"
+        className="flex flex-wrap gap-2 rounded-md border border-input bg-background px-2 py-2 text-sm min-h-9 cursor-text"
         onClick={() => !disabled && inputRef.current?.focus()}
       >
         {tags.map(tag => (
@@ -92,7 +92,7 @@ export function TagEditor({
             <button
               key={s}
               type="button"
-              className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent"
+              className="w-full text-left px-3 py-2 text-xs hover:bg-accent"
               onMouseDown={e => { e.preventDefault(); addTag(s) }}
             >
               {s}

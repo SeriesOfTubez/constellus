@@ -1,4 +1,6 @@
 import { type HygieneBand, type HygieneGrade } from "@/lib/api"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 /**
  * Asset hygiene badges — the sibling of finding-badges.tsx's Risk Score
@@ -80,7 +82,7 @@ export const HYGIENE_GRADE_COLOR: Record<HygieneGrade, string> = {
  *  "Asset Hygiene", never here. */
 export function HygieneBandBadge({ band }: { band: HygieneBand }) {
   return (
-    <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold ${HYGIENE_BAND_COLOR[band]}`}>
+    <span className={cn(CHIP, "border font-semibold", HYGIENE_BAND_COLOR[band])}>
       {HYGIENE_BAND_LABEL[band]}
     </span>
   )
@@ -91,7 +93,7 @@ export function HygieneBandBadge({ band }: { band: HygieneBand }) {
  *  the same shape and weight as every other grade, just its own colour. */
 export function HygieneGradeChip({ grade }: { grade: HygieneGrade }) {
   return (
-    <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold ${HYGIENE_GRADE_COLOR[grade]}`}>
+    <span className={cn(CHIP, "border font-semibold", HYGIENE_GRADE_COLOR[grade])}>
       {HYGIENE_GRADE_LABEL[grade]}
     </span>
   )

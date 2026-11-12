@@ -62,7 +62,7 @@ describe("AcquisitionTimeline", () => {
     const h = tl([row(), row({ entity_id: "e2", name: "Example Holdings B", closed: null, closed_precision: null })])
     expect(h).toContain("Date unknown")
     // the dated dot is an absolutely positioned axis button; the chip is not
-    expect(h.match(/class="absolute h-3 w-3/g)?.length).toBe(1)
+    expect(h.match(/class="absolute size-3/g)?.length).toBe(1)
     expect(h).toContain("Example Holdings B")
     expect(h.indexOf("Date unknown")).toBeLessThan(h.indexOf("Example Holdings B"))
   })

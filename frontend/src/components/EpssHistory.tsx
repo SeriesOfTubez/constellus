@@ -28,21 +28,21 @@ function useEpssHistory(findingId: string) {
 
 function DeltaChip({ delta }: { delta: number | null }) {
   if (delta === null || delta === 0) {
-    return <span className="inline-flex items-center gap-0.5 text-xs text-muted-foreground"><Minus className="h-3 w-3" />unchanged</span>
+    return <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><Minus className="size-3.5" />unchanged</span>
   }
   // EPSS going up = bad (higher exploitation probability)
   const isUp = delta > 0
   const pct = (Math.abs(delta) * 100).toFixed(2)
   if (isUp) {
     return (
-      <span className="inline-flex items-center gap-0.5 text-xs text-orange-500 dark:text-orange-400">
-        <TrendingUp className="h-3 w-3" />+{pct}%
+      <span className="inline-flex items-center gap-1 text-xs text-orange-500 dark:text-orange-400">
+        <TrendingUp className="size-3.5" />+{pct}%
       </span>
     )
   }
   return (
-    <span className="inline-flex items-center gap-0.5 text-xs text-green-600 dark:text-green-500">
-      <TrendingDown className="h-3 w-3" />−{pct}%
+    <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-500">
+      <TrendingDown className="size-3.5" />−{pct}%
     </span>
   )
 }
@@ -168,7 +168,7 @@ export function EpssRow({
       {data?.score_changed_date && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Info className="h-3.5 w-3.5 text-muted-foreground/60 cursor-default shrink-0" />
+            <Info className="size-3.5 text-muted-foreground/60 cursor-default shrink-0" />
           </TooltipTrigger>
           <TooltipContent side="top">
             Score last changed {relativeTime(data.score_changed_date)} ({data.score_changed_date})
@@ -209,7 +209,7 @@ export function EpssRowCompact({
       {data?.score_changed_date && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Info className="h-3 w-3 text-muted-foreground/60 cursor-default shrink-0" />
+            <Info className="size-3.5 text-muted-foreground/60 cursor-default shrink-0" />
           </TooltipTrigger>
           <TooltipContent side="top">
             Score last changed {relativeTime(data.score_changed_date)} ({data.score_changed_date})
@@ -234,7 +234,7 @@ export function EpssSparklineSection({
   const { data, isLoading } = useEpssHistory(findingId)
 
   if (isLoading) return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">EPSS trend</p>
       <div className="h-10 bg-muted/40 rounded animate-pulse" />
     </div>
@@ -243,7 +243,7 @@ export function EpssSparklineSection({
   if (!data || data.history.length === 0) return null
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
         EPSS trend · {data.history.length}w
       </p>

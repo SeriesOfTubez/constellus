@@ -99,7 +99,7 @@ function PolicyDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-2">
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <Label htmlFor="policy-tag">Tag</Label>
             <Input
               id="policy-tag"
@@ -113,7 +113,7 @@ function PolicyDialog({
               {existingTags.map(t => <option key={t} value={t} />)}
             </datalist>
           </div>
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <Label>Schedule</Label>
             <Select value={cron} onValueChange={setCron}>
               <SelectTrigger><SelectValue /></SelectTrigger>
@@ -123,7 +123,7 @@ function PolicyDialog({
             </Select>
             <p className="text-xs text-muted-foreground font-mono">{cron}</p>
           </div>
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <Label htmlFor="policy-priority">Priority</Label>
             <Input
               id="policy-priority"
@@ -139,7 +139,7 @@ function PolicyDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button disabled={!tag.trim() || mutation.isPending} onClick={() => mutation.mutate()}>
-            {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}
+            {mutation.isPending && <Loader2 className="size-4 animate-spin mr-2" />}
             Add policy
           </Button>
         </DialogFooter>
@@ -185,7 +185,7 @@ function MonitoringPoliciesCard() {
       <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
         <div>
           <CardTitle className="text-base flex items-center gap-2">
-            <Clock className="h-4 w-4" />
+            <Clock className="size-3.5" />
             Monitoring policies
           </CardTitle>
           <CardDescription>
@@ -194,7 +194,7 @@ function MonitoringPoliciesCard() {
           </CardDescription>
         </div>
         <Button size="sm" onClick={() => setAddOpen(true)}>
-          <Plus className="h-4 w-4 mr-1.5" />Add
+          <Plus className="size-4 mr-2" />Add
         </Button>
       </CardHeader>
       <CardContent>
@@ -205,7 +205,7 @@ function MonitoringPoliciesCard() {
         ) : (
           <div className="rounded-md border divide-y">
             {policies.map(p => (
-              <div key={p.id} className="flex items-center gap-3 px-3 py-2.5 text-sm">
+              <div key={p.id} className="flex items-center gap-3 px-3 py-3 text-sm">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     {p.is_default ? (
@@ -218,7 +218,7 @@ function MonitoringPoliciesCard() {
                       <span className="text-xs text-muted-foreground">priority {p.tag_priority}</span>
                     )}
                   </div>
-                  <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+                  <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                     <Select
                       value={p.schedule_cron}
                       onValueChange={(v) => updateMutation.mutate({ id: p.id, patch: { schedule_cron: v } })}
@@ -250,7 +250,7 @@ function MonitoringPoliciesCard() {
                     onClick={() => { if (confirm(`Remove policy for tag "${p.tag}"?`)) deleteMutation.mutate(p.id) }}
                     title="Remove"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <Trash2 className="size-4" />
                   </Button>
                 )}
               </div>
@@ -337,7 +337,7 @@ function NotificationRuleDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-2">
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <Label>What it's about</Label>
             {isNew ? (
               <Select value={newKind} onValueChange={(v) => setNewKind(v as NotificationRule["kind"])}>
@@ -356,12 +356,12 @@ function NotificationRuleDialog({
               </p>
             )}
           </div>
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <Label htmlFor="rule-name">Name</Label>
             <Input id="rule-name" value={name} onChange={e => setName(e.target.value)} placeholder="Critical findings → security@…" autoFocus />
           </div>
           {!isOrg && (<>
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <Label>Severity threshold</Label>
             <Select value={severity} onValueChange={(v) => setSeverity(v as NotificationRule["severity_threshold"])}>
               <SelectTrigger><SelectValue /></SelectTrigger>
@@ -373,7 +373,7 @@ function NotificationRuleDialog({
               Notify when a finding lands at this severity or higher.
             </p>
           </div>
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <Label>Delivery</Label>
             <Select value={mode} onValueChange={(v) => setMode(v as NotificationRule["mode"])}>
               <SelectTrigger><SelectValue /></SelectTrigger>
@@ -386,7 +386,7 @@ function NotificationRuleDialog({
             </p>
           </div>
           </>)}
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <Label htmlFor="rule-recipients">Recipients</Label>
             <Input
               id="rule-recipients"
@@ -404,7 +404,7 @@ function NotificationRuleDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button disabled={!name.trim() || !recipientsText.trim() || mutation.isPending} onClick={() => mutation.mutate()}>
-            {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}
+            {mutation.isPending && <Loader2 className="size-4 animate-spin mr-2" />}
             {isNew ? "Add rule" : "Save"}
           </Button>
         </DialogFooter>
@@ -452,7 +452,7 @@ function DigestSettingsBlock() {
   return (
     <div className="space-y-3">
       <h4 className="text-sm font-medium">Digest settings</h4>
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         <Label htmlFor="digest-hour">Digest hour (UTC, 0-23)</Label>
         <div className="flex gap-2">
           <Input id="digest-hour" type="number" min={0} max={23} step={1} className="h-8 w-24 text-xs"
@@ -464,7 +464,7 @@ function DigestSettingsBlock() {
         {warning && <p className="text-xs text-amber-600 dark:text-amber-500">{warning}</p>}
         {hourErr && <p className="text-xs text-destructive">{hourErr}</p>}
       </div>
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         <Label htmlFor="digest-base-url">App link base URL (optional)</Label>
         <div className="flex gap-2">
           <Input id="digest-base-url" className="h-8 text-xs"
@@ -523,7 +523,7 @@ function NotificationRulesCard() {
       <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
         <div>
           <CardTitle className="text-base flex items-center gap-2">
-            <Bell className="h-4 w-4" />
+            <Bell className="size-3.5" />
             Notification rules
           </CardTitle>
           <CardDescription>
@@ -531,7 +531,7 @@ function NotificationRulesCard() {
           </CardDescription>
         </div>
         <Button size="sm" onClick={() => setEditing(null)}>
-          <Plus className="h-4 w-4 mr-1.5" />Add
+          <Plus className="size-4 mr-2" />Add
         </Button>
       </CardHeader>
       <CardContent>
@@ -542,7 +542,7 @@ function NotificationRulesCard() {
         ) : (
           <div className="rounded-md border divide-y">
             {rules.map(r => (
-              <div key={r.id} className="flex items-center gap-3 px-3 py-2.5 text-sm">
+              <div key={r.id} className="flex items-center gap-3 px-3 py-3 text-sm">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <button
@@ -563,7 +563,7 @@ function NotificationRulesCard() {
                       </Badge>
                     )}
                   </div>
-                  <p className="mt-0.5 text-xs text-muted-foreground truncate">
+                  <p className="mt-1 text-xs text-muted-foreground truncate">
                     → {r.recipients.join(", ")}
                   </p>
                 </div>
@@ -578,7 +578,7 @@ function NotificationRulesCard() {
                   onClick={() => { if (confirm(`Remove "${r.name}"?`)) deleteMutation.mutate(r.id) }}
                   title="Remove"
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
+                  <Trash2 className="size-4" />
                 </Button>
               </div>
             ))}
@@ -669,7 +669,7 @@ function AggressivenessCard() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
-            <Gauge className="h-4 w-4" />
+            <Gauge className="size-3.5" />
             Scan aggressiveness
           </CardTitle>
           <CardDescription>
@@ -682,7 +682,7 @@ function AggressivenessCard() {
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : (
             <div className="space-y-3">
-              <div className="space-y-1.5">
+              <div className="space-y-2">
                 <Label>Default tier</Label>
                 <Select value={current} onValueChange={(v) => onSelect(v as AggressivenessTier)}>
                   <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
@@ -705,7 +705,7 @@ function AggressivenessCard() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              <AlertTriangle className="size-3.5 text-amber-500" />
               Enable aggressive scanning?
             </DialogTitle>
             <DialogDescription>
@@ -725,7 +725,7 @@ function AggressivenessCard() {
                 setPendingTier(null)
               }}
             >
-              {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}
+              {mutation.isPending && <Loader2 className="size-4 animate-spin mr-2" />}
               Enable aggressive
             </Button>
           </DialogFooter>
@@ -777,7 +777,7 @@ function OrgBrandingCard() {
     <Card>
       <CardHeader>
         <CardTitle className="text-base flex items-center gap-2">
-          <Palette className="h-4 w-4" />
+          <Palette className="size-3.5" />
           Organization branding
         </CardTitle>
         <CardDescription>
@@ -789,7 +789,7 @@ function OrgBrandingCard() {
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : (
           <>
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <Label htmlFor="org-name">Organisation name</Label>
               <Input
                 id="org-name"
@@ -800,7 +800,7 @@ function OrgBrandingCard() {
               />
             </div>
 
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <Label htmlFor="org-logo">Logo URL</Label>
               <Input
                 id="org-logo"
@@ -817,7 +817,7 @@ function OrgBrandingCard() {
               </p>
             </div>
 
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <Label htmlFor="org-name-color">Organisation name colour</Label>
               <div className="flex items-center gap-2">
                 <input
@@ -825,7 +825,7 @@ function OrgBrandingCard() {
                   id="org-name-color"
                   value={current.org_name_color || current.org_brand_accent}
                   onChange={(e) => setNameColor(e.target.value)}
-                  className="h-8 w-10 cursor-pointer rounded border border-border bg-transparent p-0.5"
+                  className="h-8 w-10 cursor-pointer rounded border border-border bg-transparent p-1"
                 />
                 <Input
                   value={current.org_name_color || ""}
@@ -879,7 +879,7 @@ function OrgBrandingCard() {
                 disabled={!isDirty || mutation.isPending}
                 size="sm"
               >
-                {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}
+                {mutation.isPending && <Loader2 className="size-4 animate-spin mr-2" />}
                 Save branding
               </Button>
             </div>
@@ -1019,7 +1019,7 @@ export function CaptureSettingsCard() {
                   {UA_MODES.map(m => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
                 </SelectContent>
               </Select>
-              <ul className="space-y-0.5 text-xs text-muted-foreground">
+              <ul className="space-y-1 text-xs text-muted-foreground">
                 {UA_MODES.map(m => <li key={m.value}><span className="font-medium">{m.label}:</span> {m.description}</li>)}
               </ul>
             </div>

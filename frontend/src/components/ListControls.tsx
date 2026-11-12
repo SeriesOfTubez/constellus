@@ -9,7 +9,7 @@ export function ViewToggle({ view, onChange }: { view: ListViewMode; onChange: (
     ["card", "Card view", LayoutGrid],
   ]
   return (
-    <div className="inline-flex items-center rounded-md border h-9 p-0.5">
+    <div className="inline-flex items-center rounded-md border h-9 p-1">
       {opts.map(([v, label, Icon]) => (
         <button
           key={v}
@@ -20,7 +20,7 @@ export function ViewToggle({ view, onChange }: { view: ListViewMode; onChange: (
             view === v ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"
           }`}
         >
-          <Icon className="h-4 w-4" />
+          <Icon className="size-4" />
         </button>
       ))}
     </div>

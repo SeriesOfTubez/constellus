@@ -30,8 +30,8 @@ export function WebClassificationSummary({
   const flags = endpointFlags(state)
 
   return (
-    <div className="space-y-0.5 min-w-0">
-      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
+    <div className="space-y-1 min-w-0">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
         <span className={none ? "text-muted-foreground" : "font-medium"}>{effectiveLabel(state)}</span>
         {showEnv && (
           <>
@@ -49,7 +49,7 @@ export function WebClassificationSummary({
         )}
       </div>
       {showCitations && (
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           {state.source !== "ai" && (
             <span className="text-xs text-muted-foreground">
               AI cited{state.ai?.kind ? ` (for ${KIND_LABELS[state.ai.kind]})` : ""}:
@@ -62,7 +62,7 @@ export function WebClassificationSummary({
                 <span className="text-xs text-muted-foreground cursor-help">+{rest.length}</span>
               </TooltipTrigger>
               <TooltipContent side="top" className="max-w-xs">
-                <div className="space-y-0.5">
+                <div className="space-y-1">
                   {rest.map((c, i) => <CitationChip key={i} c={c} />)}
                 </div>
               </TooltipContent>
