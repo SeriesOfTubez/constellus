@@ -327,6 +327,25 @@ export type SecurityScore = {
   }[]
 }
 
+export type ScoreBand = SecurityScore["band"]
+export type ScoreLadderLevel = {
+  score: number; band: ScoreBand; count: number
+  fixes_before: number; fixes_through: number
+  score_after: number; band_after: ScoreBand
+}
+export type ScoreLadderCrossing = { band: ScoreBand; fixes: number; score: number }
+export type ScoreLadderFix = {
+  rank: number; id: string; title: string; asset_value: string | null
+  risk_score: number; risk_band: ScoreBand | null
+  score_after: number; band_after: ScoreBand
+}
+export type ScoreLadder = {
+  rule: "worst_open_finding"
+  score: number; band: ScoreBand
+  open_count: number; unscored_count: number
+  levels: ScoreLadderLevel[]; crossings: ScoreLadderCrossing[]; first_fixes: ScoreLadderFix[]
+}
+
 // planning#211 — the four engagement postures. Only pre_close/abandoned
 // restrict traffic (server-side: app.services.posture.RESTRICTING_POSTURES);
 // the UI never re-derives that, it reads `passive_only` off the target.

@@ -6,7 +6,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useAuthStore } from "@/lib/auth"
-import { api, type Finding, type ScanRun, type SecurityScore, type Target as TargetType } from "@/lib/api"
+import { api, type Finding, type ScanRun, type ScoreLadder, type SecurityScore, type Target as TargetType } from "@/lib/api"
+import { BAND_VAR } from "@/components/charts/bands"
+import { ScoreLadderCard } from "@/components/ScoreLadderCard"
 import { displayName } from "@/lib/apex"
 import { relativeTime } from "@/lib/time"
 import { CATEGORY_LABEL, RISK_BAND_LABEL, RISK_BAND_SHORT, RISK_BAND_ORDER, RiskBandBadge, effectiveBand } from "@/components/finding-badges"
@@ -191,14 +193,6 @@ function CategoryBreakdown({ findings, loading, error }: { findings?: Finding[];
 }
 
 // ── Security score gauge ──────────────────────────────────────────────────────
-
-const BAND_VAR: Record<SecurityScore["band"], string> = {
-  imminent_compromise: "var(--sev-critical)",
-  high:                "var(--sev-high)",
-  elevated:            "var(--sev-medium)",
-  low:                 "var(--sev-low)",
-  secure:              "var(--sev-clean)",
-}
 
 /** Semicircular arc gauge. Worst-driven Constellus Risk Score at org scope —
  *  the number is the single worst open finding; breadth lives in the count badge. */
@@ -449,6 +443,11 @@ export default function Dashboard() {
     queryFn: () => api.get<SecurityScore>("/findings/security-score"),
   })
 
+  const { data: scoreLadder, isLoading: ladderLoading, isError: ladderError } = useQuery({
+    queryKey: ["score-ladder"],
+    queryFn: () => api.get<ScoreLadder>("/findings/score-ladder"),
+  })
+
   const { data: scans, isLoading: sLoading, isError: sError } = useQuery({
     queryKey: ["scans-recent"],
     queryFn: () => api.get<ScanRun[]>("/scans/"),
@@ -527,6 +526,9 @@ export default function Dashboard() {
           </Card>
         </Link>
       </div>
+
+      {/* The way down: how many fixes step the org score down a band */}
+      <ScoreLadderCard data={scoreLadder} loading={ladderLoading} error={ladderError} />
 
       {/* Severity strip */}
       <SeverityStrip findings={openFindings} loading={fLoading} error={fError} />
