@@ -75,7 +75,7 @@ def _cleanup_ranges(db, ids):
         db.commit()
 
 
-def _tick_isolated(own_values: list[str]) -> None:
+def _tick_isolated(own_values: list[str]) -> te.TickResult:
     """Run `tick()` without leaving claims on assets this test doesn't own.
 
     `tick()` deliberately sweeps ip_address assets across the WHOLE table (up
@@ -103,7 +103,7 @@ def _tick_isolated(own_values: list[str]) -> None:
     finally:
         db.close()
 
-    te.tick()
+    result = te.tick()
 
     db = SessionLocal()
     try:
@@ -134,6 +134,7 @@ def _tick_isolated(own_values: list[str]) -> None:
             db.commit()
     finally:
         db.close()
+    return result
 
 
 def _snapshot_meta(db):
@@ -215,7 +216,9 @@ def test_tick_tri_state_end_to_end():
             _make_ip_asset(db, ip_edge)
             _make_ip_asset(db, ip_unknown)
 
-            _tick_isolated([ip_compute, ip_edge, ip_unknown])
+            result = _tick_isolated([ip_compute, ip_edge, ip_unknown])
+            assert result.errors == 0
+            assert result.enriched >= 3
 
             asset_compute = db.query(AssetCanonical).filter(AssetCanonical.value == ip_compute).one()
             asset_edge = db.query(AssetCanonical).filter(AssetCanonical.value == ip_edge).one()
@@ -246,6 +249,44 @@ def test_tick_tri_state_end_to_end():
         db2.close()
         db.close()
         _cleanup(values)
+
+
+# ── one poisoned asset rolls back alone ──────────────────────────────────
+
+def test_one_poisoned_asset_rolls_back_alone(monkeypatch):
+    ips = ["203.0.113.80", "203.0.113.81"]
+    db = SessionLocal()
+    try:
+        with _seeded_meta(db):
+            for ip in ips:
+                _make_ip_asset(db, ip)  # newest first: both sit inside the first IPS_PER_TICK (200) selected
+            seen = []
+            orig = te.enrich_asset
+
+            def wrapper(db_, asset, state, now):
+                if asset.value in ips:
+                    seen.append(asset.value)
+                    if len(seen) == 1:
+                        # A real failed statement: poisons the session unless a savepoint contains it.
+                        db_.execute(text("select 1 from no_such_table_336"))
+                return orig(db_, asset, state, now)
+
+            monkeypatch.setattr(te, "enrich_asset", wrapper)
+            result = _tick_isolated(ips)
+
+            assert sorted(seen) == sorted(ips)  # the path was reached for both
+            assert result.errors == 1
+            fresh = SessionLocal()
+            try:
+                first = fresh.query(AssetCanonical).filter(AssetCanonical.value == seen[0]).one()
+                second = fresh.query(AssetCanonical).filter(AssetCanonical.value == seen[1]).one()
+                assert get_current_claim(fresh, first.id, "tenancy_enricher", "tenancy") is None
+                assert get_current_claim(fresh, second.id, "tenancy_enricher", "tenancy") is not None
+            finally:
+                fresh.close()
+    finally:
+        db.close()
+        _cleanup(ips)
 
 
 # ── unenriched vs enriched-no-answer ─────────────────────────────────────

@@ -60,7 +60,6 @@ from app.services.claim_emitter import upsert_single_claim
 
 log = logging.getLogger(__name__)
 
-TICK_INTERVAL_SECONDS = 300
 
 # Unlike Tier 0 (a local indexed query, 200/tick at 60s), this rung emits
 # traffic to the target, so the budget is deliberately an order of magnitude
@@ -246,13 +245,32 @@ def _handshake(targets) -> list[dict] | None:
         return None
 
 
-def tick() -> None:
+class WorkerUnavailable(RuntimeError):
+    """The scanner-worker handshake call failed (planning#336 slice 2): a worker
+    outage is OUR failure, so nothing is written this tick and the scheduler
+    records the tick as an error instead of a determination about the assets."""
+
+
+@dataclass(frozen=True)
+class TickResult:
+    """One `tick()` pass. `dissented + abstained + unreachable + errors == allowed`: the
+    three vote buckets are counted only after their claim is written; a failed write
+    counts under `errors`."""
+    selected: int
+    allowed: int
+    dissented: int
+    abstained: int
+    unreachable: int
+    errors: int
+
+
+def tick() -> TickResult:
     """One enricher pass. Idempotent; safe to call from APScheduler."""
     db = SessionLocal()
     try:
         assets = _select_assets_to_enrich(db, IPS_PER_TICK)
         if not assets:
-            return
+            return TickResult(0, 0, 0, 0, 0, 0)
 
         scope = {"domains": [], "ip_ranges": []}
         for t_type, value in db.query(Target.type, Target.value).all():
@@ -280,7 +298,7 @@ def tick() -> None:
         ]
         if not allowed:
             log.info("tenancy_tls: selected %d asset(s), gate allowed 0 — nothing to do this tick", len(assets))
-            return
+            return TickResult(len(assets), 0, 0, 0, 0, 0)
 
         rows = _handshake({"ip": a.value, "port": TLS_PORT} for a in allowed)
 
@@ -289,7 +307,7 @@ def tick() -> None:
             # it would record our own outage as a determination about the
             # asset. An IP with no `tenancy_tls` claim is "not yet probed",
             # which is exactly what this is — nothing is written this tick.
-            return
+            raise WorkerUnavailable("scanner-worker handshake unavailable; nothing written this tick")
 
         by_ip = {row.get("ip"): row for row in rows}
 
@@ -305,35 +323,47 @@ def tick() -> None:
         # too, so `dissented + abstained + unreachable` reconciles with the
         # number the gate allowed.
         unreachable = 0
+        errors = 0
         for asset in allowed:
             try:
                 cert_row = by_ip.get(asset.value)
                 tenancy, suffix_match, evidence = tenancy_for_cert(cert_row)
                 if cert_row is None:
                     reason = "no_tls_handshake"
-                    unreachable += 1
+                    bucket = "unreachable"
                 elif tenancy == NOT_SINGLE_TENANT:
                     provider, label = _suffix_lookup(suffix_match)
                     reason = f"managed_endpoint_cert:{provider}:{label}"
-                    dissented += 1
+                    bucket = "dissented"
                 else:
                     reason = "cert_unclassified_promote_branch_abstains"
-                    abstained += 1
+                    bucket = "abstained"
 
-                upsert_single_claim(
-                    db, asset.id, _OBSERVER_NAME, _CLAIM_TYPE,
-                    _claim_value(tenancy, reason, evidence, now), now,
-                )
+                # The savepoint rolls a failed asset back alone; the session stays usable.
+                with db.begin_nested():
+                    upsert_single_claim(
+                        db, asset.id, _OBSERVER_NAME, _CLAIM_TYPE,
+                        _claim_value(tenancy, reason, evidence, now), now,
+                    )
             except Exception:
+                errors += 1
                 # One bad asset must not lose the tick's other writes.
                 log.exception("tenancy_tls: failed to enrich asset %s (%s)", asset.id, asset.value)
+                continue
+            if bucket == "unreachable":
+                unreachable += 1
+            elif bucket == "dissented":
+                dissented += 1
+            else:
+                abstained += 1
 
         db.commit()   # one commit for the whole tick, not one per asset
         log.info(
             "tenancy_tls: selected %d, gate allowed %d, dissented %d, abstained %d, "
-            "unreachable %d this tick",
-            len(assets), len(allowed), dissented, abstained, unreachable,
+            "unreachable %d, failed %d this tick",
+            len(assets), len(allowed), dissented, abstained, unreachable, errors,
         )
+        return TickResult(len(assets), len(allowed), dissented, abstained, unreachable, errors)
     finally:
         db.close()
 

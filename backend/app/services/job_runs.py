@@ -7,6 +7,11 @@ A job's `Cadence` is one of three kinds: `hourly_at` and `daily_at` are UTC
 clock grids, `interval` has no grid (its slots are measured from the last
 recorded run). One coverage rule applies to all: a slot is covered by a run
 that starts within `COVERAGE` after it, and is judged once that window ends.
+
+Seconds-scale ticks (planning#336 slice 2) are recorded only when a tick did
+work or failed (`record_idle=False`); idle ticks write no row, since a 10 s
+tick would otherwise add about 8,600 rows a day of nothing. Their liveness
+is the process-local `LAST_TICK` stamp, not a row.
 """
 from __future__ import annotations
 
@@ -25,7 +30,10 @@ from app.services import app_settings
 if TYPE_CHECKING:
     from app.services.cloud_ranges import RefreshResult
     from app.services.org_discovery.rolling import RollingResult
-    from app.services.page_capture import SweepResult
+    from app.services.ct_refresher import TickResult as CtRefresherTick
+    from app.services.page_capture import SweepResult, TickResult as PageCaptureTick
+    from app.services.tenancy_enricher import TickResult as TenancyEnricherTick
+    from app.services.tenancy_tls import TickResult as TenancyTlsTick
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +45,15 @@ _DAY = timedelta(days=1)
 # One rule for every kind: a slot is covered by a run that STARTS within this
 # long after it, and is judged once that window ends.
 COVERAGE = timedelta(hours=1)
+
+# Process-local liveness: stamped with the call's start time on EVERY
+# run_recorded call, recorded or not. Resets on restart (the API and the
+# card say so). Not a row, not a setting.
+LAST_TICK: dict[str, datetime] = {}
+
+# The one count name the recorder reads: per-item / per-phase failures. A
+# run with errors is never idle, so it is always recorded.
+ERRORS_COUNT = "errors"
 
 
 @dataclass(frozen=True)
@@ -91,8 +108,8 @@ def every(**kw) -> Cadence:
 # computation (the registration test asserts they agree). Order = the order
 # on the Settings card: hourly, then the hourly interval, daily, then the
 # longer intervals in registration order. The cadence stays in code
-# (planning#320). The five seconds-scale ticks (ct_refresher, page_capture,
-# capture_tokens, tenancy_enricher, tenancy_tls) are planning#336 slice 2.
+# (planning#320). The seconds-scale ticks come last: recorded only when they
+# did work or failed; no missed-slot computation (idle is not missed).
 CADENCE: dict[str, Cadence] = {
     "alert_digests": hourly_at(5),
     "rediscovery_tick": hourly_at(20),
@@ -109,6 +126,11 @@ CADENCE: dict[str, Cadence] = {
     "chat_transcript_purger": every(hours=24),
     "report_purger": every(hours=24),
     "llm_models_refresher": every(hours=24),
+    "page_capture": every(seconds=10),
+    "ct_refresher": every(seconds=60),
+    "capture_tokens": every(seconds=60),
+    "tenancy_enricher": every(seconds=60),
+    "tenancy_tls": every(seconds=300),
 }
 
 RUN_HISTORY_DAYS_KEY = "jobs.run_history_days"
@@ -216,6 +238,50 @@ def llm_models_outcome(n: int | None) -> RunOutcome:
     return RunOutcome("done", n, {"models": n})
 
 
+def page_capture_tick_outcome(r: "PageCaptureTick") -> RunOutcome:
+    """Every phase's count; a written limits file counts as work."""
+    items = r.ingested + r.swept + r.claims_swept + r.pruned + int(r.limits_written)
+    return RunOutcome("done", items, {
+        "ingested": r.ingested, "swept": r.swept, "claims_swept": r.claims_swept, "pruned": r.pruned,
+        "limits_written": int(r.limits_written), ERRORS_COUNT: r.errors,
+    })
+
+
+def ct_refresher_outcome(r: "CtRefresherTick") -> RunOutcome:
+    return RunOutcome("done", r.targets, {"targets": r.targets, "budget": r.budget,
+                                          "refreshed": r.refreshed, ERRORS_COUNT: r.errors})
+
+
+CAPTURE_TOKEN_OUTCOMES = ("fresh", "published", "mint_failed", "refused_floor", "conflict")
+
+
+def capture_tokens_outcome(outcomes: dict[str, str]) -> RunOutcome:
+    """Per-consumer outcomes from `capture_token_secret.publish_tokens`. Items =
+    consumers that needed a refresh (every outcome but `fresh`); errors = the
+    mint failures and floor refusals (a `conflict` is benign: the next tick re-reads)."""
+    counts = {name: sum(1 for v in outcomes.values() if v == name) for name in CAPTURE_TOKEN_OUTCOMES}
+    counts[ERRORS_COUNT] = counts["mint_failed"] + counts["refused_floor"]
+    items = sum(1 for v in outcomes.values() if v != "fresh")
+    return RunOutcome("done", items, counts)
+
+
+def tenancy_enricher_outcome(r: "TenancyEnricherTick") -> RunOutcome:
+    return RunOutcome("done", r.selected, {"selected": r.selected, "enriched": r.enriched,
+                                           "stale_dataset": int(r.stale_dataset), "no_dataset": int(r.no_dataset),
+                                           ERRORS_COUNT: r.errors})
+
+
+def tenancy_tls_outcome(r: "TenancyTlsTick") -> RunOutcome:
+    return RunOutcome("done", r.selected, {"selected": r.selected, "allowed": r.allowed, "dissented": r.dissented,
+                                           "abstained": r.abstained, "unreachable": r.unreachable, ERRORS_COUNT: r.errors})
+
+
+def is_idle(outcome: RunOutcome) -> bool:
+    """A finished run that selected nothing and hit no per-item error. A job
+    recorded with `record_idle=False` writes no row for such a run."""
+    return outcome.items_selected == 0 and int(outcome.counts.get(ERRORS_COUNT, 0)) == 0
+
+
 def record(job: str, started_at: datetime, finished_at: datetime, outcome: RunOutcome,
            error: str | None = None) -> bool:
     """Own unit of work. Never raises."""
@@ -245,28 +311,42 @@ def record(job: str, started_at: datetime, finished_at: datetime, outcome: RunOu
                 pass
 
 
-def _record_safely(job: str, started_at: datetime,
-                   outcome: RunOutcome | Callable[[], RunOutcome], error: str | None = None) -> None:
+def _record_safely(job: str, started_at: datetime, outcome: RunOutcome, error: str | None = None) -> None:
     try:
-        resolved = outcome() if callable(outcome) else outcome
-        finished_at = _now()
-        record(job, started_at, finished_at, resolved, error=error)
+        record(job, started_at, _now(), outcome, error=error)
     except Exception:
         log.warning("job_runs: recording a %s run failed", job, exc_info=True)
 
 
-def run_recorded(job: str, fn: Callable[[], T], to_outcome: Callable[[T], RunOutcome]) -> T:
-    """Run `fn`, record the run, return its result. A failure of `fn` is
-    recorded (exception TYPE name only: messages can carry URLs or keys) and
-    re-raised; a failure to record is only logged."""
+def run_and_record(job: str, fn: Callable[[], T], to_outcome: Callable[[T], RunOutcome],
+                   *, record_idle: bool = True) -> tuple[T, bool]:
+    """Run `fn`, record the run, return (result, recorded). A failure of `fn`
+    is always recorded (exception TYPE name only: messages can carry URLs or
+    keys) and re-raised; a failure to record or to map is only logged. With
+    `record_idle=False` an idle outcome (see `is_idle`) writes no row. The
+    start time is stamped into `LAST_TICK` on every call."""
     started = _now()
+    LAST_TICK[job] = started
     try:
         result = fn()
     except Exception as exc:
         _record_safely(job, started, RunOutcome("error", 0, {}), error=type(exc).__name__)
         raise
-    _record_safely(job, started, lambda: to_outcome(result))
-    return result
+    try:
+        outcome = to_outcome(result)
+    except Exception:
+        log.warning("job_runs: recording a %s run failed (the result mapper raised)", job, exc_info=True)
+        return result, False
+    if not record_idle and is_idle(outcome):
+        return result, False
+    _record_safely(job, started, outcome)
+    return result, True
+
+
+def run_recorded(job: str, fn: Callable[[], T], to_outcome: Callable[[T], RunOutcome],
+                 *, record_idle: bool = True) -> T:
+    """`run_and_record` without the flag (the slice-1 call shape)."""
+    return run_and_record(job, fn, to_outcome, record_idle=record_idle)[0]
 
 
 def purge(db: Session, now: datetime | None = None) -> int:
@@ -285,6 +365,7 @@ class JobStatus:
     last_run: JobRun | None
     recorded_since: datetime | None
     missed_slots: list[datetime]
+    last_tick_at: datetime | None
 
 
 def _grid_at_or_before(t: datetime, c: Cadence) -> datetime:
@@ -358,5 +439,5 @@ def status(db: Session, now: datetime | None = None, hours: int = 24) -> list[Jo
                 missed = _interval_missed(anchor, starts, window_start, now, cadence)
             else:
                 missed = _grid_missed(starts, since, window_start, now, cadence)
-        out.append(JobStatus(job, cadence, last, since, missed))
+        out.append(JobStatus(job, cadence, last, since, missed, LAST_TICK.get(job)))
     return out

@@ -49,7 +49,7 @@ log = logging.getLogger(__name__)
 # out of bounds): browse revisit days, archive freshness days, user-agent mode, identifying
 # user-agent, max image bytes, queue timeout.
 # GUARDS (constants, never settings): IMAGE_BYTES_CEILING and the *_MIN/_MAX
-# bounds, USER_AGENT_MAX, VIEWPORT_*, WEBP_QUALITIES, TICK_INTERVAL_SECONDS and
+# bounds, USER_AGENT_MAX, VIEWPORT_*, WEBP_QUALITIES and
 # the JOB/RESULT/PROXYLOG byte caps.
 REVISIT_DAYS_KEY = "capture.browse_revisit_days"
 ARCHIVE_FRESHNESS_DAYS_KEY = "capture.archive_freshness_days"
@@ -112,7 +112,6 @@ RESULT_MIN_AGE_S = 5
 JOB_MAX_BYTES = 16 * 1024
 RESULT_MAX_BYTES = 1024 * 1024
 PROXYLOG_MAX_BYTES = 4 * 1024 * 1024
-TICK_INTERVAL_SECONDS = 10
 
 _MAX_URL = 8192
 _MAX_CHAIN = 50
@@ -594,6 +593,19 @@ class SweepResult:
     not_configured: bool = False  # no capture proxy key: nothing was done
     stopped_on_lookup: bool = False  # the lookup kept failing; the rest stay due
     out_of_time: bool = False  # the time limit was reached; the rest stay due
+
+
+@dataclass(frozen=True)
+class TickResult:
+    """One `tick()` pass (planning#336 slice 2). Each phase is isolated so the
+    later ones still run; `errors` counts the phases that failed. Mapped to a
+    job_runs row by `job_runs.page_capture_tick_outcome`."""
+    limits_written: bool
+    ingested: int
+    swept: int
+    claims_swept: int
+    pruned: int
+    errors: int
 
 
 def _record_skip(db: Session, candidate_id: uuid.UUID, rule: str) -> bool:
@@ -1165,42 +1177,52 @@ def sweep_timeouts(db: Session, now: datetime | None = None) -> int:
     return len(ids)
 
 
-def tick() -> None:
-    """One pass: ingest, then sweep. Never raises (the scheduler must keep
-    firing). Registered in scheduler.py as job `page_capture`."""
+def tick() -> TickResult:
+    """One pass: limits, ingest, timeout sweep, claim sweep, prune. Each phase is
+    isolated (a failure is counted under `errors` and the later phases still run);
+    a failure outside the phases reaches the scheduler wrapper, which records it
+    and keeps firing. Registered in scheduler.py as job `page_capture`."""
+    limits_written = False
+    ingested = swept = claims_swept = pruned = errors = 0
     db = SessionLocal()
     try:
         try:
-            write_proxy_limits(db)
+            limits_written = write_proxy_limits(db)
         except Exception:
+            errors += 1
             db.rollback()
             log.exception("page_capture: writing the proxy limits failed")
         try:
             _check_spool_dirs()
         except OSError:
+            errors += 1
             log.error("page_capture: capture store is unavailable or the spool is missing; skipping ingest", exc_info=True)
         else:
             try:
-                ingest_results(db)
+                ingested = ingest_results(db)
             except Exception:
+                errors += 1
                 db.rollback()
                 log.exception("page_capture: ingest pass failed")
         try:
-            sweep_timeouts(db)
+            swept = sweep_timeouts(db)
         except Exception:
+            errors += 1
             db.rollback()
             log.exception("page_capture: timeout sweep failed")
         try:
-            get_store().sweep_claims()
+            claims_swept = get_store().sweep_claims()
         except Exception:
+            errors += 1
             log.exception("page_capture: claim marker sweep failed")
         try:
-            prune_images(db)
+            pruned = prune_images(db)
             db.commit()
         except Exception:
+            errors += 1
+            pruned = 0
             db.rollback()
             log.exception("page_capture: image prune failed")
-    except Exception:
-        log.exception("page_capture: tick failed")
     finally:
         db.close()
+    return TickResult(limits_written, ingested, swept, claims_swept, pruned, errors)

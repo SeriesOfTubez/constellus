@@ -33,7 +33,6 @@ from app.services.claim_emitter import upsert_single_claim
 
 log = logging.getLogger(__name__)
 
-TICK_INTERVAL_SECONDS = 60
 
 # Tier 0 is a local indexed query with no external call, so the per-tick
 # budget is bounded by DB work rather than by anyone's rate limit. Tier 2
@@ -144,7 +143,19 @@ def enrich_asset(db: Session, asset, state, now: datetime) -> bool:
     return True
 
 
-def tick() -> None:
+@dataclass(frozen=True)
+class TickResult:
+    """One `tick()` pass (planning#336 slice 2). `no_dataset`: no cloud-range dataset is
+    loaded, nothing was selected or written. `stale_dataset`: the dataset is older than
+    STALE_AFTER; enrichment ran anyway (each claim records generated_at)."""
+    selected: int
+    enriched: int
+    errors: int
+    no_dataset: bool = False
+    stale_dataset: bool = False
+
+
+def tick() -> TickResult:
     """One enricher pass. Idempotent; safe to call from APScheduler."""
     db = SessionLocal()
     try:
@@ -157,7 +168,7 @@ def tick() -> None:
                 "writing 'undetermined' here would report our own outage as "
                 "a determination about the asset."
             )
-            return
+            return TickResult(0, 0, 0, no_dataset=True)
         if state.stale:
             log.warning(
                 "tenancy_enricher: cloud range dataset generated_at=%s is "
@@ -168,20 +179,25 @@ def tick() -> None:
 
         assets = _select_assets_to_enrich(db, IPS_PER_TICK)
         if not assets:
-            return
+            return TickResult(0, 0, 0, stale_dataset=state.stale)
 
         now = datetime.now(timezone.utc)
         enriched = 0
+        errors = 0
         for asset in assets:
             try:
-                if enrich_asset(db, asset, state, now):
-                    enriched += 1
+                with db.begin_nested():
+                    if enrich_asset(db, asset, state, now):
+                        enriched += 1
             except Exception:
-                # One bad asset must not lose the tick's other writes.
+                errors += 1
+                # One bad asset must not lose the tick's other writes: the savepoint
+                # rolled its own writes back and the session stays usable.
                 log.exception("tenancy_enricher: failed to enrich asset %s (%s)", asset.id, asset.value)
 
         db.commit()   # one commit for the whole tick, not one per asset
-        log.info("tenancy_enricher: enriched %d IP(s) this tick", enriched)
+        log.info("tenancy_enricher: enriched %d IP(s), %d failed this tick", enriched, errors)
+        return TickResult(len(assets), enriched, errors, stale_dataset=state.stale)
     finally:
         db.close()
 

@@ -330,8 +330,10 @@ def test_tick_survives_a_prune_failure_and_still_sweeps(w, cfg, env, settings_re
         raise RuntimeError("x")
 
     monkeypatch.setattr(pc, "prune_images", boom)
-    pc.tick()
+    r = pc.tick()
     assert calls == [1]
+    assert r.errors == 1
+    assert r.pruned == 0
 
 
 # ── drift against the proxy ──────────────────────────────────────────────────
@@ -488,6 +490,8 @@ def test_tick_survives_a_configmap_sink_failure_and_continues(w, cfg, settings_r
     monkeypatch.setattr(pc.capture_limits_configmap, "write_configmap_limits", boom)
     swept = []
     monkeypatch.setattr(pc, "sweep_timeouts", lambda db, now=None: swept.append(1) or 0)
-    pc.tick()
+    r = pc.tick()
     assert "writing the proxy limits failed" in caplog.text
     assert swept == [1]
+    assert r.errors == 2  # the limits write AND the (deliberately missing) spool check
+    assert r.limits_written is False

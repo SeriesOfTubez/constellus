@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { JobCadence, JobRun, JobStatus } from "@/lib/api"
 import {
-  cadenceText, cadenceUtcText, finishReasonText, formatDuration, formatSlotTime, isProblem, jobLabel, missedSlotsText,
+  cadenceText, cadenceUtcText, finishReasonText, formatDuration, formatSlotTime, isProblem, isSubHour, jobLabel, missedSlotsText,
   runCountsText, validateJobSettings,
 } from "@/lib/jobRuns"
 
@@ -11,7 +11,7 @@ const run = (job: string, counts: Record<string, number>, over: Partial<JobRun> 
   finish_reason: "done", items_selected: 5, counts, error: null, ...over,
 })
 const status = (over: Partial<JobStatus> = {}): JobStatus => ({
-  job: "capture_sweep", cadence: { kind: "hourly_at", minute: 40, hour: null, every_seconds: null }, last_run: null, recorded_since: iso(2026, 10, 7, 0, 0), missed_slots: [], ...over,
+  job: "capture_sweep", cadence: { kind: "hourly_at", minute: 40, hour: null, every_seconds: null }, last_run: null, recorded_since: iso(2026, 10, 7, 0, 0), missed_slots: [], last_tick_at: null, ...over,
 })
 
 describe("validateJobSettings", () => {
@@ -57,14 +57,14 @@ describe("finishReasonText", () => {
 
 describe("jobLabel", () => {
   it("names known jobs and hides unknown ones", () => {
-    expect(jobLabel("capture_sweep")).toBe("Page capture")
+    expect(jobLabel("capture_sweep")).toBe("Page capture queueing")
     expect(jobLabel("rediscovery_tick")).toBe("Organization re-discovery")
     expect(jobLabel("secret_new_job")).toBe("Other scheduled job")
   })
 })
 
 const ALL_JOBS: Record<string, string> = {
-  capture_sweep: "Page capture",
+  capture_sweep: "Page capture queueing",
   rediscovery_tick: "Organization re-discovery",
   alert_digests: "Alert digests",
   run_reaper: "Stranded scan clean-up",
@@ -79,11 +79,16 @@ const ALL_JOBS: Record<string, string> = {
   chat_transcript_purger: "Chat transcript retention",
   report_purger: "Report retention",
   llm_models_refresher: "AI model list refresh",
+  page_capture: "Page capture ingest",
+  ct_refresher: "Certificate transparency cache refresh",
+  capture_tokens: "Capture store token publisher",
+  tenancy_enricher: "Cloud tenancy enrichment",
+  tenancy_tls: "TLS certificate tenancy check",
 }
 
 describe("jobLabel, all known jobs", () => {
   it("labels every known job and falls back for others", () => {
-    expect(Object.keys(ALL_JOBS)).toHaveLength(15)
+    expect(Object.keys(ALL_JOBS)).toHaveLength(20)
     for (const [id, label] of Object.entries(ALL_JOBS)) expect(jobLabel(id)).toBe(label)
     expect(jobLabel("toString")).toBe("Other scheduled job")
   })
@@ -108,6 +113,20 @@ describe("cadenceText", () => {
     expect(cadenceText(c({ every_seconds: 43200 }))).toBe("every 12 h")
     expect(cadenceText(c({ every_seconds: 300 }))).toBe("every 5 min")
     expect(cadenceText(c({ every_seconds: 10 }))).toBe("every 10 s")
+  })
+})
+
+describe("isSubHour", () => {
+  const c = (over: Partial<JobCadence>): JobCadence => ({ kind: "interval", minute: null, hour: null, every_seconds: null, ...over })
+  it("is true only for intervals under an hour", () => {
+    expect(isSubHour(c({ every_seconds: 10 }))).toBe(true)
+    expect(isSubHour(c({ every_seconds: 60 }))).toBe(true)
+    expect(isSubHour(c({ every_seconds: 300 }))).toBe(true)
+    expect(isSubHour(c({ every_seconds: 3600 }))).toBe(false)
+    expect(isSubHour(c({ every_seconds: 86400 }))).toBe(false)
+    expect(isSubHour(c({ every_seconds: null }))).toBe(false) // an interval with no length is not "sub-hour"
+    expect(isSubHour(c({ kind: "hourly_at", minute: 5 }))).toBe(false)
+    expect(isSubHour(c({ kind: "daily_at", hour: 3, minute: 0 }))).toBe(false)
   })
 })
 
@@ -143,6 +162,17 @@ describe("runCountsText, newer jobs", () => {
     expect(t("run_reaper", { startup: 0, runs: 2, ingest_runs: 1 })).toBe("2 stranded scans and 1 ingest cleaned up")
     expect(t("run_reaper", { startup: 0, runs: 1, ingest_runs: 0 })).toBe("1 stranded scan and 0 ingests cleaned up")
     expect(t("llm_models_refresher", { models: 7 })).toBe("7 models allowed")
+    expect(t("page_capture", { ingested: 2, swept: 1, pruned: 0, claims_swept: 0, limits_written: 0, errors: 0 })).toBe("2 results ingested, 1 timed out, 0 images pruned")
+    expect(t("page_capture", { ingested: 2, swept: 1, pruned: 0, claims_swept: 3, limits_written: 1, errors: 1 })).toBe("2 results ingested, 1 timed out, 0 images pruned, 3 stale claims cleared, proxy limits written, 1 error")
+    expect(t("page_capture", { ingested: 1, swept: 0, pruned: 1 })).toBe("1 result ingested, 0 timed out, 1 image pruned")
+    expect(t("ct_refresher", { targets: 3, budget: 5, refreshed: 2, errors: 1 })).toBe("2 of 3 domain caches refreshed, 1 error")
+    expect(t("ct_refresher", { targets: 1, refreshed: 1 })).toBe("1 of 1 domain cache refreshed")
+    expect(t("capture_tokens", { fresh: 1, published: 1 })).toBe("1 published, 1 still fresh")
+    expect(t("capture_tokens", { fresh: 0, published: 0, mint_failed: 1, refused_floor: 1, conflict: 0, errors: 2 })).toBe("0 published, 0 still fresh, 1 mint failed, 1 refused (too little lifetime left)")
+    expect(t("capture_tokens", { fresh: 0, published: 0, conflict: 2 })).toBe("0 published, 0 still fresh, 2 lost a write race")
+    expect(t("tenancy_enricher", { selected: 200, enriched: 150, stale_dataset: 1, errors: 2 })).toBe("150 of 200 addresses enriched, dataset stale, 2 errors")
+    expect(t("tenancy_enricher", { selected: 1, enriched: 1 })).toBe("1 of 1 address enriched")
+    expect(t("tenancy_tls", { selected: 25, allowed: 20, dissented: 5, abstained: 10, unreachable: 4, errors: 1 })).toBe("20 of 25 allowed by the gate: 5 managed endpoints, 10 unclassified, 4 no handshake, 1 error")
   })
 })
 

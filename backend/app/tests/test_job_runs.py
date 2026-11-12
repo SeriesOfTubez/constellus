@@ -20,6 +20,11 @@ from app.services import app_settings, job_runs, page_capture, scheduler
 from app.services.org_discovery import rolling
 from app.services.org_discovery.rolling import RollingResult
 from app.services.page_capture import SweepResult
+from app.services.page_capture import TickResult as PageCaptureTick
+from app.services.ct_refresher import TickResult as CtRefresherTick
+from app.services.tenancy_enricher import TickResult as TenancyEnricherTick
+from app.services.tenancy_tls import TickResult as TenancyTlsTick
+from app.services import tenancy_tls
 
 UTC = timezone.utc
 
@@ -546,10 +551,35 @@ REGISTRARS = {
     "chat_transcript_purger": scheduler._register_chat_transcript_purger,
     "report_purger": scheduler._register_report_purger,
     "llm_models_refresher": scheduler._register_llm_models_refresher,
+    "page_capture": scheduler._register_page_capture,
+    "ct_refresher": scheduler._register_ct_refresher,
+    "capture_tokens": scheduler._register_capture_tokens,
+    "tenancy_enricher": scheduler._register_tenancy_enricher,
+    "tenancy_tls": scheduler._register_tenancy_tls,
+}
+
+WRAPPERS = {
+    "page_capture": scheduler._run_page_capture,
+    "ct_refresher": scheduler._run_ct_refresher,
+    "capture_tokens": scheduler._run_capture_tokens,
+    "tenancy_enricher": scheduler._run_tenancy_enricher,
+    "tenancy_tls": scheduler._run_tenancy_tls,
 }
 
 
-def test_every_cadence_job_registers_its_trigger(sched):
+@pytest.fixture
+def capture_env(monkeypatch):
+    """What `_register_capture_tokens` needs to schedule: S3 store with GCS workload identity."""
+    monkeypatch.setenv("CAPTURE_STORE", "s3")
+    monkeypatch.setenv("CAPTURE_S3_AUTH", "gcs-wi")
+    monkeypatch.setenv("CAPTURE_S3_ENDPOINT", "https://storage.googleapis.com")
+    monkeypatch.setenv("CAPTURE_S3_PATH_STYLE", "true")
+    for k, v in (("CAPTURE_S3_BUCKET_JOBS", "jobs-bucket"), ("CAPTURE_S3_BUCKET_RESULTS", "results-bucket"),
+                 ("CAPTURE_S3_BUCKET_PROXYLOG", "proxylog-bucket"), ("CAPTURE_S3_BUCKET_IMAGES", "images-bucket")):
+        monkeypatch.setenv(k, v)
+
+
+def test_every_cadence_job_registers_its_trigger(sched, capture_env):
     assert set(REGISTRARS) == set(job_runs.CADENCE)
     for jid, register in REGISTRARS.items():
         cadence = job_runs.CADENCE[jid]
@@ -557,6 +587,8 @@ def test_every_cadence_job_registers_its_trigger(sched):
         job = sched.get_job(jid)
         assert job is not None, jid
         assert job.coalesce is True and job.max_instances == 1, jid
+        if jid in WRAPPERS:
+            assert job.func is WRAPPERS[jid], jid  # never a bare tick
         if cadence.kind == "interval":
             assert isinstance(job.trigger, IntervalTrigger), jid
             assert job.trigger.interval == cadence.every, jid
@@ -568,11 +600,9 @@ def test_every_cadence_job_registers_its_trigger(sched):
             assert str(job.trigger.timezone) == "UTC", jid
 
 
-def test_every_scheduled_id_is_recorded_or_slice_2():
+def test_every_scheduled_id_has_a_cadence():
     ids = set(re.findall(r'\bid="([a-z_]+)"', inspect.getsource(scheduler)))
-    SLICE_2 = {"ct_refresher", "page_capture", "capture_tokens", "tenancy_enricher", "tenancy_tls"}
-    assert set(job_runs.CADENCE) <= ids
-    assert ids <= set(job_runs.CADENCE) | SLICE_2
+    assert ids == set(job_runs.CADENCE)
 
 
 # 9 -- scheduler wrappers
@@ -817,3 +847,134 @@ def test_every_wrapper_swallows_and_records_a_failure(monkeypatch, caplog, job, 
     r = _one(job)
     assert r.finish_reason == "error" and r.error == "RuntimeError" and r.counts == {}
     assert any(rec.levelno == logging.ERROR and "failed" in rec.getMessage() for rec in caplog.records)
+
+
+# 10 -- seconds-scale ticks: record_idle + LAST_TICK
+@pytest.fixture
+def last_tick(monkeypatch):
+    d: dict = {}
+    monkeypatch.setattr(job_runs, "LAST_TICK", d)
+    return d
+
+
+def _outcome(items, counts):
+    return lambda r: job_runs.RunOutcome("done", items, counts)
+
+
+def test_idle_tick_writes_no_row_but_stamps_last_tick(last_tick):
+    out = job_runs.run_recorded("page_capture", lambda: "r", _outcome(0, {"ingested": 0, "errors": 0}),
+                                record_idle=False)
+    assert out == "r"
+    assert _rows("page_capture") == []
+    stamp = last_tick["page_capture"]
+    assert stamp.tzinfo is not None
+    assert abs((datetime.now(UTC) - stamp).total_seconds()) < 60
+
+
+def test_tick_that_did_work_is_recorded(last_tick):
+    job_runs.run_recorded("page_capture", lambda: "r", _outcome(2, {"ingested": 2, "errors": 0}), record_idle=False)
+    _check("page_capture", "done", 2, {"ingested": 2, "errors": 0})
+
+
+def test_tick_with_errors_and_no_items_is_recorded(last_tick):
+    job_runs.run_recorded("page_capture", lambda: "r", _outcome(0, {"errors": 1}), record_idle=False)
+    _check("page_capture", "done", 0, {"errors": 1})
+
+
+def test_tick_failure_is_recorded_reraised_and_stamped(last_tick):
+    def boom():
+        raise ValueError("secret detail")
+
+    with pytest.raises(ValueError):
+        job_runs.run_recorded("page_capture", boom, _outcome(0, {}), record_idle=False)
+    r = _one("page_capture")
+    assert r.finish_reason == "error" and r.error == "ValueError" and r.counts == {}
+    assert "page_capture" in last_tick
+
+
+def test_record_idle_default_keeps_slice_1_behaviour(last_tick):
+    job_runs.run_recorded("alert_digests", lambda: "r", _outcome(0, {}))
+    assert len(_rows("alert_digests")) == 1
+
+
+@pytest.mark.parametrize("items,counts,idle", [
+    (0, {}, True), (0, {"errors": 0}, True), (0, {"errors": 1}, False), (1, {}, False), (0, {"x": 5}, True),
+])
+def test_is_idle(items, counts, idle):
+    assert job_runs.is_idle(job_runs.RunOutcome("done", items, counts)) is idle
+
+
+def test_run_and_record_reports_whether_a_row_was_written(last_tick):
+    assert job_runs.run_and_record("page_capture", lambda: "r", _outcome(0, {}), record_idle=False) == ("r", False)
+    assert job_runs.run_and_record("page_capture", lambda: "r", _outcome(1, {}), record_idle=False) == ("r", True)
+    assert job_runs.run_and_record("page_capture", lambda: "r", _outcome(0, {})) == ("r", True)
+    assert len(_rows("page_capture")) == 2
+
+
+def test_status_returns_last_tick_at(last_tick):
+    t = datetime(2026, 11, 10, 12, 0, 5, tzinfo=UTC)
+    last_tick["tenancy_tls"] = t
+    st = _st()
+    assert st["tenancy_tls"].last_tick_at == t
+    assert all(x.last_tick_at is None for j, x in st.items() if j != "tenancy_tls")
+
+
+def test_seconds_scale_mappers():
+    assert job_runs.page_capture_tick_outcome(PageCaptureTick(True, 2, 1, 0, 3, 1)) == job_runs.RunOutcome(
+        "done", 7, {"ingested": 2, "swept": 1, "claims_swept": 0, "pruned": 3, "limits_written": 1, "errors": 1})
+    o = job_runs.ct_refresher_outcome(CtRefresherTick(3, 5, 2, 1))
+    assert o.items_selected == 3 and o.counts == {"targets": 3, "budget": 5, "refreshed": 2, "errors": 1}
+    o = job_runs.capture_tokens_outcome({"worker": "published", "proxy": "mint_failed"})
+    assert o.items_selected == 2
+    assert o.counts == {"fresh": 0, "published": 1, "mint_failed": 1, "refused_floor": 0, "conflict": 0, "errors": 1}
+    o = job_runs.capture_tokens_outcome({"worker": "fresh", "proxy": "fresh"})
+    assert o.items_selected == 0 and job_runs.is_idle(o)
+    o = job_runs.capture_tokens_outcome({})
+    assert o.items_selected == 0 and set(o.counts.values()) == {0}
+    o = job_runs.tenancy_enricher_outcome(TenancyEnricherTick(200, 150, 2, stale_dataset=True))
+    assert o.items_selected == 200
+    assert o.counts == {"selected": 200, "enriched": 150, "stale_dataset": 1, "no_dataset": 0, "errors": 2}
+    o = job_runs.tenancy_tls_outcome(TenancyTlsTick(25, 20, 5, 10, 4, 1))
+    assert o.items_selected == 25 and o.counts["errors"] == 1 and o.counts["unreachable"] == 4
+
+
+def test_page_capture_wrapper_records_only_work(monkeypatch):
+    monkeypatch.setattr(page_capture, "tick", lambda: PageCaptureTick(False, 0, 0, 0, 0, 0))
+    scheduler._run_page_capture()
+    assert _rows("page_capture") == []
+    monkeypatch.setattr(page_capture, "tick", lambda: PageCaptureTick(False, 2, 0, 0, 0, 0))
+    scheduler._run_page_capture()
+    r = _one("page_capture")
+    assert r.finish_reason == "done" and r.items_selected == 2
+
+
+def test_capture_tokens_wrapper_logs_no_token(monkeypatch, caplog):
+    from app.services import capture_token_secret as ts
+
+    def boom():
+        raise RuntimeError("secret ABCDEF-TOKEN-336")
+
+    monkeypatch.setattr(ts, "tick", boom)
+    with caplog.at_level(logging.ERROR):
+        scheduler._run_capture_tokens()  # must not raise
+    r = _one("capture_tokens")
+    assert r.error == "RuntimeError"
+    assert "ABCDEF-TOKEN-336" not in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
+def test_tenancy_tls_wrapper_records_a_worker_outage(monkeypatch):
+    def down():
+        raise tenancy_tls.WorkerUnavailable("x")
+
+    monkeypatch.setattr(tenancy_tls, "tick", down)
+    scheduler._run_tenancy_tls()  # must not raise
+    assert _one("tenancy_tls").error == "WorkerUnavailable"
+
+
+def test_capture_tokens_wrapper_records_published(monkeypatch):
+    from app.services import capture_token_secret as ts
+    monkeypatch.setattr(ts, "tick", lambda: {"worker": "published", "proxy": "fresh"})
+    scheduler._run_capture_tokens()
+    r = _one("capture_tokens")
+    assert r.finish_reason == "done" and r.items_selected == 1

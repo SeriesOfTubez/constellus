@@ -92,14 +92,25 @@ def test_runs_validation(w):
     assert client.get(RUNS, headers=h, params={"limit": 500}).status_code == 200
 
 
-def test_status_empty(w):
+def test_status_empty(w, monkeypatch):
+    monkeypatch.setattr(job_runs, "LAST_TICK", {})  # process-global: other tests stamp it
     body = client.get(STATUS, headers=w.headers()).json()
     assert body["window_hours"] == 24
     assert [j["job"] for j in body["jobs"]] == list(job_runs.CADENCE)
     for j in body["jobs"]:
         assert j["last_run"] is None and j["recorded_since"] is None and j["missed_slots"] == []
+        assert j["last_tick_at"] is None
         assert j["cadence"] == job_runs.CADENCE[j["job"]].to_dict()
         assert "cadence_minute" not in j
+
+
+def test_status_last_tick_at_is_this_process_stamp(w, monkeypatch):
+    stamp = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    monkeypatch.setattr(job_runs, "LAST_TICK", {"page_capture": stamp})
+    jobs = {j["job"]: j for j in client.get(STATUS, headers=w.headers()).json()["jobs"]}
+    assert jobs["page_capture"]["last_tick_at"].endswith("+00:00")
+    assert datetime.fromisoformat(jobs["page_capture"]["last_tick_at"]) == stamp
+    assert jobs["tenancy_tls"]["last_tick_at"] is None
 
 
 def test_status_missed_slot_and_last_run(w):

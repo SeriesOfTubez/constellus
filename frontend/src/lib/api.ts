@@ -1031,6 +1031,8 @@ export type JobStatus = {
   last_run: JobRun | null
   recorded_since: string | null
   missed_slots: string[]
+  /** process-local liveness stamp for every tick, recorded or not; null until the first tick after a restart */
+  last_tick_at: string | null
 }
 
 export type JobsStatus = {

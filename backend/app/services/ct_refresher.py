@@ -6,7 +6,7 @@ Certspotter's API is rate-limited heavily — 100 req/hr unauthenticated,
 either blow through the limit or block runs for hours, so we maintain
 ct_query_cache as a background-refreshed resource:
 
-  - APScheduler fires `tick()` every TICK_INTERVAL_SECONDS.
+  - APScheduler fires `tick()` every `job_runs.CADENCE['ct_refresher']`.
   - Each tick picks up to `_calls_per_tick()` domain targets whose cache
     entry is missing or older than REFRESH_AFTER_SECONDS, oldest-first.
   - Each call writes to ct_query_cache. Calls within a tick are spaced
@@ -19,19 +19,17 @@ Certspotter API.
 
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from app.services import connector_instances
+from app.services import connector_instances, job_runs
 from app.core.database import SessionLocal
 from app.models.ct_query_cache import CTQueryCache
 from app.models.target import Target
 
 log = logging.getLogger(__name__)
-
-# How often the refresher tick fires.
-TICK_INTERVAL_SECONDS = 60
 
 # Refresh entries older than this — matches the cache success TTL so the
 # executor's cache reads stay within the freshness window.
@@ -46,17 +44,27 @@ _RATE_PER_HOUR_UNAUTH = 100
 _HEADROOM_FACTOR = 0.85
 
 
-def tick() -> None:
+@dataclass(frozen=True)
+class TickResult:
+    """One `tick()` pass (planning#336 slice 2): domains selected (at most `budget`),
+    the call budget, `prime_cache` successes and failures."""
+    targets: int
+    budget: int
+    refreshed: int
+    errors: int
+
+
+def tick() -> TickResult:
     """One refresher pass. Idempotent; safe to call from APScheduler."""
     db = SessionLocal()
     try:
         budget = _calls_per_tick(db)
         if budget <= 0:
-            return
+            return TickResult(0, budget, 0, 0)
 
         targets = _select_targets_to_refresh(db, budget)
         if not targets:
-            return
+            return TickResult(0, budget, 0, 0)
 
         per_call_delay = 60.0 / budget if budget > 0 else 0
         log.info(
@@ -68,13 +76,18 @@ def tick() -> None:
         # this module's siblings).
         from app.services.discovery import cert_transparency
 
+        refreshed = 0
+        errors = 0
         for i, domain in enumerate(targets):
             if i > 0 and per_call_delay > 0:
                 time.sleep(per_call_delay)
             try:
                 cert_transparency.prime_cache(domain)
+                refreshed += 1
             except Exception:
+                errors += 1
                 log.exception("ct_refresher: prime_cache failed for %s", domain)
+        return TickResult(len(targets), budget, refreshed, errors)
     finally:
         db.close()
 
@@ -86,7 +99,7 @@ def _calls_per_tick(db: Session) -> int:
     plan and the configured tick interval."""
     has_token = bool((connector_instances.enabled_config(db, "certspotter") or {}).get("api_key"))
     rate_per_hour = _RATE_PER_HOUR_AUTH if has_token else _RATE_PER_HOUR_UNAUTH
-    ticks_per_hour = 3600 / TICK_INTERVAL_SECONDS
+    ticks_per_hour = 3600 / job_runs.CADENCE["ct_refresher"].every.total_seconds()
     return max(1, int((rate_per_hour * _HEADROOM_FACTOR) / ticks_per_hour))
 
 
