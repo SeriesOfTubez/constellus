@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight } from "lucide-react"
 import type { JobRun, JobStatus } from "@/lib/api"
-import { cadenceText, cadenceUtcText, finishReasonText, formatDuration, isProblem, jobLabel, missedSlotsText, runCountsText } from "@/lib/jobRuns"
+import { cadenceText, cadenceUtcText, finishReasonText, formatDuration, isProblem, isSubHour, jobLabel, missedSlotsText, runCountsText, SUB_HOUR_NOTE } from "@/lib/jobRuns"
 import { formatExactTime, relativeTime } from "@/lib/time"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -15,6 +15,7 @@ export function JobStatusRow({ status, windowHours, expanded, onToggle }: {
   onToggle: () => void
 }) {
   const last = status.last_run
+  const subHour = isSubHour(status.cadence)
   const missed = missedSlotsText(status, windowHours)
   const Chevron = expanded ? ChevronDown : ChevronRight
   return (
@@ -24,6 +25,7 @@ export function JobStatusRow({ status, windowHours, expanded, onToggle }: {
         <span className="text-xs text-muted-foreground" title={cadenceUtcText(status.cadence) ?? undefined}>
           {cadenceText(status.cadence)}
         </span>
+        {subHour && <span className="text-xs text-muted-foreground">· {SUB_HOUR_NOTE}</span>}
       </div>
       <p className="text-xs">
         {last ? (
@@ -33,9 +35,19 @@ export function JobStatusRow({ status, windowHours, expanded, onToggle }: {
             <span className={reasonClass(last.finish_reason)}>{finishReasonText(last.finish_reason, last.job)}</span>
           </>
         ) : (
-          <span className="text-muted-foreground">No runs recorded yet.</span>
+          <span className="text-muted-foreground">{subHour ? "No tick has done work yet." : "No runs recorded yet."}</span>
         )}
       </p>
+      {subHour && (
+        <p className="text-xs text-muted-foreground">
+          {status.last_tick_at ? (
+            <>Last tick <span title={formatExactTime(status.last_tick_at)}>{relativeTime(status.last_tick_at)}</span> in this backend process</>
+          ) : (
+            <>No tick yet in this backend process</>
+          )}
+          <span title="Kept in memory, not in the run history; it resets when the backend restarts."> · resets on restart</span>
+        </p>
+      )}
       {status.missed_slots.length > 0 && (
         <p className="text-xs text-muted-foreground">
           {missed.text}

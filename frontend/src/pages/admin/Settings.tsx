@@ -1226,7 +1226,7 @@ export function ScheduledJobsCard() {
   const statusQ = useQuery({
     queryKey: ["jobs", "status"],
     queryFn: () => api.get<JobsStatus>("/jobs/status?hours=24"),
-    refetchInterval: 60_000,
+    refetchInterval: 15_000, // the seconds-scale ticks' last-tick line goes stale within a minute
   })
   const settingsQ = useQuery({
     queryKey: ["settings", "jobs"],

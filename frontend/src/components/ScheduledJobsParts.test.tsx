@@ -11,7 +11,7 @@ const run = (over: Partial<JobRun> = {}): JobRun => ({
 })
 const status = (over: Partial<JobStatus> = {}): JobStatus => ({
   job: "capture_sweep", cadence: { kind: "hourly_at", minute: 5, hour: null, every_seconds: null }, last_run: run(), recorded_since: new Date(Date.now() - 86400_000).toISOString(),
-  missed_slots: [], ...over,
+  missed_slots: [], last_tick_at: null, ...over,
 })
 const row = (s: JobStatus, expanded = false) =>
   renderToStaticMarkup(<JobStatusRow status={s} windowHours={24} expanded={expanded} onToggle={() => {}} />)
@@ -78,14 +78,45 @@ describe("JobStatusRow", () => {
   it("every known job shows its label and never its raw id", () => {
     const ids = ["alert_digests", "rediscovery_tick", "capture_sweep", "run_reaper", "nightly_rescore", "epss_refresher",
       "cpe_index_refresher", "cloud_ranges_refresher", "partition_maintenance", "hygiene_scoring", "job_run_purger",
-      "llm_ledger_pruner", "chat_transcript_purger", "report_purger", "llm_models_refresher"]
-    expect(ids).toHaveLength(15)
+      "llm_ledger_pruner", "chat_transcript_purger", "report_purger", "llm_models_refresher",
+      "page_capture", "ct_refresher", "capture_tokens", "tenancy_enricher", "tenancy_tls"]
+    expect(ids).toHaveLength(20)
     for (const id of ids) {
       const out = row(status({ job: id, last_run: run({ job: id }) }))
       expect(out).toContain(jobLabel(id))
       expect(jobLabel(id)).not.toBe("Other scheduled job")
       expect(out).not.toContain(id)
     }
+  })
+  const tick = (over: Partial<JobCadence> = {}): JobCadence => ({ kind: "interval", minute: null, hour: null, every_seconds: 10, ...over })
+  it("sub-hour job shows the recorded-when-it-does-work note and the last tick line", () => {
+    const out = row(status({
+      cadence: tick(), job: "page_capture", last_run: run({ job: "page_capture" }),
+      last_tick_at: new Date(Date.now() - 5000).toISOString(),
+    }))
+    for (const s of ["every 10 s", "recorded when it does work", "Last tick", "just now", "in this backend process", "resets on restart"])
+      expect(out).toContain(s)
+    expect(out).not.toContain("No runs recorded yet.")
+  })
+  it("sub-hour job with no tick yet and no runs says so", () => {
+    const out = row(status({ cadence: tick(), job: "page_capture", last_run: null, last_tick_at: null }))
+    expect(out).toContain("No tick has done work yet.")
+    expect(out).toContain("No tick yet in this backend process")
+    expect(out).not.toContain("No runs recorded yet.")
+  })
+  it("hour-or-longer jobs show neither note", () => {
+    const daily = row(status({ cadence: tick({ every_seconds: 86400 }), last_tick_at: new Date().toISOString() }))
+    expect(daily).not.toContain("recorded when it does work")
+    expect(daily).not.toContain("Last tick")
+    const hourly = row(status({ last_tick_at: new Date().toISOString() }))
+    expect(hourly).not.toContain("recorded when it does work")
+    expect(hourly).not.toContain("Last tick")
+  })
+  it("queueing and ingest labels are distinct", () => {
+    expect(row(status({ job: "capture_sweep" }))).toContain("Page capture queueing")
+    const ingest = row(status({ job: "page_capture", cadence: tick(), last_run: run({ job: "page_capture" }) }))
+    expect(ingest).toContain("Page capture ingest")
+    expect(ingest).not.toContain("Page capture queueing")
   })
   it("aria-expanded reflects expanded", () => {
     expect(row(status(), true)).toContain('aria-expanded="true"')

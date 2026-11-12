@@ -12,6 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.services import capture_token_minter as minter
 from app.services import capture_token_secret as ts
+from app.services import job_runs
 from app.services import scheduler
 from app.services.capture_store import StoreConfigError
 from app.services.capture_store_s3 import S3Buckets, S3Config
@@ -201,12 +202,17 @@ def test_source_failure_means_no_patch_and_both_mint_failed(sa, caplog):
     assert any(r.levelno == logging.ERROR and "MintError" in r.getMessage() for r in caplog.records)
 
 
-def test_missing_secret_logs_and_does_not_patch(sa, caplog):
+def test_missing_secret_raises_logs_and_does_not_patch(sa, caplog):
     api, calls = FakeApi(get_status=404), Calls()
-    assert run(api, calls, sa) == {}
+    with pytest.raises(ts.PublishTargetMissing):
+        run(api, calls, sa)
     assert [r.method for r in api.requests] == ["GET"]
     assert calls.sources == 0
     assert any(r.levelno == logging.ERROR and "pre-create" in r.getMessage() for r in caplog.records)
+
+
+def test_publish_target_missing_is_a_k8s_api_error():
+    assert issubclass(ts.PublishTargetMissing, K8sApiError)
 
 
 def test_conflict_on_patch_does_not_raise(sa, caplog):
@@ -320,11 +326,11 @@ def test_token_never_appears_in_logs_or_exceptions(sa, caplog):
         assert secret not in text
 
 
-# ── tick never raises ────────────────────────────────────────────────────────
+# ── tick logs and re-raises ────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("exc", [K8sApiError("GET Secret x: HTTP 500"), RuntimeError("boom"), StoreConfigError("cfg")])
-def test_tick_never_raises(monkeypatch, caplog, exc):
+def test_tick_logs_and_reraises(monkeypatch, caplog, exc):
     calls = []
 
     def boom(c, **kw):
@@ -337,7 +343,8 @@ def test_tick_never_raises(monkeypatch, caplog, exc):
         monkeypatch.setenv(k, v)
     monkeypatch.setattr(ts, "publish_tokens", boom)
     monkeypatch.setattr(ts, "_refresh_below_s", lambda: 1800)
-    ts.tick()
+    with pytest.raises(type(exc)):
+        ts.tick()
     assert len(calls) == 1  # publish WAS reached
     assert any(r.levelno == logging.ERROR for r in caplog.records)
 
@@ -349,7 +356,8 @@ def test_tick_logs_the_k8s_message_but_nothing_for_other_errors(monkeypatch, cap
     monkeypatch.setattr(ts, "publish_tokens", boom)
     monkeypatch.setattr(ts, "_refresh_below_s", lambda: 1800)
     monkeypatch.setattr("app.services.capture_store_s3.s3_config_from_env", lambda: cfg())
-    ts.tick()
+    with pytest.raises(RuntimeError):
+        ts.tick()
     assert "RuntimeError" in caplog.text and FAKE_TOKEN not in caplog.text
 
 
@@ -358,8 +366,8 @@ def test_tick_passes_the_setting_through(monkeypatch):
     c = cfg()
     monkeypatch.setattr("app.services.capture_store_s3.s3_config_from_env", lambda: c)
     monkeypatch.setattr(ts, "_refresh_below_s", lambda: 2222)
-    monkeypatch.setattr(ts, "publish_tokens", lambda config, **kw: seen.append((config, kw)) or {})
-    ts.tick()
+    monkeypatch.setattr(ts, "publish_tokens", lambda config, **kw: seen.append((config, kw)) or {"worker": "fresh", "proxy": "fresh"})
+    assert ts.tick() == {"worker": "fresh", "proxy": "fresh"}
     assert seen == [(c, {"refresh_below_s": 2222})]  # publish WAS reached, with the setting's value
 
 
@@ -408,8 +416,8 @@ def test_registered_for_s3_gcs_wi(sched, monkeypatch):
     _gcs_env(monkeypatch)
     scheduler._register_capture_tokens()
     job = sched.get_job("capture_tokens")
-    assert job is not None and job.func is ts.tick
-    assert job.trigger.interval.total_seconds() == ts.TICK_INTERVAL_SECONDS
+    assert job is not None and job.func is scheduler._run_capture_tokens
+    assert job.trigger.interval == job_runs.CADENCE["capture_tokens"].every
     assert job.coalesce is True and job.max_instances == 1
 
 

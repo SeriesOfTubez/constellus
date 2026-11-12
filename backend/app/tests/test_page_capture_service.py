@@ -762,9 +762,11 @@ def test_tick_survives_a_claim_sweep_failure_and_still_prunes(w, env, monkeypatc
             raise RuntimeError("boom")
 
     monkeypatch.setattr(pc, "get_store", lambda: Fake())
-    monkeypatch.setattr(pc, "prune_images", lambda db, now=None: pruned.append(1))
-    pc.tick()
+    monkeypatch.setattr(pc, "prune_images", lambda db, now=None: pruned.append(1) or 7)
+    r = pc.tick()
     assert pruned == [1]
+    assert r.errors == 1
+    assert r.pruned == 7
 
 
 def test_hostname_validator_accepts_ordinary_names():
@@ -880,22 +882,36 @@ def test_an_orphan_image_is_removed_when_a_later_guard_rejects(w, env, monkeypat
 
 
 def test_tick_runs_on_an_empty_spool(w, env):
-    pc.tick()  # nothing to do: must not raise
+    r = pc.tick()  # nothing to do: must not raise
+    assert isinstance(r.limits_written, bool)  # depends on the settings fixture, not on this tick's work
+    assert (r.ingested, r.swept, r.claims_swept, r.pruned, r.errors) == (0, 0, 0, 0, 0)
 
 
 def test_tick_with_a_missing_spool_logs_and_does_not_raise(w, env, caplog):
     (env["spool"] / "jobs").rmdir()
     with caplog.at_level("ERROR"):
-        pc.tick()
+        r = pc.tick()
     assert "the spool is missing; skipping ingest" in caplog.text
+    assert r.errors == 1
+    assert r.ingested == 0
+
+
+def test_a_failure_outside_the_phases_propagates(w, env, monkeypatch):
+    def no_db():
+        raise RuntimeError("no db")
+
+    monkeypatch.setattr(pc, "SessionLocal", no_db)
+    with pytest.raises(RuntimeError):
+        pc.tick()
 
 
 def test_tick_ingests_a_result(w, env):
     row = _queued(w)
     d = _drop_result(env, row)
     os.utime(d, (0, 0))  # old enough for the real clock
-    pc.tick()
+    r = pc.tick()
     assert _fresh(row.id).status == "done"
+    assert r.ingested == 1
 
 
 def test_open_regular_refuses_a_fifo_without_blocking(tmp_path):

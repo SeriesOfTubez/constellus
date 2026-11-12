@@ -1,6 +1,6 @@
 """Publish the downscoped capture tokens into one Kubernetes Secret (planning#322 slice 2b-2).
 
-A rolling job (`tick`, every TICK_INTERVAL_SECONDS) re-mints a consumer's token when the
+A rolling job (`tick`, every `job_runs.CADENCE['capture_tokens']`) re-mints a consumer's token when the
 PUBLISHED one has less than the admin setting
 `capture.store_access_refresh_below_seconds` (planning#332) left, or its boundary changed, and publishes both
 consumers' values with ONE merge PATCH pinned to the resourceVersion it read. The Secret is
@@ -27,7 +27,13 @@ from app.services.k8s_incluster import K8sApiError, SA_DIR
 
 log = logging.getLogger(__name__)
 
-TICK_INTERVAL_SECONDS = 60
+
+class PublishTargetMissing(K8sApiError):
+    """The publish target Secret does not exist (HTTP 404). The manifests
+    pre-create it (planning#322); the tick records this as an error every
+    minute until it exists."""
+
+
 PUBLISH_FLOOR_S = 600  # a GUARD, never a setting: never publish a token with less than this left
 SOURCE_LIFETIME_S = minter.SOURCE_LIFETIME_S
 DEFAULT_SECRET = "capture-store-tokens"
@@ -77,7 +83,8 @@ def _value(m: minter.Minted, b: minter.Boundary) -> str:
 def publish_tokens(cfg, *, refresh_below_s: int, now: datetime | None = None, client=None, sa_dir: str = SA_DIR,
                    make_source=minter.make_source, mint=minter.mint) -> dict[str, str]:
     """One tick of work. Returns a per-consumer outcome: fresh, published, refused_floor,
-    mint_failed, or conflict (another writer won the PATCH; the next tick re-reads)."""
+    mint_failed, or conflict (another writer won the PATCH; the next tick re-reads). A 404 on the
+    publish target raises PublishTargetMissing (a K8sApiError) after logging."""
     now = now or datetime.now(timezone.utc)
     bounds = minter.boundaries(cfg)
     name = secret_name()
@@ -98,7 +105,7 @@ def publish_tokens(cfg, *, refresh_below_s: int, now: datetime | None = None, cl
         if status == 404:
             log.error("capture publisher: the publish target is missing in namespace %s; "
                       "the manifests pre-create it (planning#322); nothing published", namespace)
-            return {}
+            raise PublishTargetMissing("the publish target is missing; nothing published")
         if status != 200:
             raise K8sApiError(f"GET Secret {namespace}/{name}: HTTP {status}")
         try:
@@ -194,12 +201,17 @@ def _refresh_below_s() -> int:
     return value
 
 
-def tick() -> None:
-    """The scheduled job. Never raises: the scheduler must keep firing."""
+def tick() -> dict[str, str]:
+    """The scheduled job: the per-consumer outcome dict from `publish_tokens`. A `K8sApiError` is
+    logged with its message (those messages are ours and carry no token) and re-raised; any other
+    failure is logged by TYPE only and re-raised. The scheduler wrapper records the failure and
+    keeps firing; for this job it logs no traceback, so no token can reach the logs."""
     try:
         from app.services.capture_store_s3 import s3_config_from_env
-        publish_tokens(s3_config_from_env(), refresh_below_s=_refresh_below_s())
+        return publish_tokens(s3_config_from_env(), refresh_below_s=_refresh_below_s())
     except K8sApiError as e:
         log.error("capture publisher: tick failed: %s: %s", type(e).__name__, e)
+        raise
     except Exception as e:
         log.error("capture publisher: tick failed: %s", type(e).__name__)
+        raise

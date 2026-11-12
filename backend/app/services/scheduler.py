@@ -69,13 +69,23 @@ def _with_session(work: Callable[[Session], T], commit: bool = False) -> Callabl
 
 
 def _recorded(job: str, fn: Callable[[], T], to_outcome: Callable[[T], job_runs.RunOutcome],
-              done: str, failed: str) -> None:
-    """Run a recorded job from the scheduler: log the outcome or the failure. Never raises."""
+              done: str, failed: str, *, record_idle: bool = True, traceback: bool = True) -> None:
+    """Run a recorded job from the scheduler: log the outcome or the failure. Never
+    raises. `record_idle=False` is the seconds-scale ticks' filter (an idle tick
+    writes no row and logs at DEBUG). `traceback=False` logs a failure by exception
+    TYPE only, for a job whose exception messages may carry a token."""
     try:
-        result = job_runs.run_recorded(job, fn, to_outcome)
+        result, recorded = job_runs.run_and_record(job, fn, to_outcome, record_idle=record_idle)
+    except Exception as exc:
+        if traceback:
+            log.error(failed, exc_info=True)
+        else:
+            log.error("%s: %s", failed, type(exc).__name__)
+        return
+    if recorded:
         log.info("%s — %s", done, result)
-    except Exception:
-        log.error(failed, exc_info=True)
+    else:
+        log.debug("%s — idle, not recorded", done)
 
 _scheduler: BackgroundScheduler | None = None
 _lock = threading.Lock()
@@ -158,15 +168,20 @@ def _register_ct_refresher() -> None:
     if _scheduler is None:
         return
     _scheduler.add_job(
-        ct_refresher.tick,
-        trigger=IntervalTrigger(seconds=ct_refresher.TICK_INTERVAL_SECONDS),
+        _run_ct_refresher,
+        trigger=_trigger("ct_refresher"),
         id="ct_refresher",
         name="Certificate Transparency cache refresher",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
     )
-    log.info("Scheduled ct_refresher (every %ds)", ct_refresher.TICK_INTERVAL_SECONDS)
+    log.info("Scheduled ct_refresher (every %ds)", int(job_runs.CADENCE["ct_refresher"].every.total_seconds()))
+
+
+def _run_ct_refresher() -> None:
+    _recorded("ct_refresher", ct_refresher.tick, job_runs.ct_refresher_outcome,
+              "CT cache refresh tick complete", "CT cache refresh tick failed", record_idle=False)
 
 
 def _register_page_capture() -> None:
@@ -175,15 +190,20 @@ def _register_page_capture() -> None:
     if _scheduler is None:
         return
     _scheduler.add_job(
-        page_capture.tick,
-        trigger=IntervalTrigger(seconds=page_capture.TICK_INTERVAL_SECONDS),
+        _run_page_capture,
+        trigger=_trigger("page_capture"),
         id="page_capture",
         name="Page capture spool ingest",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
     )
-    log.info("Scheduled page_capture (every %ds)", page_capture.TICK_INTERVAL_SECONDS)
+    log.info("Scheduled page_capture (every %ds)", int(job_runs.CADENCE["page_capture"].every.total_seconds()))
+
+
+def _run_page_capture() -> None:
+    _recorded("page_capture", page_capture.tick, job_runs.page_capture_tick_outcome,
+              "Page capture ingest tick complete", "Page capture ingest tick failed", record_idle=False)
 
 
 def _register_capture_tokens() -> None:
@@ -204,15 +224,22 @@ def _register_capture_tokens() -> None:
         log.error("capture publisher not scheduled: capture store config is invalid: %s", e)
         return
     _scheduler.add_job(
-        capture_token_secret.tick,
-        trigger=IntervalTrigger(seconds=capture_token_secret.TICK_INTERVAL_SECONDS),
+        _run_capture_tokens,
+        trigger=_trigger("capture_tokens"),
         id="capture_tokens",
         name="Capture store token publisher",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
     )
-    log.info("Scheduled capture_tokens (every %ds)", capture_token_secret.TICK_INTERVAL_SECONDS)
+    log.info("Scheduled capture_tokens (every %ds)", int(job_runs.CADENCE["capture_tokens"].every.total_seconds()))
+
+
+def _run_capture_tokens() -> None:
+    from app.services import capture_token_secret  # lazy, as in its registrar
+    _recorded("capture_tokens", capture_token_secret.tick, job_runs.capture_tokens_outcome,
+              "Capture token publish tick complete", "Capture token publish tick failed",
+              record_idle=False, traceback=False)  # its exception messages may carry a token
 
 
 def _register_epss_refresher() -> None:
@@ -350,15 +377,20 @@ def _register_tenancy_enricher() -> None:
     if _scheduler is None:
         return
     _scheduler.add_job(
-        tenancy_enricher.tick,
-        trigger=IntervalTrigger(seconds=tenancy_enricher.TICK_INTERVAL_SECONDS),
+        _run_tenancy_enricher,
+        trigger=_trigger("tenancy_enricher"),
         id="tenancy_enricher",
         name="Tier 0 tenancy enricher",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
     )
-    log.info("Scheduled tenancy_enricher (every %ds)", tenancy_enricher.TICK_INTERVAL_SECONDS)
+    log.info("Scheduled tenancy_enricher (every %ds)", int(job_runs.CADENCE["tenancy_enricher"].every.total_seconds()))
+
+
+def _run_tenancy_enricher() -> None:
+    _recorded("tenancy_enricher", tenancy_enricher.tick, job_runs.tenancy_enricher_outcome,
+              "Tenancy enricher tick complete", "Tenancy enricher tick failed", record_idle=False)
 
 
 def _register_tenancy_tls() -> None:
@@ -369,15 +401,20 @@ def _register_tenancy_tls() -> None:
     if _scheduler is None:
         return
     _scheduler.add_job(
-        tenancy_tls.tick,
-        trigger=IntervalTrigger(seconds=tenancy_tls.TICK_INTERVAL_SECONDS),
+        _run_tenancy_tls,
+        trigger=_trigger("tenancy_tls"),
         id="tenancy_tls",
         name="Tier 1b tenancy rung (no-SNI TLS certificate)",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
     )
-    log.info("Scheduled tenancy_tls (every %ds)", tenancy_tls.TICK_INTERVAL_SECONDS)
+    log.info("Scheduled tenancy_tls (every %ds)", int(job_runs.CADENCE["tenancy_tls"].every.total_seconds()))
+
+
+def _run_tenancy_tls() -> None:
+    _recorded("tenancy_tls", tenancy_tls.tick, job_runs.tenancy_tls_outcome,
+              "Tenancy TLS tick complete", "Tenancy TLS tick failed", record_idle=False)
 
 
 def _register_partition_maintenance() -> None:

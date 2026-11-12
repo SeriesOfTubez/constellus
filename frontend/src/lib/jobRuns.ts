@@ -15,7 +15,7 @@ export function validateJobSettings(d: JobSettings): string | null {
 
 /** Plain name for a job; an unknown job never echoes its raw identifier. */
 const JOB_LABELS: Record<string, string> = {
-  capture_sweep: "Page capture",
+  capture_sweep: "Page capture queueing",
   rediscovery_tick: "Organization re-discovery",
   alert_digests: "Alert digests",
   run_reaper: "Stranded scan clean-up",
@@ -30,6 +30,11 @@ const JOB_LABELS: Record<string, string> = {
   chat_transcript_purger: "Chat transcript retention",
   report_purger: "Report retention",
   llm_models_refresher: "AI model list refresh",
+  page_capture: "Page capture ingest",
+  ct_refresher: "Certificate transparency cache refresh",
+  capture_tokens: "Capture store token publisher",
+  tenancy_enricher: "Cloud tenancy enrichment",
+  tenancy_tls: "TLS certificate tenancy check",
 }
 
 export function jobLabel(job: string): string {
@@ -60,6 +65,12 @@ export function cadenceUtcText(c: JobCadence): string | null {
     return `daily at ${String(c.hour ?? 0).padStart(2, "0")}:${String(c.minute ?? 0).padStart(2, "0")} UTC`
   return null
 }
+
+/** Sub-hour interval jobs are recorded only when a tick did work or failed; idle ticks write nothing. */
+export function isSubHour(c: JobCadence): boolean {
+  return c.kind === "interval" && c.every_seconds !== null && c.every_seconds < 3600
+}
+export const SUB_HOUR_NOTE = "recorded when it does work"
 
 export function finishReasonText(reason: string, job?: string): string {
   switch (reason) {
@@ -146,6 +157,36 @@ export function runCountsText(run: JobRun): string | null {
         : `${plural(c("runs"), "stranded scan", "stranded scans")} and ${plural(c("ingest_runs"), "ingest", "ingests")} cleaned up`
     case "llm_models_refresher":
       return `${c("models")} models allowed`
+    case "page_capture": {
+      let t = `${plural(c("ingested"), "result", "results")} ingested, ${c("swept")} timed out, ${plural(c("pruned"), "image", "images")} pruned`
+      if (c("claims_swept") > 0) t += `, ${c("claims_swept")} stale claims cleared`
+      if (c("limits_written") > 0) t += ", proxy limits written"
+      if (c("errors") > 0) t += `, ${errorsText(c("errors"))}`
+      return t
+    }
+    case "ct_refresher": {
+      let t = `${c("refreshed")} of ${plural(c("targets"), "domain cache", "domain caches")} refreshed`
+      if (c("errors") > 0) t += `, ${errorsText(c("errors"))}`
+      return t
+    }
+    case "capture_tokens": {
+      let t = `${c("published")} published, ${c("fresh")} still fresh`
+      if (c("mint_failed") > 0) t += `, ${c("mint_failed")} mint failed`
+      if (c("refused_floor") > 0) t += `, ${c("refused_floor")} refused (too little lifetime left)`
+      if (c("conflict") > 0) t += `, ${c("conflict")} lost a write race`
+      return t
+    }
+    case "tenancy_enricher": {
+      let t = `${c("enriched")} of ${plural(c("selected"), "address", "addresses")} enriched`
+      if (c("stale_dataset") > 0) t += ", dataset stale"
+      if (c("errors") > 0) t += `, ${errorsText(c("errors"))}`
+      return t
+    }
+    case "tenancy_tls": {
+      let t = `${c("allowed")} of ${c("selected")} allowed by the gate: ${c("dissented")} managed endpoints, ${c("abstained")} unclassified, ${c("unreachable")} no handshake`
+      if (c("errors") > 0) t += `, ${errorsText(c("errors"))}`
+      return t
+    }
     default:
       return `${run.items_selected} items picked up`
   }

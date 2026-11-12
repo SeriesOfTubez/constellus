@@ -34,6 +34,9 @@ Run with:  python -m app.tests.test_tenancy_tls
 import uuid
 from datetime import datetime, timezone
 
+import pytest
+from sqlalchemy import text
+
 from app.core.database import SessionLocal
 from app.models.app_settings import AppSetting
 from app.models.asset_canonical import AssetCanonical
@@ -212,8 +215,9 @@ def test_tick_honours_the_computed_verdict_even_in_log_only():
 
         tls._handshake = _fake_handshake
 
-        tls.tick()
+        result = tls.tick()
 
+        assert result == tls.TickResult(selected=1, allowed=0, dissented=0, abstained=0, unreachable=0, errors=0)
         assert calls == [], "a probe_class:no_probe asset must never reach the scanner worker, even in log_only"
         claim = get_current_claim(db, asset.id, "tenancy_tls", "tenancy")
         assert claim is None, "a denied asset must get no tenancy_tls claim"
@@ -228,7 +232,8 @@ def test_tick_honours_the_computed_verdict_even_in_log_only():
 def test_worker_outage_writes_nothing_rather_than_undetermined():
     """Our own outage must not be recorded as a determination about the
     asset — an IP with no `tenancy_tls` claim is 'not yet probed', which is
-    exactly what this is."""
+    exactly what this is. The outage surfaces as a typed error (WorkerUnavailable)
+    so the scheduler records the tick as failed."""
     ip = "203.0.113.71"
     db = SessionLocal()
     orig_handshake = tls._handshake
@@ -241,7 +246,8 @@ def test_worker_outage_writes_nothing_rather_than_undetermined():
 
         tls._handshake = lambda targets: None
 
-        tls.tick()
+        with pytest.raises(tls.WorkerUnavailable):
+            tls.tick()
 
         claim = get_current_claim(db, asset.id, "tenancy_tls", "tenancy")
         assert claim is None
@@ -267,8 +273,9 @@ def test_tick_writes_a_dissent_claim_end_to_end():
             {"ip": ip, "port": 443, "subject_cn": "*.azurewebsites.net", "subject_an": []}
         ]
 
-        tls.tick()
+        result = tls.tick()
 
+        assert result == tls.TickResult(selected=1, allowed=1, dissented=1, abstained=0, unreachable=0, errors=0)
         claim = get_current_claim(db, asset.id, "tenancy_tls", "tenancy")
         assert claim is not None
         assert claim.claim_value["tenancy"] == tls.NOT_SINGLE_TENANT
@@ -278,6 +285,52 @@ def test_tick_writes_a_dissent_claim_end_to_end():
         tls._handshake = orig_handshake
         db.close()
         _cleanup([ip])
+
+
+def test_one_failed_claim_write_rolls_back_alone():
+    ips = ["203.0.113.82", "203.0.113.83"]
+    db = SessionLocal()
+    orig_handshake = tls._handshake
+    orig_upsert = tls.upsert_single_claim
+    orig_ips_per_tick = tls.IPS_PER_TICK
+    try:
+        ids = {}
+        for ip in ips:
+            asset = _make_ip_asset(db, ip)
+            _seed_tier0(db, asset.id, "undetermined")
+            _set_asset_state(db, asset.id, "name_only")
+            ids[ip] = asset.id
+        tls.IPS_PER_TICK = 2  # a fresh test DB holds only these two Tier 0 undetermined addresses
+        tls._handshake = lambda targets: [
+            {"ip": t["ip"], "port": 443, "subject_cn": "*.azurewebsites.net", "subject_an": []} for t in targets
+        ]
+        seen = []
+
+        def wrapper(db_, asset_id, *args, **kw):
+            seen.append(asset_id)
+            if len(seen) == 1:
+                # A real failed statement: poisons the session unless a savepoint contains it.
+                db_.execute(text("select 1 from no_such_table_336"))
+            return orig_upsert(db_, asset_id, *args, **kw)
+
+        tls.upsert_single_claim = wrapper
+
+        result = tls.tick()
+
+        assert sorted(seen) == sorted(ids.values())  # the path was reached for both
+        assert result == tls.TickResult(selected=2, allowed=2, dissented=1, abstained=0, unreachable=0, errors=1)
+        fresh = SessionLocal()
+        try:
+            assert get_current_claim(fresh, seen[0], "tenancy_tls", "tenancy") is None
+            assert get_current_claim(fresh, seen[1], "tenancy_tls", "tenancy") is not None
+        finally:
+            fresh.close()
+    finally:
+        tls.IPS_PER_TICK = orig_ips_per_tick
+        tls._handshake = orig_handshake
+        tls.upsert_single_claim = orig_upsert
+        db.close()
+        _cleanup(ips)
 
 
 # ── selection ────────────────────────────────────────────────────────────

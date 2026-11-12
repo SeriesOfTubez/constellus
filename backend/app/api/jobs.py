@@ -70,6 +70,10 @@ def jobs_status(
     after a restart is never a miss. A missed slot means no run is RECORDED for
     it: the backend may have been down, the previous run may have overrun, or the
     record write may have failed; this does not claim which.
+
+    `last_tick_at` is this process's in-memory stamp of the job's last start,
+    recorded or not; it resets on restart and is what shows a seconds-scale tick
+    is alive.
     """
     return {
         "window_hours": hours,
@@ -80,6 +84,7 @@ def jobs_status(
                 "last_run": _serialize(s.last_run) if s.last_run else None,
                 "recorded_since": s.recorded_since.isoformat() if s.recorded_since else None,
                 "missed_slots": [m.isoformat() for m in s.missed_slots],
+                "last_tick_at": s.last_tick_at.isoformat() if s.last_tick_at else None,
             }
             for s in job_runs.status(db, hours=hours)
         ],
