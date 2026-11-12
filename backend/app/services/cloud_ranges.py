@@ -52,6 +52,12 @@ class RefreshResult:
     reason: str | None = None
 
 
+class RefreshFailed(RuntimeError):
+    """`refresh` fails soft (it returns ok=False with a reason); the scheduler
+    raises this so the run is recorded as an error (planning#336). The reason
+    is a fixed code from this module, never upstream text."""
+
+
 @dataclass
 class CloudRangeMatch:
     prefix: str

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
-import type { JobRun, JobStatus } from "@/lib/api"
+import type { JobCadence, JobRun, JobStatus } from "@/lib/api"
+import { jobLabel } from "@/lib/jobRuns"
 import { JobRunsList, JobStatusRow } from "@/components/ScheduledJobsParts"
 
 const run = (over: Partial<JobRun> = {}): JobRun => ({
@@ -9,7 +10,7 @@ const run = (over: Partial<JobRun> = {}): JobRun => ({
   counts: { candidates: 5, queued: 3 }, error: null, ...over,
 })
 const status = (over: Partial<JobStatus> = {}): JobStatus => ({
-  job: "capture_sweep", cadence_minute: 5, last_run: run(), recorded_since: new Date(Date.now() - 86400_000).toISOString(),
+  job: "capture_sweep", cadence: { kind: "hourly_at", minute: 5, hour: null, every_seconds: null }, last_run: run(), recorded_since: new Date(Date.now() - 86400_000).toISOString(),
   missed_slots: [], ...over,
 })
 const row = (s: JobStatus, expanded = false) =>
@@ -19,7 +20,8 @@ describe("JobStatusRow", () => {
   it("shows label, cadence and duration", () => {
     const out = row(status())
     expect(out).toContain("Page capture")
-    expect(out).toContain("hourly at :05")
+    expect(out).toContain("hourly at :")
+    expect(out).toContain('title="hourly at :05 UTC"')
     expect(out).toContain("3m 12s")
   })
   it("error run shows the sentence, never the raw error or code", () => {
@@ -42,13 +44,48 @@ describe("JobStatusRow", () => {
     expect(out).not.toContain("secret_new_job")
   })
   it("recorded_since null says no runs recorded yet", () => {
-    expect(row(status({ recorded_since: null, last_run: null }))).toContain("No runs recorded yet.")
+    const out = row(status({ recorded_since: null, last_run: null }))
+    expect(out.split("No runs recorded yet.").length - 1).toBe(1)
   })
   it("five missed slots show +2", () => {
     const slots = [0, 1, 2, 3, 4].map((h) => new Date(2026, 10, 7, h, 5).toISOString())
     const out = row(status({ missed_slots: slots }))
     expect(out).toContain("No run recorded at")
     expect(out).toContain("+2")
+  })
+  it("renders each cadence in words", () => {
+    const cad = (over: Partial<JobCadence>): JobCadence => ({ kind: "interval", minute: null, hour: null, every_seconds: null, ...over })
+    const daily = row(status({ cadence: cad({ kind: "daily_at", hour: 3, minute: 0 }) }))
+    expect(daily).toContain("daily at ")
+    expect(daily).toContain('title="daily at 03:00 UTC"')
+    expect(row(status({ cadence: cad({ every_seconds: 86400 }) }))).not.toContain('title="every')
+    expect(row(status({ cadence: cad({ every_seconds: 86400 }) }))).toContain("every 24 h")
+    expect(row(status({ cadence: cad({ every_seconds: 3600 }) }))).toContain("every hour")
+    expect(row(status({ cadence: cad({ every_seconds: 300 }) }))).toContain("every 5 min")
+  })
+  it("full coverage adds no coverage line; a missed slot does", () => {
+    const covered = row(status())
+    expect(covered).not.toContain("Every expected start")
+    expect(covered).not.toContain("No run recorded at")
+    const missed = row(status({ missed_slots: [new Date(2026, 10, 7, 4, 5).toISOString()] }))
+    expect(missed).toContain("No run recorded at")
+  })
+  it("not_configured on the AI model refresh names the AI connector, not capture", () => {
+    const out = row(status({ job: "llm_models_refresher", last_run: run({ job: "llm_models_refresher", finish_reason: "not_configured" }) }))
+    expect(out).toContain("Skipped: the AI connector isn&#x27;t set up yet.")
+    expect(out).not.toContain("capture proxy")
+  })
+  it("every known job shows its label and never its raw id", () => {
+    const ids = ["alert_digests", "rediscovery_tick", "capture_sweep", "run_reaper", "nightly_rescore", "epss_refresher",
+      "cpe_index_refresher", "cloud_ranges_refresher", "partition_maintenance", "hygiene_scoring", "job_run_purger",
+      "llm_ledger_pruner", "chat_transcript_purger", "report_purger", "llm_models_refresher"]
+    expect(ids).toHaveLength(15)
+    for (const id of ids) {
+      const out = row(status({ job: id, last_run: run({ job: id }) }))
+      expect(out).toContain(jobLabel(id))
+      expect(jobLabel(id)).not.toBe("Other scheduled job")
+      expect(out).not.toContain(id)
+    }
   })
   it("aria-expanded reflects expanded", () => {
     expect(row(status(), true)).toContain('aria-expanded="true"')

@@ -1018,9 +1018,16 @@ export type JobRun = {
   error: string | null
 }
 
+export type JobCadence = {
+  kind: "hourly_at" | "daily_at" | "interval"
+  minute: number | null
+  hour: number | null
+  every_seconds: number | null
+}
+
 export type JobStatus = {
   job: string
-  cadence_minute: number
+  cadence: JobCadence
   last_run: JobRun | null
   recorded_since: string | null
   missed_slots: string[]
