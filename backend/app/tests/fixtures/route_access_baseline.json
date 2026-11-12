@@ -308,6 +308,12 @@
   "report_admin",
   "viewer"
  ],
+ "GET /api/findings/score-ladder": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
  "GET /api/findings/security-score": [
   "admin",
   "integration_admin",
@@ -327,6 +333,12 @@
   "viewer"
  ],
  "GET /api/findings/{finding_id}/epss-history": [
+  "admin",
+  "integration_admin",
+  "report_admin",
+  "viewer"
+ ],
+ "GET /api/findings/{finding_id}/score-after": [
   "admin",
   "integration_admin",
   "report_admin",

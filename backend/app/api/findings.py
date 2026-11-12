@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by
@@ -16,7 +16,7 @@ from app.models.finding import FindingState
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.user import User
-from app.services import audit, bod_sla, cluster_writeup, finding_writeup, projector, read_scope, scan_executor
+from app.services import audit, bod_sla, cluster_writeup, finding_writeup, projector, read_scope, scan_executor, score_ladder
 from app.services.asset_chain import chain_target_ids
 from app.services.finding_confidence import confidence_for, strongest
 
@@ -354,6 +354,123 @@ def security_score(
         "worst_band_new": worst_band_new,
         "worst_band_resolved": worst_band_resolved,
         "breakdown": breakdown,
+    }
+
+
+def _open_for_score(user) -> list:
+    """WHERE terms for findings that count toward the org score for `user`."""
+    return [
+        FindingCanonical.state.in_(_OPEN_STATES),
+        _NOT_EXCLUDED_FROM_MAIN,
+        read_scope.finding_clause(user, FindingCanonical, AssetCanonical),
+    ]
+
+
+def _ladder_levels(db: Session, user) -> list[dict]:
+    rows = (
+        db.query(FindingCanonical.risk_score, FindingCanonical.risk_band, func.count(FindingCanonical.id))
+        .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
+        .filter(*_open_for_score(user), FindingCanonical.risk_score > 0)
+        .group_by(FindingCanonical.risk_score, FindingCanonical.risk_band)
+        .all()
+    )
+    return score_ladder.build_levels([(s, b, c) for s, b, c in rows])
+
+
+@router.get("/score-ladder")
+def score_ladder_view(
+    fixes: int = Query(3, ge=0, le=20),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission(Permission.FINDINGS_READ)),
+):
+    """What the org score becomes as the worst open findings are fixed
+    (planning#346). Same population as `/security-score`: open or acknowledged,
+    not excluded by the shared-infra verifier, readable by the caller.
+
+    Contract: { rule, score, band, open_count, unscored_count, levels[],
+                crossings[], first_fixes[] }
+    """
+    levels = _ladder_levels(db, user)
+    top = score_ladder.summary(levels)
+    unscored = (
+        db.query(func.count(FindingCanonical.id))
+        .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
+        .filter(
+            *_open_for_score(user),
+            or_(FindingCanonical.risk_score.is_(None), FindingCanonical.risk_score <= 0),
+        )
+        .scalar()
+    )
+    first_fixes = []
+    if fixes:
+        rows = (
+            db.query(FindingCanonical, AssetCanonical)
+            .join(AssetCanonical, AssetCanonical.id == FindingCanonical.asset_canonical_id)
+            .filter(*_open_for_score(user), FindingCanonical.risk_score > 0)
+            .order_by(
+                FindingCanonical.risk_score.desc(),
+                FindingCanonical.last_seen_at.desc(),
+                FindingCanonical.id.asc(),
+            )
+            .limit(fixes)
+            .all()
+        )
+        for rank, (f, a) in enumerate(rows, start=1):
+            score_after, band_after = score_ladder.score_at(levels, rank)
+            first_fixes.append({
+                "rank": rank,
+                "id": str(f.id),
+                "title": f.title,
+                "asset_value": a.value if a else None,
+                "risk_score": f.risk_score,
+                "risk_band": f.risk_band,
+                "score_after": score_after,
+                "band_after": band_after,
+            })
+    return {
+        "rule": score_ladder.RULE,
+        "score": top["score"],
+        "band": top["band"],
+        "open_count": levels[-1]["fixes_through"] if levels else 0,
+        "unscored_count": unscored or 0,
+        "levels": levels,
+        "crossings": score_ladder.crossings(levels),
+        "first_fixes": first_fixes,
+    }
+
+
+@router.get("/{finding_id}/score-after")
+def finding_score_after(
+    finding_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission(Permission.FINDINGS_READ)),
+):
+    """The org score now and after this one finding is fixed (planning#346).
+
+    Contract: { rule, finding_id, counts_toward_score, score, band,
+                worst_band_count, score_after, band_after,
+                worst_band_count_after }
+    """
+    finding = _readable_finding(db, user, finding_id)
+    levels = _ladder_levels(db, user)
+    now = score_ladder.summary(levels)
+    counts = bool(
+        finding.state in _OPEN_STATES
+        and finding.verification not in EXCLUDED_VERIFICATIONS
+        and finding.risk_score
+        and finding.risk_score > 0
+    )
+    after = score_ladder.summary(score_ladder.without_one(levels, finding.risk_score)) if counts else now
+    return {
+        "rule": score_ladder.RULE,
+        "finding_id": str(finding.id),
+        "counts_toward_score": counts,
+        "score": now["score"],
+        "band": now["band"],
+        "worst_band_count": now["worst_band_count"],
+        "score_after": after["score"],
+        "band_after": after["band"],
+        "worst_band_count_after": after["worst_band_count"],
     }
 
 
