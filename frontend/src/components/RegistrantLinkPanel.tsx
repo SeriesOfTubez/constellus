@@ -184,7 +184,7 @@ export function RegistrantLinkPanel({ entity, isAdmin }: { entity: OrgEntity; is
             <DialogFooter>
               <Button variant="outline" onClick={() => setUnlinkOpen(false)}>Cancel</Button>
               <Button variant="destructive" disabled={unlinkMutation.isPending} onClick={() => unlinkMutation.mutate()}>
-                {unlinkMutation.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
+                {unlinkMutation.isPending && <Loader2 className="size-4 mr-1.5 animate-spin" />}
                 Unlink
               </Button>
             </DialogFooter>
@@ -212,7 +212,7 @@ export function RegistrantLinkPanel({ entity, isAdmin }: { entity: OrgEntity; is
         </p>
       )}
       <Button size="sm" variant="outline" className="h-8" onClick={openLink}>
-        <Link2 className="h-3.5 w-3.5 mr-1.5" />
+        <Link2 className="size-4 mr-1.5" />
         Link to SEC registrant…
       </Button>
 
@@ -256,7 +256,7 @@ export function RegistrantLinkPanel({ entity, isAdmin }: { entity: OrgEntity; is
               <DialogFooter>
                 <Button variant="outline" onClick={() => { linkMutation.reset(); setSelected(null) }}>Back</Button>
                 <Button disabled={linkMutation.isPending} onClick={() => linkMutation.mutate(selected.cik)}>
-                  {linkMutation.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
+                  {linkMutation.isPending && <Loader2 className="size-4 mr-1.5 animate-spin" />}
                   Confirm link
                 </Button>
               </DialogFooter>
@@ -279,7 +279,7 @@ export function RegistrantLinkPanel({ entity, isAdmin }: { entity: OrgEntity; is
                   <Label htmlFor="registrant-contains" className="font-normal">Match anywhere in the name</Label>
                 </div>
                 <Button type="submit" disabled={!query.trim() || lookup.isPending}>
-                  {lookup.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
+                  {lookup.isPending && <Loader2 className="size-4 mr-1.5 animate-spin" />}
                   Search
                 </Button>
               </form>

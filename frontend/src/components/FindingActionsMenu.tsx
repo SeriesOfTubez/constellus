@@ -30,28 +30,28 @@ export function FindingActionsMenu({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="sm" title="More actions" onClick={e => e.stopPropagation()}>
-          <MoreVertical className="h-3.5 w-3.5" />
+          <MoreVertical className="size-4" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" onClick={e => e.stopPropagation()}>
         {f.state === "open" && (
           <>
             <DropdownMenuItem disabled={statePending} onClick={onAcknowledge}>
-              <ShieldCheck className="h-3.5 w-3.5" />Acknowledge
+              <ShieldCheck className="size-4" />Acknowledge
             </DropdownMenuItem>
             <DropdownMenuItem onClick={onSuppress}>
-              <ShieldOff className="h-3.5 w-3.5" />Suppress
+              <ShieldOff className="size-4" />Suppress
             </DropdownMenuItem>
           </>
         )}
         {(f.state === "open" || f.state === "acknowledged") && (
           <DropdownMenuItem disabled={verifyPending} onClick={onVerify}>
-            {verifyPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Re-verify
+            {verifyPending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}Re-verify
           </DropdownMenuItem>
         )}
         {f.state === "suppressed" && (
           <DropdownMenuItem disabled={statePending} onClick={onReopen}>
-            <ChevronDown className="h-3.5 w-3.5 rotate-180" />Reopen
+            <ChevronDown className="size-4 rotate-180" />Reopen
           </DropdownMenuItem>
         )}
       </DropdownMenuContent>

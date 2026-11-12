@@ -8,6 +8,8 @@ import {
 } from "@/lib/api"
 import { SeverityBadge } from "@/components/finding-badges"
 import { STRENGTH_LABEL, tierChipClass } from "@/lib/organizations"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 /** What is on record, no more. */
 export const DIGEST_OUTCOME_LABEL: Record<DigestOutcome, string> = {
@@ -80,7 +82,7 @@ function OrgDiscoveryBodyView({ detail }: { detail: OrgDiscoveryDigestDetail }) 
                 <span className="text-xs text-muted-foreground shrink-0">{CANDIDATE_KIND_LABEL[c.kind] ?? c.kind}</span>
                 <span className="truncate">{c.value}</span>
                 {c.strength && (
-                  <span className={`inline-flex shrink-0 items-center rounded border px-1.5 py-0.5 text-xs font-medium ${tierChipClass(c.strength)}`}>
+                  <span className={cn(CHIP, "shrink-0 border font-medium", tierChipClass(c.strength))}>
                     {STRENGTH_LABEL[c.strength] ?? c.strength}
                   </span>
                 )}
@@ -197,7 +199,7 @@ function DigestRow({ d }: { d: DigestSummary }) {
         aria-expanded={open}
         onClick={() => setOpen(o => !o)}
       >
-        <Chevron className="h-4 w-4 mt-0.5 shrink-0" />
+        <Chevron className="size-3.5 mt-0.5 shrink-0" />
         <span className="block w-44 shrink-0 min-w-0">
           <span className="block font-medium truncate">{d.rule_name}</span>
           <span className="block text-xs text-muted-foreground">{fmt(d.period_start)} → {fmt(d.period_end)}</span>

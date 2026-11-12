@@ -46,7 +46,7 @@ function AddOrganizationButton({ size = "sm", className }: { size?: "sm" | "defa
   if (!can(CREATE_ORG)) return null
   return (
     <>
-      <Button size={size} className={className} onClick={() => setOpen(true)}><Plus className="h-4 w-4 mr-1" />Add organization</Button>
+      <Button size={size} className={className} onClick={() => setOpen(true)}><Plus className="size-4 mr-1" />Add organization</Button>
       <AddOrganizationDialog open={open} onOpenChange={setOpen} />
     </>
   )
@@ -333,7 +333,7 @@ function CandidateTable({
                 {selectable && (
                   <TableCell onClick={e => e.stopPropagation()}>
                     {r.status === "open" && r.proposable && (
-                      <input type="checkbox" className="h-4 w-4 accent-primary" checked={selected.has(r.id)} onChange={() => onToggle(r.id)} />
+                      <input type="checkbox" className="size-4 accent-primary" checked={selected.has(r.id)} onChange={() => onToggle(r.id)} />
                     )}
                   </TableCell>
                 )}
@@ -640,7 +640,7 @@ function OrgWorkspace({
         {showLeads && (
           <div className="rounded-lg border">
             <button type="button" onClick={() => setLeadsOpen(o => !o)} className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left">
-              {leadsOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {leadsOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
               <span className="font-medium">Leads ({summary?.leads ?? "…"})</span>
               <span className="text-xs text-muted-foreground">
                 One Supporting signal so far — shown here until a second, independent signal arrives.
@@ -668,7 +668,7 @@ function OrgWorkspace({
         activeTab={tab}
         onTabChange={t => { setTab(t); setSelected(new Set()) }}
         primaryAction={tab === "asns" ? <RecheckButton orgId={org.id} /> : can(PROPOSE) ? (
-          <Button size="sm" onClick={() => setAddOpen(true)}><Plus className="h-4 w-4 mr-1" />Add domain</Button>
+          <Button size="sm" onClick={() => setAddOpen(true)}><Plus className="size-4 mr-1" />Add domain</Button>
         ) : undefined}
         toolbar={toolbar}
         bulkBar={bulkBar}

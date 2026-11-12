@@ -21,6 +21,8 @@ import { api, type Asset, type DomainWhoisInfo, type Finding, type WhoisInfo } f
 import { apexFromFqdn, displayName } from "@/lib/apex"
 import { resolveTerminalIp } from "@/lib/assetChain"
 import { relativeTime } from "@/lib/time"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 // Underline tab trigger — mirrors the flyout's tab styling for a consistent contract.
 const TAB = "h-9 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:text-foreground text-muted-foreground text-sm font-medium px-3 transition-none"
@@ -96,7 +98,7 @@ export default function AssetDetail() {
   if (isError || !asset) return (
     <div className="max-w-4xl mx-auto px-6 py-8 space-y-4">
       <Link to="/assets" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ChevronLeft className="h-4 w-4" />Assets
+        <ChevronLeft className="size-3.5" />Assets
       </Link>
       <div className="rounded-md border bg-card p-6 text-sm text-muted-foreground">
         Asset not found or no longer in scope.
@@ -241,7 +243,7 @@ function AssetDetailBody({
   return (
     <div className="max-w-4xl mx-auto px-6 py-8 space-y-6">
       <Link to="/assets" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ChevronLeft className="h-4 w-4" />Assets
+        <ChevronLeft className="size-3.5" />Assets
       </Link>
 
       {/* Header */}
@@ -255,7 +257,7 @@ function AssetDetailBody({
             const meta = SOURCE_META[src] ?? { label: src.slice(0, 2).toUpperCase(), color: "bg-muted text-muted-foreground", description: src }
             return (
               <span key={src}
-                className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold cursor-default ${meta.color}`}
+                className={cn(CHIP, "font-semibold cursor-default", meta.color)}
                 title={meta.description}
               >{meta.label}</span>
             )
@@ -275,11 +277,11 @@ function AssetDetailBody({
         <div className="flex flex-wrap gap-2 pt-1">
           {!asset.ignored && (
             <Button size="sm" variant="outline" disabled={isMutating} onClick={onScan}>
-              <RefreshCw className="h-3.5 w-3.5 mr-1.5" />Recheck
+              <RefreshCw className="size-4 mr-1.5" />Recheck
             </Button>
           )}
           <Button size="sm" variant="outline" disabled={isMutating} onClick={() => onIgnore(!asset.ignored)}>
-            {asset.ignored ? <Eye className="h-3.5 w-3.5 mr-1.5" /> : <EyeOff className="h-3.5 w-3.5 mr-1.5" />}
+            {asset.ignored ? <Eye className="size-4 mr-1.5" /> : <EyeOff className="size-4 mr-1.5" />}
             {asset.ignored ? "Restore" : "Ignore"}
           </Button>
           <Button
@@ -291,7 +293,7 @@ function AssetDetailBody({
             }}
             className="text-destructive hover:text-destructive hover:bg-destructive/10"
           >
-            <Trash2 className="h-3.5 w-3.5 mr-1.5" />Delete
+            <Trash2 className="size-4 mr-1.5" />Delete
           </Button>
         </div>
       </div>
@@ -304,7 +306,7 @@ function AssetDetailBody({
             <TabsTrigger value="findings" className={TAB}>
               Findings
               {activeFindings.length > 0 && (
-                <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 text-xs font-semibold">{activeFindings.length}</span>
+                <span className={cn(CHIP, "ml-1.5 bg-muted font-semibold")}>{activeFindings.length}</span>
               )}
             </TabsTrigger>
             {hasCerts && <TabsTrigger value="tls" className={TAB}>TLS</TabsTrigger>}
@@ -364,11 +366,11 @@ function AssetDetailBody({
                     <span className="font-medium capitalize flex-1">{svc.product}</span>
                     <span className="text-muted-foreground font-mono">{svc.version}</span>
                     {svc.is_eol ? (
-                      <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold bg-amber-500/10 text-amber-500 border-amber-500/30 shrink-0">
+                      <span className={cn(CHIP, "border font-semibold bg-amber-500/10 text-amber-500 border-amber-500/30 shrink-0")}>
                         EOL{svc.days_past_eol !== null ? ` · ${svc.days_past_eol}d` : ""}
                       </span>
                     ) : (
-                      <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold bg-emerald-500/10 text-emerald-600 border-emerald-500/30 shrink-0">
+                      <span className={cn(CHIP, "border font-semibold bg-emerald-500/10 text-emerald-600 border-emerald-500/30 shrink-0")}>
                         Supported
                       </span>
                     )}
@@ -386,7 +388,7 @@ function AssetDetailBody({
                 {signals.map(s => (
                   <span
                     key={`${s.value}-${s.source}`}
-                    className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ${s.severity === "critical" ? "bg-destructive/15 text-destructive" : "bg-muted text-foreground"}`}
+                    className={cn(CHIP, s.severity === "critical" ? "bg-destructive/15 text-destructive" : "bg-muted text-foreground")}
                   >
                     {s.value}
                     <span className="text-xs uppercase tracking-wider opacity-60">{s.source}</span>

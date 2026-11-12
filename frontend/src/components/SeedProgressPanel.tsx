@@ -57,7 +57,7 @@ export function SeedProgressPanel({ seeded }: { seeded: SeedProgressSeeded }) {
         {seeded.cik && <span className="font-mono text-xs text-muted-foreground"> CIK {seeded.cik}</span>}
       </p>
       <div className="flex items-center gap-2">
-        <Icon className={`h-4 w-4 ${spinning ? "animate-spin" : ""} ${p.phase === "failed" ? "text-destructive" : ""}`} />
+        <Icon className={`size-3.5 ${spinning ? "animate-spin" : ""} ${p.phase === "failed" ? "text-destructive" : ""}`} />
         <span>{p.ingestLabel}</span>
       </div>
       {p.readLabel && <p className="text-muted-foreground pl-6">{p.readLabel}</p>}

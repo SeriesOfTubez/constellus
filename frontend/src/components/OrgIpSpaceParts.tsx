@@ -18,6 +18,7 @@ import { AssetsCell, DECIDE, SignalsCell, StateCell, errorDetail } from "@/compo
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { CHIP } from "@/components/ui/chip"
 
 export const REGISTRY_CHANGE_TITLE =
   "The registry now lists part of this prefix under another holder. This is a registry observation, not a finding."
@@ -26,9 +27,9 @@ export function RegistryChangeBadge() {
   return (
     <span
       title={REGISTRY_CHANGE_TITLE}
-      className="ml-2 inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 align-middle font-sans text-xs font-medium text-muted-foreground"
+      className={cn(CHIP, "ml-2 border bg-muted/40 align-middle font-sans font-medium text-muted-foreground")}
     >
-      <Info className="h-3 w-3" />Registry change
+      <Info className="size-3.5" />Registry change
     </span>
   )
 }
@@ -44,7 +45,7 @@ export function RegistryObservationList({ rows }: { rows: ReassignmentRow[] }) {
           <ul className="space-y-2">
             {rows.map(r => (
               <li key={r.id} className="flex items-start gap-2 rounded-md border bg-muted/30 p-2.5">
-                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <Info className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 space-y-0.5">
                   <p className="text-sm">{registryChangeText(r)}</p>
                   <p className="text-xs text-muted-foreground">
@@ -125,7 +126,7 @@ export function RecheckButton({ orgId }: { orgId: string }) {
   return (
     <div className="flex items-center gap-3">
       <Button size="sm" variant="outline" disabled={m.isPending} onClick={() => m.mutate()}>
-        <RefreshCw className={cn("h-4 w-4 mr-1", m.isPending && "animate-spin")} />Re-check registries
+        <RefreshCw className={cn("size-4 mr-1", m.isPending && "animate-spin")} />Re-check registries
       </Button>
       {started && (
         <span className="max-w-md text-xs text-muted-foreground">

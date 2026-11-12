@@ -65,7 +65,7 @@ export function AssetRiskCard({ asset, findings, href }: { asset: Asset; finding
         >
           <AssetTypeBadge type={asset.asset_type} />
           <span className="font-mono text-sm font-medium truncate">{displayName(asset.value)}</span>
-          <SquareArrowOutUpRight className="ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover/title:text-primary transition-colors" />
+          <SquareArrowOutUpRight className="ml-auto size-3.5 shrink-0 text-muted-foreground group-hover/title:text-primary transition-colors" />
         </Link>
       )}
 
@@ -120,7 +120,7 @@ export function AssetRiskCard({ asset, findings, href }: { asset: Asset; finding
             to={`/findings/${topFinding.id}`}
             className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
           >
-            View finding <SquareArrowOutUpRight className="h-3 w-3" />
+            View finding <SquareArrowOutUpRight className="size-3.5" />
           </Link>
         </div>
       )}

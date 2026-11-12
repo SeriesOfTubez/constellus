@@ -1,4 +1,6 @@
 import { X } from "lucide-react"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 // Deterministic color from tag string — maps to one of 8 palette slots
 const PALETTES = [
@@ -26,7 +28,7 @@ export function TagBadge({
   onRemove?: () => void
 }) {
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${tagColor(tag)}`}>
+    <span className={cn(CHIP, "font-medium", tagColor(tag))}>
       {tag}
       {onRemove && (
         <button
@@ -35,7 +37,7 @@ export function TagBadge({
           className="ml-0.5 opacity-60 hover:opacity-100 focus:outline-none"
           aria-label={`Remove tag ${tag}`}
         >
-          <X className="h-2.5 w-2.5" />
+          <X className="size-3.5" />
         </button>
       )}
     </span>

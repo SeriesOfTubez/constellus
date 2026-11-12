@@ -164,7 +164,7 @@ function AddRuleDialog({ onClose }: { onClose: () => void }) {
             disabled={mutation.isPending || !name || !tag}
             onClick={() => mutation.mutate()}
           >
-            {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}
+            {mutation.isPending && <Loader2 className="size-4 animate-spin mr-1.5" />}
             Create Rule
           </Button>
         </DialogFooter>
@@ -223,12 +223,12 @@ export default function TagRules() {
         <div className="flex gap-2">
           <Button variant="outline" size="sm" disabled={evaluateMutation.isPending} onClick={() => evaluateMutation.mutate()}>
             {evaluateMutation.isPending
-              ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
-              : <RefreshCw className="h-3.5 w-3.5 mr-1.5" />}
+              ? <Loader2 className="size-4 animate-spin mr-1.5" />
+              : <RefreshCw className="size-4 mr-1.5" />}
             Re-evaluate all
           </Button>
           <Button size="sm" onClick={() => setAddOpen(true)}>
-            <Plus className="h-4 w-4 mr-1.5" />New Rule
+            <Plus className="size-4 mr-1.5" />New Rule
           </Button>
         </div>
       </div>
@@ -296,7 +296,7 @@ export default function TagRules() {
                       disabled={deleteMutation.isPending}
                       onClick={() => { if (confirm(`Delete rule "${rule.name}"?`)) deleteMutation.mutate(rule.id) }}
                     >
-                      <Trash2 className="h-3.5 w-3.5" />
+                      <Trash2 className="size-4" />
                     </Button>
                   </TableCell>
                 </TableRow>

@@ -11,6 +11,8 @@ import {
 } from "@/lib/acquisitionTimeline"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 export const SHARE_TITLE =
   "Summed risk score of this company's open findings ÷ the same sum over the estate (claimed scope only)"
@@ -69,7 +71,7 @@ export function AcquisitionsTable({
                     title="Open in Companies & filings" aria-label="Open in Companies & filings"
                     onClick={() => onOpenCompany(row.organic ? null : row.entity_id)}
                   >
-                    <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+                    <SquareArrowOutUpRight className="size-4" />
                   </Button>
                 )}
               </span>
@@ -144,22 +146,22 @@ export function AcquisitionTimeline({
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Earlier"
             disabled={!canPan(w, ext, -1)} onClick={() => setWin(pan(w, ext, -1))}>
-            <ChevronLeft className="h-4 w-4" />
+            <ChevronLeft className="size-4" />
           </Button>
           {offButton(-1, off.before)}
           <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Later"
             disabled={!canPan(w, ext, 1)} onClick={() => setWin(pan(w, ext, 1))}>
-            <ChevronRight className="h-4 w-4" />
+            <ChevronRight className="size-4" />
           </Button>
           {offButton(1, off.after)}
           <span className="ml-2 flex items-center gap-1">
             <Button variant="outline" size="icon" className="h-7 w-7" aria-label="Zoom out"
               disabled={!canZoomOut(w, ext)} onClick={() => setWin(zoomOut(w, ext))}>
-              <ZoomOut className="h-4 w-4" />
+              <ZoomOut className="size-4" />
             </Button>
             <Button variant="outline" size="icon" className="h-7 w-7" aria-label="Zoom in"
               disabled={!canZoomIn(w)} onClick={() => setWin(zoomIn(w, ext))}>
-              <ZoomIn className="h-4 w-4" />
+              <ZoomIn className="size-4" />
             </Button>
           </span>
         </div>
@@ -179,7 +181,7 @@ export function AcquisitionTimeline({
             return (
               <button
                 key={id} type="button" title={title} aria-label={title} aria-pressed={selected === id}
-                className={`absolute h-3 w-3 -translate-x-1/2 rounded-full ${selected === id ? RING : ""}`}
+                className={`absolute size-3 -translate-x-1/2 rounded-full ${selected === id ? RING : ""}`}
                 style={{ left: `${xs[i] * 100}%`, top: 4 + lanes[i] * 16, ...dotStyle(p.row) }}
                 onClick={() => pick(id)}
               />
@@ -196,7 +198,7 @@ export function AcquisitionTimeline({
             return (
               <button
                 key={id} type="button" title={title} aria-label={title} aria-pressed={selected === id}
-                className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${selected === id ? RING : ""}`}
+                className={cn(CHIP, "border", selected === id ? RING : "")}
                 onClick={() => pick(id)}
               >
                 <span className="h-2 w-2 rounded-full" style={dotStyle(r)} />

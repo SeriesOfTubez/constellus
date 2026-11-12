@@ -79,7 +79,7 @@ function SeverityStrip({ findings, loading, error }: { findings?: Finding[]; loa
                   )}
                   {exploit > 0 && (
                     <Link to="/findings?exploit=true" className="flex items-center gap-1.5 text-sm hover:opacity-80 transition-opacity">
-                      <Zap className="h-3.5 w-3.5 text-[var(--sev-high)]" />
+                      <Zap className="size-3.5 text-[var(--sev-high)]" />
                       <span className="font-semibold text-foreground">{exploit}</span>
                       <span className="text-muted-foreground">with public exploit</span>
                     </Link>
@@ -227,17 +227,17 @@ function TrendChange({ count, prev }: { count: number; prev: number }) {
   const net = count - prev
   if (net < 0) return (
     <span className="mt-0.5 inline-flex items-center gap-0.5 text-xs font-medium text-[var(--sev-clean)]">
-      <ArrowDownRight className="h-3 w-3" />{Math.abs(net)} fewer since yesterday
+      <ArrowDownRight className="size-3.5" />{Math.abs(net)} fewer since yesterday
     </span>
   )
   if (net > 0) return (
     <span className="mt-0.5 inline-flex items-center gap-0.5 text-xs font-medium text-[var(--sev-high)]">
-      <ArrowUpRight className="h-3 w-3" />{net} more since yesterday
+      <ArrowUpRight className="size-3.5" />{net} more since yesterday
     </span>
   )
   return (
     <span className="mt-0.5 inline-flex items-center gap-0.5 text-xs text-muted-foreground">
-      <Minus className="h-3 w-3" />No change since yesterday
+      <Minus className="size-3.5" />No change since yesterday
     </span>
   )
 }
@@ -376,7 +376,7 @@ function RecentActivity({ scans, loading, error }: { scans?: ScanRun[]; loading:
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center gap-2">
-          <Activity className="h-4 w-4" />
+          <Activity className="size-3.5" />
           Recent activity
         </CardTitle>
       </CardHeader>
@@ -403,7 +403,7 @@ function RecentActivity({ scans, loading, error }: { scans?: ScanRun[]; loading:
                     </p>
                     <Badge variant={STATUS_VARIANT[r.status]}>{r.status}</Badge>
                     <Badge variant="outline" className="text-xs">{KIND_LABEL[r.kind]}</Badge>
-                    {r.status === "running" && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+                    {r.status === "running" && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
                   </div>
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     {r.asset_count} asset{r.asset_count !== 1 ? "s" : ""} · {r.finding_count} finding{r.finding_count !== 1 ? "s" : ""}
@@ -475,7 +475,7 @@ export default function Dashboard() {
           <Card className="hover:bg-accent/50 transition-colors cursor-pointer">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">Targets</CardTitle>
-              <Target className="h-4 w-4 text-muted-foreground" />
+              <Target className="size-3.5 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               {tLoading ? <Skeleton className="h-8 w-12" /> : tError ? (
@@ -489,7 +489,7 @@ export default function Dashboard() {
           <Card className="hover:bg-accent/50 transition-colors cursor-pointer">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">Assets</CardTitle>
-              <Globe className="h-4 w-4 text-muted-foreground" />
+              <Globe className="size-3.5 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               {aLoading ? <Skeleton className="h-8 w-12" /> : aError ? (
@@ -503,7 +503,7 @@ export default function Dashboard() {
           <Card className="hover:bg-accent/50 transition-colors cursor-pointer">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">Open Findings</CardTitle>
-              <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+              <AlertTriangle className="size-3.5 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               {fLoading ? <Skeleton className="h-8 w-12" /> : fError ? (
@@ -517,7 +517,7 @@ export default function Dashboard() {
           <Card className="hover:bg-accent/50 transition-colors cursor-pointer">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">New (7d)</CardTitle>
-              <Sparkles className="h-4 w-4 text-muted-foreground" />
+              <Sparkles className="size-3.5 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               {fLoading ? <Skeleton className="h-8 w-12" /> : fError ? (

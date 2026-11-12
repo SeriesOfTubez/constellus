@@ -24,6 +24,8 @@ import { useFlyout } from "@/lib/flyout"
 import { api, type ScanKind, type ScanRun } from "@/lib/api"
 import { displayName } from "@/lib/apex"
 import { useAuthStore } from "@/lib/auth"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -69,7 +71,7 @@ function ScanDetailSheet({ run, onClose }: { run: ScanRun; onClose: () => void }
           <div className="flex items-center gap-2">
             <Badge variant={badge.variant}>{badge.label}</Badge>
             <Badge variant="outline">{KIND_LABEL[run.kind]}</Badge>
-            {run.status === "running" && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+            {run.status === "running" && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
           </div>
           <SheetTitle className="text-base leading-snug">
             {run.name ?? run.scope.domains.slice(0, 2).map(displayName).join(", ") ?? "Unnamed scan"}
@@ -107,12 +109,12 @@ function ScanDetailSheet({ run, onClose }: { run: ScanRun; onClose: () => void }
             <div className="rounded-md border divide-y text-xs font-mono max-h-48 overflow-y-auto">
               {run.scope.domains.map(d => (
                 <div key={d} className="px-3 py-2 flex items-center gap-2" title={d}>
-                  <ScanLine className="h-3 w-3 text-muted-foreground shrink-0" />{displayName(d)}
+                  <ScanLine className="size-3.5 text-muted-foreground shrink-0" />{displayName(d)}
                 </div>
               ))}
               {run.scope.ip_ranges?.map(r => (
                 <div key={r} className="px-3 py-2 flex items-center gap-2">
-                  <ScanLine className="h-3 w-3 text-muted-foreground shrink-0" />{r}
+                  <ScanLine className="size-3.5 text-muted-foreground shrink-0" />{r}
                 </div>
               ))}
               {run.scope.domains.length === 0 && (run.scope.ip_ranges?.length ?? 0) === 0 && (
@@ -127,7 +129,7 @@ function ScanDetailSheet({ run, onClose }: { run: ScanRun; onClose: () => void }
             <div className="space-y-2">
               {timeline.map(({ label, value, icon: Icon }) => (
                 <div key={label} className="flex items-center gap-3 text-xs">
-                  <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                  <Icon className="size-3.5 text-muted-foreground shrink-0" />
                   <span className="text-muted-foreground w-20 shrink-0">{label}</span>
                   <span>{new Date(value!).toLocaleString()}</span>
                 </div>
@@ -142,7 +144,7 @@ function ScanDetailSheet({ run, onClose }: { run: ScanRun; onClose: () => void }
                 <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Connectors used</p>
                 <div className="flex flex-wrap gap-1.5">
                   {run.connectors_used.map(c => (
-                    <span key={c} className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-mono">{c}</span>
+                    <span key={c} className={cn(CHIP, "bg-muted font-mono")}>{c}</span>
                   ))}
                 </div>
               </div>
@@ -192,7 +194,7 @@ function ScanRow({ run, onDetail }: { run: ScanRun; onDetail: (run: ScanRun) => 
             <p className="text-sm font-medium truncate">{run.name ?? run.scope.domains.map(displayName).join(", ") ?? "Unnamed scan"}</p>
             <Badge variant={badge.variant}>{badge.label}</Badge>
             <Badge variant="outline" className="text-xs">{KIND_LABEL[run.kind]}</Badge>
-            {run.status === "running" && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+            {run.status === "running" && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
           </div>
           {run.scope.domains.length > 0 && (
             <p className="text-xs text-muted-foreground">
@@ -219,11 +221,11 @@ function ScanRow({ run, onDetail }: { run: ScanRun; onDetail: (run: ScanRun) => 
 
         <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
           <Button variant="ghost" size="sm" onClick={() => onDetail(run)} title="Details">
-            <Info className="h-4 w-4" />
+            <Info className="size-4" />
           </Button>
           {(run.status === "pending" || run.status === "running") && (
             <Button variant="ghost" size="sm" onClick={() => cancelMutation.mutate()} disabled={cancelMutation.isPending} title="Cancel">
-              <XCircle className="h-4 w-4" />
+              <XCircle className="size-4" />
             </Button>
           )}
         </div>
@@ -255,7 +257,7 @@ function ScansPanel() {
           <Switch checked={includeRechecks} onCheckedChange={setIncludeRechecks} />
         </div>
         <Button variant="outline" size="sm" onClick={() => qc.invalidateQueries({ queryKey: ["scans"] })}>
-          <RefreshCw className="h-4 w-4" />
+          <RefreshCw className="size-4" />
         </Button>
       </div>
 
@@ -389,7 +391,7 @@ function SystemLogsPanel() {
       <div className="px-4 py-3 border-b space-y-3 flex-shrink-0">
         <div className="flex flex-wrap gap-2 items-center">
           <div className="relative flex-1 min-w-48 max-w-xs">
-            <Filter className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Filter className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
             <Input className="pl-8 h-8 text-xs font-mono" placeholder="Search messages..."
               value={search} onChange={e => setSearch(e.target.value)} />
           </div>
@@ -422,7 +424,7 @@ function SystemLogsPanel() {
 
           <div className="flex items-center gap-3 ml-auto">
             <div className="flex items-center gap-1.5">
-              {isFetching && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+              {isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
               {autoRefresh && !isFetching && (
                 <Circle className="h-2 w-2 fill-emerald-500 text-emerald-500 animate-pulse" />
               )}
@@ -431,11 +433,11 @@ function SystemLogsPanel() {
             </div>
             <Button variant="outline" size="sm"
               onClick={() => qc.invalidateQueries({ queryKey: ["logs"] })}>
-              <RefreshCw className="h-3.5 w-3.5" />
+              <RefreshCw className="size-4" />
             </Button>
             {logSettings && (
               <div className="flex items-center gap-1.5">
-                <Timer className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                <Timer className="size-3.5 text-muted-foreground shrink-0" />
                 <span className="text-xs text-muted-foreground whitespace-nowrap">Retain for</span>
                 <Select
                   value={String(logSettings.retention_days)}
@@ -458,7 +460,7 @@ function SystemLogsPanel() {
               className="text-destructive hover:text-destructive"
               disabled={clearMutation.isPending}
               onClick={() => { if (confirm("Clear all logs?")) clearMutation.mutate() }}>
-              <Trash2 className="h-3.5 w-3.5" />
+              <Trash2 className="size-4" />
             </Button>
           </div>
         </div>
@@ -664,11 +666,11 @@ function AuditPanel() {
 
           <div className="flex items-center gap-3 ml-auto">
             <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Lock className="h-3.5 w-3.5" />
+              <Lock className="size-3.5" />
               Append-only — no delete path
             </span>
             <Button variant="outline" size="sm" onClick={() => qc.invalidateQueries({ queryKey: ["audit"] })}>
-              {isFetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              {isFetching ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
             </Button>
           </div>
         </div>
@@ -700,7 +702,7 @@ export default function Activity() {
         <AdminBreadcrumb page="Activity" />
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <ActivityIcon className="h-5 w-5 text-muted-foreground" />
+            <ActivityIcon className="size-3.5 text-muted-foreground" />
             <div>
               <h1 className="text-xl font-semibold leading-tight">Activity</h1>
               <p className="text-xs text-muted-foreground">Scan runs, system logs and the audit trail</p>

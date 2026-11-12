@@ -19,7 +19,7 @@ export function IndeterminateCheckbox({
       type="checkbox"
       checked={checked}
       onChange={e => onChange(e.target.checked)}
-      className="h-4 w-4 rounded border border-border cursor-pointer accent-primary"
+      className="size-4 rounded border border-border cursor-pointer accent-primary"
     />
   )
 }

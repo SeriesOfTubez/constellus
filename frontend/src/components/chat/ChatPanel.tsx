@@ -22,6 +22,7 @@ import {
 import { useChatPanel } from "@/lib/chatPanel"
 import { relativeTime } from "@/lib/time"
 import { cn } from "@/lib/utils"
+import { CHIP } from "@/components/ui/chip"
 
 const EXAMPLES = [
   "How many hostnames have port 22 open?",
@@ -41,7 +42,7 @@ function UserBubble({ text, muted }: { text: string; muted?: boolean }) {
 function Notice({ icon: Icon, children }: { icon: React.ElementType; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
-      <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+      <Icon className="mt-0.5 size-3.5 shrink-0" />
       <span>{children}</span>
     </div>
   )
@@ -62,7 +63,7 @@ function AssistantMessage({ m }: { m: ChatMessage }) {
                 {summariseQuery(c.query)}
               </span>
               <span
-                className="ml-auto shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-foreground"
+                className={cn(CHIP, "ml-auto shrink-0 bg-muted font-mono text-foreground")}
                 title={c.count_capped ? "More than this many match; the exact count is capped" : "Exact number of matching records"}
                 data-testid="chat-count"
               >
@@ -77,7 +78,7 @@ function AssistantMessage({ m }: { m: ChatMessage }) {
                 aria-label="Open in Explore"
                 title="Open in Explore"
               >
-                <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+                <SquareArrowOutUpRight className="size-4" />
               </Link>
             </div>
           ))}
@@ -143,7 +144,7 @@ function ConversationList() {
           ) : (
             <button className="shrink-0 text-muted-foreground hover:text-destructive" aria-label="Delete conversation"
               title="Delete conversation" onClick={() => setConfirming(c.id)}>
-              <Trash2 className="h-4 w-4" />
+              <Trash2 className="size-4" />
             </button>
           )}
         </li>
@@ -229,7 +230,7 @@ function ConversationView() {
           <>
             <UserBubble text={pending.question} />
             <div className="flex items-center gap-2 text-xs text-muted-foreground" data-testid="chat-pending">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Working… <Elapsed since={pending.since} />
+              <Loader2 className="size-3.5 animate-spin" /> Working… <Elapsed since={pending.since} />
             </div>
           </>
         )}
@@ -237,7 +238,7 @@ function ConversationView() {
           <>
             <UserBubble text={failed.question} muted />
             <div className="flex items-start gap-2 text-xs text-muted-foreground" data-testid="chat-failed">
-              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <Info className="mt-0.5 size-3.5 shrink-0" />
               <span className="flex-1">Not answered. {failed.reason}</span>
               <button className="shrink-0 text-primary hover:opacity-80" onClick={() => ask.mutate(failed.question)}>Retry</button>
             </div>
@@ -290,20 +291,20 @@ export function ChatPanel() {
       onKeyDown={e => { if (e.key === "Escape") close() }}
     >
       <div className="flex items-center gap-2 border-b px-4 py-3">
-        <Sparkles className="h-4 w-4 shrink-0 text-primary" />
+        <Sparkles className="size-3.5 shrink-0 text-primary" />
         <span className="shrink-0 text-sm font-semibold">{ASSISTANT_NAME}</span>
         {title && <span className="min-w-0 truncate text-xs text-muted-foreground">· {title}</span>}
         <div className="ml-auto flex shrink-0 items-center gap-1">
           <Button variant="ghost" size="icon" className={cn("h-8 w-8", view === "list" && "bg-muted")}
             aria-label="Conversations" title="Conversations" onClick={showList}>
-            <History className="h-4 w-4" />
+            <History className="size-4" />
           </Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="New conversation" title="New conversation"
             onClick={newConversation}>
-            <Plus className="h-4 w-4" />
+            <Plus className="size-4" />
           </Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Close" title="Close (Esc)" onClick={close}>
-            <X className="h-4 w-4" />
+            <X className="size-4" />
           </Button>
         </div>
       </div>

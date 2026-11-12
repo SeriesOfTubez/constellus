@@ -9,6 +9,8 @@ import {
 } from "@/components/finding-badges"
 import { FindingActionsMenu } from "@/components/FindingActionsMenu"
 import { TagBadge } from "@/components/ui/tag-badge"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 const NEW_FINDING_DAYS = 7
 
@@ -75,8 +77,8 @@ export function FindingCard({
         {f.cve_id && <span className="font-mono text-xs text-muted-foreground shrink-0">{f.cve_id}</span>}
         <ExposureOverrideBadge finding={f} />
         {isNew && (
-          <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary shrink-0">
-            <Sparkles className="h-2.5 w-2.5" />New
+          <span className={cn(CHIP, "bg-primary/10 font-medium text-primary shrink-0")}>
+            <Sparkles className="size-3.5" />New
           </span>
         )}
       </div>
@@ -96,7 +98,7 @@ export function FindingCard({
 
       <p className="flex items-center gap-1 text-xs text-muted-foreground">
         {stale ? (
-          <><Clock className="h-3 w-3 text-amber-500" /> stale {daysSince(f.last_seen_at)}d</>
+          <><Clock className="size-3.5 text-amber-500" /> stale {daysSince(f.last_seen_at)}d</>
         ) : (
           <>seen {relativeTime(f.last_seen_at)}</>
         )}

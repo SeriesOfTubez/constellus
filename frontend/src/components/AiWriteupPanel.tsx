@@ -91,7 +91,7 @@ export function AiWriteupPanel({ findingId }: { findingId: string }) {
         </div>
         {canGenerate && (
           <Button size="sm" variant="outline" disabled={busy} onClick={() => generate.mutate(!!w)}>
-            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : w ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}
+            {busy ? <Loader2 className="size-4 animate-spin" /> : w ? <RefreshCw className="size-4" /> : <Sparkles className="size-4" />}
             <span className="ml-1.5">{data.pending ? "Generating…" : w ? "Regenerate" : "Generate"}</span>
           </Button>
         )}

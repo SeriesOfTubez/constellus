@@ -2,6 +2,8 @@ import { useState } from "react"
 import { ChevronDown, ChevronRight, ExternalLink, ShieldAlert, ArrowDownCircle, SlidersHorizontal } from "lucide-react"
 import { type Finding } from "@/lib/api"
 import { exposureOverride } from "@/components/finding-badges"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 /** Narrative captured from VulnCheck KEV + NVD2 during enrichment, stashed in
  *  finding.detail.cve_intel. Structured (not one growing text blob) so future
@@ -60,7 +62,7 @@ function LinkRow({ url, label, date, tags }: { url: string; label: string; date?
     <div className="flex items-center gap-1.5 text-xs">
       <a href={url} target="_blank" rel="noopener noreferrer"
         className="flex items-center gap-1.5 text-blue-500 hover:underline min-w-0">
-        <ExternalLink className="h-3 w-3 shrink-0" />
+        <ExternalLink className="size-3.5 shrink-0" />
         <span className="truncate">{label}</span>
       </a>
       {tags?.slice(0, 2).map(t => (
@@ -93,7 +95,7 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
     <div className="rounded-md border">
       <button onClick={() => setOpen(o => !o)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/40 transition-colors">
-        {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+        {open ? <ChevronDown className="size-3.5 text-muted-foreground" /> : <ChevronRight className="size-3.5 text-muted-foreground" />}
         <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">About this vulnerability</span>
         {finding.cve_id && <span className="ml-auto font-mono text-xs text-muted-foreground">{finding.cve_id}</span>}
       </button>
@@ -108,8 +110,8 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
                 override.kind === "tag" ? "text-amber-700 dark:text-amber-400" : "text-sky-700 dark:text-sky-400"
               }`}>
                 {override.kind === "tag"
-                  ? <><ArrowDownCircle className="h-3 w-3" />Downgraded to {sevLabel} by tag</>
-                  : <><SlidersHorizontal className="h-3 w-3" />Severity adjusted to {sevLabel}</>}
+                  ? <><ArrowDownCircle className="size-3.5" />Downgraded to {sevLabel} by tag</>
+                  : <><SlidersHorizontal className="size-3.5" />Severity adjusted to {sevLabel}</>}
               </p>
               <p className="text-sm mt-1 text-muted-foreground leading-relaxed">
                 {override.kind === "tag" ? (
@@ -131,13 +133,13 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
           {(intel?.is_remote || intel?.is_auth !== undefined) && (
             <div className="flex items-center gap-1.5 flex-wrap">
               {intel?.is_remote && (
-                <span className="inline-flex items-center rounded border border-orange-500/40 bg-orange-500/10 px-1.5 py-0.5 text-xs font-medium text-orange-600 dark:text-orange-400">Remotely exploitable</span>
+                <span className={cn(CHIP, "border border-orange-500/40 bg-orange-500/10 font-medium text-orange-600 dark:text-orange-400")}>Remotely exploitable</span>
               )}
               {intel?.is_auth === false && (
-                <span className="inline-flex items-center rounded border border-orange-500/40 bg-orange-500/10 px-1.5 py-0.5 text-xs font-medium text-orange-600 dark:text-orange-400">No auth required</span>
+                <span className={cn(CHIP, "border border-orange-500/40 bg-orange-500/10 font-medium text-orange-600 dark:text-orange-400")}>No auth required</span>
               )}
               {intel?.is_auth === true && (
-                <span className="inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">Auth required</span>
+                <span className={cn(CHIP, "border border-border bg-muted font-medium text-muted-foreground")}>Auth required</span>
               )}
             </div>
           )}
@@ -158,7 +160,7 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
               {intel?.required_action && (
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                    <ShieldAlert className="h-3 w-3" />CISA required action
+                    <ShieldAlert className="size-3.5" />CISA required action
                   </p>
                   <p className="text-sm mt-0.5">{intel.required_action}</p>
                 </div>
@@ -184,9 +186,8 @@ type IntelItem = { url: string; label: string; date?: string; tags?: string[] }
 function FilterChip({ active, label, count, onClick }: { active: boolean; label: string; count: number; onClick: () => void }) {
   return (
     <button onClick={onClick}
-      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium transition-colors ${
-        active ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"
-      }`}>
+      className={cn(CHIP, "border font-medium transition-colors",
+        active ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground")}>
       {label}<span className="tabular-nums opacity-70">{count}</span>
     </button>
   )

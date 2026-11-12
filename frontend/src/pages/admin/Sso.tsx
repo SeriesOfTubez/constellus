@@ -136,7 +136,7 @@ export default function Sso() {
                 onClick={() => previewMutation.mutate()}
                 disabled={!metadataUrl || previewMutation.isPending}
               >
-                {previewMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Preview"}
+                {previewMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : "Preview"}
               </Button>
             </div>
           </div>
@@ -151,9 +151,9 @@ export default function Sso() {
             >
               <div className="flex items-center gap-2 font-medium">
                 {preview.valid ? (
-                  <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                  <CheckCircle2 className="size-3.5 text-emerald-500" />
                 ) : (
-                  <XCircle className="h-4 w-4 text-destructive" />
+                  <XCircle className="size-3.5 text-destructive" />
                 )}
                 {preview.valid ? "Metadata valid" : "Metadata invalid"}
               </div>
@@ -185,7 +185,7 @@ export default function Sso() {
                 onClick={() => refreshMutation.mutate()}
                 disabled={refreshMutation.isPending}
               >
-                <RefreshCw className="h-3 w-3" />
+                <RefreshCw className="size-4" />
                 Refresh metadata
               </Button>
             </div>
@@ -216,7 +216,7 @@ export default function Sso() {
               placeholder="https://constellus.example.com/api/auth/saml/acs"
             />
             <p className="text-xs text-muted-foreground flex items-center gap-1">
-              <ExternalLink className="h-3 w-3" /> Register this URL in your IdP
+              <ExternalLink className="size-3.5" /> Register this URL in your IdP
             </p>
           </div>
         </CardContent>
@@ -251,7 +251,7 @@ export default function Sso() {
           onClick={() => saveMutation.mutate()}
           disabled={saveMutation.isPending || !metadataUrl || !spEntityId || !spAcsUrl}
         >
-          {saveMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+          {saveMutation.isPending && <Loader2 className="size-4 animate-spin" />}
           {config ? "Save changes" : "Enable SSO"}
         </Button>
       </div>

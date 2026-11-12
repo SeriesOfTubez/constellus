@@ -4,6 +4,8 @@ import { ChevronRight, Box, Circle, ShieldAlert } from "lucide-react"
 
 import { api, type EdgesResponse, type EdgeNode, type EdgeNodeType } from "@/lib/api"
 import { displayName } from "@/lib/apex"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 /**
  * Source-agnostic relationship panel driven by `asset_edges`.
@@ -48,14 +50,14 @@ export function ConnectedEntities({
           Connected entities
         </p>
         <div className="flex items-center gap-1 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5">
-            <Box className="h-2.5 w-2.5" />List
+          <span className={cn(CHIP, "bg-muted")}>
+            <Box className="size-3.5" />List
           </span>
           <span
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 opacity-50 cursor-not-allowed"
+            className={cn(CHIP, "opacity-50 cursor-not-allowed")}
             title="Graph view coming with continuous-monitoring phase 4"
           >
-            <Circle className="h-2.5 w-2.5" />Graph
+            <Circle className="size-3.5" />Graph
           </span>
         </div>
       </div>
@@ -179,7 +181,7 @@ function EdgeRow({ item }: { item: EdgeNode }) {
       <TypeChip item={item} />
       <span className="font-mono break-all flex-1 min-w-0" title={item.value}>{display}</span>
       <EdgeMetaChips item={item} />
-      <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />
+      <ChevronRight className="size-3.5 text-muted-foreground shrink-0" />
     </button>
   )
 }
@@ -189,22 +191,22 @@ function TypeChip({ item }: { item: EdgeNode }) {
     const sev = item.severity ?? "info"
     const cls = SEV_COLOR[sev]
     return (
-      <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium ${cls}`}>
-        {item.kev && <ShieldAlert className="h-2.5 w-2.5" />}
+      <span className={cn(CHIP, "font-medium", cls)}>
+        {item.kev && <ShieldAlert className="size-3.5" />}
         {sev.toUpperCase()}
       </span>
     )
   }
   if (item.node_type === "target") {
-    return <span className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-foreground">target</span>
+    return <span className={cn(CHIP, "bg-muted font-medium text-foreground")}>target</span>
   }
   // asset_canonical
   const meta = item.edge_metadata
   if (item.asset_type === "dns_record" && typeof meta.record_type === "string") {
-    return <span className="inline-flex items-center rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 text-xs font-mono font-semibold">{String(meta.record_type)}</span>
+    return <span className={cn(CHIP, "bg-blue-500/10 text-blue-600 dark:text-blue-400 font-mono font-semibold")}>{String(meta.record_type)}</span>
   }
   const label = (item.asset_type ?? "asset").replace(/_/g, " ")
-  return <span className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">{label}</span>
+  return <span className={cn(CHIP, "bg-muted font-medium text-muted-foreground")}>{label}</span>
 }
 
 function EdgeMetaChips({ item }: { item: EdgeNode }) {
@@ -227,7 +229,7 @@ function EdgeMetaChips({ item }: { item: EdgeNode }) {
   return (
     <div className="flex items-center gap-1 shrink-0">
       {chips.map(c => (
-        <span key={c} className="inline-flex items-center rounded bg-muted/60 px-1 py-0.5 text-xs font-mono text-muted-foreground">{c}</span>
+        <span key={c} className={cn(CHIP, "bg-muted/60 font-mono text-muted-foreground")}>{c}</span>
       ))}
     </div>
   )

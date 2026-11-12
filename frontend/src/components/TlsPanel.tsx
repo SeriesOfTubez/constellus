@@ -9,6 +9,8 @@ import {
   type OpenPortEntry, type CertSummary,
   SOURCE_LABELS, certExpiryState,
 } from "@/components/OpenPortsPanel"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 /**
  * Unified TLS panel (#56). Reads the per-port `cert_summary` that tlsx and
@@ -200,8 +202,8 @@ function CertCardView({
             {(isWeakTls || isWeakCipher) && (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="inline-flex items-center gap-1 rounded border border-destructive/50 bg-destructive/10 px-1.5 py-0.5 text-xs font-medium text-destructive cursor-help">
-                    <ShieldAlert className="h-2.5 w-2.5" />weak
+                  <span className={cn(CHIP, "border border-destructive/50 bg-destructive/10 font-medium text-destructive cursor-help")}>
+                    <ShieldAlert className="size-3.5" />weak
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-xs">
@@ -222,7 +224,7 @@ function CertCardView({
           <div className="space-y-0.5 min-w-0">
             {cert.fingerprint && (
               <p className="font-mono text-xs text-muted-foreground break-all" title={cert.fingerprint}>
-                <Fingerprint className="inline h-2.5 w-2.5 mr-1" />{cert.fingerprint.slice(0, 32)}…
+                <Fingerprint className="inline size-3.5 mr-1" />{cert.fingerprint.slice(0, 32)}…
               </p>
             )}
             <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground/80 font-mono">
@@ -249,8 +251,8 @@ function CertCardView({
           {others.length > 0 && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="inline-flex items-center gap-1 rounded border border-violet-500/40 bg-violet-500/10 px-1.5 py-0.5 text-xs font-medium text-violet-600 dark:text-violet-400 cursor-help">
-                  <Network className="h-2.5 w-2.5" />also on {others.length} other asset{others.length === 1 ? "" : "s"}
+                <span className={cn(CHIP, "border border-violet-500/40 bg-violet-500/10 font-medium text-violet-600 dark:text-violet-400 cursor-help")}>
+                  <Network className="size-3.5" />also on {others.length} other asset{others.length === 1 ? "" : "s"}
                 </span>
               </TooltipTrigger>
               <TooltipContent side="top" className="max-w-xs">

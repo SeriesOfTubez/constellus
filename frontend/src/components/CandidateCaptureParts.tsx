@@ -213,7 +213,7 @@ export function latestRelevantSkip(skips: CaptureSkip[], captures: PageCapture[]
 export function CaptureSkipNotice({ skip }: { skip: CaptureSkip }) {
   return (
     <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
-      <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+      <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
       <span>
         Automatic capture skipped <span title={formatExactTime(skip.skipped_at)}>{relativeTime(skip.skipped_at)}</span>: {skip.message}
       </span>

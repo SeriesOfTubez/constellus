@@ -110,7 +110,7 @@ function CategoryCard({
                   key={item.label}
                   className={cn("flex items-center gap-3 px-3 py-2 rounded-md", item.future && "opacity-40")}
                 >
-                  <ItemIcon className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <ItemIcon className="size-3.5 text-muted-foreground shrink-0" />
                   <span className="flex-1 text-sm text-muted-foreground">{item.label}</span>
                   {item.future && (
                     <Badge variant="outline" className="text-xs px-1.5 py-0 h-4">Soon</Badge>
@@ -125,12 +125,12 @@ function CategoryCard({
                 to={item.to}
                 className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent group transition-colors"
               >
-                <ItemIcon className="h-4 w-4 text-muted-foreground shrink-0" />
+                <ItemIcon className="size-3.5 text-muted-foreground shrink-0" />
                 <span className="flex-1 text-sm">{item.label}</span>
                 {count !== undefined && (
                   <span className="text-xs text-muted-foreground tabular-nums">{count}</span>
                 )}
-                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-60 transition-opacity" />
+                <ChevronRight className="size-3.5 text-muted-foreground opacity-0 group-hover:opacity-60 transition-opacity" />
               </Link>
             )
           })}

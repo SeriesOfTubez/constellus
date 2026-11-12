@@ -75,7 +75,7 @@ function NavItem({
 
   const link = (
     <Link to={to} className={itemClass(collapsed, active)}>
-      <Icon className="h-4 w-4 shrink-0" />
+      <Icon className="size-4 shrink-0" />
       {!collapsed && <span>{label}</span>}
     </Link>
   )
@@ -95,7 +95,7 @@ function RailButton({
 }) {
   const btn = (
     <button onClick={onClick} className={itemClass(collapsed)}>
-      <Icon className="h-4 w-4 shrink-0" />
+      <Icon className="size-4 shrink-0" />
       {!collapsed && <span>{label}</span>}
     </button>
   )
@@ -157,8 +157,8 @@ export function Sidebar() {
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
             {collapsed
-              ? <ChevronRight className="h-4 w-4 shrink-0" />
-              : <ChevronLeft className="h-4 w-4 shrink-0" />}
+              ? <ChevronRight className="size-4 shrink-0" />
+              : <ChevronLeft className="size-4 shrink-0" />}
           </button>
         </div>
 
@@ -210,7 +210,7 @@ export function Sidebar() {
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={clearAuth} className="text-destructive focus:text-destructive">
-                <LogOut className="h-4 w-4 mr-2" />
+                <LogOut className="size-4 mr-2" />
                 Sign out
               </DropdownMenuItem>
             </DropdownMenuContent>

@@ -267,7 +267,7 @@ export function OpenPortsPanel({
             <>
               <Button variant="outline" size="sm" className="h-6 text-xs gap-1"
                 disabled={classify.isPending} onClick={() => classify.mutate(false)}>
-                <Sparkles className="h-3 w-3" />Classify
+                <Sparkles className="size-4" />Classify
               </Button>
               {allClassified && (
                 <Button variant="ghost" size="sm" className="h-6 text-xs"
@@ -351,7 +351,7 @@ function PortRow({ entry, web, assetId }: { entry: OpenPortEntry; web?: WebEndpo
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="shrink-0 inline-flex items-center justify-center text-muted-foreground hover:text-foreground cursor-help">
-                <Radio className="h-3 w-3" />
+                <Radio className="size-3.5" />
               </span>
             </TooltipTrigger>
             <TooltipContent side="left" className="max-w-xs">

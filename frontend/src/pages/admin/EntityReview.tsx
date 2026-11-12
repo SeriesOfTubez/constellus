@@ -107,7 +107,7 @@ export default function EntityReview() {
                       className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
                       title="Open evidence"
                     >
-                      <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+                      <SquareArrowOutUpRight className="size-4" />
                     </button>
                   </TableCell>
                   {isAdmin && (
@@ -119,7 +119,7 @@ export default function EntityReview() {
                           onClick={() => decisionMutation.mutate({ id: r.id, status: "confirmed" })}
                           title="Confirm"
                         >
-                          {decisionMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                          {decisionMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
                         </Button>
                         <Button
                           size="sm" variant="outline"
@@ -127,7 +127,7 @@ export default function EntityReview() {
                           onClick={() => decisionMutation.mutate({ id: r.id, status: "rejected" })}
                           title="Reject"
                         >
-                          <X className="h-3.5 w-3.5" />
+                          <X className="size-4" />
                         </Button>
                       </div>
                     </TableCell>

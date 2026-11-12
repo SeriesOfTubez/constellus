@@ -16,6 +16,8 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { OverflowCell } from "@/components/ui/overflow-cell"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 export const DECIDE = "entities.decide_candidate"
 
@@ -26,7 +28,7 @@ export function errorDetail(e: unknown): string {
 
 export function TierChip({ tier, label, title }: { tier: string; label: string; title?: string }) {
   return (
-    <span title={title} className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium ${tierChipClass(tier)}`}>
+    <span title={title} className={cn(CHIP, "border font-medium", tierChipClass(tier))}>
       {label}
     </span>
   )
@@ -77,7 +79,7 @@ export function StateCell({ row }: { row: CandidateRow }) {
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="inline-flex items-center gap-0.5 text-muted-foreground cursor-help">
-              <Plug className="h-3 w-3" />via connector
+              <Plug className="size-3.5" />via connector
             </span>
           </TooltipTrigger>
           <TooltipContent side="top">Claimed via connector</TooltipContent>

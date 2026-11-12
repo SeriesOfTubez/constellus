@@ -43,6 +43,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { api, ApiError, type Asset, type Finding, type WhoisInfo, type DomainWhoisInfo } from "@/lib/api"
 import { useAuthStore } from "@/lib/auth"
 import { canMutate } from "@/lib/roles"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 const PREVIEW_LIMIT = 20
 const NEW_ASSET_DAYS = 7
@@ -159,8 +161,8 @@ const FLY_TRIGGER = "h-9 rounded-none border-b-2 border-transparent data-[state=
 // clean-vs-unknown pair, rather than finding-badges.tsx's
 // Tailwind-hardcoded-hue convention (this isn't a new entry in the
 // Findings severity ramp, just a two-state doc chip).
-const CLEAN_CHIP_CLS = "inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold bg-[var(--sev-clean)]/15 text-[var(--sev-clean)] border-[var(--sev-clean)]/30"
-const UNSCANNED_CHIP_CLS = "inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold bg-[var(--sev-unknown)]/15 text-[var(--sev-unknown)] border-[var(--sev-unknown)]/30"
+const CLEAN_CHIP_CLS = cn(CHIP, "border font-semibold bg-[var(--sev-clean)]/15 text-[var(--sev-clean)] border-[var(--sev-clean)]/30")
+const UNSCANNED_CHIP_CLS = cn(CHIP, "border font-semibold bg-[var(--sev-unknown)]/15 text-[var(--sev-unknown)] border-[var(--sev-unknown)]/30")
 
 // Worst-first hygiene rank for the "Worst-managed" saved view / Hygiene
 // column sort (planning#130 L2, 5c). Real scores sort ascending (0 =
@@ -461,7 +463,7 @@ function AssetDetailSheet({
               className="ml-auto mr-6 text-muted-foreground hover:text-foreground"
               title="Open full asset view"
             >
-              <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+              <SquareArrowOutUpRight className="size-4" />
             </Link>
           </div>
           <SheetTitle className="font-mono text-sm break-all leading-relaxed" title={asset.value}>
@@ -482,7 +484,7 @@ function AssetDetailSheet({
               <TabsTrigger value="findings"      className={FLY_TRIGGER}>
                 Findings
                 {activeFindings.length > 0 && (
-                  <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 text-xs font-semibold">
+                  <span className={cn(CHIP, "ml-1.5 bg-muted font-semibold")}>
                     {activeFindings.length}
                   </span>
                 )}
@@ -533,7 +535,7 @@ function AssetDetailSheet({
                     {sources.map(src => {
                       const meta = SOURCE_META[src] ?? { label: src.slice(0, 2).toUpperCase(), color: "bg-muted text-muted-foreground", description: src }
                       return (
-                        <span key={src} className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold cursor-default ${meta.color}`} title={meta.description}>
+                        <span key={src} className={cn(CHIP, "font-semibold cursor-default", meta.color)} title={meta.description}>
                           {meta.label}
                         </span>
                       )
@@ -594,11 +596,11 @@ function AssetDetailSheet({
                           <span className="font-medium capitalize flex-1">{svc.product}</span>
                           <span className="text-muted-foreground font-mono">{svc.version}</span>
                           {svc.is_eol ? (
-                            <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold bg-amber-500/10 text-amber-500 border-amber-500/30 shrink-0">
+                            <span className={cn(CHIP, "border font-semibold bg-amber-500/10 text-amber-500 border-amber-500/30 shrink-0")}>
                               EOL{svc.days_past_eol !== null ? ` · ${svc.days_past_eol}d` : ""}
                             </span>
                           ) : (
-                            <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-semibold bg-emerald-500/10 text-emerald-600 border-emerald-500/30 shrink-0">
+                            <span className={cn(CHIP, "border font-semibold bg-emerald-500/10 text-emerald-600 border-emerald-500/30 shrink-0")}>
                               Supported
                             </span>
                           )}
@@ -613,7 +615,7 @@ function AssetDetailSheet({
                     <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Signals</p>
                     <div className="rounded-md border px-3 py-2 flex flex-wrap gap-1">
                       {signals.map(s => (
-                        <span key={`${s.value}-${s.source}`} className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ${s.severity === "critical" ? "bg-destructive/15 text-destructive" : "bg-muted text-foreground"}`}>
+                        <span key={`${s.value}-${s.source}`} className={cn(CHIP, s.severity === "critical" ? "bg-destructive/15 text-destructive" : "bg-muted text-foreground")}>
                           {s.value}
                           <span className="text-xs uppercase tracking-wider opacity-60">{s.source}</span>
                         </span>
@@ -713,7 +715,7 @@ function AssetDetailSheet({
                           <FindingRiskBadge finding={f} />
                           <StateBadge state={f.state} />
                           <span className="flex-1 text-xs min-w-0 truncate">{f.title}</span>
-                          <SquareArrowOutUpRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                          <SquareArrowOutUpRight className="size-3.5 shrink-0 text-muted-foreground" />
                         </Link>
                       ))}
                   </div>
@@ -764,11 +766,11 @@ function AssetDetailSheet({
         <div className="px-6 py-4 border-t flex gap-2 shrink-0">
           {!asset.ignored && (
             <Button size="sm" variant="outline" onClick={() => { onScan(asset.id); onClose() }}>
-              <RefreshCw className="h-3.5 w-3.5 mr-1.5" />Recheck
+              <RefreshCw className="size-4 mr-1.5" />Recheck
             </Button>
           )}
           <Button size="sm" variant="outline" onClick={() => onIgnore(asset.id, !asset.ignored)}>
-            {asset.ignored ? <Eye className="h-3.5 w-3.5 mr-1.5" /> : <EyeOff className="h-3.5 w-3.5 mr-1.5" />}
+            {asset.ignored ? <Eye className="size-4 mr-1.5" /> : <EyeOff className="size-4 mr-1.5" />}
             {asset.ignored ? "Restore" : "Ignore"}
           </Button>
         </div>
@@ -969,7 +971,7 @@ export default function Assets() {
     <>
       {!isEndpointsTab && (
         <div className="relative flex-1 min-w-48 max-w-sm">
-          <Filter className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          <Filter className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
           <Input className="pl-8 h-9 text-sm" placeholder={searchPlaceholder}
             value={search} onChange={e => setSearch(e.target.value)} />
         </div>
@@ -996,7 +998,7 @@ export default function Assets() {
       {!isPivotTab && availableTags.length > 0 && (
         <Select value={tagFilter} onValueChange={setTagFilter}>
           <SelectTrigger className="w-36 h-9 text-sm">
-            <Tag className="h-3 w-3 mr-1.5 text-muted-foreground" />
+            <Tag className="size-3.5 mr-1.5 text-muted-foreground" />
             <SelectValue placeholder="All tags" />
           </SelectTrigger>
           <SelectContent>
@@ -1009,7 +1011,7 @@ export default function Assets() {
       {!isPivotTab && (
         <Button variant={showIgnored ? "secondary" : "outline"} size="sm" className="h-9 gap-1.5"
           onClick={() => setShowIgnored(v => !v)}>
-          {showIgnored ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+          {showIgnored ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
           {showIgnored ? "Showing ignored" : "Show ignored"}
         </Button>
       )}
@@ -1018,7 +1020,7 @@ export default function Assets() {
         <Button variant={worstManaged ? "secondary" : "outline"} size="sm" className="h-9 gap-1.5"
           onClick={() => setWorstManaged(!worstManaged)}
           title="Sort by hygiene, worst-managed assets first">
-          <ArrowDownWideNarrow className="h-3.5 w-3.5" />
+          <ArrowDownWideNarrow className="size-4" />
           Worst-managed
         </Button>
       )}
@@ -1026,8 +1028,8 @@ export default function Assets() {
       {!isPivotTab && sortedGroups.length > 1 && (
         <Button variant="outline" size="sm" className="h-9 gap-1.5" onClick={toggleAllCollapse}>
           {allCollapsed
-            ? <><ChevronsUpDown className="h-3.5 w-3.5" />Expand all</>
-            : <><ChevronsDownUp className="h-3.5 w-3.5" />Collapse all</>}
+            ? <><ChevronsUpDown className="size-4" />Expand all</>
+            : <><ChevronsDownUp className="size-4" />Collapse all</>}
         </Button>
       )}
 
@@ -1066,15 +1068,15 @@ export default function Assets() {
           disabled={bulkRecheckMutation.isPending || rescannable.length === 0}
           onClick={() => bulkRecheckMutation.mutate(rescannable.map(a => a.id))}>
           {bulkRecheckMutation.isPending
-            ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-            : <RefreshCw className="h-3.5 w-3.5 mr-1.5" />}
+            ? <Loader2 className="size-4 mr-1.5 animate-spin" />
+            : <RefreshCw className="size-4 mr-1.5" />}
           Recheck
         </Button>
         <Button size="sm" variant="outline"
           className="text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/40"
           disabled={bulkDeleteMutation.isPending}
           onClick={() => setBulkDeleteOpen(true)}>
-          <Trash2 className="h-3.5 w-3.5 mr-1.5" />Delete
+          <Trash2 className="size-4 mr-1.5" />Delete
         </Button>
         <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>Clear</Button>
       </div>
@@ -1151,10 +1153,10 @@ export default function Assets() {
                       <IndeterminateCheckbox checked={allGroupSelected} indeterminate={someGroupSelected} onChange={c => toggleGroupAssets(key, c)} />
                     </span>
                     {isCollapsed
-                      ? <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                      : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                      ? <ChevronRight className="size-3.5 text-muted-foreground" />
+                      : <ChevronDown className="size-3.5 text-muted-foreground" />}
                     <span className={`text-sm font-semibold ${group === "apex" ? "font-mono" : ""}`}>{groupLabel(key, group)}</span>
-                    <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full">{groupAssets.length}</span>
+                    <span className={cn(CHIP, "text-muted-foreground bg-muted")}>{groupAssets.length}</span>
                   </div>
                   {!isCollapsed && (
                     <>
@@ -1174,7 +1176,7 @@ export default function Assets() {
                           className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5 transition-colors"
                           onClick={() => setExpandedGroups(prev => new Set([...prev, key]))}
                         >
-                          <ChevronDown className="h-3 w-3" />Show {hiddenCount} more record{hiddenCount !== 1 ? "s" : ""}
+                          <ChevronDown className="size-3.5" />Show {hiddenCount} more record{hiddenCount !== 1 ? "s" : ""}
                         </button>
                       )}
                     </>
@@ -1199,7 +1201,7 @@ export default function Assets() {
                   >
                     <span className="inline-flex items-center gap-1">
                       Hygiene
-                      {worstManaged && <ArrowDownWideNarrow className="h-3 w-3" />}
+                      {worstManaged && <ArrowDownWideNarrow className="size-3.5" />}
                     </span>
                   </TableHead>
                   <TableHead className="w-20">Type</TableHead>
@@ -1243,13 +1245,13 @@ export default function Assets() {
                         </TableCell>
                         <TableCell className="w-8">
                           {isCollapsed
-                            ? <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                            : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                            ? <ChevronRight className="size-3.5 text-muted-foreground" />
+                            : <ChevronDown className="size-3.5 text-muted-foreground" />}
                         </TableCell>
                         <TableCell colSpan={8}>
                           <div className="flex items-center gap-2">
                             <span className={`text-sm font-semibold ${group === "apex" ? "font-mono" : ""}`}>{groupLabel(key, group)}</span>
-                            <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full">
+                            <span className={cn(CHIP, "text-muted-foreground bg-muted")}>
                               {groupAssets.length}
                             </span>
                           </div>
@@ -1274,16 +1276,16 @@ export default function Assets() {
                             <span className="inline-flex items-center gap-2">
                               {displayName(asset.value)}
                               {isNew(asset) && (
-                                <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
-                                  <Sparkles className="h-2.5 w-2.5" />New
+                                <span className={cn(CHIP, "bg-primary/10 font-medium text-primary")}>
+                                  <Sparkles className="size-3.5" />New
                                 </span>
                               )}
                               {isStale(asset.last_seen_at) && (
                                 <span
-                                  className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+                                  className={cn(CHIP, "bg-amber-500/10 font-medium text-amber-700 dark:text-amber-400")}
                                   title={`Last seen ${relativeTime(asset.last_seen_at)} — not observed in recent monitoring runs`}
                                 >
-                                  <Clock className="h-2.5 w-2.5" />
+                                  <Clock className="size-3.5" />
                                   stale {daysSince(asset.last_seen_at)}d
                                 </span>
                               )}
@@ -1331,7 +1333,7 @@ export default function Assets() {
                                 <Button variant="ghost" size="sm" title="Recheck"
                                   onClick={() => scanMutation.mutate(asset.id)}
                                   disabled={scanMutation.isPending}>
-                                  <RefreshCw className="h-3.5 w-3.5" />
+                                  <RefreshCw className="size-4" />
                                 </Button>
                               )}
                               <Button variant="ghost" size="sm"
@@ -1339,7 +1341,7 @@ export default function Assets() {
                                 className={asset.ignored ? "text-muted-foreground" : undefined}
                                 onClick={() => ignoreMutation.mutate({ assetId: asset.id, ignored: !asset.ignored })}
                                 disabled={ignoreMutation.isPending}>
-                                {asset.ignored ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                                {asset.ignored ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
                               </Button>
                             </div>
                           </TableCell>
@@ -1355,7 +1357,7 @@ export default function Assets() {
                               className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5 transition-colors"
                               onClick={() => setExpandedGroups(prev => new Set([...prev, key]))}
                             >
-                              <ChevronDown className="h-3 w-3" />
+                              <ChevronDown className="size-3.5" />
                               Show {hiddenCount} more record{hiddenCount !== 1 ? "s" : ""}
                             </button>
                           </TableCell>
@@ -1401,8 +1403,8 @@ export default function Assets() {
             <Button variant="destructive" disabled={bulkDeleteMutation.isPending}
               onClick={() => bulkDeleteMutation.mutate(Array.from(selectedIds))}>
               {bulkDeleteMutation.isPending
-                ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
-                : <Trash2 className="h-4 w-4 mr-1.5" />}
+                ? <Loader2 className="size-4 animate-spin mr-1.5" />
+                : <Trash2 className="size-4 mr-1.5" />}
               Delete {selectedIds.size} asset{selectedIds.size !== 1 ? "s" : ""}
             </Button>
           </DialogFooter>

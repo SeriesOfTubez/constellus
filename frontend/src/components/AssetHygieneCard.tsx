@@ -86,8 +86,8 @@ export function AssetHygieneCard({ asset }: { asset: Asset }) {
         <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Asset Hygiene</p>
         <div className="rounded-lg border bg-muted/20 p-4 flex items-start gap-3">
           {excluded
-            ? <ShieldQuestion className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
-            : <Clock3 className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />}
+            ? <ShieldQuestion className="size-3.5 mt-0.5 shrink-0 text-muted-foreground" />
+            : <Clock3 className="size-3.5 mt-0.5 shrink-0 text-muted-foreground" />}
           <div className="space-y-0.5">
             <p className="text-sm font-medium">{excluded ? "Not scored — third party" : "Not yet computed"}</p>
             <p className="text-xs text-muted-foreground leading-relaxed">

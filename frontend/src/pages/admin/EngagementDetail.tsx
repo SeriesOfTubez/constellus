@@ -84,7 +84,7 @@ export default function EngagementDetail() {
   if (isError || !engagement) return (
     <div className="max-w-3xl mx-auto px-6 py-8 space-y-4">
       <Link to="/admin/engagements" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ChevronLeft className="h-4 w-4" />Engagements
+        <ChevronLeft className="size-3.5" />Engagements
       </Link>
       <div className="rounded-md border bg-card p-6 text-sm text-muted-foreground">Engagement not found.</div>
     </div>
@@ -102,7 +102,7 @@ export default function EngagementDetail() {
   return (
     <div className="max-w-3xl mx-auto px-6 py-8 space-y-6">
       <Link to="/admin/engagements" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ChevronLeft className="h-4 w-4" />Engagements
+        <ChevronLeft className="size-3.5" />Engagements
       </Link>
 
       <div className="space-y-2">
@@ -133,7 +133,7 @@ export default function EngagementDetail() {
             title={engagement.member_targets.length > 0 ? "Detach member targets first" : undefined}
             onClick={() => setDeleteOpen(true)}
           >
-            <Trash2 className="h-3.5 w-3.5 mr-1.5" />Remove
+            <Trash2 className="size-4 mr-1.5" />Remove
           </Button>
         </div>
       )}
@@ -195,7 +195,7 @@ export default function EngagementDetail() {
                         className="inline-flex items-center text-muted-foreground hover:text-primary transition-colors"
                         title="Open full view"
                       >
-                        <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+                        <SquareArrowOutUpRight className="size-4" />
                       </Link>
                     </TableCell>
                   </TableRow>
@@ -230,7 +230,7 @@ export default function EngagementDetail() {
               disabled={!reference.trim() || transitionMutation.isPending}
               onClick={() => transitionMutation.mutate({ to: transitionTo!, authorisation_reference: reference.trim() })}
             >
-              {transitionMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}Confirm
+              {transitionMutation.isPending && <Loader2 className="size-4 animate-spin mr-1.5" />}Confirm
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -247,8 +247,8 @@ export default function EngagementDetail() {
             <Button variant="outline" onClick={() => setDeleteOpen(false)}>Cancel</Button>
             <Button variant="destructive" disabled={deleteMutation.isPending} onClick={() => deleteMutation.mutate()}>
               {deleteMutation.isPending
-                ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
-                : <Trash2 className="h-4 w-4 mr-1.5" />}
+                ? <Loader2 className="size-4 animate-spin mr-1.5" />
+                : <Trash2 className="size-4 mr-1.5" />}
               Remove
             </Button>
           </DialogFooter>

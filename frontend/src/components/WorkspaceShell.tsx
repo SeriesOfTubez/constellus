@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils"
+import { CHIP } from "@/components/ui/chip"
 
 export interface TabDef {
   key: string
@@ -63,7 +64,7 @@ export function WorkspaceShell({
             {tab.label}
             {tab.count !== undefined && (
               <span className={cn(
-                "rounded-full px-1.5 py-0.5 text-xs font-semibold tabular-nums",
+                CHIP, "font-semibold tabular-nums",
                 activeTab === tab.key
                   ? "bg-primary/15 text-primary"
                   : "bg-muted text-muted-foreground"

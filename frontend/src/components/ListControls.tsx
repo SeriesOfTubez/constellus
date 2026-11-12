@@ -20,7 +20,7 @@ export function ViewToggle({ view, onChange }: { view: ListViewMode; onChange: (
             view === v ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"
           }`}
         >
-          <Icon className="h-4 w-4" />
+          <Icon className="size-4" />
         </button>
       ))}
     </div>

@@ -7,6 +7,8 @@ import {
   type WebEndpointState,
 } from "@/lib/webClassification"
 import { statusCell, titleCell } from "@/lib/redirectChain"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 /** Web endpoints (planning#231). All text is rendered as plain React text nodes. */
 export function EndpointsTable({
@@ -60,7 +62,7 @@ function GroupRows({
         <TableRow className="bg-muted/30 hover:bg-muted/30">
           <TableCell colSpan={6}>
             <span className="text-sm font-semibold">{group.label}</span>
-            <span className="ml-2 text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full">{group.rows.length}</span>
+            <span className={cn(CHIP, "ml-2 text-muted-foreground bg-muted")}>{group.rows.length}</span>
           </TableCell>
         </TableRow>
       )}

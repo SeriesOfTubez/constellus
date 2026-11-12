@@ -16,7 +16,7 @@ export function SecretInput({ value, onChange, placeholder, id }: { value: strin
         onChange={(e) => onChange(e.target.value)} className="pr-10" placeholder={placeholder} />
       <button type="button" onClick={() => setShow(s => !s)} tabIndex={-1}
         className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
-        {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        {show ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
       </button>
     </div>
   )

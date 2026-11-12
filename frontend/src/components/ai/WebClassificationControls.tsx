@@ -78,7 +78,7 @@ export function WebClassificationControls({ assetId, state }: { assetId: string;
           disabled={revert.isPending}
           onClick={e => { e.stopPropagation(); revert.mutate() }}
         >
-          <Undo2 className="h-3 w-3" />Revert to AI
+          <Undo2 className="size-4" />Revert to AI
         </Button>
       )}
       <Dialog open={open} onOpenChange={setOpen}>

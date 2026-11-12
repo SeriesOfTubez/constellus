@@ -37,7 +37,7 @@ function EvidenceButton({ id }: { id: string }) {
       className="inline-flex items-center text-muted-foreground hover:text-primary transition-colors"
       title="Open evidence"
     >
-      <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+      <SquareArrowOutUpRight className="size-4" />
     </button>
   )
 }
@@ -169,7 +169,7 @@ function AcquisitionReadPanel({ isAdmin, run, hasSections, busy, onStart }: {
             size="sm" variant="outline" disabled={!hasSections || busy} onClick={onStart}
             title={hasSections ? undefined : "No Business Combinations section is stored yet. Map this company from EDGAR first."}
           >
-            {busy ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1.5" />}
+            {busy ? <Loader2 className="size-4 mr-1.5 animate-spin" /> : <Sparkles className="size-4 mr-1.5" />}
             Read acquisitions with AI
           </Button>
           <span className="text-xs text-muted-foreground">
@@ -481,14 +481,14 @@ export function EntityDetailContent({ entityId }: { entityId: string }) {
                                     disabled={decisionMutation.isPending}
                                     onClick={() => decisionMutation.mutate({ relationId: s.relation_id, status: "confirmed" })}
                                   >
-                                    <Check className="h-3 w-3" />
+                                    <Check className="size-4" />
                                   </Button>
                                   <Button
                                     size="sm" variant="outline" className="h-6 px-2" title="Reject"
                                     disabled={decisionMutation.isPending}
                                     onClick={() => decisionMutation.mutate({ relationId: s.relation_id, status: "rejected" })}
                                   >
-                                    <X className="h-3 w-3" />
+                                    <X className="size-4" />
                                   </Button>
                                 </span>
                               )}
@@ -625,7 +625,7 @@ export function EntityDetailContent({ entityId }: { entityId: string }) {
               disabled={!oursReference.trim() || relationshipMutation.isPending}
               onClick={() => { setRelationshipError(null); relationshipMutation.mutate({ relationship: "ours", reference: oursReference.trim() }) }}
             >
-              {relationshipMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+              {relationshipMutation.isPending && <Loader2 className="size-4 mr-1.5 animate-spin" />}
               Mark as ours
             </Button>
           </DialogFooter>
@@ -696,7 +696,7 @@ export function EntityDetailContent({ entityId }: { entityId: string }) {
                 )
               }}
             >
-              {relationshipMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+              {relationshipMutation.isPending && <Loader2 className="size-4 mr-1.5 animate-spin" />}
               Confirm
             </Button>
           </DialogFooter>
@@ -718,7 +718,7 @@ export function EntityDetailContent({ entityId }: { entityId: string }) {
               disabled={relationshipMutation.isPending}
               onClick={() => { setRelationshipError(null); relationshipMutation.mutate({ relationship: null }) }}
             >
-              {relationshipMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+              {relationshipMutation.isPending && <Loader2 className="size-4 mr-1.5 animate-spin" />}
               Clear
             </Button>
           </DialogFooter>

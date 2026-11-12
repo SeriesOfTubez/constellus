@@ -45,7 +45,7 @@ function MetricsTable({ report }: { report: Report }) {
                 aria-label={`Open ${m.label} in Explore`}
                 className="text-muted-foreground hover:text-foreground"
               >
-                <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+                <SquareArrowOutUpRight className="size-4" />
               </Link>
             </TableCell>
           </TableRow>
@@ -124,7 +124,7 @@ function FactLists({ report }: { report: Report }) {
                 aria-label={`Open ${list.label} in Explore`}
                 className="text-muted-foreground hover:text-foreground"
               >
-                <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+                <SquareArrowOutUpRight className="size-4" />
               </Link>
             </h3>
             {list.rows.length === 0 ? (
@@ -207,7 +207,7 @@ export function ReportView({ report, engagementName, onDelete, onDownload }: Pro
 
       {inFlight && (
         <p className="text-sm text-muted-foreground flex items-center gap-2">
-          <Loader2 className="h-4 w-4 animate-spin" />
+          <Loader2 className="size-3.5 animate-spin" />
           {report.status === "queued" ? "Queued…" : "Generating…"}
         </p>
       )}
@@ -244,12 +244,12 @@ export function ReportView({ report, engagementName, onDelete, onDownload }: Pro
       <div className="flex gap-2">
         {report.status === "done" && onDownload && (
           <Button variant="outline" size="sm" onClick={onDownload}>
-            <Download className="h-4 w-4 mr-1.5" />Download markdown
+            <Download className="size-4 mr-1.5" />Download markdown
           </Button>
         )}
         {onDelete && !inFlight && (
           <Button variant="outline" size="sm" onClick={onDelete}>
-            <Trash2 className="h-4 w-4 mr-1.5" />Delete
+            <Trash2 className="size-4 mr-1.5" />Delete
           </Button>
         )}
       </div>

@@ -45,7 +45,7 @@ export function JobStatusRow({ status, windowHours, expanded, onToggle }: {
         </p>
       )}
       <Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs" aria-expanded={expanded} onClick={onToggle}>
-        <Chevron className="h-3 w-3 mr-1" />
+        <Chevron className="size-4 mr-1" />
         {expanded ? "Hide recent runs" : "Recent runs"}
       </Button>
     </div>

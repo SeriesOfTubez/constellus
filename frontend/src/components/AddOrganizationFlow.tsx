@@ -38,7 +38,7 @@ function FilerCard({ hit, selected, onSelect }: { hit: FilerHit; selected: boole
         <span className="font-medium">{hit.display_name ?? `CIK ${hit.cik}`}</span>
         <a href={hit.edgar_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
           className="inline-flex items-center gap-1 text-xs text-primary hover:underline shrink-0">
-          EDGAR <ExternalLink className="h-3 w-3" />
+          EDGAR <ExternalLink className="size-3.5" />
         </a>
       </div>
       <div className="text-xs text-muted-foreground">CIK <span className="font-mono">{hit.cik}</span></div>
@@ -108,7 +108,7 @@ export function OrgDetailsStep({
       <div className="flex justify-between gap-2">
         <Button variant="outline" disabled={create.isPending} onClick={() => { create.reset(); onBack() }}>Back</Button>
         <Button disabled={create.isPending || !addOrgStepValid(3, s, canMarkOurs)} onClick={onFinish}>
-          {create.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
+          {create.isPending && <Loader2 className="size-4 mr-1.5 animate-spin" />}
           Finish
         </Button>
       </div>

@@ -360,7 +360,7 @@ function StatusCards({ status }: { status: LlmStatus | undefined }) {
             </p>
           ) : key_error ? (
             <p className="text-sm text-amber-600 dark:text-amber-400 flex items-start gap-1.5">
-              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+              <AlertTriangle className="size-3.5 shrink-0 mt-0.5" />
               <span>Couldn't read the key status: {key_error}</span>
             </p>
           ) : key ? (
@@ -460,16 +460,16 @@ function RoleEditor({ role, binding, onChange, byId, cachePresent, choices }: {
               <ModelFlags id={id} model={byId.get(id)} cachePresent={cachePresent} structuredRole={role.structured} />
             </div>
             <div className="ml-auto flex gap-0.5 shrink-0">
-              <Button variant="ghost" size="icon" className="h-6 w-6" aria-label={`Move ${id} up`} disabled={i === 0} onClick={() => move(i, -1)}><ArrowUp className="h-3 w-3" /></Button>
-              <Button variant="ghost" size="icon" className="h-6 w-6" aria-label={`Move ${id} down`} disabled={i === binding.models.length - 1} onClick={() => move(i, 1)}><ArrowDown className="h-3 w-3" /></Button>
-              <Button variant="ghost" size="icon" className="h-6 w-6" aria-label={`Remove ${id}`} onClick={() => remove(i)}><X className="h-3 w-3" /></Button>
+              <Button variant="ghost" size="icon" className="h-6 w-6" aria-label={`Move ${id} up`} disabled={i === 0} onClick={() => move(i, -1)}><ArrowUp className="size-4" /></Button>
+              <Button variant="ghost" size="icon" className="h-6 w-6" aria-label={`Move ${id} down`} disabled={i === binding.models.length - 1} onClick={() => move(i, 1)}><ArrowDown className="size-4" /></Button>
+              <Button variant="ghost" size="icon" className="h-6 w-6" aria-label={`Remove ${id}`} onClick={() => remove(i)}><X className="size-4" /></Button>
             </div>
           </div>
         ))}
         <Select value="" onValueChange={add} disabled={addable.length === 0}>
           <SelectTrigger className="h-8 text-xs w-72" aria-label={`Add a model to ${role.label}`}>
             <div className="flex items-center gap-1.5 text-muted-foreground">
-              <Plus className="h-3 w-3" />
+              <Plus className="size-3.5" />
               <SelectValue placeholder={cachePresent ? (addable.length ? "Add a model" : "No more allowed models") : "Refresh the allowed models first"} />
             </div>
           </SelectTrigger>
@@ -577,7 +577,7 @@ export default function AiModels() {
 
       {saved && !saved.configured && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm flex items-start gap-2">
-          <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          <AlertTriangle className="size-3.5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
           <div>
             <div className="font-medium">AI models aren't configured</div>
             <div className="text-muted-foreground">
@@ -600,12 +600,12 @@ export default function AiModels() {
             <div className="flex gap-2 shrink-0">
               <Button variant="outline" size="sm" disabled={!dirty || saveMutation.isPending}
                 onClick={() => setDraft(saved?.bindings ? structuredClone(saved.bindings) : emptyDraft())}>
-                <RotateCcw className="h-3 w-3" /> Discard
+                <RotateCcw className="size-4" /> Discard
               </Button>
               <Button size="sm" disabled={!dirty || !complete || !valid || saveMutation.isPending}
                 onClick={() => draft && saveMutation.mutate(draft)}
                 title={!complete ? "Every role needs at least one model" : !valid ? "Max tokens must be a positive whole number; temperature 0–2" : undefined}>
-                {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                {saveMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
                 Save
               </Button>
             </div>
@@ -647,7 +647,7 @@ export default function AiModels() {
               <Button variant="outline" size="sm" disabled={refreshMutation.isPending || !status?.connector_configured}
                 onClick={() => refreshMutation.mutate()}
                 title={!status?.connector_configured ? "Configure the OpenRouter connector first" : undefined}>
-                {refreshMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                {refreshMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                 Refresh
               </Button>
             </div>

@@ -1,5 +1,7 @@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { OverflowCell } from "@/components/ui/overflow-cell"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 export const SOURCE_META: Record<string, { label: string; color: string; description: string }> = {
   cloudflare:        { label: "CF", color: "bg-orange-500/15 text-orange-600 dark:text-orange-400",  description: "Cloudflare DNS connector" },
@@ -31,7 +33,7 @@ export function SourceBadges({ metadata }: { metadata: Record<string, unknown> }
         return (
           <Tooltip key={src}>
             <TooltipTrigger asChild>
-              <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold cursor-help ${meta.color}`}>
+              <span className={cn(CHIP, "font-semibold cursor-help", meta.color)}>
                 {meta.label}
               </span>
             </TooltipTrigger>
@@ -43,7 +45,7 @@ export function SourceBadges({ metadata }: { metadata: Record<string, unknown> }
         const meta = SOURCE_META[src] ?? { label: src.slice(0, 2).toUpperCase(), color: "bg-muted text-muted-foreground", description: src }
         return (
           <div className="flex items-start gap-2">
-            <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold shrink-0 ${meta.color}`}>{meta.label}</span>
+            <span className={cn(CHIP, "font-semibold shrink-0", meta.color)}>{meta.label}</span>
             <span className="text-muted-foreground leading-snug pt-0.5">{meta.description}</span>
           </div>
         )
@@ -63,7 +65,7 @@ const RECORD_TYPE_COLOR: Record<string, string> = {
 export function RecordTypeBadge({ type }: { type: string }) {
   const cls = RECORD_TYPE_COLOR[type] ?? "bg-muted text-muted-foreground"
   return (
-    <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono font-semibold ${cls}`}>
+    <span className={cn(CHIP, "font-mono font-semibold", cls)}>
       {type}
     </span>
   )
@@ -79,7 +81,7 @@ const TYPE_COLOR: Record<string, string> = {
 export function AssetTypeBadge({ type }: { type: string }) {
   const cls = TYPE_COLOR[type] ?? "bg-muted text-muted-foreground"
   return (
-    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${cls}`}>
+    <span className={cn(CHIP, "font-medium", cls)}>
       {type.replace(/_/g, " ")}
     </span>
   )

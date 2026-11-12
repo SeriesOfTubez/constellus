@@ -139,7 +139,7 @@ function PolicyDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button disabled={!tag.trim() || mutation.isPending} onClick={() => mutation.mutate()}>
-            {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}
+            {mutation.isPending && <Loader2 className="size-4 animate-spin mr-1.5" />}
             Add policy
           </Button>
         </DialogFooter>
@@ -185,7 +185,7 @@ function MonitoringPoliciesCard() {
       <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
         <div>
           <CardTitle className="text-base flex items-center gap-2">
-            <Clock className="h-4 w-4" />
+            <Clock className="size-3.5" />
             Monitoring policies
           </CardTitle>
           <CardDescription>
@@ -194,7 +194,7 @@ function MonitoringPoliciesCard() {
           </CardDescription>
         </div>
         <Button size="sm" onClick={() => setAddOpen(true)}>
-          <Plus className="h-4 w-4 mr-1.5" />Add
+          <Plus className="size-4 mr-1.5" />Add
         </Button>
       </CardHeader>
       <CardContent>
@@ -250,7 +250,7 @@ function MonitoringPoliciesCard() {
                     onClick={() => { if (confirm(`Remove policy for tag "${p.tag}"?`)) deleteMutation.mutate(p.id) }}
                     title="Remove"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <Trash2 className="size-4" />
                   </Button>
                 )}
               </div>
@@ -404,7 +404,7 @@ function NotificationRuleDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button disabled={!name.trim() || !recipientsText.trim() || mutation.isPending} onClick={() => mutation.mutate()}>
-            {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}
+            {mutation.isPending && <Loader2 className="size-4 animate-spin mr-1.5" />}
             {isNew ? "Add rule" : "Save"}
           </Button>
         </DialogFooter>
@@ -523,7 +523,7 @@ function NotificationRulesCard() {
       <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
         <div>
           <CardTitle className="text-base flex items-center gap-2">
-            <Bell className="h-4 w-4" />
+            <Bell className="size-3.5" />
             Notification rules
           </CardTitle>
           <CardDescription>
@@ -531,7 +531,7 @@ function NotificationRulesCard() {
           </CardDescription>
         </div>
         <Button size="sm" onClick={() => setEditing(null)}>
-          <Plus className="h-4 w-4 mr-1.5" />Add
+          <Plus className="size-4 mr-1.5" />Add
         </Button>
       </CardHeader>
       <CardContent>
@@ -578,7 +578,7 @@ function NotificationRulesCard() {
                   onClick={() => { if (confirm(`Remove "${r.name}"?`)) deleteMutation.mutate(r.id) }}
                   title="Remove"
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
+                  <Trash2 className="size-4" />
                 </Button>
               </div>
             ))}
@@ -669,7 +669,7 @@ function AggressivenessCard() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
-            <Gauge className="h-4 w-4" />
+            <Gauge className="size-3.5" />
             Scan aggressiveness
           </CardTitle>
           <CardDescription>
@@ -705,7 +705,7 @@ function AggressivenessCard() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              <AlertTriangle className="size-3.5 text-amber-500" />
               Enable aggressive scanning?
             </DialogTitle>
             <DialogDescription>
@@ -725,7 +725,7 @@ function AggressivenessCard() {
                 setPendingTier(null)
               }}
             >
-              {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}
+              {mutation.isPending && <Loader2 className="size-4 animate-spin mr-1.5" />}
               Enable aggressive
             </Button>
           </DialogFooter>
@@ -777,7 +777,7 @@ function OrgBrandingCard() {
     <Card>
       <CardHeader>
         <CardTitle className="text-base flex items-center gap-2">
-          <Palette className="h-4 w-4" />
+          <Palette className="size-3.5" />
           Organization branding
         </CardTitle>
         <CardDescription>
@@ -879,7 +879,7 @@ function OrgBrandingCard() {
                 disabled={!isDirty || mutation.isPending}
                 size="sm"
               >
-                {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1.5" />}
+                {mutation.isPending && <Loader2 className="size-4 animate-spin mr-1.5" />}
                 Save branding
               </Button>
             </div>

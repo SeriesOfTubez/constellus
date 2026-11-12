@@ -52,7 +52,7 @@ export function ClusterWriteupBody({
         </div>
         {canGenerate && !w && !pending && (
           <Button size="sm" variant="outline" disabled={busy} onClick={() => onGenerate(false)}>
-            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+            {busy ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
             <span className="ml-1.5">Write up this issue with AI</span>
           </Button>
         )}
@@ -60,7 +60,7 @@ export function ClusterWriteupBody({
 
       {pending && (
         <p className="text-sm text-muted-foreground inline-flex items-center gap-1.5">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating…
+          <Loader2 className="size-3.5 animate-spin" /> Generating…
         </p>
       )}
       {!canGenerate && !w && !pending && (
@@ -71,7 +71,7 @@ export function ClusterWriteupBody({
           <p className="text-sm text-destructive">Last attempt failed: {data.last_failure!.error}</p>
           {canGenerate && (
             <Button size="sm" variant="outline" disabled={busy} onClick={() => onGenerate(!!w)}>
-              <RefreshCw className="h-3.5 w-3.5" /><span className="ml-1.5">Retry</span>
+              <RefreshCw className="size-4" /><span className="ml-1.5">Retry</span>
             </Button>
           )}
         </div>
@@ -81,7 +81,7 @@ export function ClusterWriteupBody({
           <p className="text-xs text-amber-600 dark:text-amber-400">Membership changed since this write-up</p>
           {canGenerate && !pending && (
             <Button size="sm" variant="outline" disabled={busy} onClick={() => onGenerate(true)}>
-              <RefreshCw className="h-3.5 w-3.5" /><span className="ml-1.5">Regenerate</span>
+              <RefreshCw className="size-4" /><span className="ml-1.5">Regenerate</span>
             </Button>
           )}
         </div>

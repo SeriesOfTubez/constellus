@@ -8,6 +8,8 @@ import {
   type QueryCountResponse, type QueryObject, type QueryRowsResponse,
 } from "@/lib/chat"
 import { relativeTime } from "@/lib/time"
+import { CHIP } from "@/components/ui/chip"
+import { cn } from "@/lib/utils"
 
 /**
  * Explore. Until the #53 builder exists, `?q=<query JSON>` (from the chat
@@ -93,7 +95,7 @@ function QueryResults({ q, raw }: { q: QueryObject; raw: string }) {
     <div className="p-6 space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl tracking-title font-semibold">Explore</h1>
-        <span className="rounded border px-1.5 py-0.5 text-xs text-muted-foreground">From chat</span>
+        <span className={cn(CHIP, "border text-muted-foreground")}>From chat</span>
         <span className="font-mono text-xs text-muted-foreground truncate max-w-[50ch]" title={summariseQuery(q)}>
           {summariseQuery(q)}
         </span>
@@ -102,7 +104,7 @@ function QueryResults({ q, raw }: { q: QueryObject; raw: string }) {
           {count.data && rows.data && <> · showing {rows.data.row_count.toLocaleString("en-US")}</>}
         </span>
         <button className="flex items-center gap-1 text-xs text-primary hover:opacity-80" onClick={() => setShowJson(s => !s)}>
-          <Braces className="h-3.5 w-3.5" /> Query
+          <Braces className="size-4" /> Query
         </button>
       </div>
 
