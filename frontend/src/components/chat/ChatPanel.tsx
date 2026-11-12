@@ -41,8 +41,8 @@ function UserBubble({ text, muted }: { text: string; muted?: boolean }) {
 
 function Notice({ icon: Icon, children }: { icon: React.ElementType; children: React.ReactNode }) {
   return (
-    <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
-      <Icon className="mt-0.5 size-3.5 shrink-0" />
+    <div className="flex items-start gap-2 text-xs text-muted-foreground">
+      <Icon className="mt-1 size-3.5 shrink-0" />
       <span>{children}</span>
     </div>
   )
@@ -56,9 +56,9 @@ function AssistantMessage({ m }: { m: ChatMessage }) {
     <div className="space-y-2" data-testid="chat-answer">
       <ChatMarkdown content={m.content} />
       {counted.length > 0 && (
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           {counted.map((c, i) => (
-            <div key={i} className="flex items-center gap-2 rounded-md border bg-muted/30 px-2.5 py-1.5 text-xs" data-testid="chat-query">
+            <div key={i} className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs" data-testid="chat-query">
               <span className="truncate font-mono text-muted-foreground" title={JSON.stringify(c.query, null, 2)}>
                 {summariseQuery(c.query)}
               </span>
@@ -85,7 +85,7 @@ function AssistantMessage({ m }: { m: ChatMessage }) {
         </div>
       )}
       {notice && (
-        <div className="rounded-md border bg-muted/40 px-2.5 py-2 text-xs" data-testid="chat-stop-notice">{notice}</div>
+        <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs" data-testid="chat-stop-notice">{notice}</div>
       )}
       {unverified.length > 0 && (
         <div className="border-t pt-2" data-testid="chat-unverified">
@@ -130,7 +130,7 @@ function ConversationList() {
   return (
     <ul className="divide-y" data-testid="chat-conversation-list">
       {list.data.map(c => (
-        <li key={c.id} className={cn("flex items-center gap-2 px-4 py-2.5", c.id === conversationId && "bg-muted/50")}>
+        <li key={c.id} className={cn("flex items-center gap-2 px-4 py-3", c.id === conversationId && "bg-muted/50")}>
           <button className="min-w-0 flex-1 text-left" onClick={() => openConversation(c.id)}>
             <p className="truncate text-sm">{c.title}</p>
             <p className="text-xs text-muted-foreground">{relativeTime(c.updated_at)}</p>
@@ -215,7 +215,7 @@ function ConversationView() {
           <div className="space-y-3 text-sm text-muted-foreground">
             <p>Ask about your attack surface: assets, open ports, findings and organisation entities.
               Answers come from read-only queries, shown with their exact counts.</p>
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               {EXAMPLES.map(e => (
                 <button key={e} className="block w-full rounded-md border px-3 py-2 text-left text-xs hover:bg-muted"
                   onClick={() => setDraft(e)}>{e}</button>
@@ -238,7 +238,7 @@ function ConversationView() {
           <>
             <UserBubble text={failed.question} muted />
             <div className="flex items-start gap-2 text-xs text-muted-foreground" data-testid="chat-failed">
-              <Info className="mt-0.5 size-3.5 shrink-0" />
+              <Info className="mt-1 size-3.5 shrink-0" />
               <span className="flex-1">Not answered. {failed.reason}</span>
               <button className="shrink-0 text-primary hover:opacity-80" onClick={() => ask.mutate(failed.question)}>Retry</button>
             </div>

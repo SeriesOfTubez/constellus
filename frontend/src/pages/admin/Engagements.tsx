@@ -62,7 +62,7 @@ export default function Engagements() {
           </p>
         </div>
         <Button size="sm" onClick={() => setCreateOpen(true)}>
-          <Plus className="size-4 mr-1.5" />New Engagement
+          <Plus className="size-4 mr-2" />New Engagement
         </Button>
       </div>
 
@@ -135,7 +135,7 @@ export default function Engagements() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
             <Button disabled={!newName.trim() || createMutation.isPending} onClick={() => createMutation.mutate(newName.trim())}>
-              {createMutation.isPending && <Loader2 className="size-4 animate-spin mr-1.5" />}Create
+              {createMutation.isPending && <Loader2 className="size-4 animate-spin mr-2" />}Create
             </Button>
           </DialogFooter>
         </DialogContent>

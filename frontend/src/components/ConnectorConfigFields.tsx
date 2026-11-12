@@ -49,7 +49,7 @@ export function ConnectorConfigFields({
   return (
     <div className="space-y-5">
       {Object.entries(schema).map(([key, field]) => (
-        <div key={key} className="space-y-1.5">
+        <div key={key} className="space-y-2">
           {field.type === "boolean" ? (
             <>
               <div className="flex items-center justify-between gap-4">

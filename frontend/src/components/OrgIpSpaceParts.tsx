@@ -44,9 +44,9 @@ export function RegistryObservationList({ rows }: { rows: ReassignmentRow[] }) {
         <>
           <ul className="space-y-2">
             {rows.map(r => (
-              <li key={r.id} className="flex items-start gap-2 rounded-md border bg-muted/30 p-2.5">
-                <Info className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 space-y-0.5">
+              <li key={r.id} className="flex items-start gap-2 rounded-md border bg-muted/30 p-3">
+                <Info className="mt-1 size-3.5 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 space-y-1">
                   <p className="text-sm">{registryChangeText(r)}</p>
                   <p className="text-xs text-muted-foreground">
                     First seen {relativeTime(r.first_detected_at)} · last seen {relativeTime(r.last_seen_at)}

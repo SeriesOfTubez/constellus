@@ -99,12 +99,12 @@ function AddRuleDialog({ onClose }: { onClose: () => void }) {
         <DialogHeader><DialogTitle>New Auto-Tag Rule</DialogTitle></DialogHeader>
 
         <div className="space-y-4 py-2">
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <Label>Rule name</Label>
             <Input placeholder="e.g. Tag CDN assets" value={name} onChange={e => setName(e.target.value)} />
           </div>
 
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <Label>Apply to</Label>
             <Select value={entityType} onValueChange={v => { setEntityType(v as TagRule["entity_type"]); setField(FIELDS[v as TagRule["entity_type"]][0].value) }}>
               <SelectTrigger><SelectValue /></SelectTrigger>
@@ -117,7 +117,7 @@ function AddRuleDialog({ onClose }: { onClose: () => void }) {
           </div>
 
           <div className="grid grid-cols-3 gap-2">
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <Label>Field</Label>
               <Select value={field} onValueChange={setField}>
                 <SelectTrigger className="text-xs"><SelectValue /></SelectTrigger>
@@ -126,7 +126,7 @@ function AddRuleDialog({ onClose }: { onClose: () => void }) {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <Label>Operator</Label>
               <Select value={op} onValueChange={setOp}>
                 <SelectTrigger className="text-xs"><SelectValue /></SelectTrigger>
@@ -136,7 +136,7 @@ function AddRuleDialog({ onClose }: { onClose: () => void }) {
               </Select>
             </div>
             {op !== "exists" && (
-              <div className="space-y-1.5">
+              <div className="space-y-2">
                 <Label>Value</Label>
                 <Input
                   className="text-xs font-mono"
@@ -148,7 +148,7 @@ function AddRuleDialog({ onClose }: { onClose: () => void }) {
             )}
           </div>
 
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <Label>Tag to apply</Label>
             <Input
               placeholder="e.g. cdn, legacy, provider-mx"
@@ -164,7 +164,7 @@ function AddRuleDialog({ onClose }: { onClose: () => void }) {
             disabled={mutation.isPending || !name || !tag}
             onClick={() => mutation.mutate()}
           >
-            {mutation.isPending && <Loader2 className="size-4 animate-spin mr-1.5" />}
+            {mutation.isPending && <Loader2 className="size-4 animate-spin mr-2" />}
             Create Rule
           </Button>
         </DialogFooter>
@@ -223,12 +223,12 @@ export default function TagRules() {
         <div className="flex gap-2">
           <Button variant="outline" size="sm" disabled={evaluateMutation.isPending} onClick={() => evaluateMutation.mutate()}>
             {evaluateMutation.isPending
-              ? <Loader2 className="size-4 animate-spin mr-1.5" />
-              : <RefreshCw className="size-4 mr-1.5" />}
+              ? <Loader2 className="size-4 animate-spin mr-2" />
+              : <RefreshCw className="size-4 mr-2" />}
             Re-evaluate all
           </Button>
           <Button size="sm" onClick={() => setAddOpen(true)}>
-            <Plus className="size-4 mr-1.5" />New Rule
+            <Plus className="size-4 mr-2" />New Rule
           </Button>
         </div>
       </div>
@@ -282,7 +282,7 @@ export default function TagRules() {
                     <span className="text-xs text-muted-foreground capitalize">{rule.entity_type}</span>
                   </TableCell>
                   <TableCell>
-                    <code className="text-xs font-mono bg-muted px-2 py-0.5 rounded">
+                    <code className="text-xs font-mono bg-muted px-2 py-0 rounded">
                       {JSON.stringify(rule.condition)}
                     </code>
                   </TableCell>

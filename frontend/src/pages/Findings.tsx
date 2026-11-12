@@ -133,7 +133,7 @@ function DanglingDnsSiblingLink({ finding }: { finding: Finding }) {
   return (
     <Link
       to={`/findings/${sibling.id}`}
-      className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-opacity"
+      className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-opacity"
       title="This origin also has a dangling-DNS finding"
     >
       <SquareArrowOutUpRight className="size-3.5" />
@@ -173,7 +173,7 @@ function FindingDetailSheet({
   return (
     <Sheet open onOpenChange={(o) => !o && onClose()}>
       <SheetContent className={`w-[540px] sm:max-w-[540px] flex flex-col gap-0 p-0 border-t-2 ${borderCls}`}>
-        <SheetHeader className="px-6 pt-5 pb-3 border-b space-y-1.5 shrink-0">
+        <SheetHeader className="px-6 pt-5 pb-3 border-b space-y-2 shrink-0">
           <ImpactClassBadge finding={finding} />
           <div className="flex items-center gap-2 flex-wrap">
             {finding.risk_band
@@ -230,7 +230,7 @@ function FindingDetailSheet({
                 <DanglingDnsSiblingLink finding={finding} />
 
                 {hasEnrichment && (
-                  <div className="rounded-md border p-4 space-y-2.5">
+                  <div className="rounded-md border p-4 space-y-3">
                     <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Enrichment</p>
                     {finding.cve_id && (
                       <div className="flex items-center gap-3 text-sm">
@@ -282,23 +282,23 @@ function FindingDetailSheet({
                 )}
 
                 {matchedAt && (
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Matched URL</p>
                     <p className="text-xs font-mono break-all bg-muted rounded px-3 py-2">{matchedAt}</p>
                   </div>
                 )}
 
                 {extracted.length > 0 && (
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Extracted</p>
                     <div className="space-y-1">
-                      {extracted.map((r, i) => <p key={i} className="text-xs font-mono bg-muted rounded px-3 py-1.5 break-all">{r}</p>)}
+                      {extracted.map((r, i) => <p key={i} className="text-xs font-mono bg-muted rounded px-3 py-2 break-all">{r}</p>)}
                     </div>
                   </div>
                 )}
 
                 {curlCmd && (
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Curl command</p>
                     <pre className="text-xs font-mono bg-muted/60 rounded p-3 overflow-x-auto whitespace-pre-wrap break-all">{curlCmd}</pre>
                   </div>
@@ -337,7 +337,7 @@ function FindingDetailSheet({
                   to={`/assets/${finding.asset_canonical_id}`}
                   className="flex items-center gap-3 rounded-md border p-3 hover:bg-muted/50 transition-colors"
                 >
-                  <div className="flex-1 min-w-0 space-y-0.5">
+                  <div className="flex-1 min-w-0 space-y-1">
                     <p className="font-mono text-sm break-all">{displayName(finding.asset_value)}</p>
                     {finding.asset_parent_value && (
                       <p className="text-xs text-muted-foreground font-mono break-all">{displayName(finding.asset_parent_value)}</p>
@@ -373,7 +373,7 @@ function FindingDetailSheet({
                 ].filter(Boolean).map((ev, i) => (
                   <div key={i} className="flex items-start gap-3 pb-4">
                     <div className="mt-1 h-2 w-2 rounded-full border-2 border-primary bg-background shrink-0" />
-                    <div className="space-y-0.5 text-sm">
+                    <div className="space-y-1 text-sm">
                       <p className="font-medium">{ev!.label}</p>
                       <p className="text-xs text-muted-foreground">
                         {new Date(ev!.date).toLocaleString()} · {relativeTime(ev!.date)}
@@ -400,21 +400,21 @@ function FindingDetailSheet({
             {finding.state === "open" && (
               <>
                 <Button size="sm" variant="outline" onClick={() => onStateChange(finding.id, "acknowledged")}>
-                  <ShieldCheck className="size-4 mr-1.5" />Acknowledge
+                  <ShieldCheck className="size-4 mr-2" />Acknowledge
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => { onClose(); onSuppress(finding) }}>
-                  <ShieldOff className="size-4 mr-1.5" />Suppress
+                  <ShieldOff className="size-4 mr-2" />Suppress
                 </Button>
               </>
             )}
             {(finding.state === "open" || finding.state === "acknowledged") && (
               <Button size="sm" variant="outline" onClick={() => onVerify(finding.id)}>
-                <RefreshCw className="size-4 mr-1.5" />Re-verify
+                <RefreshCw className="size-4 mr-2" />Re-verify
               </Button>
             )}
             {finding.state === "suppressed" && (
               <Button size="sm" variant="outline" onClick={() => onStateChange(finding.id, "open")}>
-                <ChevronDown className="size-4 mr-1.5 rotate-180" />Reopen
+                <ChevronDown className="size-4 mr-2 rotate-180" />Reopen
               </Button>
             )}
           </div>
@@ -459,7 +459,7 @@ function SuppressDialog({ finding, onClose }: { finding: Finding; onClose: () =>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button disabled={mutation.isPending} onClick={() => mutation.mutate()}>
-            {mutation.isPending && <Loader2 className="size-4 animate-spin mr-1.5" />}Suppress
+            {mutation.isPending && <Loader2 className="size-4 animate-spin mr-2" />}Suppress
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -763,11 +763,11 @@ export default function Findings() {
   // ── Risk verdict pills (header primary action) ───────────────────────────────
 
   const severityPills = findings && findings.length > 0 ? (
-    <div className="flex items-center gap-1.5 flex-wrap">
+    <div className="flex items-center gap-2 flex-wrap">
       {bandFilter !== "all" && (
         <button
           onClick={() => setBandFilter("all")}
-          className="rounded border px-2 py-0.5 text-xs font-semibold text-muted-foreground border-border hover:text-foreground transition-colors"
+          className="rounded border px-2 py-1 text-xs font-semibold text-muted-foreground border-border hover:text-foreground transition-colors"
         >
           All
         </button>
@@ -777,7 +777,7 @@ export default function Findings() {
         return (
           <button key={b}
             onClick={() => setBandFilter(isActive ? "all" : b)}
-            className={`rounded border px-2 py-0.5 text-xs font-semibold transition-all ${RISK_BAND_COLOR[b]} ${bandFilter !== "all" && !isActive ? "opacity-30" : ""} ${isActive ? "ring-2 ring-offset-1 ring-offset-background ring-current" : ""}`}>
+            className={`rounded border px-2 py-1 text-xs font-semibold transition-all ${RISK_BAND_COLOR[b]} ${bandFilter !== "all" && !isActive ? "opacity-30" : ""} ${isActive ? "ring-2 ring-offset-1 ring-offset-background ring-current" : ""}`}>
             {counts[b]} {RISK_BAND_SHORT[b]}
           </button>
         )
@@ -907,11 +907,11 @@ export default function Findings() {
       <div className="flex items-center gap-2 ml-auto">
         <Button size="sm" variant="outline" disabled={bulkStateMutation.isPending}
           onClick={() => bulkStateMutation.mutate({ state: "acknowledged" })}>
-          <ShieldCheck className="size-4 mr-1.5" />Acknowledge
+          <ShieldCheck className="size-4 mr-2" />Acknowledge
         </Button>
         <Button size="sm" variant="outline" disabled={bulkStateMutation.isPending}
           onClick={() => setBulkSuppressOpen(true)}>
-          <ShieldOff className="size-4 mr-1.5" />Suppress
+          <ShieldOff className="size-4 mr-2" />Suppress
         </Button>
         <Button size="sm" variant="outline" disabled={bulkStateMutation.isPending}
           onClick={() => bulkStateMutation.mutate({ state: "open" })}>
@@ -940,7 +940,7 @@ export default function Findings() {
       </TableCell>
       <TableCell className="hidden sm:table-cell"><CategoryBadge category={f.category} /></TableCell>
       <TableCell>
-        <div className="space-y-0.5">
+        <div className="space-y-1">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-medium leading-tight">{findingTitle(f)}</p>
             {f.cve_id && <span className="font-mono text-xs text-muted-foreground shrink-0">{f.cve_id}</span>}
@@ -994,7 +994,7 @@ export default function Findings() {
   const writeupButton = (g: Group) => g.cluster ? (
     <Button
       type="button" size="sm" variant="ghost"
-      className="h-6 px-1.5 text-xs normal-case tracking-normal"
+      className="h-6 px-2 text-xs normal-case tracking-normal"
       aria-expanded={writeupOpen.has(g.key)}
       onClick={e => { e.stopPropagation(); toggleWriteup(g.key) }}
     >
@@ -1015,7 +1015,7 @@ export default function Findings() {
     return (
       <TableRow key={`__hdr_${g.key}`} className="bg-muted/30 border-t cursor-pointer" onClick={() => toggleGroup(g.key)}>
         <TableCell colSpan={9} className="py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          <span className="inline-flex items-center gap-1.5">
+          <span className="inline-flex items-center gap-2">
             {isCollapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
             {g.label} <span className="text-muted-foreground/60">· {g.items.length}</span>
             {clusterBadge(g)}
@@ -1092,7 +1092,7 @@ export default function Findings() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => toggleGroup(g.key)}
-                  className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+                  className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
                 >
                   {isCollapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
                   {g.label} <span className="text-muted-foreground/60">· {g.items.length}</span>

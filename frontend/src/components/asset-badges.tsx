@@ -46,7 +46,7 @@ export function SourceBadges({ metadata }: { metadata: Record<string, unknown> }
         return (
           <div className="flex items-start gap-2">
             <span className={cn(CHIP, "font-semibold shrink-0", meta.color)}>{meta.label}</span>
-            <span className="text-muted-foreground leading-snug pt-0.5">{meta.description}</span>
+            <span className="text-muted-foreground leading-snug pt-1">{meta.description}</span>
           </div>
         )
       }}

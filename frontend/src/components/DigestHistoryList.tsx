@@ -43,7 +43,7 @@ function NarrativeBlock({ detail, noun }: { detail: DigestDetail; noun: "records
       {narrative && narrative.statements.length > 0 ? (
         <div className="space-y-1">
           <p className="text-xs font-medium">AI summary (each statement is tied to the {noun} below)</p>
-          <ul className="list-disc pl-5 space-y-0.5">
+          <ul className="list-disc pl-5 space-y-1">
             {narrative.statements.map((s, i) => <li key={i}>{s.text}</li>)}
           </ul>
         </div>
@@ -76,7 +76,7 @@ function OrgDiscoveryBodyView({ detail }: { detail: OrgDiscoveryDigestDetail }) 
             </Link>
             <span className="text-xs text-muted-foreground shrink-0">{o.candidate_count} new</span>
           </div>
-          <div className="space-y-0.5 pl-4">
+          <div className="space-y-1 pl-4">
             {o.candidates.map(c => (
               <div key={c.id} className="flex items-center gap-2 min-w-0">
                 <span className="text-xs text-muted-foreground shrink-0">{CANDIDATE_KIND_LABEL[c.kind] ?? c.kind}</span>
@@ -98,7 +98,7 @@ function OrgDiscoveryBodyView({ detail }: { detail: OrgDiscoveryDigestDetail }) 
             )}
           </div>
           {o.shared && o.shared.length > 0 && (
-            <div className="space-y-0.5 pl-4">
+            <div className="space-y-1 pl-4">
               <p className="text-xs text-muted-foreground">Shared by several candidates</p>
               {o.shared.map(g => {
                 const members = g.candidate_ids
@@ -157,7 +157,7 @@ function FindingDigestBodyView({ detail }: { detail: FindingDigestDetail }) {
               {g.writeup.inputs_changed && ", inputs changed since"}): {g.writeup.summary}
             </p>
           )}
-          <div className="space-y-0.5 pl-4">
+          <div className="space-y-1 pl-4">
             {g.items.map(it => (
               <div key={`${it.finding_id}:${it.asset_id}`} className="flex items-center gap-2 min-w-0">
                 <SeverityBadge severity={it.severity} />
@@ -192,14 +192,14 @@ function DigestRow({ d }: { d: DigestSummary }) {
   })
   const Chevron = open ? ChevronDown : ChevronRight
   return (
-    <div className="px-3 py-2.5 text-sm">
+    <div className="px-3 py-3 text-sm">
       <button
         type="button"
         className="flex w-full items-start gap-3 text-left"
         aria-expanded={open}
         onClick={() => setOpen(o => !o)}
       >
-        <Chevron className="size-3.5 mt-0.5 shrink-0" />
+        <Chevron className="size-3.5 mt-1 shrink-0" />
         <span className="block w-44 shrink-0 min-w-0">
           <span className="block font-medium truncate">{d.rule_name}</span>
           <span className="block text-xs text-muted-foreground">{fmt(d.period_start)} → {fmt(d.period_end)}</span>
@@ -209,7 +209,7 @@ function DigestRow({ d }: { d: DigestSummary }) {
             ? (d.event_count > 0 ? `${d.event_count} candidate${d.event_count === 1 ? "" : "s"}` : "Nothing new")
             : d.finding_count > 0 ? `${d.finding_count} finding${d.finding_count === 1 ? "" : "s"}` : "Nothing new"}
         </span>
-        <span className="block w-64 shrink-0 space-y-0.5 text-xs">
+        <span className="block w-64 shrink-0 space-y-1 text-xs">
           <span className={`block ${outcomeTone(d.outcome)}`}>{digestOutcomeLabel(d.outcome)}</span>
           {d.narrative_status === "succeeded" && <span className="block">AI summary</span>}
           {(d.narrative_status === "skipped" || d.narrative_status === "failed") && (

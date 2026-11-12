@@ -93,13 +93,13 @@ function CategoryCard({
           </div>
           <div>
             <h2 className="text-base font-semibold leading-tight">{category.label}</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">{category.description}</p>
+            <p className="text-xs text-muted-foreground mt-1">{category.description}</p>
           </div>
         </div>
 
         <div className="border-t" />
 
-        <div className="flex flex-col gap-0.5 -mx-2">
+        <div className="flex flex-col gap-1 -mx-2">
           {category.items.map(item => {
             const ItemIcon = item.icon
             const count = item.statsKey ? stats[item.statsKey] : undefined
@@ -113,7 +113,7 @@ function CategoryCard({
                   <ItemIcon className="size-3.5 text-muted-foreground shrink-0" />
                   <span className="flex-1 text-sm text-muted-foreground">{item.label}</span>
                   {item.future && (
-                    <Badge variant="outline" className="text-xs px-1.5 py-0 h-4">Soon</Badge>
+                    <Badge variant="outline" className="text-xs px-2 py-0 h-4">Soon</Badge>
                   )}
                 </div>
               )

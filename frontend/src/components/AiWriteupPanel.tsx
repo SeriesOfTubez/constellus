@@ -92,7 +92,7 @@ export function AiWriteupPanel({ findingId }: { findingId: string }) {
         {canGenerate && (
           <Button size="sm" variant="outline" disabled={busy} onClick={() => generate.mutate(!!w)}>
             {busy ? <Loader2 className="size-4 animate-spin" /> : w ? <RefreshCw className="size-4" /> : <Sparkles className="size-4" />}
-            <span className="ml-1.5">{data.pending ? "Generating…" : w ? "Regenerate" : "Generate"}</span>
+            <span className="ml-2">{data.pending ? "Generating…" : w ? "Regenerate" : "Generate"}</span>
           </Button>
         )}
       </div>
@@ -114,7 +114,7 @@ export function AiWriteupPanel({ findingId }: { findingId: string }) {
           {w.summary && <p className="text-sm whitespace-pre-wrap">{w.summary}</p>}
 
           {w.priority_note && (
-            <div className="rounded-md border px-3 py-2 space-y-0.5">
+            <div className="rounded-md border px-3 py-2 space-y-1">
               <p className="text-xs font-medium">Priority note (AI)</p>
               <p className="text-sm whitespace-pre-wrap">{w.priority_note}</p>
               <p className="text-xs text-muted-foreground">Never changes severity or score.</p>
@@ -128,7 +128,7 @@ export function AiWriteupPanel({ findingId }: { findingId: string }) {
             ) : (
               <ul className="space-y-2">
                 {w.context.map((c, i) => (
-                  <li key={i} className="text-sm space-y-0.5">
+                  <li key={i} className="text-sm space-y-1">
                     <p className="whitespace-pre-wrap">{c.statement}</p>
                     <p className="text-xs font-mono text-muted-foreground break-all">source: {c.source_field}</p>
                   </li>

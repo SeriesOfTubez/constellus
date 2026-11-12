@@ -61,7 +61,7 @@ export function JobRunsList({ runs, isLoading }: { runs: JobRun[] | undefined; i
       {runs.map((r) => {
         const counts = runCountsText(r)
         return (
-        <li key={r.id} className="px-3 py-2 space-y-0.5">
+        <li key={r.id} className="px-3 py-2 space-y-1">
           <div>
             <span title={formatExactTime(r.started_at)}>{relativeTime(r.started_at)}</span>
             <span className="text-muted-foreground"> · {formatDuration(r.duration_seconds)}</span>

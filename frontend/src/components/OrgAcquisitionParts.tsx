@@ -132,7 +132,7 @@ export function AcquisitionTimeline({
     onSelect(placed[i].row.entity_id as string)
   }
   const offButton = (dir: -1 | 1, n: number) => n > 0 && (
-    <Button variant="ghost" size="sm" className="h-7 px-1.5 text-xs text-muted-foreground"
+    <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground"
       title={dir === -1 ? "Jump to previous deal" : "Jump to next deal"}
       aria-label={`${dir === -1 ? "Jump to previous deal" : "Jump to next deal"} (${n} ${dir === -1 ? "earlier" : "later"})`}
       onClick={() => jump(dir)}>

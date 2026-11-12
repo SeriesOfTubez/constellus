@@ -67,7 +67,7 @@ export function OrgDetailsStep({
   const options = relationshipOptions(canMarkOurs, presetRelationship)
   return (
     <div className="space-y-4">
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         <Label htmlFor="ao-name">Organization name</Label>
         <Input id="ao-name" value={s.orgName} onChange={e => { onNameEdit(); set({ orgName: e.target.value }) }}
           placeholder="Example Holdings A" />
@@ -76,7 +76,7 @@ export function OrgDetailsStep({
       {presetRelationship ? (
         <p className="text-sm">Relationship: <span className="font-medium">{options[0].label}</span></p>
       ) : (
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <Label>Relationship</Label>
           <div role="radiogroup" className="grid grid-cols-2 gap-2">
             {options.map(o => (
@@ -91,14 +91,14 @@ export function OrgDetailsStep({
         </div>
       )}
 
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         <Label htmlFor="ao-ref">Authorisation reference</Label>
         <Input id="ao-ref" value={s.reference} onChange={e => set({ reference: e.target.value })} />
         <p className="text-xs text-muted-foreground">A ticket or engagement letter id that authorises scanning this organization.</p>
       </div>
 
       {s.relationship === "ma_target" && (
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <Label htmlFor="ao-eng">Engagement name</Label>
           <Input id="ao-eng" value={s.engagementName} onChange={e => set({ engagementName: e.target.value })} />
         </div>
@@ -108,7 +108,7 @@ export function OrgDetailsStep({
       <div className="flex justify-between gap-2">
         <Button variant="outline" disabled={create.isPending} onClick={() => { create.reset(); onBack() }}>Back</Button>
         <Button disabled={create.isPending || !addOrgStepValid(3, s, canMarkOurs)} onClick={onFinish}>
-          {create.isPending && <Loader2 className="size-4 mr-1.5 animate-spin" />}
+          {create.isPending && <Loader2 className="size-4 mr-2 animate-spin" />}
           Finish
         </Button>
       </div>
@@ -164,7 +164,7 @@ export function AddOrganizationFlow({
           e.preventDefault()
           if (addOrgStepValid(1, s, false)) { setSel(null); setStep(2) }
         }}>
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <Label htmlFor="ao-domain">Primary domain</Label>
             <Input id="ao-domain" value={s.domain} onChange={e => set({ domain: e.target.value })} placeholder="fabrikam.com" />
           </div>

@@ -3,7 +3,7 @@ import { ChevronRight } from "lucide-react"
 
 export function AdminBreadcrumb({ page }: { page: string }) {
   return (
-    <div className="flex items-center gap-1.5 text-sm">
+    <div className="flex items-center gap-2 text-sm">
       <Link to="/admin" className="text-muted-foreground hover:text-foreground transition-colors">
         Admin
       </Link>

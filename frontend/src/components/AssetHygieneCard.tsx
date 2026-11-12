@@ -86,9 +86,9 @@ export function AssetHygieneCard({ asset }: { asset: Asset }) {
         <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Asset Hygiene</p>
         <div className="rounded-lg border bg-muted/20 p-4 flex items-start gap-3">
           {excluded
-            ? <ShieldQuestion className="size-3.5 mt-0.5 shrink-0 text-muted-foreground" />
-            : <Clock3 className="size-3.5 mt-0.5 shrink-0 text-muted-foreground" />}
-          <div className="space-y-0.5">
+            ? <ShieldQuestion className="size-3.5 mt-1 shrink-0 text-muted-foreground" />
+            : <Clock3 className="size-3.5 mt-1 shrink-0 text-muted-foreground" />}
+          <div className="space-y-1">
             <p className="text-sm font-medium">{excluded ? "Not scored — third party" : "Not yet computed"}</p>
             <p className="text-xs text-muted-foreground leading-relaxed">
               {excluded
@@ -125,7 +125,7 @@ export function AssetHygieneCard({ asset }: { asset: Asset }) {
           const dim = data.dimensions[key]
           if (!dim) return null
           return (
-            <div key={key} className="px-3 py-2.5 space-y-1">
+            <div key={key} className="px-3 py-3 space-y-1">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-sm font-medium">{DIMENSION_LABEL[key]}</span>
                 <HygieneGradeChip grade={dim.grade} />

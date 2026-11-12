@@ -452,7 +452,7 @@ function AssetDetailSheet({
   return (
     <Sheet open onOpenChange={(o) => !o && onClose()}>
       <SheetContent className={`w-[540px] sm:max-w-[540px] flex flex-col gap-0 p-0 border-t-2 ${BAND_BORDER[asset.risk_band ?? "secure"] ?? BAND_BORDER.secure}`}>
-        <SheetHeader className="px-6 pt-5 pb-3 border-b space-y-1.5 shrink-0">
+        <SheetHeader className="px-6 pt-5 pb-3 border-b space-y-2 shrink-0">
           <div className="flex items-center gap-2 flex-wrap">
             {asset.asset_type === "dns_record" && m.record_type
               ? <RecordTypeBadge type={String(m.record_type)} />
@@ -484,7 +484,7 @@ function AssetDetailSheet({
               <TabsTrigger value="findings"      className={FLY_TRIGGER}>
                 Findings
                 {activeFindings.length > 0 && (
-                  <span className={cn(CHIP, "ml-1.5 bg-muted font-semibold")}>
+                  <span className={cn(CHIP, "ml-2 bg-muted font-semibold")}>
                     {activeFindings.length}
                   </span>
                 )}
@@ -512,15 +512,15 @@ function AssetDetailSheet({
 
                 {/* Identity grid */}
                 <div className="grid grid-cols-2 gap-4 text-xs">
-                  <div className="space-y-0.5">
+                  <div className="space-y-1">
                     <p className="text-muted-foreground">Parent</p>
                     <p className="font-mono break-all">{asset.parent_value ? displayName(asset.parent_value) : "—"}</p>
                   </div>
-                  <div className="space-y-0.5">
+                  <div className="space-y-1">
                     <p className="text-muted-foreground">First seen</p>
                     <p>{new Date(asset.first_seen_at).toLocaleString()}</p>
                   </div>
-                  <div className="space-y-0.5">
+                  <div className="space-y-1">
                     <p className="text-muted-foreground">Last seen</p>
                     <p>
                       {new Date(asset.last_seen_at).toLocaleString()}
@@ -530,7 +530,7 @@ function AssetDetailSheet({
                 </div>
 
                 {sources.length > 0 && (
-                  <div className="flex items-center gap-1.5 flex-wrap">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-xs uppercase tracking-wider text-muted-foreground">Sources</span>
                     {sources.map(src => {
                       const meta = SOURCE_META[src] ?? { label: src.slice(0, 2).toUpperCase(), color: "bg-muted text-muted-foreground", description: src }
@@ -672,7 +672,7 @@ function AssetDetailSheet({
                         {domainWhois!.name_servers.length > 0 && (
                           <div className="flex items-start gap-3 px-3 py-2">
                             <span className="text-muted-foreground shrink-0 w-28">Nameservers</span>
-                            <div className="font-mono text-foreground space-y-0.5 break-all">
+                            <div className="font-mono text-foreground space-y-1 break-all">
                               {domainWhois!.name_servers.map(ns => <div key={ns}>{ns}</div>)}
                             </div>
                           </div>
@@ -680,7 +680,7 @@ function AssetDetailSheet({
                         {domainWhois!.status.length > 0 && (
                           <div className="flex items-start gap-3 px-3 py-2">
                             <span className="text-muted-foreground shrink-0 w-28">Status</span>
-                            <div className="text-muted-foreground space-y-0.5 break-all">
+                            <div className="text-muted-foreground space-y-1 break-all">
                               {domainWhois!.status.map(s => <div key={s}>{s}</div>)}
                             </div>
                           </div>
@@ -703,7 +703,7 @@ function AssetDetailSheet({
                 {assetFindings.length === 0 ? (
                   <p className="py-8 text-center text-sm text-muted-foreground">No findings</p>
                 ) : (
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     {[...assetFindings]
                       .sort((a, b) => (b.risk_score ?? 0) - (a.risk_score ?? 0))
                       .map(f => (
@@ -741,7 +741,7 @@ function AssetDetailSheet({
                 ].filter(Boolean).map((ev, i) => (
                   <div key={i} className="flex items-start gap-3 pb-4">
                     <div className="mt-1 h-2 w-2 rounded-full border-2 border-primary bg-background shrink-0" />
-                    <div className="space-y-0.5 text-sm">
+                    <div className="space-y-1 text-sm">
                       <p className="font-medium">{ev!.label}</p>
                       <p className="text-xs text-muted-foreground">
                         {new Date(ev!.date).toLocaleString()} · {relativeTime(ev!.date)}
@@ -766,11 +766,11 @@ function AssetDetailSheet({
         <div className="px-6 py-4 border-t flex gap-2 shrink-0">
           {!asset.ignored && (
             <Button size="sm" variant="outline" onClick={() => { onScan(asset.id); onClose() }}>
-              <RefreshCw className="size-4 mr-1.5" />Recheck
+              <RefreshCw className="size-4 mr-2" />Recheck
             </Button>
           )}
           <Button size="sm" variant="outline" onClick={() => onIgnore(asset.id, !asset.ignored)}>
-            {asset.ignored ? <Eye className="size-4 mr-1.5" /> : <EyeOff className="size-4 mr-1.5" />}
+            {asset.ignored ? <Eye className="size-4 mr-2" /> : <EyeOff className="size-4 mr-2" />}
             {asset.ignored ? "Restore" : "Ignore"}
           </Button>
         </div>
@@ -998,7 +998,7 @@ export default function Assets() {
       {!isPivotTab && availableTags.length > 0 && (
         <Select value={tagFilter} onValueChange={setTagFilter}>
           <SelectTrigger className="w-36 h-9 text-sm">
-            <Tag className="size-3.5 mr-1.5 text-muted-foreground" />
+            <Tag className="size-3.5 mr-2 text-muted-foreground" />
             <SelectValue placeholder="All tags" />
           </SelectTrigger>
           <SelectContent>
@@ -1009,7 +1009,7 @@ export default function Assets() {
       )}
 
       {!isPivotTab && (
-        <Button variant={showIgnored ? "secondary" : "outline"} size="sm" className="h-9 gap-1.5"
+        <Button variant={showIgnored ? "secondary" : "outline"} size="sm" className="h-9 gap-2"
           onClick={() => setShowIgnored(v => !v)}>
           {showIgnored ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
           {showIgnored ? "Showing ignored" : "Show ignored"}
@@ -1017,7 +1017,7 @@ export default function Assets() {
       )}
 
       {!isPivotTab && (
-        <Button variant={worstManaged ? "secondary" : "outline"} size="sm" className="h-9 gap-1.5"
+        <Button variant={worstManaged ? "secondary" : "outline"} size="sm" className="h-9 gap-2"
           onClick={() => setWorstManaged(!worstManaged)}
           title="Sort by hygiene, worst-managed assets first">
           <ArrowDownWideNarrow className="size-4" />
@@ -1026,7 +1026,7 @@ export default function Assets() {
       )}
 
       {!isPivotTab && sortedGroups.length > 1 && (
-        <Button variant="outline" size="sm" className="h-9 gap-1.5" onClick={toggleAllCollapse}>
+        <Button variant="outline" size="sm" className="h-9 gap-2" onClick={toggleAllCollapse}>
           {allCollapsed
             ? <><ChevronsUpDown className="size-4" />Expand all</>
             : <><ChevronsDownUp className="size-4" />Collapse all</>}
@@ -1068,15 +1068,15 @@ export default function Assets() {
           disabled={bulkRecheckMutation.isPending || rescannable.length === 0}
           onClick={() => bulkRecheckMutation.mutate(rescannable.map(a => a.id))}>
           {bulkRecheckMutation.isPending
-            ? <Loader2 className="size-4 mr-1.5 animate-spin" />
-            : <RefreshCw className="size-4 mr-1.5" />}
+            ? <Loader2 className="size-4 mr-2 animate-spin" />
+            : <RefreshCw className="size-4 mr-2" />}
           Recheck
         </Button>
         <Button size="sm" variant="outline"
           className="text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/40"
           disabled={bulkDeleteMutation.isPending}
           onClick={() => setBulkDeleteOpen(true)}>
-          <Trash2 className="size-4 mr-1.5" />Delete
+          <Trash2 className="size-4 mr-2" />Delete
         </Button>
         <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>Clear</Button>
       </div>
@@ -1173,7 +1173,7 @@ export default function Assets() {
                       </div>
                       {truncated && (
                         <button
-                          className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5 transition-colors"
+                          className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-2 transition-colors"
                           onClick={() => setExpandedGroups(prev => new Set([...prev, key]))}
                         >
                           <ChevronDown className="size-3.5" />Show {hiddenCount} more record{hiddenCount !== 1 ? "s" : ""}
@@ -1354,7 +1354,7 @@ export default function Assets() {
                           <TableCell /><TableCell />
                           <TableCell colSpan={8} className="pl-4 py-2">
                             <button
-                              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5 transition-colors"
+                              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-2 transition-colors"
                               onClick={() => setExpandedGroups(prev => new Set([...prev, key]))}
                             >
                               <ChevronDown className="size-3.5" />
@@ -1403,8 +1403,8 @@ export default function Assets() {
             <Button variant="destructive" disabled={bulkDeleteMutation.isPending}
               onClick={() => bulkDeleteMutation.mutate(Array.from(selectedIds))}>
               {bulkDeleteMutation.isPending
-                ? <Loader2 className="size-4 animate-spin mr-1.5" />
-                : <Trash2 className="size-4 mr-1.5" />}
+                ? <Loader2 className="size-4 animate-spin mr-2" />
+                : <Trash2 className="size-4 mr-2" />}
               Delete {selectedIds.size} asset{selectedIds.size !== 1 ? "s" : ""}
             </Button>
           </DialogFooter>

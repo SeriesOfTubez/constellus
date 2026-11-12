@@ -169,7 +169,7 @@ function AcquisitionReadPanel({ isAdmin, run, hasSections, busy, onStart }: {
             size="sm" variant="outline" disabled={!hasSections || busy} onClick={onStart}
             title={hasSections ? undefined : "No Business Combinations section is stored yet. Map this company from EDGAR first."}
           >
-            {busy ? <Loader2 className="size-4 mr-1.5 animate-spin" /> : <Sparkles className="size-4 mr-1.5" />}
+            {busy ? <Loader2 className="size-4 mr-2 animate-spin" /> : <Sparkles className="size-4 mr-2" />}
             Read acquisitions with AI
           </Button>
           <span className="text-xs text-muted-foreground">
@@ -191,9 +191,9 @@ function AcquisitionReadPanel({ isAdmin, run, hasSections, busy, onStart }: {
               <summary className="cursor-pointer text-muted-foreground">
                 Show {droppedItems(run).length + droppedItemsOmitted(run)} dropped
               </summary>
-              <ul className="mt-1 space-y-0.5 pl-3">
+              <ul className="mt-1 space-y-1 pl-3">
                 {droppedItems(run).map((d, i) => (
-                  <li key={i} className="flex flex-wrap items-baseline gap-x-1.5">
+                  <li key={i} className="flex flex-wrap items-baseline gap-x-2">
                     <span className="font-medium">{d.name}</span>
                     <span className="text-muted-foreground">{DROPPED_REASON_LABEL[d.reason] ?? d.reason}</span>
                     <span className="text-muted-foreground">10-K {d.filing_date.slice(0, 4)}</span>
@@ -201,7 +201,7 @@ function AcquisitionReadPanel({ isAdmin, run, hasSections, busy, onStart }: {
                 ))}
               </ul>
               {droppedItemsOmitted(run) > 0 && (
-                <p className="mt-0.5 text-muted-foreground">…and {droppedItemsOmitted(run)} more not listed</p>
+                <p className="mt-1 text-muted-foreground">…and {droppedItemsOmitted(run)} more not listed</p>
               )}
             </details>
           )}
@@ -523,7 +523,7 @@ export function EntityDetailContent({ entityId }: { entityId: string }) {
               <EvidenceButton id={d.group.evidence_id} />
             </summary>
             <div className="px-4 pb-3 text-sm space-y-2">
-              <ul className="space-y-0.5">
+              <ul className="space-y-1">
                 {d.group.rows.map((r, j) => {
                   const appeared = d.appeared.has(listingKey(r))
                   return (
@@ -540,7 +540,7 @@ export function EntityDetailContent({ entityId }: { entityId: string }) {
               {!!d.disappeared.length && (
                 <div>
                   <p className="text-xs font-medium text-muted-foreground mt-2">Not listed any more (was in the previous EX-21):</p>
-                  <ul className="space-y-0.5">
+                  <ul className="space-y-1">
                     {d.disappeared.map((r, j) => (
                       <li key={j} className="text-red-700 dark:text-red-400 line-through" data-disappeared>
                         {r.name}{r.jurisdiction && ` — ${r.jurisdiction}`}
@@ -625,7 +625,7 @@ export function EntityDetailContent({ entityId }: { entityId: string }) {
               disabled={!oursReference.trim() || relationshipMutation.isPending}
               onClick={() => { setRelationshipError(null); relationshipMutation.mutate({ relationship: "ours", reference: oursReference.trim() }) }}
             >
-              {relationshipMutation.isPending && <Loader2 className="size-4 mr-1.5 animate-spin" />}
+              {relationshipMutation.isPending && <Loader2 className="size-4 mr-2 animate-spin" />}
               Mark as ours
             </Button>
           </DialogFooter>
@@ -696,7 +696,7 @@ export function EntityDetailContent({ entityId }: { entityId: string }) {
                 )
               }}
             >
-              {relationshipMutation.isPending && <Loader2 className="size-4 mr-1.5 animate-spin" />}
+              {relationshipMutation.isPending && <Loader2 className="size-4 mr-2 animate-spin" />}
               Confirm
             </Button>
           </DialogFooter>
@@ -718,7 +718,7 @@ export function EntityDetailContent({ entityId }: { entityId: string }) {
               disabled={relationshipMutation.isPending}
               onClick={() => { setRelationshipError(null); relationshipMutation.mutate({ relationship: null }) }}
             >
-              {relationshipMutation.isPending && <Loader2 className="size-4 mr-1.5 animate-spin" />}
+              {relationshipMutation.isPending && <Loader2 className="size-4 mr-2 animate-spin" />}
               Clear
             </Button>
           </DialogFooter>

@@ -143,7 +143,7 @@ function EngagementControl({
 
   if (target.engagement) {
     return (
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         <div className="flex items-center gap-2 h-8">
           <Link
             to={`/admin/engagements/${target.engagement.id}`}
@@ -173,7 +173,7 @@ function EngagementControl({
                 system may do — an authorisation reference is required.
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-1.5 py-1">
+            <div className="space-y-2 py-1">
               <Label className="text-sm">Authorisation reference</Label>
               <Input
                 value={detachRef}
@@ -370,11 +370,11 @@ export default function TargetDetail() {
         <div className="flex flex-wrap gap-2 pt-1">
           {target.type === "domain" && !target.verified && (
             <Button size="sm" variant="outline" disabled={isMutating} onClick={() => verifyMutation.mutate()}>
-              <ShieldCheck className="size-4 mr-1.5" />Verify TXT
+              <ShieldCheck className="size-4 mr-2" />Verify TXT
             </Button>
           )}
           <Button size="sm" variant="outline" disabled={isMutating} onClick={() => recheckMutation.mutate()}>
-            <RefreshCw className="size-4 mr-1.5" />Recheck
+            <RefreshCw className="size-4 mr-2" />Recheck
           </Button>
           <Button
             size="sm"
@@ -387,7 +387,7 @@ export default function TargetDetail() {
             }}
             className="text-destructive hover:text-destructive hover:bg-destructive/10"
           >
-            <Trash2 className="size-4 mr-1.5" />Remove
+            <Trash2 className="size-4 mr-2" />Remove
           </Button>
         </div>
       </div>
@@ -396,37 +396,37 @@ export default function TargetDetail() {
 
       {/* Metadata grid */}
       <div className="grid grid-cols-2 gap-4 text-sm">
-        <div className="space-y-0.5">
+        <div className="space-y-1">
           <p className="text-xs text-muted-foreground">Source</p>
           <p>{sourceLabel(target)}</p>
         </div>
-        <div className="space-y-0.5">
+        <div className="space-y-1">
           <p className="text-xs text-muted-foreground">Added</p>
           <p>
             {new Date(target.created_at).toLocaleString()}
             <span className="text-muted-foreground"> · {relativeTime(target.created_at)}</span>
           </p>
         </div>
-        <div className="space-y-0.5">
+        <div className="space-y-1">
           <p className="text-xs text-muted-foreground">Last scanned</p>
           <p title={target.last_scanned_at ? new Date(target.last_scanned_at).toLocaleString() : undefined}>
             {target.last_scanned_at ? relativeTime(target.last_scanned_at) : "never"}
           </p>
         </div>
-        <div className="space-y-0.5">
+        <div className="space-y-1">
           <p className="text-xs text-muted-foreground">Next scan</p>
           <p title={target.next_scan_at ? new Date(target.next_scan_at).toLocaleString() : undefined}>
             {target.next_scan_at ? relativeFuture(target.next_scan_at) : "—"}
           </p>
         </div>
         {target.verified_at && (
-          <div className="space-y-0.5">
+          <div className="space-y-1">
             <p className="text-xs text-muted-foreground">Verified at</p>
             <p>{new Date(target.verified_at).toLocaleString()}</p>
           </div>
         )}
         {target.verification_method && (
-          <div className="space-y-0.5">
+          <div className="space-y-1">
             <p className="text-xs text-muted-foreground">Verification</p>
             <p className="capitalize">{target.verification_method.replace(/_/g, " ")}</p>
           </div>
@@ -462,7 +462,7 @@ export default function TargetDetail() {
           />
         </div>
         {target.notes && (
-          <div className="col-span-2 space-y-0.5">
+          <div className="col-span-2 space-y-1">
             <p className="text-xs text-muted-foreground">Notes</p>
             <p>{target.notes}</p>
           </div>

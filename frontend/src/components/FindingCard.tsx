@@ -46,14 +46,14 @@ export function FindingCard({
       tabIndex={0}
       onClick={onClick}
       onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick() } }}
-      className={`text-left w-full rounded-lg border bg-card p-3.5 space-y-2 transition-colors hover:bg-accent/40 cursor-pointer ${
+      className={`text-left w-full rounded-lg border bg-card p-4 space-y-2 transition-colors hover:bg-accent/40 cursor-pointer ${
         selected ? "ring-2 ring-primary" : ""
       }`}
     >
       <div className="space-y-1">
         <ImpactClassBadge finding={f} />
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
             {f.risk_band ? <RiskBandBadge band={f.risk_band} score={f.risk_score} /> : <SeverityBadge severity={f.severity} />}
             <BuildingVelocityBadge active={f.building_velocity} />
           </div>

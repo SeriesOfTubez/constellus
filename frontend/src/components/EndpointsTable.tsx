@@ -81,7 +81,7 @@ function GroupRows({
             </TableCell>
             <TableCell className="text-xs tabular-nums whitespace-nowrap">{statusCell(row.http_status, row.redirect_chain)}</TableCell>
             <TableCell>
-              <span className="inline-flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="inline-flex flex-wrap items-center gap-2 text-xs">
                 <span className={none ? "text-muted-foreground" : "font-medium"}>{effectiveLabel(row)}</span>
                 {!none && (
                   <AiInferredBadge
@@ -106,7 +106,7 @@ function GroupRows({
                     </span>
                   </TooltipTrigger>
                   <TooltipContent side="left" className="max-w-xs">
-                    <div className="space-y-0.5">
+                    <div className="space-y-1">
                       {warn.map(f => <p key={f.key}>{f.text}</p>)}
                     </div>
                   </TooltipContent>

@@ -76,7 +76,7 @@ function RootList({ orgs, activeId }: { orgs: OrganizationSummary[]; activeId?: 
           >
             <div className="flex items-center justify-between gap-2">
               <span className="font-medium truncate">{o.name}</span>
-              <span className="rounded-full border px-1.5 text-xs text-muted-foreground shrink-0">{orgPill(o)}</span>
+              <span className="rounded-full border px-2 text-xs text-muted-foreground shrink-0">{orgPill(o)}</span>
             </div>
             <div className="text-xs text-muted-foreground">{o.proposed} to review</div>
           </Link>
@@ -91,7 +91,7 @@ function TreeList({
 }: { nodes: TreeNode[]; selected: string | null; onSelect: (id: string | null) => void }) {
   const rootId = nodes.find(n => n.parent_id === null)?.entity_id
   return (
-    <ul className="p-2 space-y-0.5">
+    <ul className="p-2 space-y-1">
       {treeRows(nodes).map(({ node, indent, note, selectable }) => {
         const active = (selected ?? rootId) === node.entity_id
         const inner = (
@@ -107,12 +107,12 @@ function TreeList({
               <button
                 type="button"
                 onClick={() => onSelect(node.entity_id === rootId ? null : node.entity_id)}
-                className={cn("w-full text-left rounded-md px-2 py-1.5 text-sm hover:bg-accent", active && "bg-primary/15 text-primary")}
+                className={cn("w-full text-left rounded-md px-2 py-2 text-sm hover:bg-accent", active && "bg-primary/15 text-primary")}
               >
                 {inner}
               </button>
             ) : (
-              <div className="rounded-md px-2 py-1.5 text-sm opacity-50 cursor-not-allowed">{inner}</div>
+              <div className="rounded-md px-2 py-2 text-sm opacity-50 cursor-not-allowed">{inner}</div>
             )}
           </li>
         )
@@ -217,15 +217,15 @@ function AddDomainSheet({
           <SheetTitle>Add domain</SheetTitle>
           <SheetDescription>Propose a domain with the source that says it belongs to this organization.</SheetDescription>
         </SheetHeader>
-        <div className="space-y-1.5"><Label htmlFor="ad-domain">Domain</Label>
+        <div className="space-y-2"><Label htmlFor="ad-domain">Domain</Label>
           <Input id="ad-domain" value={domain} onChange={e => setDomain(e.target.value)} placeholder="fabrikam.com" /></div>
-        <div className="space-y-1.5"><Label htmlFor="ad-url">Source URL</Label>
+        <div className="space-y-2"><Label htmlFor="ad-url">Source URL</Label>
           <Input id="ad-url" value={sourceUrl} onChange={e => setSourceUrl(e.target.value)} placeholder="https://" /></div>
-        <div className="space-y-1.5"><Label htmlFor="ad-quote">Quote (required)</Label>
+        <div className="space-y-2"><Label htmlFor="ad-quote">Quote (required)</Label>
           <Textarea id="ad-quote" value={quote} onChange={e => setQuote(e.target.value)} /></div>
-        <div className="space-y-1.5"><Label htmlFor="ad-excerpt">Excerpt (optional, defaults to the quote)</Label>
+        <div className="space-y-2"><Label htmlFor="ad-excerpt">Excerpt (optional, defaults to the quote)</Label>
           <Textarea id="ad-excerpt" value={excerpt} onChange={e => setExcerpt(e.target.value)} /></div>
-        <div className="space-y-1.5"><Label>Organization it belongs to</Label>
+        <div className="space-y-2"><Label>Organization it belongs to</Label>
           <Select value={via} onValueChange={setVia}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>{confirmed.map(n => <SelectItem key={n.entity_id} value={n.entity_id}>{n.name}</SelectItem>)}</SelectContent>
@@ -494,7 +494,7 @@ function OrgWorkspace({
   const builtSignals = signalTypes.filter(s => s.built)
   const toolbar = tab === "domains" ? (
     <>
-      <div className="inline-flex rounded-md border h-9 p-0.5">
+      <div className="inline-flex rounded-md border h-9 p-1">
         {SEGMENTS.map(sg => (
           <button key={sg} type="button" aria-pressed={segment === sg} onClick={() => setSegment(sg)}
             className={cn("px-3 text-sm rounded", segment === sg ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground")}>
@@ -526,7 +526,7 @@ function OrgWorkspace({
     </>
   ) : tab === "asns" ? (
     <>
-      <div className="inline-flex rounded-md border h-9 p-0.5">
+      <div className="inline-flex rounded-md border h-9 p-1">
         {SEGMENTS.map(sg => (
           <button key={sg} type="button" aria-pressed={segment === sg} onClick={() => setSegment(sg)}
             className={cn("px-3 text-sm rounded", segment === sg ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground")}>

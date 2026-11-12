@@ -37,7 +37,7 @@ export function AiInferredBadge({
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-xs">
         {isAi ? (
-          <div className="space-y-0.5">
+          <div className="space-y-1">
             <p>An AI model inferred this from the endpoint's own signals. It is applied as-is; an admin can correct it.</p>
             {model && <p className="text-muted-foreground">Model: {model}</p>}
           </div>

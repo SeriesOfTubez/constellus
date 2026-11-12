@@ -213,7 +213,7 @@ export function VerificationEvidencePanel({ finding }: { finding: Finding }) {
   if (lines.length === 0) return null
 
   return (
-    <div className="rounded border border-border bg-muted/30 p-3 text-sm space-y-1.5">
+    <div className="rounded border border-border bg-muted/30 p-3 text-sm space-y-2">
       <div className="font-medium text-muted-foreground">Why this was excluded</div>
       {lines.map((line, i) => <div key={i} className="text-muted-foreground">{line}</div>)}
     </div>
@@ -447,7 +447,7 @@ export function SsvcEvidence({ finding }: { finding: Finding }) {
   const auto = finding.ssvc_automatable
   const expl = finding.ssvc_exploitation
   return (
-    <div className="rounded-md border p-4 space-y-2.5">
+    <div className="rounded-md border p-4 space-y-3">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">SSVC</p>
         <span
@@ -721,7 +721,7 @@ export function EnrichmentBadges({ finding }: { finding: Finding }) {
           <span className={cn(CHIP, "border font-mono shrink-0", item.badgeClass)}>
             {item.label}
           </span>
-          <span className="text-muted-foreground whitespace-pre-line leading-snug pt-0.5">{item.tooltip}</span>
+          <span className="text-muted-foreground whitespace-pre-line leading-snug pt-1">{item.tooltip}</span>
         </div>
       )}
       getLabel={(item) => item.label}
@@ -964,7 +964,7 @@ export function UpstreamEvidence({ finding }: { finding: Finding }) {
         <ConfidenceChip confidence={finding.confidence} />
       </div>
 
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-2">
         <SourceBadges finding={finding} />
         {port != null
           ? <PortBadge port={port} />
@@ -990,7 +990,7 @@ export function UpstreamEvidence({ finding }: { finding: Finding }) {
       )}
 
       {rows.length > 0 && (
-        <div className="space-y-1.5 pt-1">
+        <div className="space-y-2 pt-1">
           {rows.map((r, i) => (
             <div key={i} className="flex items-start gap-3 text-sm">
               <span className="text-xs text-muted-foreground w-24 shrink-0">{r.label}</span>

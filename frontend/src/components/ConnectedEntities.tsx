@@ -98,7 +98,7 @@ function ObservedNamesBlock({ names }: { names: ObservedName[] }) {
 
   return (
     <div className="rounded-md border bg-card">
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b text-xs">
+      <div className="flex items-center gap-2 px-3 py-2 border-b text-xs">
         <span className="text-muted-foreground font-mono">~</span>
         <span className="font-medium">Other names observed</span>
         <span className="text-muted-foreground">({total})</span>
@@ -115,7 +115,7 @@ function ObservedNamesBlock({ names }: { names: ObservedName[] }) {
             <div className="flex items-center gap-2">
               <span className="text-xs uppercase tracking-wider text-muted-foreground">via {source}</span>
             </div>
-            <div className="font-mono space-y-0.5 break-all">
+            <div className="font-mono space-y-1 break-all">
               {values.map(v => <div key={v}>{v}</div>)}
             </div>
           </div>
@@ -139,7 +139,7 @@ function EdgeGroupBlock({
 
   return (
     <div className="rounded-md border bg-card">
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b text-xs">
+      <div className="flex items-center gap-2 px-3 py-2 border-b text-xs">
         <span className="text-muted-foreground font-mono">{glyph}</span>
         <span className="font-medium">{verb}</span>
         <span className="text-muted-foreground">({total})</span>
@@ -152,7 +152,7 @@ function EdgeGroupBlock({
           <EdgeRow key={`${item.node_type}-${item.node_id}`} item={item} />
         ))}
         {overflow > 0 && (
-          <div className="px-3 py-1.5 text-xs text-muted-foreground italic">
+          <div className="px-3 py-2 text-xs text-muted-foreground italic">
             +{overflow} more — open full view to see all
           </div>
         )}

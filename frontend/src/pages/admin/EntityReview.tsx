@@ -95,7 +95,7 @@ export default function EntityReview() {
                   <TableCell>
                     <span className="text-sm">{r.observer_name ?? "—"}</span>
                     {r.observer_trust === "inferred" && (
-                      <Badge variant="outline" className="ml-1.5">AI</Badge>
+                      <Badge variant="outline" className="ml-2">AI</Badge>
                     )}
                   </TableCell>
                   <TableCell className="max-w-xs truncate text-xs text-muted-foreground" title={r.quote}>

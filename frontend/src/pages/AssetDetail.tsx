@@ -277,11 +277,11 @@ function AssetDetailBody({
         <div className="flex flex-wrap gap-2 pt-1">
           {!asset.ignored && (
             <Button size="sm" variant="outline" disabled={isMutating} onClick={onScan}>
-              <RefreshCw className="size-4 mr-1.5" />Recheck
+              <RefreshCw className="size-4 mr-2" />Recheck
             </Button>
           )}
           <Button size="sm" variant="outline" disabled={isMutating} onClick={() => onIgnore(!asset.ignored)}>
-            {asset.ignored ? <Eye className="size-4 mr-1.5" /> : <EyeOff className="size-4 mr-1.5" />}
+            {asset.ignored ? <Eye className="size-4 mr-2" /> : <EyeOff className="size-4 mr-2" />}
             {asset.ignored ? "Restore" : "Ignore"}
           </Button>
           <Button
@@ -293,7 +293,7 @@ function AssetDetailBody({
             }}
             className="text-destructive hover:text-destructive hover:bg-destructive/10"
           >
-            <Trash2 className="size-4 mr-1.5" />Delete
+            <Trash2 className="size-4 mr-2" />Delete
           </Button>
         </div>
       </div>
@@ -306,7 +306,7 @@ function AssetDetailBody({
             <TabsTrigger value="findings" className={TAB}>
               Findings
               {activeFindings.length > 0 && (
-                <span className={cn(CHIP, "ml-1.5 bg-muted font-semibold")}>{activeFindings.length}</span>
+                <span className={cn(CHIP, "ml-2 bg-muted font-semibold")}>{activeFindings.length}</span>
               )}
             </TabsTrigger>
             {hasCerts && <TabsTrigger value="tls" className={TAB}>TLS</TabsTrigger>}
@@ -434,7 +434,7 @@ function AssetDetailBody({
                 {domainWhois!.name_servers.length > 0 && (
                   <div className="flex items-start gap-3 px-3 py-2">
                     <span className="text-muted-foreground shrink-0 w-32">Nameservers</span>
-                    <div className="font-mono text-foreground space-y-0.5 break-all">
+                    <div className="font-mono text-foreground space-y-1 break-all">
                       {domainWhois!.name_servers.map(ns => <div key={ns}>{ns}</div>)}
                     </div>
                   </div>
@@ -486,7 +486,7 @@ function AssetDetailBody({
                       <TableCell>
                         <p className="text-sm font-medium leading-tight">{f.title}</p>
                         {f.cve_id && (
-                          <p className="text-xs font-mono text-muted-foreground mt-0.5">{f.cve_id}</p>
+                          <p className="text-xs font-mono text-muted-foreground mt-1">{f.cve_id}</p>
                         )}
                       </TableCell>
                       <TableCell><StateBadge state={f.state} /></TableCell>
@@ -522,7 +522,7 @@ function AssetDetailBody({
           {timelineEvents.map((ev, i) => (
             <div key={i} className="flex items-start gap-3 pb-4">
               <div className="mt-1 h-2 w-2 rounded-full border-2 border-primary bg-background shrink-0" />
-              <div className="space-y-0.5 text-sm">
+              <div className="space-y-1 text-sm">
                 <p className="font-medium">{ev.label}</p>
                 <p className="text-xs text-muted-foreground">
                   {new Date(ev.date).toLocaleString()} · {relativeTime(ev.date)}

@@ -119,7 +119,7 @@ function ScreenshotLine({ c, candidateId }: { c: PageCapture; candidateId: strin
         <summary className="cursor-pointer text-muted-foreground">
           {kib != null ? `Screenshot (${kib} KiB)` : "Screenshot (size unknown)"}
         </summary>
-        {open && <div className="mt-1.5"><CaptureImage candidateId={candidateId} captureId={c.id} domain={c.domain} /></div>}
+        {open && <div className="mt-2"><CaptureImage candidateId={candidateId} captureId={c.id} domain={c.domain} /></div>}
       </details>
     )
   }
@@ -140,7 +140,7 @@ export function CaptureList({ captures, candidateId }: { captures: PageCapture[]
         const badge = STATUS_BADGE[c.status] ?? { variant: "outline" as const, label: c.status }
         const chain = c.redirect_chain ?? []
         return (
-          <li key={c.id} className="rounded-md border p-2.5 space-y-1">
+          <li key={c.id} className="rounded-md border p-3 space-y-1">
             <div className="flex items-center gap-2">
               <Badge variant={badge.variant}>{badge.label}</Badge>
               {captureSource(c) === "live"
@@ -176,7 +176,7 @@ export function CaptureList({ captures, candidateId }: { captures: PageCapture[]
                 {chain.length > 0 && (
                   <details className="text-xs">
                     <summary className="cursor-pointer text-muted-foreground">Redirect chain</summary>
-                    <ol className="mt-1 space-y-0.5 break-all font-mono">
+                    <ol className="mt-1 space-y-1 break-all font-mono">
                       {chain.map((h, i) => <li key={i}>{hopText(h)}</li>)}
                     </ol>
                   </details>
@@ -184,7 +184,7 @@ export function CaptureList({ captures, candidateId }: { captures: PageCapture[]
                 {c.cert_san_dns && c.cert_san_dns.length > 0 && (
                   <details className="text-xs">
                     <summary className="cursor-pointer text-muted-foreground">Certificate names ({c.cert_san_dns.length})</summary>
-                    <ul className="mt-1 space-y-0.5 break-all font-mono">
+                    <ul className="mt-1 space-y-1 break-all font-mono">
                       {c.cert_san_dns.map(n => <li key={n}>{n}</li>)}
                     </ul>
                   </details>
@@ -212,8 +212,8 @@ export function latestRelevantSkip(skips: CaptureSkip[], captures: PageCapture[]
 
 export function CaptureSkipNotice({ skip }: { skip: CaptureSkip }) {
   return (
-    <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
-      <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+    <p className="flex items-start gap-2 text-xs text-muted-foreground">
+      <Info className="mt-1 size-3.5 shrink-0" aria-hidden="true" />
       <span>
         Automatic capture skipped <span title={formatExactTime(skip.skipped_at)}>{relativeTime(skip.skipped_at)}</span>: {skip.message}
       </span>

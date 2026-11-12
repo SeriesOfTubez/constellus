@@ -71,14 +71,14 @@ function SeverityStrip({ findings, loading, error }: { findings?: Finding[]; loa
                 <div className="h-8 w-px bg-border self-center" />
                 <div className="flex flex-wrap items-center gap-3">
                   {kev > 0 && (
-                    <Link to="/findings?kev=true" className="flex items-center gap-1.5 text-sm hover:opacity-80 transition-opacity">
+                    <Link to="/findings?kev=true" className="flex items-center gap-2 text-sm hover:opacity-80 transition-opacity">
                       <span className="inline-block h-2 w-2 rounded-full bg-[var(--sev-critical)]" />
                       <span className="font-semibold text-foreground">{kev}</span>
                       <span className="text-muted-foreground">confirmed exploited (KEV)</span>
                     </Link>
                   )}
                   {exploit > 0 && (
-                    <Link to="/findings?exploit=true" className="flex items-center gap-1.5 text-sm hover:opacity-80 transition-opacity">
+                    <Link to="/findings?exploit=true" className="flex items-center gap-2 text-sm hover:opacity-80 transition-opacity">
                       <Zap className="size-3.5 text-[var(--sev-high)]" />
                       <span className="font-semibold text-foreground">{exploit}</span>
                       <span className="text-muted-foreground">with public exploit</span>
@@ -164,12 +164,12 @@ function CategoryBreakdown({ findings, loading, error }: { findings?: Finding[];
         ) : rows.length === 0 ? (
           <p className="text-sm text-muted-foreground">No findings yet.</p>
         ) : (
-          <div className="space-y-2.5">
+          <div className="space-y-3">
             {rows.map(([cat, count]) => (
               <Link
                 key={cat}
                 to={`/findings?category=${encodeURIComponent(cat)}`}
-                className="flex items-center gap-3 -mx-1 px-1 py-0.5 rounded hover:bg-accent/40 transition-colors group"
+                className="flex items-center gap-3 -mx-1 px-1 py-1 rounded hover:bg-accent/40 transition-colors group"
               >
                 <span className="text-xs text-muted-foreground w-36 shrink-0 truncate group-hover:text-foreground transition-colors">
                   {CATEGORY_LABEL[cat] ?? cat}
@@ -226,17 +226,17 @@ function ScoreGauge({ score, color }: { score: number; color: string }) {
 function TrendChange({ count, prev }: { count: number; prev: number }) {
   const net = count - prev
   if (net < 0) return (
-    <span className="mt-0.5 inline-flex items-center gap-0.5 text-xs font-medium text-[var(--sev-clean)]">
+    <span className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-[var(--sev-clean)]">
       <ArrowDownRight className="size-3.5" />{Math.abs(net)} fewer since yesterday
     </span>
   )
   if (net > 0) return (
-    <span className="mt-0.5 inline-flex items-center gap-0.5 text-xs font-medium text-[var(--sev-high)]">
+    <span className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-[var(--sev-high)]">
       <ArrowUpRight className="size-3.5" />{net} more since yesterday
     </span>
   )
   return (
-    <span className="mt-0.5 inline-flex items-center gap-0.5 text-xs text-muted-foreground">
+    <span className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground">
       <Minus className="size-3.5" />No change since yesterday
     </span>
   )
@@ -284,7 +284,7 @@ function SecurityScoreGauge({ data, loading, error }: { data?: SecurityScore; lo
             ) : data ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Link to="/findings" className="mt-1.5 flex flex-col items-center cursor-help hover:opacity-80 transition-opacity">
+                  <Link to="/findings" className="mt-2 flex flex-col items-center cursor-help hover:opacity-80 transition-opacity">
                     <span className="text-sm">
                       <span className="font-semibold tabular-nums" style={{ color }}>{data.worst_band_count}</span>{" "}
                       <span className="text-muted-foreground">{label.toLowerCase()} finding{data.worst_band_count !== 1 ? "s" : ""}</span>
@@ -302,7 +302,7 @@ function SecurityScoreGauge({ data, loading, error }: { data?: SecurityScore; lo
 
             {/* Top contributors */}
             {data && data.breakdown.length > 0 && (
-              <div className="w-full mt-4 pt-3 border-t space-y-1.5">
+              <div className="w-full mt-4 pt-3 border-t space-y-2">
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Top contributors</p>
                 {data.breakdown.slice(0, 3).map(f => (
                   <Link key={f.id} to={`/findings/${f.id}`}
@@ -350,7 +350,7 @@ function RecentlyRemediated({ findings, loading, error }: { findings?: Finding[]
           <div className="divide-y">
             {remediated.map(f => (
               <Link key={f.id} to={`/findings/${f.id}`}
-                className="flex items-center gap-3 py-2.5 -mx-1 px-1 rounded hover:bg-accent/40 transition-colors">
+                className="flex items-center gap-3 py-3 -mx-1 px-1 rounded hover:bg-accent/40 transition-colors">
                 <RiskBandBadge band={f.risk_band ?? effectiveBand(f)} score={f.risk_score} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">{f.title}</p>
@@ -395,7 +395,7 @@ function RecentActivity({ scans, loading, error }: { scans?: ScanRun[]; loading:
           <div className="divide-y">
             {recent.map(r => (
               <Link key={r.id} to={`/assets?scan=${r.id}`}
-                className="flex items-center gap-3 py-2.5 -mx-1 px-1 rounded hover:bg-accent/40 transition-colors">
+                className="flex items-center gap-3 py-3 -mx-1 px-1 rounded hover:bg-accent/40 transition-colors">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <p className="text-sm font-medium truncate">
@@ -405,7 +405,7 @@ function RecentActivity({ scans, loading, error }: { scans?: ScanRun[]; loading:
                     <Badge variant="outline" className="text-xs">{KIND_LABEL[r.kind]}</Badge>
                     {r.status === "running" && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
                   </div>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     {r.asset_count} asset{r.asset_count !== 1 ? "s" : ""} · {r.finding_count} finding{r.finding_count !== 1 ? "s" : ""}
                     {" · "}{relativeTime(r.completed_at ?? r.started_at ?? r.created_at)}
                   </p>

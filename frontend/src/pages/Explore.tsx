@@ -141,7 +141,7 @@ function QueryResults({ q, raw }: { q: QueryObject; raw: string }) {
                     const id = link ? r[link.idCol] : undefined
                     const text = cellText(c, r[c])
                     return (
-                      <td key={c} className="px-3 py-1.5 max-w-[40ch] truncate" title={text}>
+                      <td key={c} className="px-3 py-2 max-w-[40ch] truncate" title={text}>
                         {typeof id === "string"
                           ? <Link to={link.base + encodeURIComponent(id)} className="text-primary hover:underline">{text}</Link>
                           : text}

@@ -229,7 +229,7 @@ export default function Sso() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
+            <div className="space-y-1">
               <p className="text-sm font-medium">JIT provisioning</p>
               <p className="text-xs text-muted-foreground">Auto-create accounts for new SSO users (Viewer role)</p>
             </div>
@@ -237,7 +237,7 @@ export default function Sso() {
           </div>
           <Separator />
           <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
+            <div className="space-y-1">
               <p className="text-sm font-medium">Allow local fallback</p>
               <p className="text-xs text-muted-foreground">Keep password login available during SSO rollout</p>
             </div>

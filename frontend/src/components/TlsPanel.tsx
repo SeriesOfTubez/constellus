@@ -144,7 +144,7 @@ function CertCardView({
         <span className="font-mono font-medium break-all">{cert.subject_cn ?? "(no subject CN)"}</span>
         <div className="flex items-center gap-1">
           {ports.sort((a, b) => a - b).map(p => (
-            <Badge key={p} variant="outline" className="h-4 px-1.5 py-0 text-xs font-normal font-mono">:{p}</Badge>
+            <Badge key={p} variant="outline" className="h-4 px-2 py-0 text-xs font-normal font-mono">:{p}</Badge>
           ))}
         </div>
       </div>
@@ -190,9 +190,9 @@ function CertCardView({
       {(cert.tls_version || cert.cipher) && (
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-muted-foreground w-20 shrink-0">Crypto</span>
-          <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
             {cert.tls_version && (
-              <Badge variant="outline" className={`h-4 px-1.5 py-0 text-xs font-normal ${isWeakTls ? "border-destructive/50 text-destructive" : ""}`}>
+              <Badge variant="outline" className={`h-4 px-2 py-0 text-xs font-normal ${isWeakTls ? "border-destructive/50 text-destructive" : ""}`}>
                 {cert.tls_version}
               </Badge>
             )}
@@ -221,7 +221,7 @@ function CertCardView({
       {(cert.fingerprint || cert.ja3 || cert.ja3s || card.jarm) && (
         <div className="flex items-start gap-2">
           <span className="text-xs text-muted-foreground w-20 shrink-0">Fingerprint</span>
-          <div className="space-y-0.5 min-w-0">
+          <div className="space-y-1 min-w-0">
             {cert.fingerprint && (
               <p className="font-mono text-xs text-muted-foreground break-all" title={cert.fingerprint}>
                 <Fingerprint className="inline size-3.5 mr-1" />{cert.fingerprint.slice(0, 32)}…
@@ -243,7 +243,7 @@ function CertCardView({
           {sources.map(s => (
             <Tooltip key={s}>
               <TooltipTrigger asChild>
-                <Badge variant="outline" className="h-4 px-1.5 py-0 text-xs font-normal capitalize cursor-help">{s}</Badge>
+                <Badge variant="outline" className="h-4 px-2 py-0 text-xs font-normal capitalize cursor-help">{s}</Badge>
               </TooltipTrigger>
               <TooltipContent side="top">{SOURCE_LABELS[s] ?? s}</TooltipContent>
             </Tooltip>
@@ -257,7 +257,7 @@ function CertCardView({
               </TooltipTrigger>
               <TooltipContent side="top" className="max-w-xs">
                 <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-1">Same certificate</p>
-                <div className="space-y-0.5">
+                <div className="space-y-1">
                   {others.slice(0, 12).map(([id, value]) => <div key={id} className="font-mono text-xs break-all">{displayName(value)}</div>)}
                   {others.length > 12 && <div className="text-xs text-muted-foreground">+{others.length - 12} more</div>}
                 </div>

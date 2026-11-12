@@ -189,7 +189,7 @@ function ConnectSourcesStep({ onContinue }: { onContinue: () => void }) {
       <CardContent className="space-y-6">
         {core.length > 0 && (
           <div className="space-y-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground flex items-center gap-2">
               <Zap className="size-3.5 text-primary" />
               Core capabilities — results are noticeably thinner without these
             </p>

@@ -142,7 +142,7 @@ function ScanDetailSheet({ run, onClose }: { run: ScanRun; onClose: () => void }
               <Separator />
               <div className="space-y-2">
                 <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Connectors used</p>
-                <div className="flex flex-wrap gap-1.5">
+                <div className="flex flex-wrap gap-2">
                   {run.connectors_used.map(c => (
                     <span key={c} className={cn(CHIP, "bg-muted font-mono")}>{c}</span>
                   ))}
@@ -189,7 +189,7 @@ function ScanRow({ run, onDetail }: { run: ScanRun; onDetail: (run: ScanRun) => 
   return (
     <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => navigate(`/assets?scan=${run.id}`)}>
       <CardContent className="flex items-center gap-4 py-4">
-        <div className="flex-1 min-w-0 space-y-0.5">
+        <div className="flex-1 min-w-0 space-y-1">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-medium truncate">{run.name ?? run.scope.domains.map(displayName).join(", ") ?? "Unnamed scan"}</p>
             <Badge variant={badge.variant}>{badge.label}</Badge>
@@ -423,7 +423,7 @@ function SystemLogsPanel() {
           </span>
 
           <div className="flex items-center gap-3 ml-auto">
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-2">
               {isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
               {autoRefresh && !isFetching && (
                 <Circle className="h-2 w-2 fill-emerald-500 text-emerald-500 animate-pulse" />
@@ -436,7 +436,7 @@ function SystemLogsPanel() {
               <RefreshCw className="size-4" />
             </Button>
             {logSettings && (
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-2">
                 <Timer className="size-3.5 text-muted-foreground shrink-0" />
                 <span className="text-xs text-muted-foreground whitespace-nowrap">Retain for</span>
                 <Select
@@ -479,7 +479,7 @@ function SystemLogsPanel() {
         ) : (
           reversed.map(entry => (
             <div key={entry.id}
-              className={`flex gap-3 px-4 py-0.5 hover:bg-white/5 border-b border-white/5 ${LEVEL_BG[entry.level] ?? ""}`}>
+              className={`flex gap-3 px-4 py-1 hover:bg-white/5 border-b border-white/5 ${LEVEL_BG[entry.level] ?? ""}`}>
               <span className="text-xs text-muted-foreground shrink-0 w-44 tabular-nums">
                 {fmtLogTime(entry.created_at)}
               </span>
@@ -665,7 +665,7 @@ function AuditPanel() {
           <span className="text-xs text-muted-foreground">{entries?.length ?? 0} events</span>
 
           <div className="flex items-center gap-3 ml-auto">
-            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="flex items-center gap-2 text-xs text-muted-foreground">
               <Lock className="size-3.5" />
               Append-only — no delete path
             </span>

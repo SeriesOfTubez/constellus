@@ -42,7 +42,7 @@ export function WorkspaceShell({
       <div className="px-6 pt-6 pb-4 flex items-start justify-between gap-4">
         <div>
           <h1 className="text-xl tracking-title font-semibold">{title}</h1>
-          {subtitle && <p className="text-sm text-muted-foreground mt-0.5">{subtitle}</p>}
+          {subtitle && <p className="text-sm text-muted-foreground mt-1">{subtitle}</p>}
           {headerExtra && <div className="mt-3">{headerExtra}</div>}
         </div>
         {primaryAction && <div className="shrink-0">{primaryAction}</div>}
@@ -55,7 +55,7 @@ export function WorkspaceShell({
             key={tab.key}
             onClick={() => onTabChange(tab.key)}
             className={cn(
-              "relative flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px",
+              "relative flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px",
               activeTab === tab.key
                 ? "border-primary text-primary"
                 : "border-transparent text-muted-foreground hover:text-foreground hover:border-border"

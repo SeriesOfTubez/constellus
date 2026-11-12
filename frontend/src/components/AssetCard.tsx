@@ -42,7 +42,7 @@ export function AssetCard({
       role="button"
       tabIndex={0}
       onKeyDown={e => { if (e.key === "Enter") onOpen() }}
-      className={`rounded-lg border bg-card p-3.5 space-y-2.5 cursor-pointer transition-colors hover:bg-accent/40 ${
+      className={`rounded-lg border bg-card p-4 space-y-3 cursor-pointer transition-colors hover:bg-accent/40 ${
         asset.ignored ? "opacity-50" : ""
       } ${selected ? "ring-2 ring-primary" : ""}`}
     >
@@ -60,7 +60,7 @@ export function AssetCard({
       </div>
 
       {/* Identity */}
-      <div className="space-y-0.5">
+      <div className="space-y-1">
         <div className="flex items-center gap-2 flex-wrap">
           <p className="font-mono text-sm font-medium break-all">{displayName(asset.value)}</p>
           {isNew && (

@@ -227,11 +227,11 @@ export function ClashesSection({ instance }: { instance: ConnectorInstanceSummar
         Clashes ({n})
       </button>
       {open && (
-        <div className="mt-1.5 space-y-1.5">
+        <div className="mt-2 space-y-2">
           {isLoading && <Skeleton className="h-8 w-full" />}
           {error && <p className="text-destructive">{(error as ApiError).message || "Could not load clashes"}</p>}
           {data?.map((c) => (
-            <div key={c.id} className="rounded border border-amber-500/30 px-2 py-1.5">
+            <div key={c.id} className="rounded border border-amber-500/30 px-2 py-2">
               <p><span className="font-mono">{c.zone}</span> <span className="text-muted-foreground">{clashReasonLabel(c.reason)}</span></p>
               <p className="text-muted-foreground">
                 first seen {new Date(c.first_seen_at).toLocaleDateString()} · last seen {new Date(c.last_seen_at).toLocaleDateString()}
@@ -307,8 +307,8 @@ function AccountRow({
         <Switch checked={instance.enabled} onCheckedChange={(v) => toggle.mutate(v)} disabled={toggle.isPending} />
       </div>
       {warning && (
-        <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
-          <TriangleAlert className="size-3.5 mt-0.5 shrink-0" />
+        <p className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400">
+          <TriangleAlert className="size-3.5 mt-1 shrink-0" />
           {warning}
         </p>
       )}
@@ -447,7 +447,7 @@ function ZonesTab({ instanceId }: { instanceId: string }) {
         {paginated.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-muted-foreground">No zones match your search.</div>
         ) : paginated.map(zone => (
-          <label key={zone.name} className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/40 cursor-pointer">
+          <label key={zone.name} className="flex items-center gap-3 px-4 py-3 hover:bg-muted/40 cursor-pointer">
             <input
               type="checkbox"
               checked={!zone.excluded}
@@ -474,11 +474,11 @@ function ZonesTab({ instanceId }: { instanceId: string }) {
 
       <div className="flex justify-end gap-2">
         <Button variant="outline" onClick={() => syncMutation.mutate()} disabled={syncMutation.isPending || saveMutation.isPending}>
-          {syncMutation.isPending ? <Loader2 className="size-4 animate-spin mr-1.5" /> : <RefreshCw className="size-4 mr-1.5" />}
+          {syncMutation.isPending ? <Loader2 className="size-4 animate-spin mr-2" /> : <RefreshCw className="size-4 mr-2" />}
           Sync Now
         </Button>
         <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !dirty}>
-          {saveMutation.isPending ? <Loader2 className="size-4 animate-spin mr-1.5" /> : <Save className="size-4 mr-1.5" />}
+          {saveMutation.isPending ? <Loader2 className="size-4 animate-spin mr-2" /> : <Save className="size-4 mr-2" />}
           Save Zones{dirty ? " *" : ""}
         </Button>
       </div>
@@ -607,7 +607,7 @@ function AddInstanceSheet({ type, onClose }: { type: ConnectorTypeSummary | null
           <SheetDescription>One instance per account. Each is bound to the organization that owns it.</SheetDescription>
         </SheetHeader>
         <div className="py-6 space-y-5">
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <Label htmlFor="instance-name">Name</Label>
             <Input id="instance-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Example Holdings A" />
           </div>
@@ -700,14 +700,14 @@ function ConfigSheet({
       <div className="py-6 space-y-5">
         {type.account_scoped && (
           <>
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <Label htmlFor="instance-name">Name</Label>
               <Input id="instance-name" value={name} onChange={(e) => setName(e.target.value)} />
             </div>
             <InstanceBindingControl type={type} instance={instance} org={org} onChange={setOrg} getConfig={() => values} />
             {bindingWarning(instance) && (
-              <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
-                <TriangleAlert className="size-3.5 mt-0.5 shrink-0" />
+              <p className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400">
+                <TriangleAlert className="size-3.5 mt-1 shrink-0" />
                 {bindingWarning(instance)}
               </p>
             )}
@@ -745,7 +745,7 @@ function ConfigSheet({
             <TabsList className="w-full">
               <TabsTrigger value="credentials" className="flex-1">Credentials</TabsTrigger>
               <TabsTrigger value="zones" className="flex-1">
-                <Globe className="size-3.5 mr-1.5" />Zones
+                <Globe className="size-3.5 mr-2" />Zones
               </TabsTrigger>
             </TabsList>
             <TabsContent value="credentials">{credentialsContent}</TabsContent>

@@ -72,3 +72,19 @@ describe("icon and chip geometry (planning#337 slice 3)", () => {
     expect(users.length).toBeGreaterThanOrEqual(20)
   })
 })
+
+describe("spacing on the 4px grid (planning#337 slice 3)", () => {
+  const SPACING = "(?:p|px|py|pt|pb|pl|pr|m|mx|my|mt|mb|ml|mr|gap|gap-x|gap-y|space-x|space-y)"
+
+  it("has no spacing half-step (variant prefixes and negatives included)", () => {
+    expect(hits(new RegExp("(?:^|[\\s\"`':])-?" + SPACING + "-\\d+\\.5\\b", "g"))).toEqual([])
+  })
+
+  it("has no arbitrary pixel spacing", () => {
+    expect(hits(new RegExp("\\b" + SPACING + "-\\[\\d+px\\]", "g"))).toEqual([])
+  })
+
+  it("keeps inline code at a flat vertical padding (py-0)", () => {
+    expect(hits(/<code\b[^>]*\bpy-(?!0\b)\d+\b/g)).toEqual([])
+  })
+})

@@ -96,7 +96,7 @@ export function AssetRiskCard({ asset, findings, href }: { asset: Asset; finding
                 count > 0 ? `${RISK_BAND_COLOR[b]} hover:opacity-80` : "border-border/40 opacity-30 pointer-events-none"
               }`}
             >
-              <p className="text-base font-bold leading-none mb-0.5">{count}</p>
+              <p className="text-base font-bold leading-none mb-1">{count}</p>
               <p className="text-xs uppercase tracking-wider">{RISK_BAND_SHORT[b]}</p>
             </Link>
           )
@@ -105,7 +105,7 @@ export function AssetRiskCard({ asset, findings, href }: { asset: Asset; finding
 
       {/* Top finding spotlight */}
       {topFinding && (
-        <div className={`rounded-md border bg-muted/20 p-3.5 space-y-2 ${SPOTLIGHT_CLS[effectiveBand(topFinding)] ?? ""}`}>
+        <div className={`rounded-md border bg-muted/20 p-4 space-y-2 ${SPOTLIGHT_CLS[effectiveBand(topFinding)] ?? ""}`}>
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Top finding</span>
             {(topFinding.kev || topFinding.vulncheck_kev) && (

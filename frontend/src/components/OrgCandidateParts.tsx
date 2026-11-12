@@ -73,12 +73,12 @@ export function AssetsCell({ row }: { row: CandidateRow }) {
 export function StateCell({ row }: { row: CandidateRow }) {
   const st = stateInfo(row)
   return (
-    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+    <div className="flex flex-wrap items-center gap-2 text-xs">
       <span className="font-medium">{st.label}</span>
       {st.viaConnector && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="inline-flex items-center gap-0.5 text-muted-foreground cursor-help">
+            <span className="inline-flex items-center gap-1 text-muted-foreground cursor-help">
               <Plug className="size-3.5" />via connector
             </span>
           </TooltipTrigger>
@@ -103,7 +103,7 @@ export function OrganizationCell({ row }: { row: CandidateRow }) {
 
 function SignalRow({ s, labelOf }: { s: SignalDetail; labelOf: LabelOf }) {
   return (
-    <li className="rounded-md border p-2.5 space-y-1" title={s.quote ?? undefined}>
+    <li className="rounded-md border p-3 space-y-1" title={s.quote ?? undefined}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium">{labelOf(s.signal_type)}</span>
         <TierChip tier={s.tier} label={TIER_LABEL[s.tier] ?? s.tier} />
@@ -112,7 +112,7 @@ function SignalRow({ s, labelOf }: { s: SignalDetail; labelOf: LabelOf }) {
       {s.matched_values && s.matched_values.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {s.matched_values.map(v => (
-            <code key={v} className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">{v}</code>
+            <code key={v} className="rounded bg-muted px-2 py-0 text-xs font-mono">{v}</code>
           ))}
         </div>
       )}
@@ -162,7 +162,7 @@ export function CandidateFlyoutContent({
         </p>
 
         {detail.previously_rejected && (
-          <div className="rounded-md border border-dashed p-2.5 text-xs text-muted-foreground">
+          <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
             previously rejected: {detail.previously_rejected.reason ?? "no reason recorded"}
           </div>
         )}
@@ -253,7 +253,7 @@ export function ClaimDialog({
             The claim is recorded with you as the decider.{description ? ` ${description}` : ""}
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <Label>Organization it belongs to</Label>
           <Select value={aff} onValueChange={setAff}>
             <SelectTrigger><SelectValue placeholder="Default" /></SelectTrigger>
@@ -288,7 +288,7 @@ export function RejectDialog({
           <DialogTitle>Reject {value}</DialogTitle>
           <DialogDescription>A reason is required and is kept in the history.</DialogDescription>
         </DialogHeader>
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <Label htmlFor="reject-reason">Reason</Label>
           <Textarea id="reject-reason" value={reason} onChange={e => setReason(e.target.value)} />
         </div>
