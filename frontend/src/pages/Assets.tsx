@@ -43,7 +43,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { api, ApiError, type Asset, type Finding, type WhoisInfo, type DomainWhoisInfo } from "@/lib/api"
 import { useAuthStore } from "@/lib/auth"
 import { canMutate } from "@/lib/roles"
-import { CHIP } from "@/components/ui/chip"
+import { CHIP, SEV_CHIP } from "@/components/ui/chip"
 import { cn } from "@/lib/utils"
 
 const PREVIEW_LIMIT = 20
@@ -143,11 +143,11 @@ const SEV_RANK: Record<string, number> = { critical: 5, high: 4, medium: 3, low:
 
 // Top-border accent for the flyout, keyed on the asset's Risk Score band.
 const BAND_BORDER: Record<string, string> = {
-  imminent_compromise: "border-t-red-500",
-  high:                "border-t-orange-500",
-  elevated:            "border-t-amber-500",
-  low:                 "border-t-blue-500",
-  secure:              "border-t-emerald-500",
+  imminent_compromise: "border-t-sev-critical",
+  high:                "border-t-sev-high",
+  elevated:            "border-t-sev-medium",
+  low:                 "border-t-sev-low",
+  secure:              "border-t-sev-clean",
 }
 
 const FLY_TRIGGER = "h-9 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:text-foreground text-muted-foreground text-xs font-medium px-3 transition-none"
@@ -156,13 +156,10 @@ const FLY_TRIGGER = "h-9 rounded-none border-b-2 border-transparent data-[state=
 // bare "—" for every asset with no open findings, collapsing "we checked
 // and it's clean" and "nothing has ever looked at this" into the same
 // blank cell. `scanned` (backend hygiene_scorer.scanned_by_asset) tells
-// them apart. Uses the var(--sev-clean)/var(--sev-unknown) token
-// convention Dashboard.tsx already established for exactly this
-// clean-vs-unknown pair, rather than finding-badges.tsx's
-// Tailwind-hardcoded-hue convention (this isn't a new entry in the
-// Findings severity ramp, just a two-state doc chip).
-const CLEAN_CHIP_CLS = cn(CHIP, "border font-semibold bg-[var(--sev-clean)]/15 text-[var(--sev-clean)] border-[var(--sev-clean)]/30")
-const UNSCANNED_CHIP_CLS = cn(CHIP, "border font-semibold bg-[var(--sev-unknown)]/15 text-[var(--sev-unknown)] border-[var(--sev-unknown)]/30")
+// them apart. Same sev-clean / sev-unknown tones as the Dashboard's
+// clean-vs-unknown pair (a two-state doc chip, not a Findings ramp entry).
+const CLEAN_CHIP_CLS = cn(CHIP, SEV_CHIP.clean)
+const UNSCANNED_CHIP_CLS = cn(CHIP, SEV_CHIP.unknown)
 
 // Worst-first hygiene rank for the "Worst-managed" saved view / Hygiene
 // column sort (planning#130 L2, 5c). Real scores sort ascending (0 =
@@ -484,7 +481,7 @@ function AssetDetailSheet({
               <TabsTrigger value="findings"      className={FLY_TRIGGER}>
                 Findings
                 {activeFindings.length > 0 && (
-                  <span className={cn(CHIP, "ml-2 bg-muted font-semibold")}>
+                  <span className={cn(CHIP, "ml-2 bg-muted")}>
                     {activeFindings.length}
                   </span>
                 )}
@@ -533,9 +530,9 @@ function AssetDetailSheet({
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-xs uppercase tracking-wider text-muted-foreground">Sources</span>
                     {sources.map(src => {
-                      const meta = SOURCE_META[src] ?? { label: src.slice(0, 2).toUpperCase(), color: "bg-muted text-muted-foreground", description: src }
+                      const meta = SOURCE_META[src] ?? { label: src.slice(0, 2).toUpperCase(), description: src }
                       return (
-                        <span key={src} className={cn(CHIP, "font-semibold cursor-default", meta.color)} title={meta.description}>
+                        <span key={src} className={cn(CHIP, "cursor-default")} title={meta.description}>
                           {meta.label}
                         </span>
                       )
@@ -596,11 +593,11 @@ function AssetDetailSheet({
                           <span className="font-medium capitalize flex-1">{svc.product}</span>
                           <span className="text-muted-foreground font-mono">{svc.version}</span>
                           {svc.is_eol ? (
-                            <span className={cn(CHIP, "border font-semibold bg-amber-500/10 text-amber-500 border-amber-500/30 shrink-0")}>
+                            <span className={cn(CHIP, SEV_CHIP.medium, "shrink-0")}>
                               EOL{svc.days_past_eol !== null ? ` · ${svc.days_past_eol}d` : ""}
                             </span>
                           ) : (
-                            <span className={cn(CHIP, "border font-semibold bg-emerald-500/10 text-emerald-600 border-emerald-500/30 shrink-0")}>
+                            <span className={cn(CHIP, SEV_CHIP.clean, "shrink-0")}>
                               Supported
                             </span>
                           )}
@@ -662,7 +659,7 @@ function AssetDetailSheet({
                         {domainWhois!.expiration_date && (
                           <div className="flex items-start gap-3 px-3 py-2">
                             <span className="text-muted-foreground shrink-0 w-28">Expires</span>
-                            <span className={expired ? "text-destructive font-medium" : expiringSoon ? "text-orange-500 font-medium" : "text-foreground"}>
+                            <span className={expired ? "text-destructive font-medium" : expiringSoon ? "text-sev-high font-medium" : "text-foreground"}>
                               {new Date(domainWhois!.expiration_date).toLocaleDateString()}
                               {expired && " — expired"}
                               {expiringSoon && ` — expires in ${daysToExpiry} day${daysToExpiry !== 1 ? "s" : ""}`}
@@ -1276,13 +1273,13 @@ export default function Assets() {
                             <span className="inline-flex items-center gap-2">
                               {displayName(asset.value)}
                               {isNew(asset) && (
-                                <span className={cn(CHIP, "bg-primary/10 font-medium text-primary")}>
+                                <span className={CHIP}>
                                   <Sparkles className="size-3.5" />New
                                 </span>
                               )}
                               {isStale(asset.last_seen_at) && (
                                 <span
-                                  className={cn(CHIP, "bg-amber-500/10 font-medium text-amber-700 dark:text-amber-400")}
+                                  className={cn(CHIP, SEV_CHIP.medium)}
                                   title={`Last seen ${relativeTime(asset.last_seen_at)} — not observed in recent monitoring runs`}
                                 >
                                   <Clock className="size-3.5" />

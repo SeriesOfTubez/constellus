@@ -9,6 +9,7 @@ import {
 import { SeverityBadge } from "@/components/finding-badges"
 import { STRENGTH_LABEL, tierChipClass } from "@/lib/organizations"
 import { CHIP } from "@/components/ui/chip"
+import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 
 /** What is on record, no more. */
@@ -82,7 +83,7 @@ function OrgDiscoveryBodyView({ detail }: { detail: OrgDiscoveryDigestDetail }) 
                 <span className="text-xs text-muted-foreground shrink-0">{CANDIDATE_KIND_LABEL[c.kind] ?? c.kind}</span>
                 <span className="truncate">{c.value}</span>
                 {c.strength && (
-                  <span className={cn(CHIP, "shrink-0 border font-medium", tierChipClass(c.strength))}>
+                  <span className={cn(CHIP, "shrink-0", tierChipClass(c.strength))}>
                     {STRENGTH_LABEL[c.strength] ?? c.strength}
                   </span>
                 )}
@@ -219,7 +220,13 @@ function DigestRow({ d }: { d: DigestSummary }) {
       </button>
       {open && (
         <div className="mt-3 pl-7">
-          {isLoading ? <p className="text-xs text-muted-foreground">Loading…</p>
+          {isLoading ? (
+            <div role="status" aria-label="Loading" className="space-y-2">
+              <Skeleton className="h-4 w-2/3" />
+              <Skeleton className="h-4 w-1/2" />
+              <Skeleton className="h-4 w-3/5" />
+            </div>
+          )
             : isError || !data ? <p className="text-xs text-muted-foreground">Could not load this digest.</p>
             : <DigestBodyView detail={data} />}
         </div>

@@ -29,10 +29,10 @@ import { cn } from "@/lib/utils"
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-const STATUS_BADGE: Record<ScanRun["status"], { label: string; variant: "default" | "outline" | "success" | "warning" | "destructive" }> = {
+const STATUS_BADGE: Record<ScanRun["status"], { label: string; variant: "outline" | "destructive" }> = {
   pending:   { label: "Pending",   variant: "outline" },
-  running:   { label: "Running",   variant: "warning" },
-  completed: { label: "Completed", variant: "success" },
+  running:   { label: "Running",   variant: "outline" },
+  completed: { label: "Completed", variant: "outline" },
   failed:    { label: "Failed",    variant: "destructive" },
   cancelled: { label: "Cancelled", variant: "outline" },
 }
@@ -293,33 +293,18 @@ type LogEntry = {
 
 const LEVEL_COLOR: Record<string, string> = {
   DEBUG:    "text-muted-foreground",
-  INFO:     "text-blue-500",
-  WARNING:  "text-yellow-500",
-  ERROR:    "text-red-500",
-  CRITICAL: "text-red-600 font-bold",
+  INFO:     "text-secondary-foreground",
+  WARNING:  "text-sev-medium",
+  ERROR:    "text-sev-critical",
+  CRITICAL: "text-sev-critical font-semibold",
 }
 
 const LEVEL_BG: Record<string, string> = {
   DEBUG:    "",
   INFO:     "",
-  WARNING:  "bg-yellow-500/5",
-  ERROR:    "bg-red-500/5",
-  CRITICAL: "bg-red-500/10",
-}
-
-const SOURCE_COLOR: Record<string, string> = {
-  system:           "text-muted-foreground",
-  scan_executor:    "text-purple-500",
-  cloudflare:       "text-orange-500",
-  mailtrap:         "text-blue-500",
-  tenable:          "text-red-500",
-  wiz:              "text-cyan-500",
-  fortimanager:     "text-indigo-500",
-  nuclei:           "text-green-500",
-  cert_transparency:"text-blue-400",
-  subfinder:        "text-purple-400",
-  dnsrecon:         "text-green-400",
-  bruteforce:       "text-yellow-500",
+  WARNING:  "bg-sev-medium/5",
+  ERROR:    "bg-sev-critical/5",
+  CRITICAL: "bg-sev-critical/10",
 }
 
 function fmtLogTime(iso: string) {
@@ -426,7 +411,7 @@ function SystemLogsPanel() {
             <div className="flex items-center gap-2">
               {isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
               {autoRefresh && !isFetching && (
-                <Circle className="h-2 w-2 fill-emerald-500 text-emerald-500 animate-pulse" />
+                <Circle className="h-2 w-2 fill-sev-clean text-sev-clean animate-pulse" />
               )}
               <Label className="text-xs text-muted-foreground cursor-pointer">Live</Label>
               <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
@@ -473,7 +458,9 @@ function SystemLogsPanel() {
           setPinToBottom(atBottom)
         }}>
         {isLoading ? (
-          <div className="p-4 text-muted-foreground">Loading…</div>
+          <div role="status" aria-label="Loading" className="space-y-2 p-4">
+            {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-6 w-full" />)}
+          </div>
         ) : reversed.length === 0 ? (
           <div className="p-4 text-muted-foreground">No log entries yet.</div>
         ) : (
@@ -486,7 +473,7 @@ function SystemLogsPanel() {
               <span className={`shrink-0 w-16 ${LEVEL_COLOR[entry.level] ?? "text-foreground"}`}>
                 {entry.level}
               </span>
-              <span className={`shrink-0 w-28 truncate ${SOURCE_COLOR[entry.source] ?? "text-muted-foreground"}`}>
+              <span className="shrink-0 w-28 truncate text-muted-foreground">
                 {entry.source}
               </span>
               <span className="text-foreground/90 break-all">{entry.message}</span>
@@ -526,9 +513,8 @@ function sinceFor(period: string): string | null {
   return new Date(Date.now() - hours * 3600_000).toISOString()
 }
 
-function auditOutcomeVariant(status: number | undefined): "default" | "outline" | "success" | "warning" | "destructive" {
+function auditOutcomeVariant(status: number | undefined): "outline" | "destructive" {
   if (status === undefined) return "outline"
-  if (status >= 200 && status < 300) return "success"
   if (status >= 400) return "destructive"
   return "outline"
 }
@@ -678,7 +664,9 @@ function AuditPanel() {
 
       <div className="flex-1 overflow-y-auto">
         {isLoading ? (
-          <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+          <div role="status" aria-label="Loading" className="space-y-2 p-4">
+            {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+          </div>
         ) : entries?.length === 0 ? (
           <div className="p-4 text-sm text-muted-foreground">No audit events in this period.</div>
         ) : (

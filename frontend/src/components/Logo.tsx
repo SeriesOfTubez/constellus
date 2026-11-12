@@ -14,7 +14,7 @@ export function Logo({ className, showWordmark = true }: LogoProps) {
     isCustomOrg ? (
       <span className="text-base font-semibold truncate" style={{ color: "var(--org-name-color)" }}>{org_name}</span>
     ) : (
-      <span className="text-base font-semibold tracking-title bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
+      <span className="text-base font-semibold tracking-title bg-gradient-to-r from-(--brand) to-(--logo-glow) bg-clip-text text-transparent">
         Constellus
       </span>
     )
@@ -40,8 +40,8 @@ export function Logo({ className, showWordmark = true }: LogoProps) {
       <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 shrink-0">
         <defs>
           <linearGradient id="logo-g" x1="8" y1="4" x2="40" y2="44" gradientUnits="userSpaceOnUse">
-            <stop stopColor="#60a5fa" />
-            <stop offset="1" stopColor="#06b6d4" />
+            <stop style={{ stopColor: "var(--brand)" }} />
+            <stop offset="1" style={{ stopColor: "var(--logo-glow)" }} />
           </linearGradient>
         </defs>
         <line x1="14" y1="5"  x2="24" y2="26" stroke="url(#logo-g)" strokeWidth="1.3" strokeLinecap="round" opacity="0.65" />

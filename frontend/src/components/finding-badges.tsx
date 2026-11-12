@@ -8,7 +8,7 @@ import {
 import { type Finding } from "@/lib/api"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { OverflowCell } from "@/components/ui/overflow-cell"
-import { CHIP } from "@/components/ui/chip"
+import { CHIP, SEV_CHIP } from "@/components/ui/chip"
 import { cn } from "@/lib/utils"
 
 // CVE findings with no NVD-curated name fall back to the bare CVE id as their
@@ -46,14 +46,11 @@ export function ExposureOverrideBadge({ finding }: { finding: Finding }) {
   const Icon = isTag ? Tag : SlidersHorizontal
   const text = isTag ? "Downgraded by tag" : "Severity adjusted"
   const tip = isTag && o.tag ? `${o.tag} — ${o.label}` : o.label
-  const cls = isTag
-    ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
-    : "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-400"
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn(CHIP, "border font-medium cursor-help", cls)}>
+        <span className={cn(CHIP, "cursor-help")}>
           <Icon className="size-3.5" />{text}
         </span>
       </TooltipTrigger>
@@ -71,12 +68,6 @@ const EXPOSURE_CLASS_LABEL: Record<string, string> = {
   infrastructure: "Infrastructure",
   orchestration:  "Orchestration",
 }
-const EXPOSURE_CLASS_COLOR: Record<string, string> = {
-  remote_access:  "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400",
-  data_store:     "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400",
-  infrastructure: "border-violet-500/40 bg-violet-500/10 text-violet-600 dark:text-violet-400",
-  orchestration:  "border-cyan-500/40 bg-cyan-500/10 text-cyan-600 dark:text-cyan-400",
-}
 const EXPOSURE_CLASS_TIP: Record<string, string> = {
   remote_access:  "Interactive/admin access service exposed — direct compromise vector.",
   data_store:     "Database or cache exposed — data exposure risk.",
@@ -92,7 +83,7 @@ export function ExposureClassBadge({ finding }: { finding: Finding }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn(CHIP, "border font-medium cursor-help", EXPOSURE_CLASS_COLOR[cls])}>
+        <span className={cn(CHIP, "cursor-help")}>
           {EXPOSURE_CLASS_LABEL[cls]}
         </span>
       </TooltipTrigger>
@@ -111,12 +102,6 @@ const DETECTION_LAYER_LABEL: Record<string, string> = {
   affinity_unreachable:         "Origin unreachable",
   affinity_corroborated_alive:  "Origin serves others",
 }
-const DETECTION_LAYER_COLOR: Record<string, string> = {
-  fingerprint:                  "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400",
-  affinity_not_affine:          "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400",
-  affinity_unreachable:         "border-slate-500/40 bg-slate-500/10 text-slate-600 dark:text-slate-400",
-  affinity_corroborated_alive:  "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400",
-}
 const DETECTION_LAYER_TIP: Record<string, string> = {
   fingerprint:                  "A nuclei takeover-signature match on the CNAME target — directly claimable now.",
   affinity_not_affine:          "The record's origin is reachable but shows no evidence of serving content for this hostname (shared-hosting origin, no ownership signal).",
@@ -134,7 +119,7 @@ export function DetectionLayerBadge({ finding }: { finding: Finding }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn(CHIP, "border font-medium cursor-help", DETECTION_LAYER_COLOR[layer])}>
+        <span className={cn(CHIP, "cursor-help")}>
           {DETECTION_LAYER_LABEL[layer]}
         </span>
       </TooltipTrigger>
@@ -167,7 +152,7 @@ export function VerificationBadge({ finding }: { finding: Finding }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn(CHIP, "border font-medium cursor-help border-slate-500/40 bg-slate-500/10 text-slate-600 dark:text-slate-400")}>
+        <span className={cn(CHIP, "cursor-help")}>
           {VERIFICATION_LABEL[v]}
         </span>
       </TooltipTrigger>
@@ -221,18 +206,18 @@ export function VerificationEvidencePanel({ finding }: { finding: Finding }) {
 }
 
 export const SEVERITY_COLOR: Record<Finding["severity"], string> = {
-  critical: "bg-red-500/15 text-red-500 border-red-500/30",
-  high:     "bg-orange-500/15 text-orange-500 border-orange-500/30",
-  medium:   "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400 border-yellow-500/30",
-  low:      "bg-blue-500/15 text-blue-500 border-blue-500/30",
-  info:     "bg-muted text-muted-foreground border-border",
+  critical: SEV_CHIP.critical,
+  high:     SEV_CHIP.high,
+  medium:   SEV_CHIP.medium,
+  low:      SEV_CHIP.low,
+  info:     "",
 }
 
 export const SEVERITY_ORDER: Finding["severity"][] = ["critical", "high", "medium", "low", "info"]
 
 export function SeverityBadge({ severity }: { severity: Finding["severity"] }) {
   return (
-    <span className={cn(CHIP, "border font-semibold capitalize", SEVERITY_COLOR[severity])}>
+    <span className={cn(CHIP, "capitalize", SEVERITY_COLOR[severity])}>
       {severity}
     </span>
   )
@@ -254,11 +239,11 @@ export const RISK_BAND_LABEL: Record<RiskBand, string> = {
 
 // Verdict colours map to the locked severity palette (meaning, not decoration).
 export const RISK_BAND_COLOR: Record<RiskBand, string> = {
-  imminent_compromise: "bg-red-500/15 text-red-500 border-red-500/30",
-  high:                "bg-orange-500/15 text-orange-500 border-orange-500/30",
-  elevated:            "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400 border-yellow-500/30",
-  low:                 "bg-blue-500/15 text-blue-500 border-blue-500/30",
-  secure:              "bg-emerald-500/15 text-emerald-500 border-emerald-500/30",
+  imminent_compromise: SEV_CHIP.critical,
+  high:                SEV_CHIP.high,
+  elevated:            SEV_CHIP.medium,
+  low:                 SEV_CHIP.low,
+  secure:              SEV_CHIP.clean,
 }
 
 // Short labels for compact contexts (filter pills, chips).
@@ -294,7 +279,7 @@ export function effectiveBand(f: Finding): RiskBand {
 export function RiskBandBadge({ band, score }: { band: Finding["risk_band"]; score: number | null }) {
   if (!band) return null
   return (
-    <span className={cn(CHIP, "border font-semibold", RISK_BAND_COLOR[band])}>
+    <span className={cn(CHIP, RISK_BAND_COLOR[band])}>
       {RISK_BAND_LABEL[band]}
       {score != null && <span className="font-mono opacity-70">{score}</span>}
     </span>
@@ -317,7 +302,7 @@ export function BuildingVelocityBadge({ active }: { active: boolean | null | und
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn(CHIP, "border border-amber-500/40 bg-amber-500/15 font-semibold text-amber-600 dark:text-amber-400 cursor-help animate-pulse")}>
+        <span className={cn(CHIP, SEV_CHIP.medium, "cursor-help animate-pulse")}>
           <span aria-hidden>⚡</span> Building Velocity
         </span>
       </TooltipTrigger>
@@ -340,24 +325,11 @@ export const CATEGORY_LABEL: Record<string, string> = {
   other:                  "Other",
 }
 
-const CATEGORY_COLOR: Record<string, string> = {
-  cve:                    "bg-red-500/10 text-red-600 dark:text-red-400",
-  app_security:           "bg-purple-500/10 text-purple-600 dark:text-purple-400",
-  exposed_asset:          "bg-orange-500/10 text-orange-600 dark:text-orange-400",
-  exposure:               "bg-rose-500/10 text-rose-600 dark:text-rose-400",
-  information_disclosure: "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400",
-  configuration:          "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-  network_security:       "bg-cyan-500/10 text-cyan-600 dark:text-cyan-400",
-  outdated_software:      "bg-slate-500/10 text-slate-600 dark:text-slate-400",
-  other:                  "bg-muted text-muted-foreground",
-}
-
 export function CategoryBadge({ category }: { category: string | null }) {
   if (!category) return null
   const label = CATEGORY_LABEL[category] ?? category
-  const color = CATEGORY_COLOR[category] ?? "bg-muted text-muted-foreground"
   return (
-    <span className={cn(CHIP, "font-medium", color)}>
+    <span className={CHIP}>
       {label}
     </span>
   )
@@ -390,7 +362,6 @@ const IMPACT_CLASS_EXPLOIT_DUP: Record<ImpactClass, string> = {
 // the only impact-class style: color is reserved for the verdict band, so this
 // tag never competes with it (used both above the verdict on cards/heroes and
 // as an adjacent pill in dense table rows).
-const IMPACT_CLASS_CLS = "bg-muted text-muted-foreground"
 
 // SSVC Technical Impact degree → adjective prefix on the consequence label
 // ("Total Code Execution" / "Partial Code Execution"). Bare label when SSVC hasn't
@@ -417,7 +388,7 @@ export function ImpactClassBadge({ finding }: { finding: Finding }) {
     <Link
       to={`/findings?impact_class=${impactClass}`}
       title={title}
-      className={cn(CHIP, "self-start font-semibold uppercase tracking-wide hover:opacity-80 transition-opacity", IMPACT_CLASS_CLS)}
+      className={cn(CHIP, "self-start uppercase tracking-wide hover:opacity-80 transition-opacity")}
     >
       {degree}{IMPACT_CLASS_LABEL[impactClass]}
     </Link>
@@ -451,9 +422,7 @@ export function SsvcEvidence({ finding }: { finding: Finding }) {
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">SSVC</p>
         <span
-          className={cn(CHIP, "border font-medium", derived
-            ? "border-border bg-muted/40 text-muted-foreground"
-            : "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-400")}
+          className={CHIP}
           title={derived
             ? "Inferred from the CVSS vector — CISA Vulnrichment hasn't scored this CVE"
             : "Scored by CISA Vulnrichment"}
@@ -497,7 +466,7 @@ export function ExploitTypeBadges({ types, impactClass }: { types: string[] | nu
   const shown = dupLabel ? types.filter(t => t.replace(/-/g, " ").toLowerCase() !== dupLabel) : types
   if (shown.length === 0) return null
   const chip = (t: string) => (
-    <span key={t} className={cn(CHIP, "border border-purple-500/30 bg-purple-500/10 font-medium text-purple-600 dark:text-purple-400 capitalize")}>
+    <span key={t} className={cn(CHIP, "capitalize")}>
       {t.replace(/-/g, " ")}
     </span>
   )
@@ -516,11 +485,11 @@ export function ExploitTypeBadges({ types, impactClass }: { types: string[] | nu
 // ── BOD-26-04 Remediation SLA badge ───────────────────────────────────────────
 
 const BOD_WINDOW_COLOR: Record<NonNullable<NonNullable<Finding["bod_sla"]>["window"]>, string> = {
-  "3d":        "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400",
-  "3d+triage": "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400",
-  "14d":       "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400",
-  "60d":       "border-border bg-muted/50 text-muted-foreground",
-  "upgrade":   "border-border bg-muted/50 text-muted-foreground",
+  "3d":        SEV_CHIP.critical,
+  "3d+triage": SEV_CHIP.critical,
+  "14d":       SEV_CHIP.medium,
+  "60d":       "",
+  "upgrade":   "",
 }
 
 /** BOD-26-04 compliance deadline badge. Only rendered when the finding has real
@@ -531,7 +500,7 @@ export function BodSlaBadge({ finding }: { finding: Finding }) {
   if (!sla) return null
 
   const colorCls = sla.overdue
-    ? "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400"
+    ? SEV_CHIP.critical
     : BOD_WINDOW_COLOR[sla.window]
 
   let deadline: string
@@ -559,7 +528,7 @@ export function BodSlaBadge({ finding }: { finding: Finding }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn(CHIP, "border font-medium cursor-help", colorCls)}>
+        <span className={cn(CHIP, "cursor-help", colorCls)}>
           {label}{sla.forensic_triage ? " + triage" : ""}
         </span>
       </TooltipTrigger>
@@ -568,37 +537,33 @@ export function BodSlaBadge({ finding }: { finding: Finding }) {
   )
 }
 
-const STATE_COLOR: Record<Finding["state"], string> = {
-  open:         "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-  acknowledged: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-  suppressed:   "bg-muted text-muted-foreground",
-  resolved:     "bg-slate-500/10 text-slate-500",
-}
-
 export function StateBadge({ state }: { state: Finding["state"] }) {
   return (
-    <span className={cn(CHIP, "font-medium capitalize", STATE_COLOR[state])}>
+    <span className={cn(CHIP, "capitalize")}>
       {state}
     </span>
   )
 }
 
 export function cvssColor(score: number): string {
-  if (score >= 9.0) return "bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30"
-  if (score >= 7.0) return "bg-orange-500/15 text-orange-600 dark:text-orange-400 border-orange-500/30"
-  if (score >= 4.0) return "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400 border-yellow-500/30"
-  return "bg-blue-500/15 text-blue-500 border-blue-500/30"
+  if (score >= 9.0) return SEV_CHIP.critical
+  if (score >= 7.0) return SEV_CHIP.high
+  if (score >= 4.0) return SEV_CHIP.medium
+  return SEV_CHIP.low
 }
 
 // EPSS scores are heavily right-skewed: ~90% of CVEs are below 1%.
 // Thresholds are set at meaningful exploit-probability inflection points,
 // not evenly spaced like CVSS.
 export function epssColor(score: number): string {
-  if (score >= 0.50) return "bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30"
-  if (score >= 0.10) return "bg-orange-500/15 text-orange-600 dark:text-orange-400 border-orange-500/30"
-  if (score >= 0.01) return "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400 border-yellow-500/30"
-  return "bg-muted border-border"
+  if (score >= 0.50) return SEV_CHIP.critical
+  if (score >= 0.10) return SEV_CHIP.high
+  if (score >= 0.01) return SEV_CHIP.medium
+  return ""
 }
+
+// KEV-family chips (CISA KEV, VC-KEV, ransomware): solid critical fill.
+const KEV_SOLID = "border-sev-critical bg-sev-critical font-semibold text-destructive-foreground"
 
 type EnrichmentItem = { key: string; label: string; tooltip: string; badgeClass: string }
 
@@ -612,7 +577,7 @@ export function EnrichmentBadges({ finding }: { finding: Finding }) {
       tooltip: finding.kev_date_added
         ? `CISA Known Exploited Vulnerability\nAdded ${finding.kev_date_added}`
         : "CISA Known Exploited Vulnerability",
-      badgeClass: "bg-red-500 text-white border-red-600 font-bold",
+      badgeClass: KEV_SOLID,
     })
   }
   if (finding.vulncheck_kev && !finding.kev) {
@@ -620,7 +585,7 @@ export function EnrichmentBadges({ finding }: { finding: Finding }) {
       key: "vckev",
       label: "VC-KEV",
       tooltip: "VulnCheck KEV — confirmed exploited (often listed ahead of CISA KEV)",
-      badgeClass: "bg-red-500 text-white border-red-600 font-bold",
+      badgeClass: KEV_SOLID,
     })
   }
   if (finding.ransomware_use) {
@@ -628,7 +593,7 @@ export function EnrichmentBadges({ finding }: { finding: Finding }) {
       key: "ransomware",
       label: "Ransomware",
       tooltip: "Associated with a known ransomware campaign (VulnCheck)",
-      badgeClass: "bg-red-600 text-white border-red-700 font-bold",
+      badgeClass: KEV_SOLID,
     })
   }
   if (finding.canary_detected) {
@@ -636,7 +601,7 @@ export function EnrichmentBadges({ finding }: { finding: Finding }) {
       key: "canary",
       label: "Canary",
       tooltip: "Observed exploited in the wild by VulnCheck canaries (ground-truth)",
-      badgeClass: "bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30 font-semibold",
+      badgeClass: SEV_CHIP.critical,
     })
   }
   if (finding.has_exploit) {
@@ -647,7 +612,7 @@ export function EnrichmentBadges({ finding }: { finding: Finding }) {
       tooltip: n > 0
         ? `${n} public exploit${n === 1 ? "" : "s"} in VulnCheck XDB`
         : "Public exploit available (VulnCheck XDB)",
-      badgeClass: "bg-orange-500/15 text-orange-600 dark:text-orange-400 border-orange-500/30 font-semibold",
+      badgeClass: SEV_CHIP.high,
     })
   }
   if (finding.cvss_score != null) {
@@ -678,7 +643,7 @@ export function EnrichmentBadges({ finding }: { finding: Finding }) {
       key: "template",
       label: "Nuclei",
       tooltip: "A Nuclei template exists — automated attack tooling is available (vulnx)",
-      badgeClass: "bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-500/30",
+      badgeClass: "",
     })
   }
   if (finding.is_poc && !finding.has_exploit) {
@@ -686,7 +651,7 @@ export function EnrichmentBadges({ finding }: { finding: Finding }) {
       key: "poc",
       label: "PoC",
       tooltip: "A public proof-of-concept exists (vulnx)",
-      badgeClass: "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400 border-yellow-500/30",
+      badgeClass: SEV_CHIP.medium,
     })
   }
   if (finding.cwe) {
@@ -694,7 +659,7 @@ export function EnrichmentBadges({ finding }: { finding: Finding }) {
       key: "cwe",
       label: finding.cwe,
       tooltip: finding.cwe,
-      badgeClass: "bg-muted/50 border-border text-muted-foreground",
+      badgeClass: "",
     })
   }
 
@@ -706,7 +671,7 @@ export function EnrichmentBadges({ finding }: { finding: Finding }) {
       renderItem={(item) => (
         <Tooltip key={item.key}>
           <TooltipTrigger asChild>
-            <span className={cn(CHIP, "border font-mono cursor-help", item.badgeClass)}>
+            <span className={cn(CHIP, "font-mono cursor-help", item.badgeClass)}>
               {item.label}
             </span>
           </TooltipTrigger>
@@ -718,7 +683,7 @@ export function EnrichmentBadges({ finding }: { finding: Finding }) {
       // Rich hover card: each hidden signal as its colored badge + what it means.
       renderOverflowItem={(item) => (
         <div className="flex items-start gap-2">
-          <span className={cn(CHIP, "border font-mono shrink-0", item.badgeClass)}>
+          <span className={cn(CHIP, "font-mono shrink-0", item.badgeClass)}>
             {item.label}
           </span>
           <span className="text-muted-foreground whitespace-pre-line leading-snug pt-1">{item.tooltip}</span>
@@ -735,42 +700,36 @@ export function EnrichmentBadges({ finding }: { finding: Finding }) {
 // not our scan." `source` is on every row; the read-time CVE rollup adds `sources[]`
 // (a logical finding can have several), `confidence`, and `fixed_version`.
 
-type SourceMeta = { label: string; cls: string; Icon: LucideIcon; blurb: string }
+type SourceMeta = { label: string; Icon: LucideIcon; blurb: string }
 
 const SOURCE_META: Record<string, SourceMeta> = {
   nuclei: {
     label: "Nuclei",
-    cls: "border-purple-500/40 bg-purple-500/10 text-purple-600 dark:text-purple-400",
     Icon: Crosshair,
     blurb: "Actively probed by Nuclei against this asset — a template matched on our own scan.",
   },
   shodan: {
     label: "Shodan",
-    cls: "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-400",
     Icon: Radar,
     blurb: "Attributed by Shodan's host fingerprinting — Shodan's own data, separate from Constellus's scan.",
   },
   constellus: {
     label: "Constellus exposure",
-    cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
     Icon: Telescope,
     blurb: "Flagged by the Constellus exposure analyzer from an open port/service we observed.",
   },
   version_match: {
     label: "Version match",
-    cls: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400",
     Icon: GitCompareArrows,
     blurb: "Inferred by matching the detected product version against known-vulnerable ranges — backport-blind, so it can overstate.",
   },
   whois: {
     label: "WHOIS",
-    cls: "border-slate-500/40 bg-slate-500/10 text-slate-600 dark:text-slate-400",
     Icon: CalendarClock,
     blurb: "Derived from the domain's WHOIS registration record.",
   },
   tenable: {
     label: "Tenable",
-    cls: "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400",
     Icon: ShieldCheck,
     blurb: "Imported from a Tenable vulnerability scan.",
   },
@@ -779,7 +738,6 @@ const SOURCE_META: Record<string, SourceMeta> = {
 function sourceMeta(source: string): SourceMeta {
   return SOURCE_META[source] ?? {
     label: source,
-    cls: "border-border bg-muted/50 text-muted-foreground",
     Icon: ScanSearch,
     blurb: `Reported by ${source}.`,
   }
@@ -831,14 +789,14 @@ function portFromMatchedAt(raw: string): number | null {
 /** Provenance pill — which producer reported this finding. Deep-links to the
  *  source-filtered findings list (mirrors CategoryBadge). */
 export function SourceBadge({ source }: { source: string }) {
-  const { label, cls, Icon, blurb } = sourceMeta(source)
+  const { label, Icon, blurb } = sourceMeta(source)
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Link
           to={`/findings?source=${encodeURIComponent(source)}`}
           title={`Show ${label} findings`}
-          className={cn(CHIP, "border font-medium hover:opacity-80 transition-opacity", cls)}
+          className={cn(CHIP, "hover:opacity-80 transition-opacity")}
         >
           <Icon className="size-3.5" />{label}
         </Link>
@@ -866,7 +824,7 @@ export function PortBadge({ port }: { port: number | null }) {
     <Link
       to={`/findings?port=${port}`}
       title="Show findings on this port"
-      className={cn(CHIP, "border border-border bg-muted/50 font-mono text-muted-foreground hover:opacity-80 transition-opacity")}
+      className={cn(CHIP, "font-mono hover:opacity-80 transition-opacity")}
     >
       :{port}
     </Link>
@@ -881,9 +839,7 @@ function ConfidenceChip({ confidence }: { confidence?: "confirmed" | "potential"
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn(CHIP, "border font-medium cursor-help", confirmed
-          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-          : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400")}>
+        <span className={cn(CHIP, "cursor-help")}>
           {confirmed ? "Confirmed" : "Potential"}
         </span>
       </TooltipTrigger>
@@ -969,7 +925,7 @@ export function UpstreamEvidence({ finding }: { finding: Finding }) {
         {port != null
           ? <PortBadge port={port} />
           : hostLevel
-          ? <span className={cn(CHIP, "border border-border bg-muted/50 font-medium text-muted-foreground")} title="No port — Shodan attributes this at the host/IP level">host-level</span>
+          ? <span className={CHIP} title="No port — Shodan attributes this at the host/IP level">host-level</span>
           : null}
       </div>
 
@@ -981,8 +937,8 @@ export function UpstreamEvidence({ finding }: { finding: Finding }) {
       )}
 
       {hostLevel && (
-        <div className="rounded border-l-2 border-l-sky-500 bg-sky-500/5 px-3 py-2">
-          <p className="text-xs text-sky-700 dark:text-sky-400 leading-relaxed">
+        <div className="rounded border-l-2 border-l-border bg-muted/50 px-3 py-2">
+          <p className="text-xs text-muted-foreground leading-relaxed">
             Shodan attributes this at the host/IP level from its own fingerprinting — there may be nothing
             in Constellus's scan data for this asset that corresponds to it.
           </p>

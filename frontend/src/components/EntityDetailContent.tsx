@@ -516,8 +516,8 @@ export function EntityDetailContent({ entityId }: { entityId: string }) {
                 <span className="text-muted-foreground">first listing</span>
               ) : (
                 <>
-                  <span className="text-green-700 dark:text-green-400">+{d.appeared.size} appeared</span>
-                  <span className="text-red-700 dark:text-red-400">−{d.disappeared.length} disappeared</span>
+                  <span className="text-foreground font-medium">+{d.appeared.size} appeared</span>
+                  <span className="text-muted-foreground">−{d.disappeared.length} disappeared</span>
                 </>
               )}
               <EvidenceButton id={d.group.evidence_id} />
@@ -527,7 +527,7 @@ export function EntityDetailContent({ entityId }: { entityId: string }) {
                 {d.group.rows.map((r, j) => {
                   const appeared = d.appeared.has(listingKey(r))
                   return (
-                    <li key={j} className={appeared ? "text-green-700 dark:text-green-400" : ""} data-appeared={appeared || undefined}>
+                    <li key={j} className={appeared ? "text-foreground font-medium" : ""} data-appeared={appeared || undefined}>
                       {appeared && "+ "}
                       {r.subsidiary_entity_id
                         ? <Link to={entityHref(r.subsidiary_entity_id)} className="hover:underline">{r.name}</Link>
@@ -542,7 +542,7 @@ export function EntityDetailContent({ entityId }: { entityId: string }) {
                   <p className="text-xs font-medium text-muted-foreground mt-2">Not listed any more (was in the previous EX-21):</p>
                   <ul className="space-y-1">
                     {d.disappeared.map((r, j) => (
-                      <li key={j} className="text-red-700 dark:text-red-400 line-through" data-disappeared>
+                      <li key={j} className="text-muted-foreground line-through" data-disappeared>
                         {r.name}{r.jurisdiction && ` — ${r.jurisdiction}`}
                       </li>
                     ))}

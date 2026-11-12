@@ -68,7 +68,7 @@ function useInstanceActions(type: ConnectorTypeSummary, instance: ConnectorInsta
 function ConfiguredBadges({ type, instance }: { type: ConnectorTypeSummary; instance: ConnectorInstanceSummary }) {
   return (
     <>
-      <Badge variant={instance.configured ? "success" : "outline"}>
+      <Badge variant="outline">
         {instance.configured ? "Configured" : "Not configured"}
       </Badge>
       {instance.enabled && !instance.configured && <Badge variant="warning">Needs config</Badge>}
@@ -219,7 +219,7 @@ export function ClashesSection({ instance }: { instance: ConnectorInstanceSummar
     <div className="text-xs">
       <button
         type="button"
-        className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-medium"
+        className="flex items-center gap-1 text-sev-medium font-medium"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
       >
@@ -231,7 +231,7 @@ export function ClashesSection({ instance }: { instance: ConnectorInstanceSummar
           {isLoading && <Skeleton className="h-8 w-full" />}
           {error && <p className="text-destructive">{(error as ApiError).message || "Could not load clashes"}</p>}
           {data?.map((c) => (
-            <div key={c.id} className="rounded border border-amber-500/30 px-2 py-2">
+            <div key={c.id} className="rounded border border-sev-medium/30 px-2 py-2">
               <p><span className="font-mono">{c.zone}</span> <span className="text-muted-foreground">{clashReasonLabel(c.reason)}</span></p>
               <p className="text-muted-foreground">
                 first seen {new Date(c.first_seen_at).toLocaleDateString()} · last seen {new Date(c.last_seen_at).toLocaleDateString()}
@@ -307,7 +307,7 @@ function AccountRow({
         <Switch checked={instance.enabled} onCheckedChange={(v) => toggle.mutate(v)} disabled={toggle.isPending} />
       </div>
       {warning && (
-        <p className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400">
+        <p className="flex items-start gap-2 text-xs text-sev-medium">
           <TriangleAlert className="size-3.5 mt-1 shrink-0" />
           {warning}
         </p>
@@ -706,7 +706,7 @@ function ConfigSheet({
             </div>
             <InstanceBindingControl type={type} instance={instance} org={org} onChange={setOrg} getConfig={() => values} />
             {bindingWarning(instance) && (
-              <p className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400">
+              <p className="flex items-start gap-2 text-xs text-sev-medium">
                 <TriangleAlert className="size-3.5 mt-1 shrink-0" />
                 {bindingWarning(instance)}
               </p>

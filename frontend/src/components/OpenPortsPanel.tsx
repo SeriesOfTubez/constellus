@@ -411,7 +411,7 @@ function PortRow({ entry, web, assetId }: { entry: OpenPortEntry; web?: WebEndpo
         <div className="font-mono text-xs text-muted-foreground/80 truncate pl-[5.75rem]">
           {certIssuer}
           {cert?.not_after && (
-            <span className={certExpired ? "text-destructive font-medium" : certExpiringSoon ? "text-orange-500 font-medium" : ""}>
+            <span className={certExpired ? "text-destructive font-medium" : certExpiringSoon ? "text-sev-high font-medium" : ""}>
               {" · "}
               {certExpired ? "expired" : "expires"} {certExpiry!.toLocaleDateString()}
               {certExpiringSoon && ` (${certDaysToExpiry}d)`}

@@ -28,7 +28,7 @@ export function errorDetail(e: unknown): string {
 
 export function TierChip({ tier, label, title }: { tier: string; label: string; title?: string }) {
   return (
-    <span title={title} className={cn(CHIP, "border font-medium", tierChipClass(tier))}>
+    <span title={title} className={cn(CHIP, tierChipClass(tier))}>
       {label}
     </span>
   )

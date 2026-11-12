@@ -40,7 +40,7 @@ describe("cells", () => {
     expect(html(<AssetsCell row={row({ status: "claimed", asset_count: 0 })} />)).toContain("no assets recorded")
     expect(html(<AssetsCell row={row({ status: "open" })} />)).toContain("—")
     const bar = html(<AssetsCell row={row({ status: "claimed", asset_count: 4, open_findings: { critical: 1, high: 0, medium: 0, low: 0, unknown: 0 } })} />)
-    expect(bar).toContain("bg-red-500")
+    expect(bar).toContain("bg-sev-critical")
   })
   it("State cell shows via connector and Claimed · seed", () => {
     const out = html(<StateCell row={row({ status: "claimed", decided_by_connector_instance_id: "k", signals: [sig("admin_seed", "strong")] })} />)

@@ -35,13 +35,13 @@ function DeltaChip({ delta }: { delta: number | null }) {
   const pct = (Math.abs(delta) * 100).toFixed(2)
   if (isUp) {
     return (
-      <span className="inline-flex items-center gap-1 text-xs text-orange-500 dark:text-orange-400">
+      <span className="inline-flex items-center gap-1 text-xs text-sev-high">
         <TrendingUp className="size-3.5" />+{pct}%
       </span>
     )
   }
   return (
-    <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-500">
+    <span className="inline-flex items-center gap-1 text-xs text-sev-clean">
       <TrendingDown className="size-3.5" />−{pct}%
     </span>
   )

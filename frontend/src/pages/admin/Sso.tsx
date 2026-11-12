@@ -145,13 +145,13 @@ export default function Sso() {
             <div
               className={`rounded-lg border p-4 text-sm space-y-2 ${
                 preview.valid
-                  ? "border-emerald-500/30 bg-emerald-500/5"
+                  ? "border-sev-clean/30 bg-sev-clean/5"
                   : "border-destructive/30 bg-destructive/5"
               }`}
             >
               <div className="flex items-center gap-2 font-medium">
                 {preview.valid ? (
-                  <CheckCircle2 className="size-3.5 text-emerald-500" />
+                  <CheckCircle2 className="size-3.5 text-sev-clean" />
                 ) : (
                   <XCircle className="size-3.5 text-destructive" />
                 )}
@@ -168,7 +168,7 @@ export default function Sso() {
                     <span className="text-foreground font-mono text-xs break-all">{preview.sso_url}</span>
                   </p>
                   {preview.certificate_subject && (
-                    <Badge variant="success">{preview.certificate_subject}</Badge>
+                    <Badge variant="outline">{preview.certificate_subject}</Badge>
                   )}
                 </>
               )}

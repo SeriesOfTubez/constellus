@@ -48,7 +48,7 @@ import {
   IMPACT_CLASS_LABEL,
   findingTitle,
 } from "@/components/finding-badges"
-import { CHIP } from "@/components/ui/chip"
+import { CHIP, SEV_CHIP } from "@/components/ui/chip"
 import { cn } from "@/lib/utils"
 
 const NEW_FINDING_DAYS = 7
@@ -107,10 +107,10 @@ function buildTabs(findings: Finding[] | undefined): TabDef[] {
 const FLY_TRIGGER = "h-9 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:text-foreground text-muted-foreground text-xs font-medium px-3 transition-none"
 
 const SEV_BORDER_CLS: Record<string, string> = {
-  critical: "border-t-red-500",
-  high:     "border-t-orange-500",
-  medium:   "border-t-amber-500",
-  low:      "border-t-blue-500",
+  critical: "border-t-sev-critical",
+  high:     "border-t-sev-high",
+  medium:   "border-t-sev-medium",
+  low:      "border-t-sev-low",
   info:     "border-t-border",
 }
 
@@ -242,7 +242,7 @@ function FindingDetailSheet({
                       <div className="flex items-start gap-3 text-sm">
                         <span className="text-xs text-muted-foreground w-20 shrink-0">CVSS</span>
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className={cn(CHIP, "border font-mono", cvssColor(finding.cvss_score))}>
+                          <span className={cn(CHIP, "font-mono", cvssColor(finding.cvss_score))}>
                             {finding.cvss_version && <span className="opacity-60 mr-1">v{finding.cvss_version}</span>}
                             {finding.cvss_score.toFixed(1)}
                           </span>
@@ -261,7 +261,7 @@ function FindingDetailSheet({
                       <div className="flex items-center gap-3 text-sm">
                         <span className="text-xs text-muted-foreground w-20 shrink-0">KEV</span>
                         <Link to="/findings?kev=true" className="hover:opacity-80 transition-opacity" title="Show all KEV findings">
-                          <span className={cn(CHIP, "border font-bold bg-red-500 text-white border-red-600")}>KEV</span>
+                          <span className={cn(CHIP, "border-sev-critical bg-sev-critical font-semibold text-destructive-foreground")}>KEV</span>
                         </Link>
                         {finding.kev_date_added && <span className="text-xs text-muted-foreground">Added {finding.kev_date_added}</span>}
                       </div>
@@ -854,13 +854,13 @@ export default function Findings() {
       {/* Active enrichment filters (e.g. arrived from a dashboard chip) — dismissable */}
       {kevFilter && (
         <button onClick={() => setKevFilter(false)}
-          className="inline-flex items-center gap-1 rounded border border-red-500/40 bg-red-500/10 px-2 h-9 text-xs font-medium text-red-600 dark:text-red-400 hover:opacity-80 transition-opacity">
+          className="inline-flex items-center gap-1 rounded border border-sev-critical/40 bg-sev-critical/10 px-2 h-9 text-xs font-medium text-sev-critical hover:opacity-80 transition-opacity">
           In KEV <X className="size-3.5" />
         </button>
       )}
       {exploitFilter && (
         <button onClick={() => setExploitFilter(false)}
-          className="inline-flex items-center gap-1 rounded border border-orange-500/40 bg-orange-500/10 px-2 h-9 text-xs font-medium text-orange-600 dark:text-orange-400 hover:opacity-80 transition-opacity">
+          className="inline-flex items-center gap-1 rounded border border-sev-high/40 bg-sev-high/10 px-2 h-9 text-xs font-medium text-sev-high hover:opacity-80 transition-opacity">
           Public exploit <X className="size-3.5" />
         </button>
       )}
@@ -946,13 +946,13 @@ export default function Findings() {
             {f.cve_id && <span className="font-mono text-xs text-muted-foreground shrink-0">{f.cve_id}</span>}
             <ExposureOverrideBadge finding={f} />
             {isNew(f) && (
-              <span className={cn(CHIP, "bg-primary/10 font-medium text-primary")}>
+              <span className={CHIP}>
                 <Sparkles className="size-3.5" />New
               </span>
             )}
             {isStale(f.last_seen_at) && (
               <span
-                className={cn(CHIP, "bg-amber-500/10 font-medium text-amber-700 dark:text-amber-400")}
+                className={cn(CHIP, SEV_CHIP.medium)}
                 title={`Last seen ${relativeTime(f.last_seen_at)} — not observed in recent scans`}
               >
                 <Clock className="size-3.5" />stale {daysSince(f.last_seen_at)}d

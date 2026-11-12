@@ -1,5 +1,5 @@
 import { type HygieneBand, type HygieneGrade } from "@/lib/api"
-import { CHIP } from "@/components/ui/chip"
+import { CHIP, SEV_CHIP } from "@/components/ui/chip"
 import { cn } from "@/lib/utils"
 
 /**
@@ -33,19 +33,15 @@ export const HYGIENE_BAND_LABEL: Record<HygieneBand, string> = {
 }
 
 // Mapped to the LOCKED severity palette by MEANING (Design Decisions —
-// severity palette lock): critical -> --sev-critical, poor -> --sev-high,
-// fair -> --sev-medium, good -> --sev-low, excellent -> --sev-clean. Uses
-// the same Tailwind-hardcoded-hue convention finding-badges.tsx's own
-// RISK_BAND_COLOR already established for this palette — not the
-// var(--sev-*) inline-style convention Dashboard.tsx/CvssBreakdown.tsx use
-// elsewhere. One convention per badge family; this file doesn't invent a
-// third one.
+// severity palette lock): critical -> sev-critical, poor -> sev-high,
+// fair -> sev-medium, good -> sev-low, excellent -> sev-clean. Same SEV_CHIP
+// tones finding-badges.tsx's RISK_BAND_COLOR uses.
 export const HYGIENE_BAND_COLOR: Record<HygieneBand, string> = {
-  critical:  "bg-red-500/15 text-red-500 border-red-500/30",
-  poor:      "bg-orange-500/15 text-orange-500 border-orange-500/30",
-  fair:      "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400 border-yellow-500/30",
-  good:      "bg-blue-500/15 text-blue-500 border-blue-500/30",
-  excellent: "bg-emerald-500/15 text-emerald-500 border-emerald-500/30",
+  critical:  SEV_CHIP.critical,
+  poor:      SEV_CHIP.high,
+  fair:      SEV_CHIP.medium,
+  good:      SEV_CHIP.low,
+  excellent: SEV_CHIP.clean,
 }
 
 export const HYGIENE_GRADE_LABEL: Record<HygieneGrade, string> = {
@@ -56,20 +52,16 @@ export const HYGIENE_GRADE_LABEL: Record<HygieneGrade, string> = {
   excellent: "Excellent",
 }
 
-// `fair`/`good`/`excellent` reuse HYGIENE_BAND_COLOR's exact classes (same
-// word, same meaning). `bad` borrows `poor`'s orange — the worst REAL
-// reading, one rung above unknown. `unknown` gets the locked --sev-unknown
-// token directly via the var(--sev-*) arbitrary-value convention (the only
-// place in this file that isn't a plain Tailwind hue) because it isn't a
-// point on the red/orange/yellow/blue/emerald ramp at all — it's a
-// distinct "nothing reports on this" signal, not a rating on the same
-// scale, and must stand out as such rather than blend into the ramp.
+// `fair`/`good`/`excellent` reuse the band tones (same word, same meaning).
+// `bad` borrows `poor`'s high — the worst REAL reading, one rung above unknown.
+// `unknown` is the locked sev-unknown tone: a distinct "nothing reports on
+// this" signal, not a rating on the same scale.
 export const HYGIENE_GRADE_COLOR: Record<HygieneGrade, string> = {
-  unknown:   "bg-[var(--sev-unknown)]/10 text-[var(--sev-unknown)] border-[var(--sev-unknown)]/40",
-  bad:       "bg-orange-500/15 text-orange-500 border-orange-500/30",
-  fair:      "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400 border-yellow-500/30",
-  good:      "bg-blue-500/15 text-blue-500 border-blue-500/30",
-  excellent: "bg-emerald-500/15 text-emerald-500 border-emerald-500/30",
+  unknown:   SEV_CHIP.unknown,
+  bad:       SEV_CHIP.high,
+  fair:      SEV_CHIP.medium,
+  good:      SEV_CHIP.low,
+  excellent: SEV_CHIP.clean,
 }
 
 /** The Assets-list-safe hygiene verdict chip — band WORD ONLY. There is no
@@ -82,7 +74,7 @@ export const HYGIENE_GRADE_COLOR: Record<HygieneGrade, string> = {
  *  "Asset Hygiene", never here. */
 export function HygieneBandBadge({ band }: { band: HygieneBand }) {
   return (
-    <span className={cn(CHIP, "border font-semibold", HYGIENE_BAND_COLOR[band])}>
+    <span className={cn(CHIP, HYGIENE_BAND_COLOR[band])}>
       {HYGIENE_BAND_LABEL[band]}
     </span>
   )
@@ -93,7 +85,7 @@ export function HygieneBandBadge({ band }: { band: HygieneBand }) {
  *  the same shape and weight as every other grade, just its own colour. */
 export function HygieneGradeChip({ grade }: { grade: HygieneGrade }) {
   return (
-    <span className={cn(CHIP, "border font-semibold", HYGIENE_GRADE_COLOR[grade])}>
+    <span className={cn(CHIP, HYGIENE_GRADE_COLOR[grade])}>
       {HYGIENE_GRADE_LABEL[grade]}
     </span>
   )

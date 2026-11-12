@@ -23,15 +23,12 @@ export function AiInferredBadge({
   const isAi = source === "ai"
   const Icon = isAi ? Sparkles : UserCheck
   const text = isAi ? "Inferred by AI" : `Set by ${setBy || "an admin"}`
-  const cls = isAi
-    ? "border-violet-500/40 bg-violet-500/10 text-violet-600 dark:text-violet-400"
-    : "border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400"
   const date = at ? new Date(at).toLocaleDateString() : null
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn(CHIP, "border font-medium cursor-help", cls, className)}>
+        <span className={cn(CHIP, "cursor-help", className)}>
           <Icon className="size-3.5" />{text}
         </span>
       </TooltipTrigger>

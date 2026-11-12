@@ -199,7 +199,9 @@ function MonitoringPoliciesCard() {
       </CardHeader>
       <CardContent>
         {isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <div role="status" aria-label="Loading" className="space-y-2">
+            {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-14 w-full" />)}
+          </div>
         ) : !policies?.length ? (
           <p className="text-sm text-muted-foreground">No policies yet.</p>
         ) : (
@@ -461,7 +463,7 @@ function DigestSettingsBlock() {
             onClick={() => run({ digest_hour_utc: hourNum }, setHourErr)}>Save</Button>
         </div>
         {!hourValid && <p className="text-xs text-destructive">A whole number from 0 to 23.</p>}
-        {warning && <p className="text-xs text-amber-600 dark:text-amber-500">{warning}</p>}
+        {warning && <p className="text-xs text-sev-medium">{warning}</p>}
         {hourErr && <p className="text-xs text-destructive">{hourErr}</p>}
       </div>
       <div className="space-y-2">
@@ -536,7 +538,9 @@ function NotificationRulesCard() {
       </CardHeader>
       <CardContent>
         {isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <div role="status" aria-label="Loading" className="space-y-2">
+            {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-14 w-full" />)}
+          </div>
         ) : !rules?.length ? (
           <p className="text-sm text-muted-foreground">No rules yet.</p>
         ) : (
@@ -589,7 +593,9 @@ function NotificationRulesCard() {
         <Separator className="my-4" />
         <h4 className="text-sm font-medium mb-2">Recent alerts</h4>
         {alertsLoading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <div role="status" aria-label="Loading" className="space-y-2">
+            {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+          </div>
         ) : alertsError ? (
           <p className="text-sm text-muted-foreground">Could not load alert history.</p>
         ) : (
@@ -597,7 +603,9 @@ function NotificationRulesCard() {
         )}
         <h4 className="text-sm font-medium mt-4 mb-2">Recent digests</h4>
         {digestsLoading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <div role="status" aria-label="Loading" className="space-y-2">
+            {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+          </div>
         ) : digestsError ? (
           <p className="text-sm text-muted-foreground">Could not load digest history.</p>
         ) : (
@@ -679,7 +687,11 @@ function AggressivenessCard() {
         </CardHeader>
         <CardContent>
           {isLoading ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            <div role="status" aria-label="Loading" className="space-y-3">
+              <Skeleton className="h-4 w-1/4" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-4 w-2/3" />
+            </div>
           ) : (
             <div className="space-y-3">
               <div className="space-y-2">
@@ -705,7 +717,7 @@ function AggressivenessCard() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="size-3.5 text-amber-500" />
+              <AlertTriangle className="size-3.5 text-sev-medium" />
               Enable aggressive scanning?
             </DialogTitle>
             <DialogDescription>
@@ -786,7 +798,16 @@ function OrgBrandingCard() {
       </CardHeader>
       <CardContent className="space-y-5">
         {isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <div role="status" aria-label="Loading" className="space-y-5">
+            <Skeleton className="h-4 w-1/4" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-4 w-1/4" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-4 w-1/4" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-4 w-1/4" />
+            <Skeleton className="h-10 w-full" />
+          </div>
         ) : (
           <>
             <div className="space-y-2">
@@ -1339,7 +1360,7 @@ export default function Settings() {
           </div>
           <div className="flex items-center justify-between py-2">
             <span className="text-muted-foreground">Setup status</span>
-            <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30">Complete</Badge>
+            <Badge variant="outline">Complete</Badge>
           </div>
         </CardContent>
       </Card>

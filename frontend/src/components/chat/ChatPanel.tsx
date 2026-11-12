@@ -23,6 +23,7 @@ import { useChatPanel } from "@/lib/chatPanel"
 import { relativeTime } from "@/lib/time"
 import { cn } from "@/lib/utils"
 import { CHIP } from "@/components/ui/chip"
+import { Skeleton } from "@/components/ui/skeleton"
 
 const EXAMPLES = [
   "How many hostnames have port 22 open?",
@@ -124,7 +125,13 @@ function ConversationList() {
     },
   })
 
-  if (list.isLoading) return <p className="p-4 text-sm text-muted-foreground">Loading…</p>
+  if (list.isLoading) {
+    return (
+      <div role="status" aria-label="Loading" className="space-y-2 p-4">
+        {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
+      </div>
+    )
+  }
   if (list.isError) return <p className="p-4 text-sm text-muted-foreground">Could not load conversations.</p>
   if (!list.data?.length) return <p className="p-4 text-sm text-muted-foreground">No conversations yet.</p>
   return (
@@ -209,7 +216,12 @@ function ConversationView() {
   return (
     <>
       <div className="flex-1 space-y-4 overflow-y-auto p-4" data-testid="chat-messages">
-        {conversationId && conv.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+        {conversationId && conv.isLoading && (
+          <div role="status" aria-label="Loading" className="space-y-4">
+            <Skeleton className="ml-auto h-10 w-2/3" />
+            <Skeleton className="h-16 w-5/6" />
+          </div>
+        )}
         {conversationId && conv.isError && <p className="text-sm text-muted-foreground">This conversation could not be loaded.</p>}
         {empty && !conv.isLoading && (
           <div className="space-y-3 text-sm text-muted-foreground">

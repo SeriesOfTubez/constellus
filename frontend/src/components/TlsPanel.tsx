@@ -9,7 +9,7 @@ import {
   type OpenPortEntry, type CertSummary,
   SOURCE_LABELS, certExpiryState,
 } from "@/components/OpenPortsPanel"
-import { CHIP } from "@/components/ui/chip"
+import { CHIP, SEV_CHIP } from "@/components/ui/chip"
 import { cn } from "@/lib/utils"
 
 /**
@@ -135,7 +135,7 @@ function CertCardView({
     ? [...(reuseIndex.get(cert.fingerprint)?.entries() ?? [])].filter(([id]) => id !== selfId)
     : []
 
-  const expiryCls = expired ? "text-destructive font-medium" : expiringSoon ? "text-orange-500 font-medium" : "text-muted-foreground"
+  const expiryCls = expired ? "text-destructive font-medium" : expiringSoon ? "text-sev-high font-medium" : "text-muted-foreground"
 
   return (
     <div className="rounded-md border p-3 space-y-2 text-sm">
@@ -202,7 +202,7 @@ function CertCardView({
             {(isWeakTls || isWeakCipher) && (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className={cn(CHIP, "border border-destructive/50 bg-destructive/10 font-medium text-destructive cursor-help")}>
+                  <span className={cn(CHIP, SEV_CHIP.critical, "cursor-help")}>
                     <ShieldAlert className="size-3.5" />weak
                   </span>
                 </TooltipTrigger>
@@ -251,7 +251,7 @@ function CertCardView({
           {others.length > 0 && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className={cn(CHIP, "border border-violet-500/40 bg-violet-500/10 font-medium text-violet-600 dark:text-violet-400 cursor-help")}>
+                <span className={cn(CHIP, "cursor-help")}>
                   <Network className="size-3.5" />also on {others.length} other asset{others.length === 1 ? "" : "s"}
                 </span>
               </TooltipTrigger>

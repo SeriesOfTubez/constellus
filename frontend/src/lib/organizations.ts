@@ -327,10 +327,10 @@ export function anchorText(a: AnchorDetail): string {
 export const SEVERITY_KEYS: SeverityKey[] = ["critical", "high", "medium", "low", "unknown"]
 /** Solid fills matching the locked severity palette (finding-badges SEVERITY_COLOR). */
 export const SEVERITY_BAR_CLASS: Record<SeverityKey, string> = {
-  critical: "bg-red-500",
-  high: "bg-orange-500",
-  medium: "bg-yellow-500",
-  low: "bg-blue-500",
+  critical: "bg-sev-critical",
+  high: "bg-sev-high",
+  medium: "bg-sev-medium",
+  low: "bg-sev-low",
   unknown: "bg-muted-foreground/40",
 }
 

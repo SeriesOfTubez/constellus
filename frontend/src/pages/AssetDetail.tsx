@@ -21,7 +21,7 @@ import { api, type Asset, type DomainWhoisInfo, type Finding, type WhoisInfo } f
 import { apexFromFqdn, displayName } from "@/lib/apex"
 import { resolveTerminalIp } from "@/lib/assetChain"
 import { relativeTime } from "@/lib/time"
-import { CHIP } from "@/components/ui/chip"
+import { CHIP, SEV_CHIP } from "@/components/ui/chip"
 import { cn } from "@/lib/utils"
 
 // Underline tab trigger — mirrors the flyout's tab styling for a consistent contract.
@@ -254,10 +254,10 @@ function AssetDetailBody({
             : <AssetTypeBadge type={asset.asset_type} />}
           {asset.ignored && <span className="text-xs text-muted-foreground italic">ignored</span>}
           {sources.map(src => {
-            const meta = SOURCE_META[src] ?? { label: src.slice(0, 2).toUpperCase(), color: "bg-muted text-muted-foreground", description: src }
+            const meta = SOURCE_META[src] ?? { label: src.slice(0, 2).toUpperCase(), description: src }
             return (
               <span key={src}
-                className={cn(CHIP, "font-semibold cursor-default", meta.color)}
+                className={cn(CHIP, "cursor-default")}
                 title={meta.description}
               >{meta.label}</span>
             )
@@ -306,7 +306,7 @@ function AssetDetailBody({
             <TabsTrigger value="findings" className={TAB}>
               Findings
               {activeFindings.length > 0 && (
-                <span className={cn(CHIP, "ml-2 bg-muted font-semibold")}>{activeFindings.length}</span>
+                <span className={cn(CHIP, "ml-2 bg-muted")}>{activeFindings.length}</span>
               )}
             </TabsTrigger>
             {hasCerts && <TabsTrigger value="tls" className={TAB}>TLS</TabsTrigger>}
@@ -366,11 +366,11 @@ function AssetDetailBody({
                     <span className="font-medium capitalize flex-1">{svc.product}</span>
                     <span className="text-muted-foreground font-mono">{svc.version}</span>
                     {svc.is_eol ? (
-                      <span className={cn(CHIP, "border font-semibold bg-amber-500/10 text-amber-500 border-amber-500/30 shrink-0")}>
+                      <span className={cn(CHIP, SEV_CHIP.medium, "shrink-0")}>
                         EOL{svc.days_past_eol !== null ? ` · ${svc.days_past_eol}d` : ""}
                       </span>
                     ) : (
-                      <span className={cn(CHIP, "border font-semibold bg-emerald-500/10 text-emerald-600 border-emerald-500/30 shrink-0")}>
+                      <span className={cn(CHIP, SEV_CHIP.clean, "shrink-0")}>
                         Supported
                       </span>
                     )}

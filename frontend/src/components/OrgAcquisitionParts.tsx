@@ -198,7 +198,7 @@ export function AcquisitionTimeline({
             return (
               <button
                 key={id} type="button" title={title} aria-label={title} aria-pressed={selected === id}
-                className={cn(CHIP, "border", selected === id ? RING : "")}
+                className={cn(CHIP, selected === id ? RING : "")}
                 onClick={() => pick(id)}
               >
                 <span className="h-2 w-2 rounded-full" style={dotStyle(r)} />

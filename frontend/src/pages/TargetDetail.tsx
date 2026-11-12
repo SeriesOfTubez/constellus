@@ -16,7 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { api, type AggressivenessTier, type Engagement, type Target } from "@/lib/api"
 import { displayName } from "@/lib/apex"
 import { relativeTime, relativeFuture } from "@/lib/time"
-import { CHIP } from "@/components/ui/chip"
+import { CHIP, SEV_CHIP } from "@/components/ui/chip"
 import { cn } from "@/lib/utils"
 
 const POSTURE_LABEL: Record<string, string> = {
@@ -40,15 +40,9 @@ const TIER_LABEL: Record<AggressivenessTier, string> = {
 const TIERS: AggressivenessTier[] = ["stealth", "polite", "standard", "aggressive"]
 const INHERIT_VALUE = "__inherit__"
 
-const TYPE_COLOR: Record<Target["type"], string> = {
-  domain: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-  ip:     "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-  cidr:   "bg-amber-500/10 text-amber-700 dark:text-amber-400",
-}
-
 function TypeBadge({ type }: { type: Target["type"] }) {
   return (
-    <span className={cn(CHIP, "font-medium uppercase", TYPE_COLOR[type])}>
+    <span className={cn(CHIP, "uppercase")}>
       {type}
     </span>
   )
@@ -354,15 +348,15 @@ export default function TargetDetail() {
         <div className="flex items-center gap-2 flex-wrap">
           <TypeBadge type={target.type} />
           {target.verified ? (
-            <span className={cn(CHIP, "bg-emerald-500/15 font-medium text-emerald-700 dark:text-emerald-400")}>
+            <span className={cn(CHIP, SEV_CHIP.clean)}>
               <ShieldCheck className="size-3.5" />verified
             </span>
           ) : (
-            <span className={cn(CHIP, "bg-amber-500/15 font-medium text-amber-700 dark:text-amber-400")}>
+            <span className={cn(CHIP, SEV_CHIP.medium)}>
               unverified
             </span>
           )}
-          {target.passive_only && <Badge variant="warning">Passive-only</Badge>}
+          {target.passive_only && <Badge variant="outline">Passive-only</Badge>}
         </div>
         <h1 className="font-mono text-xl break-all leading-tight" title={target.value}>{displayName(target.value)}</h1>
 

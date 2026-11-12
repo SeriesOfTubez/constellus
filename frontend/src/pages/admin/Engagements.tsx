@@ -19,10 +19,10 @@ const POSTURE_LABEL: Record<string, string> = {
   integrated: "Integrated",
   abandoned: "Abandoned",
 }
-const POSTURE_VARIANT: Record<string, "warning" | "success" | "secondary" | "outline"> = {
-  pre_close: "warning",
-  day_0: "success",
-  integrated: "success",
+const POSTURE_VARIANT: Record<string, "secondary" | "outline"> = {
+  pre_close: "outline",
+  day_0: "outline",
+  integrated: "outline",
   abandoned: "secondary",
 }
 

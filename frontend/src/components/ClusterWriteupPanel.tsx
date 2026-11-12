@@ -78,7 +78,7 @@ export function ClusterWriteupBody({
       )}
       {w && data.inputs_changed && (
         <div className="flex items-center gap-3">
-          <p className="text-xs text-amber-600 dark:text-amber-400">Membership changed since this write-up</p>
+          <p className="text-xs text-muted-foreground">Membership changed since this write-up</p>
           {canGenerate && !pending && (
             <Button size="sm" variant="outline" disabled={busy} onClick={() => onGenerate(true)}>
               <RefreshCw className="size-4" /><span className="ml-2">Regenerate</span>

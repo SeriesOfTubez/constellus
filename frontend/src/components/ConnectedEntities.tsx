@@ -4,8 +4,9 @@ import { ChevronRight, Box, Circle, ShieldAlert } from "lucide-react"
 
 import { api, type EdgesResponse, type EdgeNode, type EdgeNodeType } from "@/lib/api"
 import { displayName } from "@/lib/apex"
-import { CHIP } from "@/components/ui/chip"
+import { CHIP, SEV_CHIP } from "@/components/ui/chip"
 import { cn } from "@/lib/utils"
+import { Skeleton } from "@/components/ui/skeleton"
 
 /**
  * Source-agnostic relationship panel driven by `asset_edges`.
@@ -63,7 +64,11 @@ export function ConnectedEntities({
       </div>
 
       {isLoading ? (
-        <p className="text-xs text-muted-foreground italic">Loading…</p>
+        <div role="status" aria-label="Loading" className="space-y-3">
+          <Skeleton className="h-4 w-1/3" />
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-5/6" />
+        </div>
       ) : !hasContent ? (
         <p className="text-xs text-muted-foreground italic">No connected entities.</p>
       ) : (
@@ -191,22 +196,22 @@ function TypeChip({ item }: { item: EdgeNode }) {
     const sev = item.severity ?? "info"
     const cls = SEV_COLOR[sev]
     return (
-      <span className={cn(CHIP, "font-medium", cls)}>
+      <span className={cn(CHIP, cls)}>
         {item.kev && <ShieldAlert className="size-3.5" />}
         {sev.toUpperCase()}
       </span>
     )
   }
   if (item.node_type === "target") {
-    return <span className={cn(CHIP, "bg-muted font-medium text-foreground")}>target</span>
+    return <span className={cn(CHIP, "bg-muted text-foreground")}>target</span>
   }
   // asset_canonical
   const meta = item.edge_metadata
   if (item.asset_type === "dns_record" && typeof meta.record_type === "string") {
-    return <span className={cn(CHIP, "bg-blue-500/10 text-blue-600 dark:text-blue-400 font-mono font-semibold")}>{String(meta.record_type)}</span>
+    return <span className={cn(CHIP, "font-mono")}>{String(meta.record_type)}</span>
   }
   const label = (item.asset_type ?? "asset").replace(/_/g, " ")
-  return <span className={cn(CHIP, "bg-muted font-medium text-muted-foreground")}>{label}</span>
+  return <span className={cn(CHIP, "bg-muted text-muted-foreground")}>{label}</span>
 }
 
 function EdgeMetaChips({ item }: { item: EdgeNode }) {
@@ -236,9 +241,9 @@ function EdgeMetaChips({ item }: { item: EdgeNode }) {
 }
 
 const SEV_COLOR: Record<string, string> = {
-  critical: "bg-red-500/15 text-red-600 dark:text-red-400",
-  high:     "bg-orange-500/15 text-orange-600 dark:text-orange-400",
-  medium:   "bg-amber-500/15 text-amber-700 dark:text-amber-400",
-  low:      "bg-yellow-500/10 text-yellow-700 dark:text-yellow-500",
-  info:     "bg-blue-500/10 text-blue-600 dark:text-blue-400",
+  critical: SEV_CHIP.critical,
+  high:     SEV_CHIP.high,
+  medium:   SEV_CHIP.medium,
+  low:      SEV_CHIP.low,
+  info:     "",
 }

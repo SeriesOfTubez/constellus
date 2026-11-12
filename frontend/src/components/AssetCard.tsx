@@ -6,7 +6,7 @@ import { RecordTypeBadge, AssetTypeBadge, SourceBadges } from "@/components/asse
 import { RiskBandBadge, SeverityBadge } from "@/components/finding-badges"
 import { TagBadge } from "@/components/ui/tag-badge"
 import { IndeterminateCheckbox } from "@/components/ui/indeterminate-checkbox"
-import { CHIP } from "@/components/ui/chip"
+import { CHIP, SEV_CHIP } from "@/components/ui/chip"
 import { cn } from "@/lib/utils"
 
 const NEW_ASSET_DAYS = 7
@@ -64,12 +64,12 @@ export function AssetCard({
         <div className="flex items-center gap-2 flex-wrap">
           <p className="font-mono text-sm font-medium break-all">{displayName(asset.value)}</p>
           {isNew && (
-            <span className={cn(CHIP, "bg-primary/10 font-medium text-primary")}>
+            <span className={CHIP}>
               <Sparkles className="size-3.5" />New
             </span>
           )}
           {stale && (
-            <span className={cn(CHIP, "bg-amber-500/10 font-medium text-amber-700 dark:text-amber-400")}>
+            <span className={cn(CHIP, SEV_CHIP.medium)}>
               <Clock className="size-3.5" />stale {daysSince(asset.last_seen_at)}d
             </span>
           )}

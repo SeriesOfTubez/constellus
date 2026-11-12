@@ -2,7 +2,7 @@ import { useState } from "react"
 import { ChevronDown, ChevronRight, ExternalLink, ShieldAlert, ArrowDownCircle, SlidersHorizontal } from "lucide-react"
 import { type Finding } from "@/lib/api"
 import { exposureOverride } from "@/components/finding-badges"
-import { CHIP } from "@/components/ui/chip"
+import { CHIP, SEV_CHIP } from "@/components/ui/chip"
 import { cn } from "@/lib/utils"
 
 /** Narrative captured from VulnCheck KEV + NVD2 during enrichment, stashed in
@@ -61,7 +61,7 @@ function LinkRow({ url, label, date, tags }: { url: string; label: string; date?
   return (
     <div className="flex items-center gap-2 text-xs">
       <a href={url} target="_blank" rel="noopener noreferrer"
-        className="flex items-center gap-2 text-blue-500 hover:underline min-w-0">
+        className="flex items-center gap-2 text-primary hover:underline min-w-0">
         <ExternalLink className="size-3.5 shrink-0" />
         <span className="truncate">{label}</span>
       </a>
@@ -103,12 +103,8 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
       {open && (
         <div className="border-t px-3 py-3 space-y-3">
           {override && (
-            <div className={`rounded border-l-2 px-3 py-2 ${
-              override.kind === "tag" ? "border-l-amber-500 bg-amber-500/5" : "border-l-sky-500 bg-sky-500/5"
-            }`}>
-              <p className={`text-xs font-semibold uppercase tracking-wider flex items-center gap-1 ${
-                override.kind === "tag" ? "text-amber-700 dark:text-amber-400" : "text-sky-700 dark:text-sky-400"
-              }`}>
+            <div className="rounded border-l-2 border-l-border bg-muted/50 px-3 py-2">
+              <p className="text-xs font-semibold uppercase tracking-wider flex items-center gap-1 text-muted-foreground">
                 {override.kind === "tag"
                   ? <><ArrowDownCircle className="size-3.5" />Downgraded to {sevLabel} by tag</>
                   : <><SlidersHorizontal className="size-3.5" />Severity adjusted to {sevLabel}</>}
@@ -133,13 +129,13 @@ export function VulnNarrative({ finding, defaultOpen = true }: { finding: Findin
           {(intel?.is_remote || intel?.is_auth !== undefined) && (
             <div className="flex items-center gap-2 flex-wrap">
               {intel?.is_remote && (
-                <span className={cn(CHIP, "border border-orange-500/40 bg-orange-500/10 font-medium text-orange-600 dark:text-orange-400")}>Remotely exploitable</span>
+                <span className={cn(CHIP, SEV_CHIP.high)}>Remotely exploitable</span>
               )}
               {intel?.is_auth === false && (
-                <span className={cn(CHIP, "border border-orange-500/40 bg-orange-500/10 font-medium text-orange-600 dark:text-orange-400")}>No auth required</span>
+                <span className={cn(CHIP, SEV_CHIP.high)}>No auth required</span>
               )}
               {intel?.is_auth === true && (
-                <span className={cn(CHIP, "border border-border bg-muted font-medium text-muted-foreground")}>Auth required</span>
+                <span className={cn(CHIP, "bg-muted")}>Auth required</span>
               )}
             </div>
           )}
@@ -186,7 +182,7 @@ type IntelItem = { url: string; label: string; date?: string; tags?: string[] }
 function FilterChip({ active, label, count, onClick }: { active: boolean; label: string; count: number; onClick: () => void }) {
   return (
     <button onClick={onClick}
-      className={cn(CHIP, "border font-medium transition-colors",
+      className={cn(CHIP, "transition-colors",
         active ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground")}>
       {label}<span className="tabular-nums opacity-70">{count}</span>
     </button>
