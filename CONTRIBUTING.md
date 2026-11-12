@@ -52,6 +52,11 @@ because it had never been decided and that ambiguity was its own bug class.
    and carries on without rolling back leaves the transaction aborted, so the
    *next* unrelated statement raises `PendingRollbackError` — and the failure
    surfaces far from its cause, typically inside the handler meant to record it.
+   Inside a per-item loop that must keep going after one item fails, a bare
+   rollback would also discard the earlier items' uncommitted writes: run each
+   item in a savepoint (`with db.begin_nested(): ...`) and count the failure, so
+   the failed item rolls back alone and the session stays usable
+   (`tenancy_enricher.tick` / `tenancy_tls.tick` since planning#336 slice 2).
 3. **A fail-soft step is its own unit of work.** Where one step may fail without
    failing the whole job, each step gets
    `try: step(); db.commit()` / `except: db.rollback(); record()`. Without the
