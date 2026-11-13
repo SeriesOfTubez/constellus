@@ -96,6 +96,10 @@ DEFAULTS = {
     "discovery.rediscovery_failed_retry_days": "1",
     # planning#329 - days of job run history kept (bounds in app.services.job_runs).
     "jobs.run_history_days": "90",
+    # planning#335 - DB log queue tuning (bounds in app.services.log_settings).
+    "logs.queue_max_records": "10000",
+    "logs.batch_max_records": "200",
+    "logs.flush_interval_s": "1.0",
 }
 
 

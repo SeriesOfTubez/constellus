@@ -12,7 +12,8 @@ from app.core.database import get_db
 
 from app.services import aggressiveness as aggr
 from app.services import app_settings as svc
-from app.services import audit, job_runs, page_capture
+from app.core import logging as app_logging
+from app.services import audit, job_runs, log_settings, page_capture
 from app.services.org_discovery import pacing as discovery_pacing
 
 router = APIRouter()
@@ -432,3 +433,72 @@ def put_jobs_settings(
         svc.set_value(db, job_runs.RUN_HISTORY_DAYS_KEY, str(after))
         audit.record_detail(request, jobs_run_history_days={"from": before, "to": after})
     return _jobs_current(db)
+
+
+# ── DB log queue tuning (planning#335) ──────────────────────────────────────
+
+
+class LogQueueSettings(BaseModel):
+    queue_max_records: int
+    batch_max_records: int
+    flush_interval_s: float
+    # The bound the running queue was built with. It differs from
+    # `queue_max_records` between a change and the next restart.
+    queue_max_records_active: int
+
+
+class LogQueueSettingsUpdate(BaseModel):
+    queue_max_records: int | None = Field(
+        default=None, ge=log_settings.QUEUE_MAX_MIN, le=log_settings.QUEUE_MAX_MAX
+    )
+    batch_max_records: int | None = Field(
+        default=None, ge=log_settings.BATCH_MAX_MIN, le=log_settings.BATCH_MAX_MAX
+    )
+    flush_interval_s: float | None = Field(
+        default=None, ge=log_settings.FLUSH_INTERVAL_S_MIN, le=log_settings.FLUSH_INTERVAL_S_MAX
+    )
+
+
+def _log_queue_current(db: Session) -> LogQueueSettings:
+    t = log_settings.tuning(db)
+    return LogQueueSettings(
+        queue_max_records=t.queue_max,
+        batch_max_records=t.batch_max,
+        flush_interval_s=t.flush_interval_s,
+        queue_max_records_active=app_logging.db_handler.queue.maxsize,
+    )
+
+
+@router.get("/logging", response_model=LogQueueSettings)
+def get_log_queue_settings(
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.SETTINGS_READ)),
+):
+    return _log_queue_current(db)
+
+
+@router.put("/logging", response_model=LogQueueSettings)
+def put_log_queue_settings(
+    data: LogQueueSettingsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.SETTINGS_UPDATE)),
+):
+    """Set the DB log queue tuning, audited old -> new. Batch size and flush
+    interval reach the writer on its next re-read; the queue bound applies
+    after the next restart."""
+    old = log_settings.tuning(db)
+    fields = (
+        ("queue_max_records", log_settings.QUEUE_MAX_KEY, old.queue_max),
+        ("batch_max_records", log_settings.BATCH_MAX_KEY, old.batch_max),
+        ("flush_interval_s", log_settings.FLUSH_INTERVAL_S_KEY, old.flush_interval_s),
+    )
+    changes = {}
+    for field, key, before in fields:
+        after = getattr(data, field)
+        if after is not None and after != before:
+            svc.set_value(db, key, str(after))
+            changes[f"logs_{field}"] = {"from": before, "to": after}
+    if changes:
+        audit.record_detail(request, **changes)
+    return _log_queue_current(db)

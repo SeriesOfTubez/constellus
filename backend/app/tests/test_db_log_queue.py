@@ -15,14 +15,27 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.core import logging as app_logging
+from app.services import log_settings
 
 
 def _rec(name="app.x", msg="m", level=logging.INFO):
     return logging.LogRecord(name, level, __file__, 1, msg, None, None)
 
 
+@pytest.fixture(autouse=True)
+def tuning_stub(monkeypatch):
+    """No test opens a DB session through `_read_tuning` implicitly. The
+    returned dict is what the stub reports; a test may change it."""
+    state = {"queue_max": app_logging.DEFAULT_QUEUE_MAX,
+             "batch_max": app_logging.DEFAULT_BATCH_MAX,
+             "flush_interval_s": app_logging.DEFAULT_FLUSH_INTERVAL_S}
+    monkeypatch.setattr(app_logging, "_read_tuning",
+                        lambda: log_settings.LogQueueTuning(**state))
+    return state
+
+
 def _handler(monkeypatch, qmax=10_000):
-    monkeypatch.setattr(app_logging, "_QUEUE_MAX", qmax)
+    monkeypatch.setattr(app_logging, "DEFAULT_QUEUE_MAX", qmax)
     h = app_logging.DBLogHandler()
     h.setFormatter(logging.Formatter("%(message)s"))
     return h
@@ -125,12 +138,12 @@ def test_emit_does_not_block_on_a_full_queue(monkeypatch):
 
 # 5
 def test_next_batch_respects_batch_max(monkeypatch):
-    monkeypatch.setattr(app_logging, "_BATCH_MAX", 3)
     h = _handler(monkeypatch)
     h.enable()
     for i in range(7):
         h.emit(_rec(msg=f"m{i}"))
     w = app_logging._DBLogWriter(h)
+    w.batch_max = 3
     sizes = [len(w.next_batch(0.05)) for _ in range(3)]
     assert sizes == [3, 3, 1]
 
@@ -155,8 +168,8 @@ def test_next_batch_does_not_wait_once_stopping(monkeypatch):
     assert time.monotonic() - t0 < 1.0
 
 
-def test_stop_does_not_wait_out_the_flush_interval(monkeypatch):
-    monkeypatch.setattr(app_logging, "_FLUSH_INTERVAL_S", 5.0)
+def test_stop_does_not_wait_out_the_flush_interval(monkeypatch, tuning_stub):
+    tuning_stub["flush_interval_s"] = 5.0
     h = _handler(monkeypatch)
     w = app_logging._DBLogWriter(h)
     written = []
@@ -316,8 +329,8 @@ def test_stop_returns_within_timeout_when_the_writer_is_stuck(monkeypatch, capsy
 
 
 # 10
-def test_writer_loop_survives_an_exception_and_keeps_writing(monkeypatch, capsys):
-    monkeypatch.setattr(app_logging, "_FLUSH_INTERVAL_S", 0.05)
+def test_writer_loop_survives_an_exception_and_keeps_writing(monkeypatch, capsys, tuning_stub):
+    tuning_stub["flush_interval_s"] = 0.05
     h = _handler(monkeypatch)
     w = app_logging._DBLogWriter(h)
     written = []
@@ -399,3 +412,168 @@ def test_lifespan_stops_db_logging_after_the_scheduler(monkeypatch):
 ])
 def test_extract_source_unchanged(name, expected):
     assert app_logging._extract_source(name) == expected
+
+
+# planning#335 — tuning re-read, resize, startup sizing
+def _spy_tuning(monkeypatch, tuning_stub, fail=None):
+    """Replace `_read_tuning` with a counting spy; `fail` is an exception to raise."""
+    calls = []
+    box = {"fail": fail}
+
+    def spy():
+        calls.append(1)
+        if box["fail"] is not None:
+            raise box["fail"]
+        return log_settings.LogQueueTuning(**tuning_stub)
+
+    monkeypatch.setattr(app_logging, "_read_tuning", spy)
+    return calls, box
+
+
+def test_refresh_tuning_applies_new_batch_and_flush(monkeypatch, tuning_stub):
+    calls, _ = _spy_tuning(monkeypatch, tuning_stub)
+    tuning_stub.update(batch_max=2, flush_interval_s=0.3)
+    h = _handler(monkeypatch)
+    h.enable()
+    for i in range(5):
+        h.emit(_rec(msg=f"m{i}"))
+    w = app_logging._DBLogWriter(h)
+    assert (w.batch_max, w.flush_interval_s) == (200, 1.0)
+    w.refresh_tuning()
+    assert len(calls) == 1  # reached
+    assert (w.batch_max, w.flush_interval_s) == (2, 0.3)
+    assert [len(w.next_batch(0.05)) for _ in range(3)] == [2, 2, 1]
+
+
+def test_refresh_tuning_rereads_at_most_every_interval(monkeypatch, tuning_stub):
+    calls, _ = _spy_tuning(monkeypatch, tuning_stub)
+    w = app_logging._DBLogWriter(_handler(monkeypatch))
+    w.refresh_tuning()
+    w.refresh_tuning()
+    assert len(calls) == 1
+    w._next_reread = 0.0
+    w.refresh_tuning()
+    assert len(calls) == 2
+
+
+def test_refresh_tuning_failure_keeps_values_and_tells_stderr_once(monkeypatch, tuning_stub, capsys):
+    calls, box = _spy_tuning(monkeypatch, tuning_stub, fail=ConnectionError("SECRET-MARKER-335 dsn"))
+    w = app_logging._DBLogWriter(_handler(monkeypatch))
+    w.batch_max, w.flush_interval_s = 77, 0.7
+    seen = []
+
+    class Capture(logging.Handler):
+        def emit(self, record):
+            seen.append(record)
+
+    root = logging.getLogger()
+    cap = Capture(level=logging.NOTSET)
+    root.addHandler(cap)
+    capsys.readouterr()
+    try:
+        w.refresh_tuning()
+        w._next_reread = 0.0
+        w.refresh_tuning()
+        assert len(calls) == 2  # the failure path ran twice
+        err = capsys.readouterr().err
+        assert err.count("settings unreadable") == 1
+        assert err.count("\n") == 1
+        assert "ConnectionError" in err
+        assert "SECRET-MARKER-335" not in err
+        assert (w.batch_max, w.flush_interval_s) == (77, 0.7)
+        assert seen == []  # nothing went through logging
+
+        box["fail"] = None
+        tuning_stub.update(batch_max=33, flush_interval_s=0.4)
+        w._next_reread = 0.0
+        w.refresh_tuning()
+        assert len(calls) == 3
+        err = capsys.readouterr().err
+        assert err.count("settings readable again") == 1 and err.count("\n") == 1
+        assert (w.batch_max, w.flush_interval_s) == (33, 0.4)
+        assert seen == []
+    finally:
+        root.removeHandler(cap)
+
+
+def test_run_does_not_refresh_tuning_once_stopping(monkeypatch, tuning_stub):
+    calls, _ = _spy_tuning(monkeypatch, tuning_stub)
+    h = _handler(monkeypatch)
+    w = app_logging._DBLogWriter(h)
+    written = []
+    monkeypatch.setattr(w, "_insert", lambda batch: written.extend(batch))
+    h.enable()
+    h.emit(_rec(msg="queued"))
+    w._stopping.set()
+    t = threading.Thread(target=w._run, daemon=True)
+    t.start()
+    t.join(5)
+    assert not t.is_alive()
+    assert [r["message"] for r in written] == ["queued"]  # the loop really ran
+    assert calls == []
+
+
+def test_resize_on_disabled_empty_handler(monkeypatch):
+    h = _handler(monkeypatch)
+    assert h.resize(2_000) is True
+    assert h.queue.maxsize == 2_000
+
+
+def test_resize_refused_when_enabled(monkeypatch):
+    h = _handler(monkeypatch)
+    h.enable()
+    q = h.queue
+    assert h.resize(2_000) is False
+    assert h.queue is q and q.maxsize == 10_000
+
+
+def test_resize_refused_when_queue_has_a_record(monkeypatch):
+    h = _handler(monkeypatch)
+    h.enable()
+    h.emit(_rec(msg="keep"))
+    h.disable()
+    q = h.queue
+    assert h.resize(2_000) is False
+    assert h.queue is q and q.maxsize == 10_000
+    assert [r["message"] for r in _drain(h)] == ["keep"]
+
+
+def test_size_queue_applies_the_stored_bound(monkeypatch, tuning_stub):
+    calls, _ = _spy_tuning(monkeypatch, tuning_stub)
+    tuning_stub["queue_max"] = 2_000
+    h = _handler(monkeypatch)
+    monkeypatch.setattr(app_logging, "db_handler", h)
+    app_logging._size_queue()
+    assert len(calls) == 1
+    assert h.queue.maxsize == 2_000
+
+
+def test_size_queue_falls_back_to_default_when_unreadable(monkeypatch, tuning_stub, capsys):
+    calls, _ = _spy_tuning(monkeypatch, tuning_stub, fail=ConnectionError("SECRET-MARKER-335 dsn"))
+    h = _handler(monkeypatch)
+    h.resize(5_000)  # make a fallback distinguishable from "untouched"
+    monkeypatch.setattr(app_logging, "db_handler", h)
+    capsys.readouterr()
+    app_logging._size_queue()
+    assert len(calls) == 1
+    assert h.queue.maxsize == app_logging.DEFAULT_QUEUE_MAX
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1
+    assert "ConnectionError" in err and "SECRET-MARKER-335" not in err
+
+
+def test_setup_sizes_the_queue_before_the_writer_starts(monkeypatch, tuning_stub):
+    tuning_stub["queue_max"] = 2_000
+    h = _handler(monkeypatch)
+    seen = []
+    writer = MagicMock()
+    writer.start.side_effect = lambda: seen.append((h.queue.maxsize, h._enabled))
+    monkeypatch.setattr(app_logging, "db_handler", h)
+    monkeypatch.setattr(app_logging, "db_writer", writer)
+    root = logging.getLogger()
+    try:
+        app_logging.setup_db_logging()
+    finally:
+        root.removeHandler(h)
+        h.disable()
+    assert seen == [(2_000, False)]
