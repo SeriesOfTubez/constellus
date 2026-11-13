@@ -77,15 +77,20 @@ export function finishReasonText(reason: string, job?: string): string {
     case "done":
       return "Finished."
     case "time_limit":
+      if (job === "cpe_index_refresher")
+        return "Stopped at its time limit. The days it didn't reach are still due and it continues on the next run."
       return "Stopped at its time limit. Anything it didn't reach is still due and runs next hour."
     case "lookup_failures":
       return "Stopped after the web archive lookup failed several times in a row. The remaining pages are still due and are tried again next hour."
     case "rate_limited":
       return "Stopped because a data source asked us to slow down. The remaining organisations are still due and are tried again next hour."
+    case "source_refused":
+      return "Stopped because a data source refused a request. What it didn't reach is still due and is tried again on the next run. The details are in the logs."
     case "not_configured":
       if (job === "capture_sweep")
         return "Nothing was captured: page capture isn't set up yet (no capture proxy key)."
       if (job === "llm_models_refresher") return "Skipped: the AI connector isn't set up yet."
+      if (job === "cpe_index_refresher") return "Skipped: the vulnerability data connector isn't set up yet."
       return "Skipped: this job isn't set up yet."
     case "error":
       return "Failed with an unexpected error. The details are in the logs."

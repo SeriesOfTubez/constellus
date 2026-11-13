@@ -7,9 +7,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
-# Mirror the CHECK-backed vocabulary in migration 0100 by hand.
+# Mirror the CHECK-backed vocabulary in migration 0101 by hand.
 JOB_RUN_FINISH_REASONS: frozenset[str] = frozenset(
-    {"done", "time_limit", "lookup_failures", "rate_limited", "not_configured", "error"}
+    {"done", "time_limit", "lookup_failures", "rate_limited", "not_configured", "source_refused", "error"}
 )
 
 
@@ -26,7 +26,7 @@ class JobRun(Base):
         CheckConstraint("length(job) > 0", name="ck_job_runs_job_nonempty"),
         CheckConstraint("finished_at >= started_at", name="ck_job_runs_finished_after_started"),
         CheckConstraint(
-            "finish_reason IN ('done', 'time_limit', 'lookup_failures', 'rate_limited', 'not_configured', 'error')",
+            "finish_reason IN ('done', 'time_limit', 'lookup_failures', 'rate_limited', 'not_configured', 'source_refused', 'error')",
             name="ck_job_runs_finish_reason",
         ),
         CheckConstraint("(finish_reason = 'error') = (error IS NOT NULL)", name="ck_job_runs_error_iff_reason"),

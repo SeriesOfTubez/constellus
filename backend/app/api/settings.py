@@ -13,7 +13,7 @@ from app.core.database import get_db
 from app.services import aggressiveness as aggr
 from app.services import app_settings as svc
 from app.core import logging as app_logging
-from app.services import audit, job_runs, log_settings, page_capture
+from app.services import audit, cpe_cve_sync, job_runs, log_settings, page_capture
 from app.services.org_discovery import pacing as discovery_pacing
 
 router = APIRouter()
@@ -502,3 +502,57 @@ def put_log_queue_settings(
     if changes:
         audit.record_detail(request, **changes)
     return _log_queue_current(db)
+
+
+# ── CPE index delta pacing (planning#369) ──
+
+
+class CpeIndexSettings(BaseModel):
+    page_size: int
+    run_time_limit_seconds: int
+
+
+class CpeIndexSettingsUpdate(BaseModel):
+    page_size: int | None = Field(
+        default=None, ge=cpe_cve_sync.PAGE_SIZE_MIN, le=cpe_cve_sync.PAGE_SIZE_MAX
+    )
+    run_time_limit_seconds: int | None = Field(
+        default=None, ge=cpe_cve_sync.RUN_TIME_LIMIT_MIN, le=cpe_cve_sync.RUN_TIME_LIMIT_MAX
+    )
+
+
+def _cpe_index_current(db: Session) -> CpeIndexSettings:
+    p = cpe_cve_sync.pacing(db)
+    return CpeIndexSettings(page_size=p.page_size, run_time_limit_seconds=p.time_limit_s)
+
+
+@router.get("/cpe-index", response_model=CpeIndexSettings)
+def get_cpe_index_settings(
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.SETTINGS_READ)),
+):
+    return _cpe_index_current(db)
+
+
+@router.put("/cpe-index", response_model=CpeIndexSettings)
+def put_cpe_index_settings(
+    data: CpeIndexSettingsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.SETTINGS_UPDATE)),
+):
+    """Set the CPE index delta pacing, audited old -> new. Read by the next run."""
+    old = cpe_cve_sync.pacing(db)
+    fields = (
+        ("page_size", cpe_cve_sync.PAGE_SIZE_KEY, old.page_size),
+        ("run_time_limit_seconds", cpe_cve_sync.RUN_TIME_LIMIT_KEY, old.time_limit_s),
+    )
+    changes = {}
+    for field, key, before in fields:
+        after = getattr(data, field)
+        if after is not None and after != before:
+            svc.set_value(db, key, str(after))
+            changes[f"cpe_index_{field}"] = {"from": before, "to": after}
+    if changes:
+        audit.record_detail(request, **changes)
+    return _cpe_index_current(db)

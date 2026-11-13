@@ -100,6 +100,9 @@ DEFAULTS = {
     "logs.queue_max_records": "10000",
     "logs.batch_max_records": "200",
     "logs.flush_interval_s": "1.0",
+    # planning#369 - CPE index delta pacing (bounds in app.services.cpe_cve_sync).
+    "cpe_index.page_size": "500",
+    "cpe_index.run_time_limit_seconds": "600",
 }
 
 
