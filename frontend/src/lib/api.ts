@@ -1063,6 +1063,13 @@ export type JobSettings = {
   run_history_days: number
 }
 
+export type LogQueueSettings = {
+  queue_max_records: number
+  batch_max_records: number
+  flush_interval_s: number
+  queue_max_records_active: number
+}
+
 export type EpssHistoryPoint = {
   week_start: string
   epss_score: number

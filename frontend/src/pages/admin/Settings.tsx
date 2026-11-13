@@ -32,8 +32,12 @@ import {
   REDISCOVERY_BATCH_MIN, REDISCOVERY_BATCH_MAX, REDISCOVERY_REFRESH_MIN, REDISCOVERY_REFRESH_MAX,
   REDISCOVERY_FAILED_RETRY_MIN, REDISCOVERY_FAILED_RETRY_MAX, validateDiscoverySettings,
 } from "@/lib/discoverySettings"
-import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type CaptureSettings, type DigestSettings, type DigestSummary, type DiscoverySettings, type JobRun, type JobSettings, type JobsStatus, type SystemStatus } from "@/lib/api"
+import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type CaptureSettings, type DigestSettings, type DigestSummary, type DiscoverySettings, type JobRun, type JobSettings, type JobsStatus, type LogQueueSettings, type SystemStatus } from "@/lib/api"
 import { useAuthStore } from "@/lib/auth"
+import {
+  BATCH_MAX_MAX, BATCH_MAX_MIN, FLUSH_INTERVAL_S_MAX, FLUSH_INTERVAL_S_MIN, QUEUE_MAX_MAX, QUEUE_MAX_MIN, queueRestartNote,
+  validateLogQueueSettings,
+} from "@/lib/logSettings"
 import { RUN_HISTORY_DAYS_MAX, RUN_HISTORY_DAYS_MIN, validateJobSettings } from "@/lib/jobRuns"
 import { JobRunsList, JobStatusRow } from "@/components/ScheduledJobsParts"
 
@@ -1313,6 +1317,84 @@ export function ScheduledJobsCard() {
   )
 }
 
+export function LoggingSettingsCard() {
+  const qc = useQueryClient()
+  const settingsQ = useQuery({
+    queryKey: ["settings", "logging"],
+    queryFn: () => api.get<LogQueueSettings>("/settings/logging"),
+  })
+  const settings = settingsQ.data
+  const [queueMax, setQueueMax] = useState("")
+  const [batchMax, setBatchMax] = useState("")
+  const [flushS, setFlushS] = useState("")
+  useEffect(() => {
+    if (settings) {
+      setQueueMax(String(settings.queue_max_records))
+      setBatchMax(String(settings.batch_max_records))
+      setFlushS(String(settings.flush_interval_s))
+    }
+  }, [settings])
+
+  const num = (s: string) => (s.trim() === "" ? NaN : Number(s))
+  const draft = { queue_max_records: num(queueMax), batch_max_records: num(batchMax), flush_interval_s: num(flushS) }
+  const error = settings ? validateLogQueueSettings(draft) : null
+  const dirty = settings !== undefined && (
+    draft.queue_max_records !== settings.queue_max_records
+    || draft.batch_max_records !== settings.batch_max_records
+    || draft.flush_interval_s !== settings.flush_interval_s
+  )
+  const restartNote = settings ? queueRestartNote(settings) : null
+  const save = useMutation({
+    mutationFn: () => api.put<LogQueueSettings>("/settings/logging", draft),
+    onSuccess: (next) => {
+      qc.setQueryData(["settings", "logging"], next)
+      qc.invalidateQueries({ queryKey: ["settings", "logging"] })
+      toast.success("Logging settings saved")
+    },
+    onError: (e: Error) => toast.error(`Save failed: ${e.message}`),
+  })
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">Logging</CardTitle>
+        <CardDescription className="text-xs">How log lines are held and written before they show on the Logs page.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {settingsQ.isError ? (
+          <p className="text-xs text-muted-foreground">Couldn&apos;t load the logging settings. Try again in a minute.</p>
+        ) : settingsQ.isLoading || !settings ? <Skeleton className="h-96" /> : (
+          <>
+            <div className="space-y-1">
+              <Label htmlFor="logs-queue-max-records" className="text-xs text-muted-foreground">Lines held in memory</Label>
+              <Input id="logs-queue-max-records" type="number" min={QUEUE_MAX_MIN} max={QUEUE_MAX_MAX} step={1}
+                className="h-8 w-28 text-xs" value={queueMax} onChange={(e) => setQueueMax(e.target.value)} />
+              <p className="max-w-prose text-xs text-muted-foreground">If the database can&apos;t be reached, log lines wait here. Past this number, new lines are dropped. A larger number uses more memory during an outage. 1,000–100,000. Applies after the next backend restart.</p>
+              {restartNote && <p className="max-w-prose text-xs text-muted-foreground">{restartNote}</p>}
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="logs-batch-max-records" className="text-xs text-muted-foreground">Lines per write</Label>
+              <Input id="logs-batch-max-records" type="number" min={BATCH_MAX_MIN} max={BATCH_MAX_MAX} step={1}
+                className="h-8 w-24 text-xs" value={batchMax} onChange={(e) => setBatchMax(e.target.value)} />
+              <p className="max-w-prose text-xs text-muted-foreground">A larger number means fewer writes, but more lines lost if the backend stops unexpectedly. 10–1,000.</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="logs-flush-interval-s" className="text-xs text-muted-foreground">Longest wait before a write (seconds)</Label>
+              <Input id="logs-flush-interval-s" type="number" min={FLUSH_INTERVAL_S_MIN} max={FLUSH_INTERVAL_S_MAX} step={0.1}
+                className="h-8 w-24 text-xs" value={flushS} onChange={(e) => setFlushS(e.target.value)} />
+              <p className="max-w-prose text-xs text-muted-foreground">A partly filled write is sent after this long. A longer wait means fewer writes, but more lines lost if the backend stops unexpectedly. 0.2–10.</p>
+              <p className="max-w-prose text-xs text-muted-foreground">Changes to the last two take effect within about 30 seconds.</p>
+            </div>
+            {error && <p className="text-xs text-destructive">{error}</p>}
+            <Button size="sm" className="h-8" aria-label="Save logging settings"
+              disabled={!dirty || error !== null || save.isPending} onClick={() => save.mutate()}>Save</Button>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function Settings() {
   const isAdmin = useAuthStore().user?.role === "admin"
   const { data: status } = useQuery({
@@ -1339,6 +1421,8 @@ export default function Settings() {
       <DiscoverySettingsCard />
 
       {isAdmin && <ScheduledJobsCard />}
+
+      {isAdmin && <LoggingSettingsCard />}
 
       <NotificationRulesCard />
 

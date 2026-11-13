@@ -131,6 +131,7 @@ EXEMPT = {
     "/api/settings/capture": "application settings",
     "/api/settings/discovery": "application settings",
     "/api/settings/jobs": "application settings",
+    "/api/settings/logging": "application settings",
     "/api/system/monitoring-status": "scheduler status",
     "/api/system/status": "first-run status",
     "/api/users/": "user administration",

@@ -547,6 +547,9 @@
  "GET /api/settings/jobs": [
   "admin"
  ],
+ "GET /api/settings/logging": [
+  "admin"
+ ],
  "GET /api/system/monitoring-status": [
   "admin",
   "integration_admin",
@@ -888,6 +891,9 @@
   "admin"
  ],
  "PUT /api/settings/jobs": [
+  "admin"
+ ],
+ "PUT /api/settings/logging": [
   "admin"
  ]
 }

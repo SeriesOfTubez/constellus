@@ -57,17 +57,36 @@ class _SkipFilter(logging.Filter):
 _skip_filter = _SkipFilter()
 
 
-# Constants for now; planning#335 promotes them to admin settings.
-_QUEUE_MAX = 10_000          # records held before new ones are dropped
-_BATCH_MAX = 200             # records per commit
-_FLUSH_INTERVAL_S = 1.0      # longest a partial batch waits
+# Defaults. Admin settings override them (planning#335; keys and bounds in
+# `app.services.log_settings`). The queue bound is read once at startup;
+# the writer re-reads the other two while it runs.
+DEFAULT_QUEUE_MAX = 10_000        # records held before new ones are dropped
+DEFAULT_BATCH_MAX = 200           # records per commit
+DEFAULT_FLUSH_INTERVAL_S = 1.0    # longest a partial batch waits
+# Guards, not settings.
 _STOP_JOIN_TIMEOUT_S = 5.0   # shutdown never waits longer on a dead DB
+_TUNING_REREAD_S = 30.0      # the writer re-reads the settings this often
 
 
 def _stderr(line: str) -> None:
     # The DB writer's own reporting. Never through `logging`: that would
     # feed its failures back into its own queue.
     print(f"[DBLogHandler] {line}", file=sys.stderr, flush=True)
+
+
+def _read_tuning():
+    """The admin tuning, read with a short-lived session. Raises on any
+    failure; callers keep what they had. Never logs."""
+    from app.core.database import SessionLocal
+    from app.services import log_settings
+    db = SessionLocal()
+    try:
+        return log_settings.tuning(db)
+    finally:
+        try:
+            db.rollback()
+        finally:
+            db.close()
 
 
 class DBLogHandler(logging.Handler):
@@ -83,7 +102,7 @@ class DBLogHandler(logging.Handler):
         super().__init__(level=_MIN_LEVEL)
         self._enabled = False
         self.addFilter(_skip_filter)
-        self.queue: queue.Queue[dict] = queue.Queue(maxsize=_QUEUE_MAX)
+        self.queue: queue.Queue[dict] = queue.Queue(maxsize=DEFAULT_QUEUE_MAX)
         self._dropped = 0
         self._dropped_lock = threading.Lock()
 
@@ -92,6 +111,15 @@ class DBLogHandler(logging.Handler):
 
     def disable(self):
         self._enabled = False
+
+    def resize(self, maxsize: int) -> bool:
+        """Give the queue a new bound. Only while disabled and empty (i.e. at
+        startup), so no record is ever in flight; otherwise a no-op."""
+        if self._enabled or not self.queue.empty():
+            return False
+        if self.queue.maxsize != maxsize:
+            self.queue = queue.Queue(maxsize=maxsize)
+        return True
 
     def take_dropped(self) -> int:
         """Return and reset the queue-full drop count."""
@@ -130,6 +158,10 @@ class _DBLogWriter:
     back and retried once, then dropped; stderr gets the exception TYPE and
     a count, never the exception text (it can carry the bound parameters,
     i.e. the log messages).
+
+    Batch size and flush interval are admin settings (planning#335),
+    re-read every `_TUNING_REREAD_S`. An unreadable setting keeps the last
+    good values and tells stderr once per outage.
     """
 
     _STOP = object()
@@ -138,6 +170,10 @@ class _DBLogWriter:
         self.handler = handler
         self._thread: threading.Thread | None = None
         self._stopping = threading.Event()
+        self.batch_max = DEFAULT_BATCH_MAX
+        self.flush_interval_s = DEFAULT_FLUSH_INTERVAL_S
+        self._next_reread = 0.0
+        self._tuning_unreadable = False
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -164,7 +200,9 @@ class _DBLogWriter:
     def _run(self) -> None:
         while True:
             try:
-                batch = self.next_batch(_FLUSH_INTERVAL_S)
+                if not self._stopping.is_set():
+                    self.refresh_tuning()
+                batch = self.next_batch(self.flush_interval_s)
                 if batch:
                     self.write(batch)
                 self.report_dropped()
@@ -174,12 +212,32 @@ class _DBLogWriter:
             if self._stopping.is_set() and self.handler.queue.empty():
                 return
 
+    def refresh_tuning(self) -> None:
+        """Re-read batch size and flush interval, at most every `_TUNING_REREAD_S`."""
+        now = time.monotonic()
+        if now < self._next_reread:
+            return
+        self._next_reread = now + _TUNING_REREAD_S
+        try:
+            tuning = _read_tuning()
+        except Exception as exc:
+            if not self._tuning_unreadable:
+                self._tuning_unreadable = True
+                _stderr(f"settings unreadable ({type(exc).__name__}); keeping batch "
+                        f"{self.batch_max}, flush {self.flush_interval_s}s")
+            return
+        if self._tuning_unreadable:
+            self._tuning_unreadable = False
+            _stderr("settings readable again")
+        self.batch_max = tuning.batch_max
+        self.flush_interval_s = tuning.flush_interval_s
+
     def next_batch(self, wait_s: float) -> list[dict]:
-        """Up to `_BATCH_MAX` records, waiting at most `wait_s` in total."""
+        """Up to `batch_max` records, waiting at most `wait_s` in total."""
         q = self.handler.queue
         deadline = time.monotonic() + wait_s
         batch: list[dict] = []
-        while len(batch) < _BATCH_MAX:
+        while len(batch) < self.batch_max:
             remaining = deadline - time.monotonic()
             try:
                 if self._stopping.is_set() or remaining <= 0:
@@ -249,6 +307,18 @@ def setup_stderr_logging(level: str) -> None:
         root.addHandler(_stderr_handler)
 
 
+def _size_queue() -> None:
+    """Apply the admin queue bound. Startup only: a later change waits for
+    the next restart, because `resize` refuses a handler that is in use."""
+    try:
+        bound = _read_tuning().queue_max
+    except Exception as exc:
+        bound = DEFAULT_QUEUE_MAX
+        _stderr(f"settings unreadable at startup ({type(exc).__name__}); "
+                f"queue bound {bound}")
+    db_handler.resize(bound)
+
+
 def setup_db_logging() -> None:
     """Attach the DB handler to the root logger, start its writer, enable it."""
     root = logging.getLogger()
@@ -257,6 +327,7 @@ def setup_db_logging() -> None:
     if db_handler not in root.handlers:
         db_handler.setFormatter(logging.Formatter("%(message)s"))
         root.addHandler(db_handler)
+    _size_queue()
     db_writer.start()
     db_handler.enable()
 
