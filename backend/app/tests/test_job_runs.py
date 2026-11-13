@@ -94,7 +94,17 @@ def test_int_outcome():
 
 _MAPPER_CASES = [
     ("epss", job_runs.epss_outcome({"upserted": 5, "pruned": 2}), "done", 5, {"upserted": 5, "pruned": 2}),
-    ("cpe", job_runs.cpe_index_outcome({"seeded": 4, "delta": 3}), "done", 7, {"seeded": 4, "delta": 3}),
+    ("cpe", job_runs.cpe_index_outcome({"seeded": 4, "delta": 3, "days_done": 5, "days_left": 0, "stopped": "done"}),
+     "done", 7, {"seeded": 4, "delta": 3, "days_done": 5, "days_left": 0}),
+    ("cpe_time_limit",
+     job_runs.cpe_index_outcome({"seeded": 0, "delta": 9, "days_done": 2, "days_left": 6, "stopped": "time_limit"}),
+     "time_limit", 9, {"seeded": 0, "delta": 9, "days_done": 2, "days_left": 6}),
+    ("cpe_source_refused",
+     job_runs.cpe_index_outcome({"seeded": 0, "delta": 1, "days_done": 1, "days_left": 3, "stopped": "source_refused"}),
+     "source_refused", 1, {"seeded": 0, "delta": 1, "days_done": 1, "days_left": 3}),
+    ("cpe_not_configured",
+     job_runs.cpe_index_outcome({"seeded": 0, "delta": 0, "days_done": 0, "days_left": 0, "stopped": "not_configured"}),
+     "not_configured", 0, {"seeded": 0, "delta": 0, "days_done": 0, "days_left": 0}),
     ("cloud_changed",
      job_runs.cloud_ranges_outcome(RefreshResult(ok=True, changed=True, record_count=12, dataset_sha256="x")),
      "done", 12, {"changed": 1, "record_count": 12}),
@@ -681,9 +691,10 @@ def test_epss_double_failure_records_the_refresh_error_and_logs_the_prune_one(mo
 
 def test_cpe_index_wrapper_records(monkeypatch):
     from app.services import cpe_cve_sync
-    monkeypatch.setattr(cpe_cve_sync, "refresh", lambda db: {"seeded": 10, "delta": 3})
+    monkeypatch.setattr(cpe_cve_sync, "refresh", lambda db: {
+        "seeded": 10, "delta": 3, "days_done": 4, "days_left": 0, "stopped": "done"})
     scheduler._run_cpe_index_refresh()
-    _check("cpe_index_refresher", "done", 13, {"seeded": 10, "delta": 3})
+    _check("cpe_index_refresher", "done", 13, {"seeded": 10, "delta": 3, "days_done": 4, "days_left": 0})
 
 
 def test_cloud_ranges_wrapper_records_and_a_rejected_refresh_is_an_error(monkeypatch):

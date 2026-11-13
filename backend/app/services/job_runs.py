@@ -198,8 +198,9 @@ def epss_outcome(r: dict) -> RunOutcome:  # {"upserted": int, "pruned": int}
     return RunOutcome("done", r["upserted"], {"upserted": r["upserted"], "pruned": r["pruned"]})
 
 
-def cpe_index_outcome(r: dict) -> RunOutcome:  # cpe_cve_sync.refresh: {"seeded": int, "delta": int}
-    return RunOutcome("done", r["seeded"] + r["delta"], {"seeded": r["seeded"], "delta": r["delta"]})
+def cpe_index_outcome(r: dict) -> RunOutcome:  # cpe_cve_sync.refresh: seeded, delta, days_done, days_left, stopped
+    counts = {k: int(r[k]) for k in ("seeded", "delta", "days_done", "days_left")}
+    return RunOutcome(r["stopped"], r["seeded"] + r["delta"], counts)
 
 
 def cloud_ranges_outcome(r: "RefreshResult") -> RunOutcome:

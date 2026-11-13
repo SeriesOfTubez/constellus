@@ -541,6 +541,9 @@
  "GET /api/settings/capture": [
   "admin"
  ],
+ "GET /api/settings/cpe-index": [
+  "admin"
+ ],
  "GET /api/settings/discovery": [
   "admin"
  ],
@@ -885,6 +888,9 @@
   "admin"
  ],
  "PUT /api/settings/capture": [
+  "admin"
+ ],
+ "PUT /api/settings/cpe-index": [
   "admin"
  ],
  "PUT /api/settings/discovery": [

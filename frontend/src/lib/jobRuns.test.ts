@@ -236,3 +236,23 @@ describe("missedSlotsText", () => {
     expect(r.overflow).toEqual(all.slice(3))
   })
 })
+
+describe("finishReasonText cpe_index_refresher and source_refused", () => {
+  const refused = "Stopped because a data source refused a request. What it didn't reach is still due and is tried again on the next run. The details are in the logs."
+  const daily = "Stopped at its time limit. The days it didn't reach are still due and it continues on the next run."
+  const hourly = "Stopped at its time limit. Anything it didn't reach is still due and runs next hour."
+  it("source_refused has one sentence with or without a job", () => {
+    expect(finishReasonText("source_refused")).toBe(refused)
+    expect(finishReasonText("source_refused", "cpe_index_refresher")).toBe(refused)
+    expect(isProblem("source_refused")).toBe(true)
+  })
+  it("time_limit is job-aware", () => {
+    expect(finishReasonText("time_limit", "cpe_index_refresher")).toBe(daily)
+    expect(finishReasonText("time_limit", "cpe_index_refresher")).not.toContain("next hour")
+    expect(finishReasonText("time_limit", "capture_sweep")).toBe(hourly)
+    expect(finishReasonText("time_limit")).toBe(hourly)
+  })
+  it("not_configured names the vulnerability data connector", () => {
+    expect(finishReasonText("not_configured", "cpe_index_refresher")).toBe("Skipped: the vulnerability data connector isn't set up yet.")
+  })
+})

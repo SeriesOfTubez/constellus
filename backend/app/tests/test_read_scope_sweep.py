@@ -129,6 +129,7 @@ EXEMPT = {
     "/api/settings/": "application settings",
     "/api/settings/branding": "login-page branding",
     "/api/settings/capture": "application settings",
+    "/api/settings/cpe-index": "application settings",
     "/api/settings/discovery": "application settings",
     "/api/settings/jobs": "application settings",
     "/api/settings/logging": "application settings",
