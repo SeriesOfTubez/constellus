@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { ACCENT_PALETTE, BRANDING_DEFAULTS, applyBranding } from "./branding"
 
 describe("ACCENT_PALETTE", () => {
-  it("is the curated five, well formed and unique", () => {
-    expect(ACCENT_PALETTE).toHaveLength(5)
+  it("is the curated four, well formed and unique", () => {
+    expect(ACCENT_PALETTE).toHaveLength(4)
     for (const p of ACCENT_PALETTE) expect(p.value).toMatch(/^#[0-9a-f]{6}$/)
-    expect(new Set(ACCENT_PALETTE.map((p) => p.value)).size).toBe(5)
-    expect(new Set(ACCENT_PALETTE.map((p) => p.name)).size).toBe(5)
+    expect(new Set(ACCENT_PALETTE.map((p) => p.value)).size).toBe(4)
+    expect(new Set(ACCENT_PALETTE.map((p) => p.name)).size).toBe(4)
     expect(ACCENT_PALETTE.map((p) => p.value)).toContain(BRANDING_DEFAULTS.org_brand_accent)
   })
 })

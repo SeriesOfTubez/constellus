@@ -21,16 +21,16 @@ router = APIRouter()
 SCAN_AUTH_MODES = ("strict", "acknowledge", "disabled")
 
 # The accent set is curated: a raw picker could land on a severity hue. Every option is
-# OKLCH L 0.80 / C 0.10 with its hue 40 degrees or more from every severity hue, which
-# leaves only the bands 204-213 and 294-333; one dark --brand-fg therefore serves all of
-# them. The same five live in frontend/src/lib/branding.ts and
-# test_settings_branding.py keeps them equal.
+# OKLCH L 0.80 / C 0.10, so one dark --brand-fg serves all of them, with its hue 40
+# degrees or more from every severity hue. That floor leaves only the bands 204-213 and
+# 294-333; lime is the one named exception (37 degrees from clean, 38 from medium;
+# planning#367). The same four live in frontend/src/lib/branding.ts and
+# test_settings_branding.py keeps them equal and holds the floor and the exception.
 ACCENT_PALETTE = {
     "#66d0df",  # cyan  (default)
+    "#aeca82",  # lime
     "#c7aff5",  # violet
-    "#d2acee",  # orchid
-    "#dba9e6",  # magenta
-    "#e1a7df",  # pink
+    "#e3a6dc",  # pink
 }
 
 _HTTPS_RE = re.compile(r"^https://\S+$")
@@ -58,12 +58,18 @@ class SettingsUpdate(BaseModel):
     org_name_color: str | None = None
 
 
+def _accent(db: Session) -> str:
+    # A stored accent that has left the curated set reads as the default.
+    stored = svc.get(db, "org.brand_accent")
+    return stored if stored in ACCENT_PALETTE else svc.DEFAULTS["org.brand_accent"]
+
+
 def _branding(db: Session) -> OrgBrandingResponse:
     name_color = svc.get(db, "org.name_color")
     return OrgBrandingResponse(
         org_name=svc.get(db, "org.name") or "Constellus",
         org_logo_url=svc.get(db, "org.logo_url") or None,
-        org_brand_accent=svc.get(db, "org.brand_accent") or svc.DEFAULTS["org.brand_accent"],
+        org_brand_accent=_accent(db),
         org_name_color=name_color if name_color else None,
     )
 
