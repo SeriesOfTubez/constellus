@@ -2,7 +2,8 @@
 
 An org-chosen accent must never read as a severity colour, so the accent is not a
 free picker: it is a small allowlist of colours that all sit at the same OKLCH
-lightness and chroma, with hues well clear of the severity hues.
+lightness and chroma, with hues well clear of the severity hues. The floor is 40
+degrees; lime is the one named exception (planning#367).
 
 This file is the guard that three things agree: the backend allowlist
 (`app.api.settings.ACCENT_PALETTE`), the frontend swatches
@@ -33,6 +34,12 @@ from app.tests._users import user_with
 ROOT = Path(__file__).resolve().parents[3]
 BRANDING_TS = ROOT / "frontend" / "src" / "lib" / "branding.ts"
 INDEX_CSS = ROOT / "frontend" / "src" / "index.css"
+
+# Hue distance from every severity hue, in degrees. Lime was judged by eye beside Medium
+# and Clean in a mockup and accepted at 37 (Jason, 2026-11-12, planning#367). It is keyed
+# by value, so a changed lime loses the exception and a new accent is held to 40.
+HUE_FLOOR = 40
+HUE_FLOOR_EXCEPTIONS = {"#aeca82": 35}
 
 
 def _lin(c: float) -> float:
@@ -109,6 +116,39 @@ def test_rejects_an_accent_outside_the_curated_set():
     assert _stored_accent() is None
 
 
+def test_rejects_an_accent_that_left_the_curated_set():
+    # Orchid, Magenta, the old Pink and the considered-then-dropped Silver.
+    for gone in ("#d2acee", "#dba9e6", "#e1a7df", "#b1c0c8"):
+        r = _client().put("/api/settings/", json={"org_brand_accent": gone})
+        assert r.status_code == 422, gone
+    assert _stored_accent() is None
+
+
+def test_a_stored_accent_that_left_the_curated_set_reads_as_the_default():
+    db = SessionLocal()
+    try:
+        svc.set_value(db, "org.brand_accent", "#d2acee")
+    finally:
+        db.close()
+    assert _stored_accent() == "#d2acee"
+
+    pub = _client(with_admin=False).get("/api/settings/branding")
+    assert pub.status_code == 200
+    assert pub.json()["org_brand_accent"] == "#66d0df"
+    full = _client().get("/api/settings/")
+    assert full.status_code == 200
+    assert full.json()["org_brand_accent"] == "#66d0df"
+
+
+def test_accepts_every_curated_accent():
+    assert len(ACCENT_PALETTE) == 4
+    for hx in sorted(ACCENT_PALETTE):
+        r = _client().put("/api/settings/", json={"org_brand_accent": hx})
+        assert r.status_code == 200, hx
+        pub = _client(with_admin=False).get("/api/settings/branding")
+        assert pub.json()["org_brand_accent"] == hx
+
+
 def test_accepts_a_curated_accent_case_insensitively():
     r = _client().put("/api/settings/", json={"org_brand_accent": "#C7AFF5"})
     assert r.status_code == 200
@@ -137,7 +177,7 @@ def test_palette_matches_the_frontend():
     block = re.search(r"ACCENT_PALETTE[^=]*=\s*\[[^\]]*\]", src, re.DOTALL)
     assert block, "ACCENT_PALETTE block not found in branding.ts"
     found = re.findall(r"#[0-9a-f]{6}", block.group(0))
-    assert len(found) >= 5
+    assert len(found) == len(ACCENT_PALETTE)
     assert set(found) == ACCENT_PALETTE
 
     default = re.search(
@@ -155,6 +195,7 @@ def test_every_curated_accent_clears_the_severity_hues():
     assert len(sev) == 5, sev
     sev_hues = {name: oklch(hx)[2] for name, hx in sev}
 
+    assert set(HUE_FLOOR_EXCEPTIONS) <= ACCENT_PALETTE, "an exception names no curated accent"
     for hx in sorted(ACCENT_PALETTE):
         L, C, H = oklch(hx)
         assert 0.78 <= L <= 0.82, f"{hx} lightness {L:.3f}"
@@ -164,6 +205,9 @@ def test_every_curated_accent_clears_the_severity_hues():
             d = abs(H - sh) % 360
             dists[name] = min(d, 360 - d)
         nearest = min(dists, key=lambda k: dists[k])
-        assert dists[nearest] >= 40, (
+        floor = HUE_FLOOR_EXCEPTIONS.get(hx, HUE_FLOOR)
+        assert dists[nearest] >= floor, (
             f"{hx} (hue {H:.1f}) is only {dists[nearest]:.1f} degrees from {nearest}"
         )
+        if hx in HUE_FLOOR_EXCEPTIONS:
+            assert dists[nearest] < HUE_FLOOR, f"{hx} clears {HUE_FLOOR} and needs no exception"

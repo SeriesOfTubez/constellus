@@ -13,13 +13,13 @@ export const BRANDING_DEFAULTS: OrgBranding = {
 }
 
 // Curated, not a picker: all OKLCH L 0.80 / C 0.10 at hues 40 degrees or more from every
-// severity hue; the backend allowlist in api/settings.py holds the same five and a backend test keeps them equal.
+// severity hue (Lime is the one named exception, at 37); the backend allowlist in
+// api/settings.py holds the same four and a backend test keeps them equal.
 export const ACCENT_PALETTE: { name: string; value: string }[] = [
-  { name: "Cyan",    value: "#66d0df" },
-  { name: "Violet",  value: "#c7aff5" },
-  { name: "Orchid",  value: "#d2acee" },
-  { name: "Magenta", value: "#dba9e6" },
-  { name: "Pink",    value: "#e1a7df" },
+  { name: "Cyan",   value: "#66d0df" },
+  { name: "Lime",   value: "#aeca82" },
+  { name: "Violet", value: "#c7aff5" },
+  { name: "Pink",   value: "#e3a6dc" },
 ]
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
