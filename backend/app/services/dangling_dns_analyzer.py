@@ -95,7 +95,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from app.connectors.base import DiscoveredFinding
+from app.connectors.base import DiscoveredFinding, ObservedEndpoint
 from app.models.asset_canonical import AssetCanonical
 from app.models.asset_state import AssetState
 from app.models.finding_canonical import FindingCanonical
@@ -510,6 +510,7 @@ def _build_finding(record: AssetCanonical, tier_result: dict) -> DiscoveredFindi
     # Branches on LAYER, not tier — LAYER_AFFINITY_CORROBORATED_ALIVE is
     # also tier=TIER_MEDIUM (the promoted case) but needs its own narrative,
     # distinct from a "genuine" not_affine Medium.
+    origin_ip: str | None = None
     if layer == LAYER_FINGERPRINT:
         signal = tier_result["signal"]
         template_id = signal.get("template_id") or "unknown"
@@ -568,6 +569,11 @@ def _build_finding(record: AssetCanonical, tier_result: dict) -> DiscoveredFindi
         description=description,
         category=CATEGORY,
         detail=detail,
+        endpoints=(
+            [ObservedEndpoint(address=origin_ip)]
+            if isinstance(origin_ip, str) and origin_ip
+            else []
+        ),
     )
 
 

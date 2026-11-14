@@ -42,6 +42,17 @@ class DiscoveredAsset:
     observer: str | None = None
 
 
+@dataclass(frozen=True)
+class ObservedEndpoint:
+    """One place a finding was observed (planning#347). Each part is what the
+    source RECORDED; leave it None when the source did not say, never fill a
+    default. `address` is an IP literal, `protocol` is the transport (tcp/udp).
+    finding_writer validates and stores these as `finding_endpoints` rows."""
+    address: str | None = None
+    port: int | None = None
+    protocol: str | None = None
+
+
 @dataclass
 class DiscoveredFinding:
     asset_value: str
@@ -68,6 +79,11 @@ class DiscoveredFinding:
     # share the same hostname (A vs AAAA vs MX vs CNAME, etc.) and would
     # otherwise resolve to an arbitrary one of them.
     asset_id: uuid.UUID | None = None
+    # Every place this finding was observed in this pass (planning#347). A
+    # finding's identity has no port, so one finding can be seen on several
+    # ports or addresses: list them all. Empty means the source recorded
+    # neither an address nor a port.
+    endpoints: list[ObservedEndpoint] = field(default_factory=list)
 
 
 @dataclass

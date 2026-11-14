@@ -1,3 +1,4 @@
+import ipaddress
 import logging
 import os
 import re
@@ -6,7 +7,13 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from app.connectors.base import DiscoveredFinding, PhaseResult, ScanningConnector, TestResult
+from app.connectors.base import (
+    DiscoveredFinding,
+    ObservedEndpoint,
+    PhaseResult,
+    ScanningConnector,
+    TestResult,
+)
 from app.models.finding import Severity
 
 log = logging.getLogger(__name__)
@@ -63,6 +70,47 @@ def _port_from_matched_at(matched_at: str | None) -> int | None:
         return urlsplit(f"//{s}").port
     except ValueError:
         return None
+
+def _is_ip_literal(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _port_from_item(item: dict) -> int | None:
+    """The port a Nuclei result maps to: the matched-at URL first, then nuclei's
+    own ``port`` field (a string of digits on the wire; an int is also accepted).
+    None when neither yields a valid 1..65535 port."""
+    port = _port_from_matched_at(item.get("matched-at"))
+    if port is not None:
+        return port
+    raw = item.get("port")
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, str) and raw.isascii() and raw.isdigit():
+        raw = int(raw)
+    if isinstance(raw, int) and 1 <= raw <= 65535:
+        return raw
+    return None
+
+
+def _observed_endpoint(item: dict, port: int | None) -> list[ObservedEndpoint]:
+    """The endpoint Nuclei recorded for a result. The address is the ``ip`` nuclei
+    connected to, else ``host`` when that is itself an IP literal; otherwise it is
+    not recorded. Protocol is always None: ``scheme``/``type`` are not a transport
+    statement. Empty when neither address nor port was recorded."""
+    address: str | None = None
+    if _is_ip_literal(item.get("ip")):
+        address = item["ip"]
+    elif _is_ip_literal(item.get("host")):
+        address = item["host"]
+    if address is None and port is None:
+        return []
+    return [ObservedEndpoint(address=address, port=port, protocol=None)]
 
 
 class NucleiConnector(ScanningConnector):
@@ -192,6 +240,7 @@ class NucleiConnector(ScanningConnector):
                 elif isinstance(raw_cwe, str) and raw_cwe:
                     cwe = raw_cwe
 
+                port = _port_from_item(item)
                 findings.append(DiscoveredFinding(
                     asset_value=item.get("host", item.get("matched-at", "")),
                     finding_type=item.get("template-id", "nuclei-finding"),
@@ -202,7 +251,7 @@ class NucleiConnector(ScanningConnector):
                     detail={
                         "template_id": item.get("template-id"),
                         "matched_at": item.get("matched-at"),
-                        "port": _port_from_matched_at(item.get("matched-at")),
+                        "port": port,
                         "extracted_results": item.get("extracted-results", []),
                         "curl_command": item.get("curl-command"),
                         "tags": info.get("tags", []),
@@ -213,6 +262,7 @@ class NucleiConnector(ScanningConnector):
                     cvss_vector=cvss_vector,
                     cvss_version=cvss_version,
                     cwe=cwe,
+                    endpoints=_observed_endpoint(item, port),
                 ))
             except Exception:
                 continue

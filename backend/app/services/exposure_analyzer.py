@@ -44,7 +44,7 @@ from pathlib import Path
 import yaml
 from sqlalchemy.orm import Session
 
-from app.connectors.base import DiscoveredFinding
+from app.connectors.base import DiscoveredFinding, ObservedEndpoint
 from app.core.netaddr import is_public_ip as _is_public_ip
 from app.models.asset_canonical import AssetCanonical
 from app.models.finding_canonical import FindingCanonical
@@ -301,7 +301,8 @@ def _resolve_severity(
 def _build_finding(asset_value: str, port: int, protocol: str, service: str | None,
                    service_version: str | None, rule: ExposureRule, confidence: str,
                    severity: str, override_label: str | None,
-                   override_kind: str | None = None, override_tag: str | None = None) -> DiscoveredFinding:
+                   override_kind: str | None = None, override_tag: str | None = None,
+                   *, observed_protocol: str | None) -> DiscoveredFinding:
     # Title stays clean: just the service + port. The override reason (tag/banner)
     # is carried in detail and surfaced as a pill in the UI, not appended here.
     if confidence == "confirmed":
@@ -332,6 +333,9 @@ def _build_finding(asset_value: str, port: int, protocol: str, service: str | No
             "remediation": rule.remediation,
             "references": list(rule.references),
         },
+        # What the source recorded: `protocol` above keeps its "tcp" default for
+        # display, the endpoint must not (planning#347).
+        endpoints=[ObservedEndpoint(address=asset_value, port=port, protocol=observed_protocol)],
     )
 
 
@@ -430,6 +434,7 @@ def analyze_exposures(
                 override_label=override_label,
                 override_kind=override_kind,
                 override_tag=override_tag,
+                observed_protocol=entry.get("protocol") if isinstance(entry.get("protocol"), str) else None,
             ))
         retained_by_asset[asset.id] = retained
 

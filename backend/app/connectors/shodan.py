@@ -33,6 +33,7 @@ from app.connectors.base import (
     DiscoveredAsset,
     DiscoveredFinding,
     EnrichmentConnector,
+    ObservedEndpoint,
     PhaseResult,
     TestResult,
     is_dns_policy_name,
@@ -300,6 +301,35 @@ def _parse_host_ports(host: dict) -> list[dict]:
         seen[port] = entry
 
     return sorted(seen.values(), key=lambda e: e["port"])
+
+
+def _cve_endpoints(host: dict, ip: str, cve_id: str) -> list[ObservedEndpoint]:
+    """Where Shodan recorded a CVE on a host: one endpoint per service whose own
+    `vulns` names it (port from the service, transport as Shodan recorded it,
+    None when absent). When no service names it the CVE is host-level, so the
+    endpoint is the address alone (port not recorded)."""
+    endpoints: list[ObservedEndpoint] = []
+    for svc in host.get("data") or []:
+        if not isinstance(svc, dict):
+            continue
+        svc_vulns = svc.get("vulns")
+        if isinstance(svc_vulns, dict):
+            named = cve_id in svc_vulns
+        elif isinstance(svc_vulns, list):
+            named = cve_id in svc_vulns
+        else:
+            named = False
+        if not named:
+            continue
+        port = svc.get("port")
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            continue
+        transport = svc.get("transport")
+        protocol = transport.lower() if isinstance(transport, str) and transport else None
+        endpoint = ObservedEndpoint(address=ip, port=port, protocol=protocol)
+        if endpoint not in endpoints:
+            endpoints.append(endpoint)
+    return endpoints or [ObservedEndpoint(address=ip)]
 
 
 class ShodanConnector(EnrichmentConnector):
@@ -619,6 +649,7 @@ class ShodanConnector(EnrichmentConnector):
                         },
                         cve_id=cve_id,
                         cvss_score=cvss,
+                        endpoints=_cve_endpoints(host, ip, cve_id),
                     ))
 
             # Tag findings — flag malware / compromised / honeypot classifications
@@ -635,6 +666,7 @@ class ShodanConnector(EnrichmentConnector):
                             f"compromised, hosting malware, or acting as a honeypot."
                         ),
                         detail={"shodan_tag": tag, "shodan_tags": list(host.get("tags", []))},
+                        endpoints=[ObservedEndpoint(address=ip)],
                     ))
 
             _sleep_between(i, len(ips), rate_delay)
