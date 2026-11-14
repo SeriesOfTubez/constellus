@@ -9,9 +9,10 @@
    THEMEABLE  (org branding)  ──  --brand, --brand-dim, --logo-glow, --link
               (--primary and --ring mirror --brand). Applied at boot by
               applyBranding() in lib/branding.ts from app_settings. --brand must
-              come from ACCENT_PALETTE: five options at OKLCH L 0.80 / C 0.10
-              whose hues sit 40° or more from every severity hue, so one dark
-              --brand-fg serves all of them.
+              come from ACCENT_PALETTE: four options at OKLCH L 0.80 / C 0.10
+              whose hues sit 40° or more from every severity hue (Lime, at
+              37°, is the one named exception), so one dark --brand-fg serves
+              all of them.
 
    LOCKED     (never themeable)  ──  severity palette · slate surfaces · text ·
               type · radius. Severity vars carry semantic meaning; recolouring
