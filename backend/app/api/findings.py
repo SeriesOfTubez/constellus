@@ -16,8 +16,10 @@ from app.models.finding import FindingState
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.user import User
+from app.schemas.exposure_path import FindingDetailResponse
 from app.services import audit, bod_sla, cluster_writeup, finding_writeup, projector, read_scope, scan_executor, score_ladder
 from app.services.asset_chain import chain_target_ids
+from app.services.exposure_path import build_exposure_paths
 from app.services.finding_confidence import confidence_for, strongest
 
 router = APIRouter()
@@ -708,7 +710,9 @@ def _readable_finding(db: Session, user: User, finding_id: uuid.UUID) -> Finding
     return finding
 
 
-@router.get("/{finding_id}")
+# `responses` documents the typed part; the handler still returns a dict, so
+# the untyped keys are serialised exactly as before.
+@router.get("/{finding_id}", responses={200: {"model": FindingDetailResponse}})
 def get_finding(
     finding_id: uuid.UUID,
     db: Session = Depends(get_db),
@@ -717,7 +721,13 @@ def get_finding(
     """Fetch a single canonical finding by ID — drives the full-detail page."""
     finding = _readable_finding(db, user, finding_id)
     asset = db.get(AssetCanonical, finding.asset_canonical_id)
-    return _serialize_finding(finding, asset, _finding_asset_state(db, finding))
+    payload = _serialize_finding(finding, asset, _finding_asset_state(db, finding))
+    # One path per place the finding was observed (planning#347). Detail only:
+    # the list route does not carry it.
+    payload["exposure_paths"] = [
+        path.model_dump(mode="json") for path in build_exposure_paths(db, user, finding, asset)
+    ]
+    return payload
 
 
 # ── AI write-up (planning#226) ───────────────────────────────────────────────

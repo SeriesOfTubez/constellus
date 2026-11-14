@@ -624,6 +624,69 @@ export type VerificationEvidence = {
   }
 } | null
 
+// Exposure path (planning#347). Mirrors backend/app/schemas/exposure_path.py.
+// observed: a source recorded the hop. derived: worked out from DNS records,
+// always a list of candidates, never one picked. unknown: nothing on record
+// singles it out. `reason` is plain language for anything not observed.
+export type ExposureHopStatus = "observed" | "derived" | "unknown" | "not_applicable"
+
+export type ExposureHopCandidate = {
+  asset_id: string
+  asset_type: "dns_record" | "ip_address"
+  value: string
+  record_type: string | null
+  // Record hops between the candidate and the address (1 = its own address record).
+  distance: number
+  link_first_seen_at: string | null
+  link_last_seen_at: string | null
+}
+
+type ExposureHopBase = {
+  status: ExposureHopStatus
+  reason: string | null
+  sources: string[]
+  first_seen_at: string | null
+  last_seen_at: string | null
+}
+
+export type ExposureHop =
+  | (ExposureHopBase & { kind: "internet" })
+  | (ExposureHopBase & {
+      kind: "host"
+      asset_id: string | null
+      hostname: string | null
+      candidates: ExposureHopCandidate[]
+      candidates_truncated: boolean
+    })
+  | (ExposureHopBase & {
+      kind: "address"
+      asset_id: string | null
+      address: string | null
+      candidates: ExposureHopCandidate[]
+      candidates_truncated: boolean
+    })
+  // protocol null = the source did not record it; never treat it as tcp.
+  | (ExposureHopBase & { kind: "port"; port: number | null; protocol: "tcp" | "udp" | null })
+  | (ExposureHopBase & {
+      kind: "service"
+      asset_id: string | null
+      service: string | null
+      version: string | null
+      protocol: string | null
+    })
+  | (ExposureHopBase & { kind: "finding"; finding_id: string; finding_type: string })
+
+export type ExposurePath = {
+  endpoint_id: string | null
+  // not_reobserved: the finding was seen since, this place was not. It does
+  // not mean closed. not_recorded: the source recorded no place at all.
+  observation: "current" | "not_reobserved" | "not_recorded"
+  first_seen_at: string | null
+  last_seen_at: string | null
+  // internet, host, address, port, service, finding — always in that order.
+  hops: ExposureHop[]
+}
+
 export type Finding = {
   id: string
   asset_value: string
@@ -691,6 +754,9 @@ export type Finding = {
     days_remaining: number | null
     overdue: boolean
   } | null
+  // The hops between the internet and the flaw, one path per place the finding
+  // was observed. Detail route only (GET /findings/{id}); absent on list rows.
+  exposure_paths?: ExposurePath[]
 }
 
 export type AlertEventSummary = {
