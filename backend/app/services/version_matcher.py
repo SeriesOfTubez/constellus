@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from univers.versions import NginxVersion, OpensslVersion, RpmVersion
 
-from app.connectors.base import DiscoveredFinding
+from app.connectors.base import DiscoveredFinding, ObservedEndpoint
 from app.models.asset_canonical import AssetCanonical
 from app.models.cpe_cve_range import CpeCveRange
 from app.models.finding_canonical import FindingCanonical
@@ -177,6 +177,9 @@ def match_versions(
         # one finding per (cve_id) on this asset — prefer a match carrying a
         # clean fixed_version for the detail
         best_by_cve: dict[str, DiscoveredFinding] = {}
+        # every (port, protocol) this CVE matched on this run — the finding is
+        # one row per CVE, its endpoints are all the places it was seen
+        endpoints_by_cve: dict[str, list[ObservedEndpoint]] = {}
         for entry in open_ports:
             if not isinstance(entry, dict):
                 continue
@@ -210,6 +213,17 @@ def match_versions(
                         existing.detail.get("fixed_version") is None and row.version_end_excluding
                     ):
                         best_by_cve[cid] = _build_finding(asset.value, cid, sw, row, port)
+                    protocol = entry.get("protocol")
+                    endpoint = ObservedEndpoint(
+                        address=asset.value,
+                        port=port,
+                        protocol=protocol if isinstance(protocol, str) else None,
+                    )
+                    seen_endpoints = endpoints_by_cve.setdefault(cid, [])
+                    if endpoint not in seen_endpoints:
+                        seen_endpoints.append(endpoint)
+        for cid, finding in best_by_cve.items():
+            finding.endpoints = endpoints_by_cve[cid]
 
         if had_software:
             matched_by_asset[asset.id] = set(best_by_cve.keys())

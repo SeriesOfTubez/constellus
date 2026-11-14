@@ -16,6 +16,7 @@ from app.models.rir_lookup_cache import RirLookupCache
 from app.models.scan_template import ScanTemplate
 from app.models.asset_canonical import AssetCanonical
 from app.models.finding_canonical import FindingCanonical
+from app.models.finding_endpoint import FindingEndpoint, ENDPOINT_PROTOCOLS
 from app.models.target_asset_link import TargetAssetLink
 from app.models.asset_edge import AssetEdge, EDGE_TYPES, NODE_TYPES
 from app.models.ct_query_cache import CTQueryCache
@@ -87,6 +88,8 @@ __all__ = [
     "ScanTemplate",
     "AssetCanonical",
     "FindingCanonical",
+    "FindingEndpoint",
+    "ENDPOINT_PROTOCOLS",
     "TargetAssetLink",
     "AssetEdge",
     "EDGE_TYPES",

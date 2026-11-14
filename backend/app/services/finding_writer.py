@@ -7,10 +7,11 @@ from sqlalchemy import text, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.connectors.base import DiscoveredFinding
+from app.connectors.base import DiscoveredFinding, ObservedEndpoint
 from app.models.asset_canonical import AssetCanonical
 from app.models.asset_edge import AssetEdge
 from app.models.finding_canonical import FindingCanonical
+from app.models.finding_endpoint import ENDPOINT_PROTOCOLS, FindingEndpoint
 from app.models.tag_rule import TagRule
 from app.services.finding_category import categorize, extract_cve_id
 from app.services.tag_service import apply_rules_preloaded, merge_tags
@@ -27,8 +28,9 @@ def write_findings(
     """Persist a batch of discovered findings to the canonical schema.
 
     Upserts findings_canonical rows (one per unique
-    (asset, finding_type, source, fingerprint)) and emits has_finding
-    edges from each asset_canonical row to its finding_canonical row.
+    (asset, finding_type, source, fingerprint)), emits has_finding
+    edges from each asset_canonical row to its finding_canonical row, and
+    upserts one finding_endpoints row per place each finding was observed.
 
     Pass `new_canonical_ids_out` to receive the ids of any truly-new
     rows (not re-observations). The notification dispatcher uses this
@@ -59,6 +61,9 @@ def write_findings(
 
     # ── 3. Emit has_finding edges: asset_canonical → finding_canonical ────────
     _emit_has_finding_edges(db, canonical_ids, now)
+
+    # ── 4. Record where each finding was observed ─────────────────────────────
+    _upsert_finding_endpoints(db, findings, asset_canonical_map, canonical_ids, now)
 
     db.commit()
     return set(canonical_ids.values())
@@ -410,3 +415,95 @@ def _emit_has_finding_edges(
         set_={"last_seen_at": now},
     )
     db.execute(stmt)
+
+
+# One INSERT carries 5 bind parameters per row; stay far below the driver's
+# 65535-parameter ceiling on a large batch.
+_ENDPOINT_INSERT_CHUNK = 1000
+
+
+def _normalise_endpoint(ep: ObservedEndpoint) -> tuple[str | None, int | None, str | None] | None:
+    """Validate one observed endpoint into (address, port, protocol), or None
+    when nothing usable is left. A part that fails validation becomes None
+    (not recorded) rather than being repaired: an address must be a single IP
+    literal, a port an int in 1..65535, a protocol tcp or udp."""
+    address: str | None = None
+    if isinstance(ep.address, str) and ep.address.strip():
+        try:
+            address = str(ipaddress.ip_address(ep.address.strip()))
+        except ValueError:
+            log.warning("Finding endpoint address is not an IP literal; storing it as not recorded")
+
+    port: int | None = None
+    if isinstance(ep.port, int) and not isinstance(ep.port, bool) and 1 <= ep.port <= 65535:
+        port = ep.port
+    elif ep.port is not None:
+        log.warning("Finding endpoint port %r is not a port number; storing it as not recorded", ep.port)
+
+    protocol: str | None = None
+    if isinstance(ep.protocol, str) and ep.protocol.strip().lower() in ENDPOINT_PROTOCOLS:
+        protocol = ep.protocol.strip().lower()
+
+    if address is None and port is None:
+        return None
+    return address, port, protocol
+
+
+def _upsert_finding_endpoints(
+    db: Session,
+    findings: list[DiscoveredFinding],
+    asset_canonical_map: dict[int, uuid.UUID],
+    canonical_ids: dict[tuple, uuid.UUID],
+    now: datetime,
+) -> None:
+    """Upsert one finding_endpoints row per (finding, address, port, protocol).
+
+    Endpoints are the UNION over every DiscoveredFinding that maps to the same
+    canonical row, unlike the finding's own payload where the last in-batch
+    duplicate wins: two observations of one flaw on two ports are two
+    endpoints of one finding. A re-observed endpoint only moves last_seen_at;
+    one that is not re-observed keeps its row and its older last_seen_at.
+
+    Runs inside write_findings' transaction, after _upsert_findings_canonical
+    has locked (or inserted) every finding row touched here, so two writers
+    never interleave on one finding's endpoints.
+    """
+    rows: set[tuple[uuid.UUID, str | None, int | None, str | None]] = set()
+    for f in findings:
+        if not f.endpoints:
+            continue
+        asset_id = asset_canonical_map.get(id(f))
+        if not asset_id:
+            continue
+        finding_id = canonical_ids.get((asset_id, f.finding_type, f.source, _fingerprint_for(f)))
+        if not finding_id:
+            continue
+        for ep in f.endpoints:
+            normalised = _normalise_endpoint(ep)
+            if normalised is not None:
+                rows.add((finding_id, *normalised))
+
+    if not rows:
+        return
+
+    # A stable order, so two batches that share endpoints take row locks in
+    # the same sequence.
+    ordered = sorted(rows, key=lambda r: (str(r[0]), r[1] or "", r[2] or 0, r[3] or ""))
+    for start in range(0, len(ordered), _ENDPOINT_INSERT_CHUNK):
+        chunk = ordered[start:start + _ENDPOINT_INSERT_CHUNK]
+        stmt = pg_insert(FindingEndpoint.__table__).values([
+            {
+                "finding_id": finding_id,
+                "address": address,
+                "port": port,
+                "protocol": protocol,
+                "first_seen_at": now,
+                "last_seen_at": now,
+            }
+            for finding_id, address, port, protocol in chunk
+        ])
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_finding_endpoints_endpoint",
+            set_={"last_seen_at": now},
+        )
+        db.execute(stmt)
