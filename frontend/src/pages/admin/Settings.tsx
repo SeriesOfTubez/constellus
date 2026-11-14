@@ -33,7 +33,7 @@ import {
   REDISCOVERY_FAILED_RETRY_MIN, REDISCOVERY_FAILED_RETRY_MAX, validateDiscoverySettings,
 } from "@/lib/discoverySettings"
 import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type CaptureSettings, type DigestSettings, type DigestSummary, type DiscoverySettings, type JobRun, type JobSettings, type JobsStatus, type LogQueueSettings, type SystemStatus } from "@/lib/api"
-import { useAuthStore } from "@/lib/auth"
+import { useCan } from "@/lib/permissions"
 import {
   BATCH_MAX_MAX, BATCH_MAX_MIN, FLUSH_INTERVAL_S_MAX, FLUSH_INTERVAL_S_MIN, QUEUE_MAX_MAX, QUEUE_MAX_MIN, queueRestartNote,
   validateLogQueueSettings,
@@ -1396,7 +1396,10 @@ export function LoggingSettingsCard() {
 }
 
 export default function Settings() {
-  const isAdmin = useAuthStore().user?.role === "admin"
+  // A card mounts only for a user who can read what it fetches (planning#339): the page
+  // is open to integration_admin, which holds neither settings.read nor jobs.read.
+  const can = useCan()
+  const canReadSettings = can("settings.read")
   const { data: status } = useQuery({
     queryKey: ["system-status"],
     queryFn: () => api.get<SystemStatus>("/system/status"),
@@ -1410,21 +1413,21 @@ export default function Settings() {
         <p className="text-sm text-muted-foreground mt-1">System information and configuration</p>
       </div>
 
-      <OrgBrandingCard />
+      {canReadSettings && <OrgBrandingCard />}
 
-      <AggressivenessCard />
+      {canReadSettings && <AggressivenessCard />}
 
-      <MonitoringPoliciesCard />
+      {can("monitoring.read") && <MonitoringPoliciesCard />}
 
-      <CaptureSettingsCard />
+      {canReadSettings && <CaptureSettingsCard />}
 
-      <DiscoverySettingsCard />
+      {canReadSettings && <DiscoverySettingsCard />}
 
-      {isAdmin && <ScheduledJobsCard />}
+      {canReadSettings && can("jobs.read") && <ScheduledJobsCard />}
 
-      {isAdmin && <LoggingSettingsCard />}
+      {canReadSettings && <LoggingSettingsCard />}
 
-      <NotificationRulesCard />
+      {can("notifications.read") && <NotificationRulesCard />}
 
       <Separator />
 
