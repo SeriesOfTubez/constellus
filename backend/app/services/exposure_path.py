@@ -31,7 +31,6 @@ from sqlalchemy.orm import Session
 
 from app.core.permissions import Permission, has_permission
 from app.models.asset_canonical import AssetCanonical
-from app.models.asset_edge import AssetEdge
 from app.models.finding_canonical import FindingCanonical
 from app.models.finding_endpoint import FindingEndpoint
 from app.models.user import User
@@ -45,7 +44,7 @@ from app.schemas.exposure_path import (
     PortHop,
     ServiceHop,
 )
-from app.services import projector, read_scope
+from app.services import dns_walk, projector, read_scope
 
 # Sources whose observations are made from outside the network: our own
 # scanners and analyzers working from their results, and Shodan. A source that
@@ -58,14 +57,9 @@ PORTLESS_FINDING_TYPES: frozenset[str] = frozenset({"dangling_dns"})
 
 # Response-size bound on one hop's candidates (a shared address can have
 # thousands of names), and the guard on how far a CNAME chain is followed.
-MAX_CANDIDATES = 50
-MAX_CHAIN_DEPTH = 8
-_LEVEL_ROW_LIMIT = 500
-
-_NODE = "asset_canonical"
-# A CNAME step is normally a `resolves_to` edge; the hop into third-party CDN
-# infrastructure is typed `cname` instead (planning#147). Both are DNS links.
-_DNS_EDGE_TYPES = ("resolves_to", "cname")
+# (the walk itself lives in `dns_walk`; these names stay importable from here)
+MAX_CANDIDATES = dns_walk.MAX_CANDIDATES
+MAX_CHAIN_DEPTH = dns_walk.MAX_CHAIN_DEPTH
 
 # One reason per situation, shared by "no such asset" and "an asset the reader
 # may not read": the two must be indistinguishable.
@@ -88,10 +82,6 @@ def build_exposure_paths(
     """Every exposure path of `finding`, which `user` is already known to be
     allowed to read. `asset` is the finding's own asset. Read-only."""
     return _Builder(db, user, finding, asset).build()
-
-
-def _norm_name(name: str) -> str:
-    return name.lower().rstrip(".")
 
 
 def _host_address(value) -> str | None:
@@ -378,94 +368,14 @@ class _Builder:
 
     def _addresses_below(self) -> tuple[list[HopCandidate], bool]:
         if self._below is None:
-            self._below = self._walk(self._record_ids_for_names([self.asset.value]), upward=False)
+            start_ids = dns_walk.record_ids_for_names(self.db, self._clause, [self.asset.value])
+            self._below = self._walk(start_ids, upward=False)
         return self._below
 
-    def _record_ids_for_names(self, names) -> list[uuid.UUID]:
-        """Every readable dns_record row for `names`. A hostname has one row
-        per record, and a CNAME edge points at any one of them."""
-        names = list(names)
-        if not names:
-            return []
-        A = AssetCanonical
-        return list(
-            self.db.execute(
-                select(A.id)
-                .where(A.asset_type == "dns_record", A.value.in_(names), self._clause(A))
-                .order_by(A.id)
-                .limit(_LEVEL_ROW_LIMIT)
-            ).scalars()
-        )
-
     def _walk(self, start_ids: list[uuid.UUID], *, upward: bool) -> tuple[list[HopCandidate], bool]:
-        """Follow DNS edges from `start_ids`, level by level.
-
-        Upward (from an address): collect the hostnames that point at it, then
-        the names that CNAME to those. Downward (from a hostname's records):
-        follow CNAMEs and collect the addresses they end at. Every asset read
-        passes `asset_clause`, so the walk stops at one the reader may not
-        read. Returns (candidates, truncated).
-        """
-        A = AssetCanonical
-        near, far = (AssetEdge.target_id, AssetEdge.source_id) if upward else (AssetEdge.source_id, AssetEdge.target_id)
-        wanted = "dns_record" if upward else "ip_address"
-
-        # Keyed by name: a hostname has one asset row per DNS record, and it is
-        # one candidate, listed at the nearest row that links it.
-        found: dict[str, HopCandidate] = {}
-        truncated = False
-        frontier = list(start_ids)
-        expanded_ids: set[uuid.UUID] = set(start_ids)
-        expanded_names: set[str] = set()
-
-        for distance in range(1, MAX_CHAIN_DEPTH + 1):
-            if not frontier:
-                break
-            rows = self.db.execute(
-                select(
-                    A.id, A.asset_type, A.value,
-                    AssetEdge.edge_metadata, AssetEdge.first_seen_at, AssetEdge.last_seen_at,
-                )
-                .join(AssetEdge, far == A.id)
-                .where(
-                    near.in_(frontier),
-                    AssetEdge.source_type == _NODE,
-                    AssetEdge.target_type == _NODE,
-                    AssetEdge.edge_type.in_(_DNS_EDGE_TYPES),
-                    A.asset_type.in_(("dns_record", "ip_address")),
-                    self._clause(A),
-                )
-                .order_by(A.value, A.id)
-                .limit(_LEVEL_ROW_LIMIT + 1)
-            ).all()
-            if len(rows) > _LEVEL_ROW_LIMIT:
-                truncated = True
-                rows = rows[:_LEVEL_ROW_LIMIT]
-
-            next_names: list[str] = []
-            for asset_id, asset_type, value, metadata, link_first, link_last in rows:
-                if asset_type == wanted and _norm_name(value) not in found:
-                    record_type = (metadata or {}).get("record_type") if isinstance(metadata, dict) else None
-                    found[_norm_name(value)] = HopCandidate(
-                        asset_id=asset_id,
-                        asset_type=asset_type,
-                        value=value,
-                        record_type=record_type if isinstance(record_type, str) else None,
-                        distance=distance,
-                        link_first_seen_at=link_first,
-                        link_last_seen_at=link_last,
-                    )
-                if asset_type == "dns_record" and _norm_name(value) not in expanded_names:
-                    expanded_names.add(_norm_name(value))
-                    next_names.append(value)
-
-            if len(found) > MAX_CANDIDATES:
-                truncated = True
-                break
-            # The next level starts from every record row of the names just
-            # reached; `expanded_names` is what stops a CNAME loop.
-            frontier = [i for i in self._record_ids_for_names(next_names) if i not in expanded_ids]
-            expanded_ids.update(frontier)
-
-        candidates = sorted(found.values(), key=lambda c: (c.distance, c.value, str(c.asset_id)))
-        return candidates[:MAX_CANDIDATES], truncated
+        # The caps are passed from this module's names so that patching
+        # `exposure_path.MAX_CANDIDATES` / `MAX_CHAIN_DEPTH` still applies.
+        return dns_walk.walk(
+            self.db, self._clause, start_ids, upward=upward,
+            max_candidates=MAX_CANDIDATES, max_depth=MAX_CHAIN_DEPTH,
+        )

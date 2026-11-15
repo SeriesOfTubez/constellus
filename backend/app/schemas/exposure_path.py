@@ -123,12 +123,3 @@ class ExposurePath(_Model):
     last_seen_at: datetime | None = None
     # internet, host, address, port, service, finding — always in that order.
     hops: list[ExposureHop]
-
-
-class FindingDetailResponse(BaseModel):
-    """Documents the typed part of `GET /api/findings/{id}`. The rest of that
-    response is still an untyped dict, hence `extra="allow"`."""
-
-    model_config = ConfigDict(extra="allow")
-
-    exposure_paths: list[ExposurePath]
