@@ -270,6 +270,10 @@ export type Asset = {
   // planning#204 — see ProbeClass above for the value/null meanings and
   // the log_only caveat.
   probe_class: ProbeClass | null
+  // planning#358: how the asset links to an organization. Detail route only
+  // (GET /assets/{id}); absent on list rows. Optional because the detail
+  // fetch shares this type with the list.
+  attribution?: Attribution
 }
 
 // ── Asset hygiene (planning#130 L2) ─────────────────────────────────────────
@@ -687,6 +691,127 @@ export type ExposurePath = {
   hops: ExposureHop[]
 }
 
+// Attribution (planning#358). Mirrors backend/app/schemas/attribution_chain.py.
+// A chain reads from the organization down to the asset; each hop's `evidence`
+// is the rows behind the link to the hop above, `tier` the strongest of them
+// (null when there is no row). A missing link is an `unknown` hop, never
+// filled in. `ownership` is the projected estate, never inferred from a chain.
+export type AttributionTier = "strong" | "supporting" | "context"
+
+export type RelationEvidence = {
+  kind: "relation"
+  relation_id: string
+  relation: "acquired" | "subsidiary_of"
+  source: string | null
+  tier: AttributionTier | null
+  // When the relation happened, as the source states it (not when we read it).
+  event_date: string | null
+  event_date_precision: "day" | "month" | "year" | "unknown"
+  evidence_id: string
+  confirmed_by: "person" | "source" | null
+  confirmed_at: string | null
+}
+
+export type SignalEvidence = {
+  kind: "signal"
+  signal_id: string
+  signal_type: string
+  label: string | null
+  source: string | null
+  tier: AttributionTier | null
+  // null for an admin seed with no fetched document.
+  evidence_id: string | null
+  first_seen_at: string | null
+  last_seen_at: string | null
+}
+
+export type ClaimEvidence = {
+  kind: "claim"
+  claim_id: string
+  claim_type: string
+  source: string
+  // The observer's recorded trust: observed, derived or inferred.
+  source_trust: string | null
+  tier: AttributionTier | null
+  // What an ownership claim concluded; null for a claim that only records a sighting.
+  outcome: string | null
+  first_seen_at: string | null
+  last_seen_at: string | null
+}
+
+export type AttributionEvidence = RelationEvidence | SignalEvidence | ClaimEvidence
+
+type AttributionHopBase = {
+  status: ExposureHopStatus
+  reason: string | null
+  evidence: AttributionEvidence[]
+  // More rows exist than are listed; `tier` is taken over all of them.
+  evidence_truncated: boolean
+  tier: AttributionTier | null
+  first_seen_at: string | null
+  last_seen_at: string | null
+}
+
+export type AttributionHop =
+  | (AttributionHopBase & {
+      kind: "organization"
+      entity_id: string | null
+      name: string | null
+      relationship: "ours" | "ma_target" | null
+      // Who marked the entity as ours, and when; null for an acquisition target.
+      marked_at: string | null
+      marked_by_id: string | null
+    })
+  | (AttributionHopBase & {
+      kind: "entity"
+      entity_id: string
+      name: string
+      // null when no confirmed relation leads up from this entity.
+      relation: "acquired" | "subsidiary_of" | null
+    })
+  | (AttributionHopBase & {
+      kind: "scope"
+      target_id: string | null
+      target_type: "domain" | "ip" | "cidr" | null
+      value: string | null
+      // The claimed candidate that became this target, when one is on record.
+      candidate_id: string | null
+      claimed_at: string | null
+      claimed_by_id: string | null
+    })
+  | (AttributionHopBase & {
+      kind: "host"
+      asset_id: string | null
+      hostname: string | null
+      candidates: ExposureHopCandidate[]
+      candidates_truncated: boolean
+    })
+  | (AttributionHopBase & { kind: "address"; asset_id: string | null; address: string | null })
+
+export type AttributionChain = {
+  // null when no target covers the asset.
+  target_id: string | null
+  // organization, entity (zero or more), scope, host (zero or one), then the
+  // asset itself as a host or an address — always in that order.
+  hops: AttributionHop[]
+}
+
+export type AttributionOwnership = {
+  surface: AssetSurface
+  // Plain language about the record; set unless the surface is proven_ours.
+  reason: string | null
+  evidence: ClaimEvidence[]
+  // The strongest tier among the rows, only when the surface is ours.
+  tier: AttributionTier | null
+}
+
+export type Attribution = {
+  ownership: AttributionOwnership
+  // One chain per target and per organization it leads to; none is promoted.
+  chains: AttributionChain[]
+  chains_truncated: boolean
+}
+
 export type Finding = {
   id: string
   asset_value: string
@@ -757,6 +882,9 @@ export type Finding = {
   // The hops between the internet and the flaw, one path per place the finding
   // was observed. Detail route only (GET /findings/{id}); absent on list rows.
   exposure_paths?: ExposurePath[]
+  // How the finding's asset links to an organization (planning#358). Detail
+  // route only; null when the finding has no asset.
+  attribution?: Attribution | null
 }
 
 export type AlertEventSummary = {

@@ -21,6 +21,8 @@ from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.user import User
 from app.models.target_asset_link import TargetAssetLink
 
+from app.schemas.attribution_chain import AssetDetailResponse
+from app.services.attribution_chain import build_attribution
 from app.services import claims_query, hygiene_scorer, metadata_bridge, read_scope, scan_executor, whois_service
 from app.services.asset_chain import chain_target_ids
 
@@ -408,7 +410,8 @@ def _readable_asset(db: Session, user, asset_id: uuid.UUID) -> AssetCanonical:
     return asset
 
 
-@router.get("/{asset_id}")
+# `responses` documents the typed part; the handler still returns a dict.
+@router.get("/{asset_id}", responses={200: {"model": AssetDetailResponse}})
 def get_asset(
     asset_id: uuid.UUID,
     db: Session = Depends(get_db),
@@ -422,10 +425,14 @@ def get_asset(
     surface = claims_query.surface_by_asset(db, [asset.id])
     scores = hygiene_scorer.scores_by_asset(db, [asset.id])
     scanned = hygiene_scorer.scanned_by_asset(db, [asset.id])
-    return _serialize_asset(
+    payload = _serialize_asset(
         asset, risk.get(asset.id), bridge_sources.get(asset.id), surface.get(asset.id),
         scores.get(asset.id), scanned.get(asset.id, False),
     )
+    # How the asset links to an organization (planning#358). Detail only: the
+    # list route does not carry it.
+    payload["attribution"] = build_attribution(db, user, asset).model_dump(mode="json")
+    return payload
 
 
 @router.patch("/{asset_id}/ignore", status_code=200)

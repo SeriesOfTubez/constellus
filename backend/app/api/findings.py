@@ -16,9 +16,10 @@ from app.models.finding import FindingState
 from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonical
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.user import User
-from app.schemas.exposure_path import FindingDetailResponse
+from app.schemas.finding_detail import FindingDetailResponse
 from app.services import audit, bod_sla, cluster_writeup, finding_writeup, projector, read_scope, scan_executor, score_ladder
 from app.services.asset_chain import chain_target_ids
+from app.services.attribution_chain import build_attribution
 from app.services.exposure_path import build_exposure_paths
 from app.services.finding_confidence import confidence_for, strongest
 
@@ -727,6 +728,11 @@ def get_finding(
     payload["exposure_paths"] = [
         path.model_dump(mode="json") for path in build_exposure_paths(db, user, finding, asset)
     ]
+    # How the finding's asset links to an organization (planning#358). Detail
+    # only, like the paths.
+    payload["attribution"] = (
+        build_attribution(db, user, asset).model_dump(mode="json") if asset is not None else None
+    )
     return payload
 
 
