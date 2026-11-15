@@ -8,9 +8,9 @@ import { MemoryRouter } from "react-router-dom"
 
 vi.mock("@/lib/evidence", () => ({ openEvidence: vi.fn() }))
 
-import type { Finding } from "@/lib/api"
-import { AttributionQuestion } from "./AttributionQuestion"
-import { ExposureQuestion } from "./ExposureQuestion"
+import type { Attribution, ExposurePath, Finding } from "@/lib/api"
+import { AttributionChainHops, AttributionQuestion } from "./AttributionQuestion"
+import { ExposurePathHops, ExposureQuestion } from "./ExposureQuestion"
 import { EvidenceList } from "./EvidenceList"
 import { CandidateList } from "./CandidateList"
 import { TraceChains } from "./TraceChains"
@@ -23,11 +23,20 @@ const count = (s: string, needle: string) => s.split(needle).length - 1
 const text = (html: string) => html.replace(/<[^>]*>/g, " ")
 const TITLE = "Admin panel reachable without login"
 
+// Rows start closed and static markup cannot click, so the detail of a row is rendered
+// on its own: `question*` is what loads, `hops*` is what one opened row shows.
+const questionA = (a: Attribution) => render(<AttributionQuestion attribution={a} />)
+const hopsA = (a: Attribution, i = 0) => render(<AttributionChainHops chain={a.chains[i]} />)
+const bothA = (a: Attribution) => questionA(a) + a.chains.map((_, i) => hopsA(a, i)).join("")
+const questionP = (paths: ExposurePath[]) => render(<ExposureQuestion paths={paths} findingTitle={TITLE} />)
+const hopsP = (p: ExposurePath) => render(<ExposurePathHops path={p} findingTitle={TITLE} />)
+const bothP = (paths: ExposurePath[]) => questionP(paths) + paths.map(hopsP).join("")
+
 describe("Is it yours?", () => {
   it("S1: not_ours still shows its chain", () => {
     const a = attribution({ ownership: { surface: "not_ours", reason: "A registry names another holder.", evidence: [], tier: null } })
     expect(a.chains).toHaveLength(1)
-    const html = render(<AttributionQuestion attribution={a} />)
+    const html = bothA(a)
     expect(html).toContain("No. The record says this is not yours.")
     expect(html).toContain("Halvard Rhys Freight")
     expect(html).toContain("A registry names another holder.")
@@ -38,7 +47,7 @@ describe("Is it yours?", () => {
   it("S1: claimed_ours with an unknown organization hop is not downgraded", () => {
     const org = orgHop({ status: "unknown", name: null, entity_id: null, relationship: null, reason: "No organization claims this target." })
     const a = attribution({ ownership: { surface: "claimed_ours", reason: null, evidence: [], tier: null }, chains: [chain([org, scopeHop()])] })
-    const html = render(<AttributionQuestion attribution={a} />)
+    const html = bothA(a)
     expect(html).toContain("Claimed as yours, not proven.")
     expect(html).not.toContain("No. The record says")
     expect(html).not.toContain("Not checked.")
@@ -48,10 +57,10 @@ describe("Is it yours?", () => {
   it("S2: tier null prints no chip; a supporting tier prints one", () => {
     const withEvidence = (tier: "supporting" | null) =>
       attribution({ chains: [chain([orgHop(), scopeHop({ evidence: [signal({ tier })], tier }), hostHop()])] })
-    const none = render(<AttributionQuestion attribution={withEvidence(null)} />)
+    const none = bothA(withEvidence(null))
     expect(none).toContain("1 record")
     for (const t of [">Strong<", ">Supporting<", ">Context<"]) expect(none).not.toContain(t)
-    expect(render(<AttributionQuestion attribution={withEvidence("supporting")} />)).toContain(">Supporting<")
+    expect(hopsA(withEvidence("supporting"))).toContain(">Supporting<")
   })
 
   it("S2: no chip when ownership tier and claim row tier are null", () => {
@@ -59,7 +68,7 @@ describe("Is it yours?", () => {
       ownership: { surface: "not_ours", reason: null, evidence: [claim({ tier: null })], tier: null },
       chains: [chain([orgHop(), scopeHop(), hostHop()])],
     })
-    const html = render(<AttributionQuestion attribution={a} />)
+    const html = bothA(a)
     expect(html).toContain("1 ownership record")
     for (const t of [">Strong<", ">Supporting<", ">Context<"]) expect(html).not.toContain(t)
   })
@@ -67,7 +76,7 @@ describe("Is it yours?", () => {
   it("S3: unknown hop is a dashed gap with its reason, and later hops remain", () => {
     const reason = "No target on record covers this asset."
     const a = attribution({ chains: [chain([orgHop(), scopeHop({ status: "unknown", target_id: null, value: null, reason }), hostHop()])] })
-    const html = render(<AttributionQuestion attribution={a} />)
+    const html = bothA(a)
     expect(html).toContain('data-status="unknown"')
     expect(html).toContain("border-dashed")
     expect(html).toContain(reason)
@@ -79,22 +88,26 @@ describe("Is it yours?", () => {
   it("S4: a derived host with one candidate lists it and promotes none", () => {
     const host = hostHop({ status: "derived", hostname: null, asset_id: null, candidates: [candidate()] })
     const a = attribution({ chains: [chain([orgHop(), scopeHop(), host])] })
-    const html = render(<AttributionQuestion attribution={a} />)
+    const html = bothA(a)
     expect(html).toContain("1 hostname points here")
     expect(count(html, "gate.brightwatercold.example")).toBe(1)
     expect(html).toContain('href="/assets/cand-1"')
   })
 
-  it("S5: three chains, one expanded, none labelled as the main one", () => {
+  it("S5: three chains, all closed on load, none labelled as the main one", () => {
     const mk = (name: string, reason: string) => chain([orgHop({ name }), scopeHop({ reason }), hostHop()])
     const a = attribution({ chains: [mk("Halvard Rhys Freight", "detail one"), mk("Orsolya Vane Cold Storage", "detail two"), mk("Pelham Quay Logistics", "detail three")] })
     expect(a.chains).toHaveLength(3)
-    const html = render(<AttributionQuestion attribution={a} />)
+    const html = questionA(a)
     expect(count(html, "aria-expanded")).toBe(3)
-    expect(count(html, 'aria-expanded="true"')).toBe(1)
-    expect(html).toContain("detail one")
-    expect(html).not.toContain("detail two")
-    expect(html).toContain("Orsolya Vane Cold Storage")
+    expect(count(html, 'aria-expanded="false"')).toBe(3)
+    // Every chain is summarised; no hop detail is on the page until a row is opened.
+    for (const name of ["Halvard Rhys Freight", "Orsolya Vane Cold Storage", "Pelham Quay Logistics"]) expect(html).toContain(name)
+    for (const detail of ["detail one", "detail two", "detail three"]) expect(html).not.toContain(detail)
+    expect(html).not.toContain("data-status=")
+    // An opened row shows its own chain's hops and no other's.
+    expect(hopsA(a, 1)).toContain("detail two")
+    expect(hopsA(a, 1)).not.toContain("detail one")
     const t = text(html).replace("None is the main one.", "")
     expect(t).not.toMatch(/main|primary|best match|default/i)
     expect(t).toContain("3 chains on record")
@@ -102,10 +115,10 @@ describe("Is it yours?", () => {
 
   it("S6: an address without an asset id is text, with one it links", () => {
     const mk = (assetId: string | null) => attribution({ chains: [chain([orgHop(), scopeHop(), addrHop({ asset_id: assetId })])] })
-    const bare = render(<AttributionQuestion attribution={mk(null)} />)
+    const bare = bothA(mk(null))
     expect(bare).toContain("203.0.113.47")
     expect(bare).not.toContain('href="/assets/')
-    expect(render(<AttributionQuestion attribution={mk("ast-9")} />)).toContain('href="/assets/ast-9"')
+    expect(hopsA(mk("ast-9"))).toContain('href="/assets/ast-9"')
   })
 
   it("S9: truncated chains say so", () => {
@@ -122,7 +135,7 @@ describe("Is it yours?", () => {
 
   it("evidence lists start collapsed", () => {
     const a = attribution({ chains: [chain([orgHop(), scopeHop({ evidence: [signal(), signal({ signal_id: "sig-2", label: "Shared mail server" })] }), hostHop()])] })
-    const html = render(<AttributionQuestion attribution={a} />)
+    const html = hopsA(a)
     expect(html).toContain("2 records")
     expect(html).toContain("linked by 2 signals")
     expect(html).not.toContain("Shared mail server")
@@ -169,22 +182,23 @@ describe("EvidenceList and CandidateList", () => {
 describe("Can it be reached?", () => {
   it("a port without a protocol shows :443 and never tcp", () => {
     const p = path({ hops: exposureHops({ port: { protocol: null } }) })
-    const html = render(<ExposureQuestion paths={[p]} findingTitle={TITLE} />)
+    const html = bothP([p])
     expect(html).toContain(":443")
     expect(html).not.toContain("tcp")
   })
 
   it("not_reobserved uses the observation label and never says closed or resolved", () => {
     const p = path({ observation: "not_reobserved", last_seen_at: "2026-03-04T10:00:00Z" })
-    const html = render(<ExposureQuestion paths={[p]} findingTitle={TITLE} />)
+    const html = bothP([p])
     expect(html).toContain("Not seen again since 4 Mar 2026")
     expect(text(html)).not.toMatch(/closed|resolved/i)
   })
 
   it("a not_applicable hop is in the expanded detail but not in the summary", () => {
     const p = path({ hops: exposureHops({ service: { status: "not_applicable" } }) })
-    const html = render(<ExposureQuestion paths={[p]} findingTitle={TITLE} />)
-    expect(count(html, "Does not apply")).toBe(1) // the title says it; no second status word
+    expect(count(hopsP(p), "Does not apply")).toBe(1) // the title says it; no second status word
+    const html = questionP([p])
+    expect(html).not.toContain("Does not apply")
     const header = html.slice(html.indexOf("<button"), html.indexOf("</button>"))
     expect(header).not.toContain("Does not apply")
     expect(header).toContain("dock.brightwatercold.example")
@@ -192,15 +206,18 @@ describe("Can it be reached?", () => {
   })
 
   it("the finding hop is drawn as a diamond, the title coming from the finding", () => {
-    const html = render(<ExposureQuestion paths={[path()]} findingTitle={TITLE} />)
+    const html = hopsP(path())
     expect(html).toContain("rotate-45")
     expect(html).toContain(TITLE)
   })
 
-  it("every path is listed, the first open, with the legend once", () => {
-    const html = render(<ExposureQuestion paths={[path(), path({ endpoint_id: "ep-2" })]} findingTitle={TITLE} />)
-    expect(count(html, 'aria-expanded="true"')).toBe(1)
-    expect(count(html, 'aria-expanded="false"')).toBe(1)
+  it("every path is listed, all closed on load, with the legend once", () => {
+    const html = questionP([path(), path({ endpoint_id: "ep-2" })])
+    expect(count(html, "aria-expanded")).toBe(2)
+    expect(count(html, 'aria-expanded="false"')).toBe(2)
+    // No hop detail on load: the finding hop's diamond is only in an opened row.
+    expect(html).not.toContain("rotate-45")
+    expect(hopsP(path())).toContain("rotate-45")
     expect(count(html, "Evidence tier")).toBe(1)
     expect(html).toContain(">Strong<")
   })
@@ -213,7 +230,7 @@ describe("Can it be reached?", () => {
 
   it("S9: truncated candidates on an exposure host hop say so", () => {
     const host = { status: "derived", hostname: null, asset_id: null, candidates: [candidate()], candidates_truncated: true }
-    const html = render(<ExposureQuestion paths={[path({ hops: exposureHops({ host }) })]} findingTitle={TITLE} />)
+    const html = bothP([path({ hops: exposureHops({ host }) })])
     expect(html).toContain("More than 1 hostnames point here")
     expect(html).toContain("More exist than are listed.")
   })

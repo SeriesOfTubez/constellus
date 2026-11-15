@@ -4,13 +4,13 @@ import type { Segment } from "@/lib/trace"
 import { CHIP } from "@/components/ui/chip"
 import { cn } from "@/lib/utils"
 
-export function ChainRow({ segments, chip, defaultOpen, children }: {
+// Every row starts closed: the summary line is the answer, the hops are detail on request.
+export function ChainRow({ segments, chip, children }: {
   segments: Segment[]
   chip?: string | null
-  defaultOpen: boolean
   children: ReactNode
 }) {
-  const [open, setOpen] = useState(defaultOpen)
+  const [open, setOpen] = useState(false)
   return (
     <div className="rounded-lg border bg-card">
       <button

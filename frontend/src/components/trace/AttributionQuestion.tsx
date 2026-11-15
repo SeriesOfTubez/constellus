@@ -1,4 +1,4 @@
-import type { Attribution, AttributionHop } from "@/lib/api"
+import type { Attribution, AttributionChain, AttributionHop } from "@/lib/api"
 import { TIER_LABEL } from "@/lib/organizations"
 import {
   attributionHopCaption, attributionHopTitle, attributionLinkText, attributionSummary,
@@ -26,6 +26,16 @@ function toView(hop: AttributionHop, index: number): HopView {
     candidates: hop.kind === "host" ? hop.candidates : undefined,
     candidatesTruncated: hop.kind === "host" ? hop.candidates_truncated : undefined,
   }
+}
+
+export function AttributionChainHops({ chain }: { chain: AttributionChain }) {
+  return (
+    <>
+      {chain.hops.map((hop, hi) => (
+        <Hop key={hi} hop={toView(hop, hi)} first={hi === 0} last={hi === chain.hops.length - 1} />
+      ))}
+    </>
+  )
 }
 
 export function AttributionQuestion({ attribution }: { attribution: Attribution | null | undefined }) {
@@ -57,10 +67,8 @@ export function AttributionQuestion({ attribution }: { attribution: Attribution 
       {answer.note && <p className="text-sm text-muted-foreground">{answer.note}</p>}
       {note && <p className="text-xs text-muted-foreground">{note}</p>}
       {chains.map((chain, ci) => (
-        <ChainRow key={ci} defaultOpen={ci === 0} segments={attributionSummary(chain)}>
-          {chain.hops.map((hop, hi) => (
-            <Hop key={hi} hop={toView(hop, hi)} first={hi === 0} last={hi === chain.hops.length - 1} />
-          ))}
+        <ChainRow key={ci} segments={attributionSummary(chain)}>
+          <AttributionChainHops chain={chain} />
         </ChainRow>
       ))}
     </TraceSection>

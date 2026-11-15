@@ -27,6 +27,16 @@ function toView(hop: ExposureHop, index: number, findingTitle: string | null): H
   }
 }
 
+export function ExposurePathHops({ path, findingTitle }: { path: ExposurePath; findingTitle: string | null }) {
+  return (
+    <>
+      {path.hops.map((hop, hi) => (
+        <Hop key={hi} hop={toView(hop, hi, findingTitle)} first={hi === 0} last={hi === path.hops.length - 1} />
+      ))}
+    </>
+  )
+}
+
 export function ExposureQuestion({ paths, findingTitle }: { paths: ExposurePath[] | undefined; findingTitle: string | null }) {
   if (paths === undefined) return null
   return (
@@ -35,13 +45,10 @@ export function ExposureQuestion({ paths, findingTitle }: { paths: ExposurePath[
       {paths.map((path, pi) => (
         <ChainRow
           key={path.endpoint_id ?? pi}
-          defaultOpen={pi === 0}
           segments={exposureSummary(path, findingTitle)}
           chip={observationLabel(path)}
         >
-          {path.hops.map((hop, hi) => (
-            <Hop key={hi} hop={toView(hop, hi, findingTitle)} first={hi === 0} last={hi === path.hops.length - 1} />
-          ))}
+          <ExposurePathHops path={path} findingTitle={findingTitle} />
         </ChainRow>
       ))}
       <TraceLegend />
