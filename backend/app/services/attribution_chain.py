@@ -147,6 +147,7 @@ class _Builder:
         self.user = user
         self.asset = asset
         self._entities: dict[uuid.UUID, OrgEntity | None] = {}
+        self._user_names: dict[uuid.UUID, str | None] = {}
         self._walks: dict[tuple, tuple[list, bool]] = {}
         self._sightings: _Sightings | None = None
 
@@ -258,6 +259,17 @@ class _Builder:
             out.append((org, hops))
         return out
 
+    def _user_name(self, user_id: uuid.UUID | None) -> str | None:
+        """The name of the person who made a decision the reader may already
+        see. Only the name: no other user field leaves through the chain."""
+        if user_id is None:
+            return None
+        if user_id not in self._user_names:
+            self._user_names[user_id] = self.db.execute(
+                select(User.full_name).where(User.id == user_id)
+            ).scalar_one_or_none()
+        return self._user_names[user_id]
+
     def _stop_hop(self, entity: OrgEntity) -> OrganizationHop:
         ours = entity.relationship == "ours"
         return OrganizationHop(
@@ -267,6 +279,7 @@ class _Builder:
             relationship=entity.relationship,
             marked_at=entity.ours_authorised_at if ours else None,
             marked_by_id=entity.ours_authorised_by_id if ours else None,
+            marked_by_name=self._user_name(entity.ours_authorised_by_id) if ours else None,
         )
 
     def _entity_hop(self, entity: OrgEntity, link: _Link | None) -> EntityHop:
@@ -387,6 +400,7 @@ class _Builder:
         hop.candidate_id = candidate.id
         hop.claimed_at = candidate.decided_at
         hop.claimed_by_id = candidate.decided_by_id
+        hop.claimed_by_name = self._user_name(candidate.decided_by_id)
         hop.evidence, hop.evidence_truncated = _cap(evidence)
         hop.tier = attribution_tiers.highest(e.tier for e in evidence)
         return hop

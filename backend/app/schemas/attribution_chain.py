@@ -126,6 +126,8 @@ class OrganizationHop(_Hop):
     # Who marked the entity as ours, and when. None for an acquisition target.
     marked_at: datetime | None = None
     marked_by_id: uuid.UUID | None = None
+    # That user's name, for display. None when the user row is gone.
+    marked_by_name: str | None = None
 
 
 class EntityHop(_Hop):
@@ -150,6 +152,8 @@ class ScopeHop(_Hop):
     candidate_id: uuid.UUID | None = None
     claimed_at: datetime | None = None
     claimed_by_id: uuid.UUID | None = None
+    # That user's name, for display. None when the user row is gone.
+    claimed_by_name: str | None = None
 
 
 class HostHop(_Hop):

@@ -34,6 +34,7 @@ from app.models.observer import OBSERVER_TRUST, Observer
 from app.models.scope_candidate import ScopeCandidate, ScopeSignal
 from app.models.target import Target
 from app.models.target_asset_link import TargetAssetLink
+from app.models.user import User
 from app.services import attribution_chain, attribution_tiers, claim_emitter, dns_walk, entity_graph, projector
 from app.services.org_discovery import tiers
 from app.services.attribution_chain import (
@@ -218,11 +219,14 @@ def test_claimed_asset_has_one_full_chain_and_claimed_ownership(env):
 
     assert (org.status, org.entity_id, org.name, org.relationship) == ("observed", root.id, root.legal_name, "ours")
     assert org.marked_by_id == root.ours_authorised_by_id and org.marked_at == root.ours_authorised_at
+    assert root.ours_authorised_by_id is not None
+    assert org.marked_by_name == env.db.get(User, root.ours_authorised_by_id).full_name
     assert org.evidence == [] and org.tier is None
 
     assert (scope.status, scope.target_id, scope.target_type, scope.value) == ("observed", target.id, "domain", _DOM)
     assert scope.reason is None and scope.tier == "strong" and scope.evidence_truncated is False
     assert scope.candidate_id is not None and scope.claimed_at == T0 and scope.claimed_by_id == env.admin.id
+    assert env.admin.full_name and scope.claimed_by_name == env.admin.full_name
     assert [(e.signal_type, e.tier, e.source) for e in scope.evidence] == [
         ("filer_10k_website", "strong", None), ("shared_vanity_ns", "supporting", "cert_transparency")]
     assert [e.label for e in scope.evidence] == [
@@ -424,6 +428,9 @@ def test_the_walk_stops_at_the_nearest_marked_entity(env):
     root = env.w.ours()
     x = env.w.child_of(root)
     x, _eng = env.w.deal(x)
+    # Stale "ours" stamps on an acquisition target must not surface as who marked it.
+    x.ours_authorised_by_id, x.ours_authorised_at = env.admin.id, T0
+    env.w.db.commit()
     b = env.w.child_of(x)
     target = env.target(_DOM, entity=b)
     asset = env.asset(host)
@@ -434,6 +441,7 @@ def test_the_walk_stops_at_the_nearest_marked_entity(env):
     assert _kinds(chain) == ["organization", "entity", "scope", "host"]
     org, ent_b = chain.hops[:2]
     assert (org.entity_id, org.relationship, org.marked_at, org.marked_by_id) == (x.id, "ma_target", None, None)
+    assert org.marked_by_name is None
     assert ent_b.entity_id == b.id and ent_b.relation == "subsidiary_of"
     assert root.id not in {getattr(h, "entity_id", None) for h in chain.hops}
 

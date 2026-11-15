@@ -8,6 +8,7 @@ import {
 
 import { AiWriteupPanel } from "@/components/AiWriteupPanel"
 import { ConnectedEntities } from "@/components/ConnectedEntities"
+import { TraceChains } from "@/components/trace/TraceChains"
 import { VulnNarrative, VulnIntel, hasVulnIntel } from "@/components/VulnNarrative"
 import { CvssBreakdown } from "@/components/CvssBreakdown"
 import {
@@ -202,6 +203,7 @@ export default function FindingDetail() {
 
         {/* ── Overview — verdict story + scores ── */}
         <TabsContent value="overview" className="pt-5 space-y-6">
+          <TraceChains finding={finding} />
           <VulnNarrative finding={finding} />
 
           {/* Provenance — what produced this finding + the upstream evidence */}
