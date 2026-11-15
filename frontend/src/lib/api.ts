@@ -761,6 +761,8 @@ export type AttributionHop =
       // Who marked the entity as ours, and when; null for an acquisition target.
       marked_at: string | null
       marked_by_id: string | null
+      // That user's name, for display; null when the user row is gone.
+      marked_by_name: string | null
     })
   | (AttributionHopBase & {
       kind: "entity"
@@ -778,6 +780,8 @@ export type AttributionHop =
       candidate_id: string | null
       claimed_at: string | null
       claimed_by_id: string | null
+      // That user's name, for display; null when the user row is gone.
+      claimed_by_name: string | null
     })
   | (AttributionHopBase & {
       kind: "host"
