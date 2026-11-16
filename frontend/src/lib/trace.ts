@@ -4,7 +4,7 @@
 // rewritten here; components render them as written.
 import type {
   AssetSurface, AttributionChain, AttributionEvidence, AttributionHop,
-  ExposureHop, ExposureHopCandidate, ExposureHopStatus, ExposurePath,
+  ExposureHop, ExposureHopCandidate, ExposureHopStatus, ExposurePath, Finding,
 } from "@/lib/api"
 import { formatClosed } from "@/lib/organizations"
 
@@ -36,6 +36,123 @@ export function plural(n: number, one: string, many: string): string {
 
 export function humanise(code: string): string {
   return code.replace(/_/g, " ")
+}
+
+// ---- Verdict band ----
+
+export type VerdictVariant =
+  | "nuclei_check" | "nuclei_default_login"
+  | "exposed_service_identified" | "exposed_service_unidentified"
+  | "dangling_fingerprint" | "dangling_not_affine" | "dangling_unreachable" | "dangling_serves_others"
+  | "version_match_cve" | "shodan_cve" | "shodan_cve_verified" | "shodan_label" | "other"
+
+export type Verdict = { label: string; saw: string; didNot: string }
+
+export const VERDICT_HEADINGS = { saw: "What we saw", didNot: "What we did not do" }
+
+// Text is fixed per variant and settled on planning#362 (comment 6904233411). No values are
+// interpolated, and a label never says "confirmed".
+export const VERDICTS: Record<VerdictVariant, Verdict> = {
+  nuclei_check: {
+    label: "Check matched",
+    saw: "A scanner check sent a request to this host, and the response matched the pattern for this issue.",
+    didNot: "We did not go further than that one check. No attempt was made to use the issue.",
+  },
+  nuclei_default_login: {
+    label: "Default login accepted",
+    saw: "A scanner check tried a known default username and password on this host, and the login was accepted.",
+    didNot: "We did nothing after the login. Nothing was read or changed. We kept the check's result, nothing else from the session.",
+  },
+  exposed_service_identified: {
+    label: "Seen open",
+    saw: "A port scan found this port open, and the service answering on it was identified.",
+    didNot: "We did not try to log in, send commands or test the service for weaknesses. An open service is an exposure, not a break-in.",
+  },
+  exposed_service_unidentified: {
+    label: "Seen open, service not identified",
+    saw: "A port scan found this port open. What answers on it was not identified; the finding goes by the port's usual service.",
+    didNot: "We did not confirm what is answering, try to log in or test it for weaknesses.",
+  },
+  dangling_fingerprint: {
+    label: "Check matched",
+    saw: "This DNS name points to a third-party service, and that service replied that nothing is set up there.",
+    didNot: "We did not try to claim the resource. Whether someone else can claim it was not tested.",
+  },
+  dangling_not_affine: {
+    label: "No sign of this name",
+    saw: "This name points at a shared hosting address. The address answered, but showed no sign of serving this name.",
+    didNot: "We did not try to take over the address or the name. Finding no sign is not proof the name is abandoned.",
+  },
+  dangling_unreachable: {
+    label: "No answer",
+    saw: "This name points at an address that did not answer on any port we tried.",
+    didNot: "We did not find out why. The address may be retired, or something in front of it may still serve the name.",
+  },
+  dangling_serves_others: {
+    label: "Serves another name",
+    saw: "This name points at an address that did not answer for this name but does serve a different one.",
+    didNot: "We did not try to claim the address or serve anything under this name.",
+  },
+  version_match_cve: {
+    label: "Inferred from a version",
+    saw: "Software on this host reported a version number, and that version is in the range this CVE affects.",
+    didNot: "We did not test for the weakness itself. A vendor can patch it without changing the version number, so this can overstate.",
+  },
+  shodan_cve: {
+    label: "Reported by Shodan",
+    saw: "Shodan listed this CVE for this address, from the software version it recorded there.",
+    didNot: "We did not contact the host to check it, and neither we nor Shodan tested for the weakness itself. A version match can overstate.",
+  },
+  shodan_cve_verified: {
+    label: "Tested by Shodan",
+    saw: "Shodan reports that it tested this address for this CVE and the test came back positive.",
+    didNot: "We did not contact the host or repeat the test. Shodan's report is all we have.",
+  },
+  shodan_label: {
+    label: "Reported by Shodan",
+    saw: "Shodan labelled this address as compromised, hosting malware or a honeypot.",
+    didNot: "We did not check the label ourselves. The record does not say what Shodan saw.",
+  },
+  other: {
+    label: "Reported by a source",
+    saw: "The source named on this finding reported it.",
+    didNot: "No description of what that source checks is on file, so we cannot say what was and was not done.",
+  },
+}
+
+type VerdictInput = Pick<Finding, "source" | "finding_type" | "detail">
+
+function hasDefaultLoginTag(tags: unknown): boolean {
+  const list = Array.isArray(tags) ? tags : typeof tags === "string" ? tags.split(",") : []
+  return list.some((t) => typeof t === "string" && t.trim() === "default-login")
+}
+
+// Never throws; anything unmatched is "other". Fails toward the weaker claim.
+export function verdictVariant(f: VerdictInput): VerdictVariant {
+  const d = f.detail && typeof f.detail === "object" ? f.detail : {}
+  if (f.source === "nuclei") return hasDefaultLoginTag(d.tags) ? "nuclei_default_login" : "nuclei_check"
+  if (f.source === "constellus" && f.finding_type === "exposed_service") {
+    return d.confidence === "confirmed" ? "exposed_service_identified" : "exposed_service_unidentified"
+  }
+  if (f.source === "constellus" && f.finding_type === "dangling_dns") {
+    switch (d.layer) {
+      case "fingerprint": return "dangling_fingerprint"
+      case "affinity_not_affine": return "dangling_not_affine"
+      case "affinity_unreachable": return "dangling_unreachable"
+      case "affinity_corroborated_alive": return "dangling_serves_others"
+      default: return "other"
+    }
+  }
+  if (f.source === "version_match" && f.finding_type === "cve") return "version_match_cve"
+  if (f.source === "shodan") {
+    if (f.finding_type === "cve") return d.shodan_verified === true ? "shodan_cve_verified" : "shodan_cve"
+    if (f.finding_type === "malware" || f.finding_type === "honeypot") return "shodan_label"
+  }
+  return "other"
+}
+
+export function verdictFor(f: VerdictInput): Verdict {
+  return VERDICTS[verdictVariant(f)]
 }
 
 // ---- Question 1: attribution ----
