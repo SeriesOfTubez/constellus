@@ -48,4 +48,14 @@ describe("FindingDetail trace mount", () => {
     expect(html).toContain(">Raw<")
     expect(html).toContain(">Intel<")
   })
+
+  it("shows the verdict band above the first question", () => {
+    const html = render()
+    expect(html).toContain("Check matched")
+    expect(html).toContain("What we did not do")
+    expect(html.indexOf("Check matched")).toBeLessThan(html.indexOf("Is it yours?"))
+    expect(html).toContain(">Timeline<")
+    expect(html).toContain(">Raw<")
+    expect(html).toContain(">Intel<")
+  })
 })

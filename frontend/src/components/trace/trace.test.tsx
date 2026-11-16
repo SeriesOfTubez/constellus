@@ -14,6 +14,8 @@ import { ExposurePathHops, ExposureQuestion } from "./ExposureQuestion"
 import { EvidenceList } from "./EvidenceList"
 import { CandidateList } from "./CandidateList"
 import { TraceChains } from "./TraceChains"
+import { VerdictBand } from "./VerdictBand"
+import { VERDICTS, verdictFor, verdictVariant, type VerdictVariant } from "@/lib/trace"
 import {
   addrHop, attribution, candidate, chain, claim, exposureHops, hostHop, orgHop, path, relation, scopeHop, signal,
 } from "./fixtures"
@@ -236,6 +238,86 @@ describe("Can it be reached?", () => {
   })
 })
 
+type VIn = Parameters<typeof verdictVariant>[0]
+const vin = (source: string, finding_type: string, detail: Record<string, unknown> | null = {}): VIn => ({ source, finding_type, detail })
+
+describe("Verdict band", () => {
+  const TABLE: [VerdictVariant, VIn, string, string, string][] = [
+    ["nuclei_check", { source: "nuclei", finding_type: "exposed_panel", detail: {} }, "Check matched", "A scanner check sent a request to this host, and the response matched the pattern for this issue.", "We did not go further than that one check. No attempt was made to use the issue."],
+    ["nuclei_default_login", { source: "nuclei", finding_type: "tpl", detail: { tags: ["default-login"] } }, "Default login accepted", "A scanner check tried a known default username and password on this host, and the login was accepted.", "We did nothing after the login. Nothing was read or changed. We kept the check's result, nothing else from the session."],
+    ["exposed_service_identified", { source: "constellus", finding_type: "exposed_service", detail: { confidence: "confirmed" } }, "Seen open", "A port scan found this port open, and the service answering on it was identified.", "We did not try to log in, send commands or test the service for weaknesses. An open service is an exposure, not a break-in."],
+    ["exposed_service_unidentified", { source: "constellus", finding_type: "exposed_service", detail: { confidence: "potential" } }, "Seen open, service not identified", "A port scan found this port open. What answers on it was not identified; the finding goes by the port's usual service.", "We did not confirm what is answering, try to log in or test it for weaknesses."],
+    ["dangling_fingerprint", { source: "constellus", finding_type: "dangling_dns", detail: { layer: "fingerprint" } }, "Check matched", "This DNS name points to a third-party service, and that service replied that nothing is set up there.", "We did not try to claim the resource. Whether someone else can claim it was not tested."],
+    ["dangling_not_affine", { source: "constellus", finding_type: "dangling_dns", detail: { layer: "affinity_not_affine" } }, "No sign of this name", "This name points at a shared hosting address. The address answered, but showed no sign of serving this name.", "We did not try to take over the address or the name. Finding no sign is not proof the name is abandoned."],
+    ["dangling_unreachable", { source: "constellus", finding_type: "dangling_dns", detail: { layer: "affinity_unreachable" } }, "No answer", "This name points at an address that did not answer on any port we tried.", "We did not find out why. The address may be retired, or something in front of it may still serve the name."],
+    ["dangling_serves_others", { source: "constellus", finding_type: "dangling_dns", detail: { layer: "affinity_corroborated_alive" } }, "Serves another name", "This name points at an address that did not answer for this name but does serve a different one.", "We did not try to claim the address or serve anything under this name."],
+    ["version_match_cve", { source: "version_match", finding_type: "cve", detail: {} }, "Inferred from a version", "Software on this host reported a version number, and that version is in the range this CVE affects.", "We did not test for the weakness itself. A vendor can patch it without changing the version number, so this can overstate."],
+    ["shodan_cve", { source: "shodan", finding_type: "cve", detail: {} }, "Reported by Shodan", "Shodan listed this CVE for this address, from the software version it recorded there.", "We did not contact the host to check it, and neither we nor Shodan tested for the weakness itself. A version match can overstate."],
+    ["shodan_cve_verified", { source: "shodan", finding_type: "cve", detail: { shodan_verified: true } }, "Tested by Shodan", "Shodan reports that it tested this address for this CVE and the test came back positive.", "We did not contact the host or repeat the test. Shodan's report is all we have."],
+    ["shodan_label", { source: "shodan", finding_type: "malware", detail: null }, "Reported by Shodan", "Shodan labelled this address as compromised, hosting malware or a honeypot.", "We did not check the label ourselves. The record does not say what Shodan saw."],
+    ["other", { source: "tenable", finding_type: "cve", detail: null }, "Reported by a source", "The source named on this finding reported it.", "No description of what that source checks is on file, so we cannot say what was and was not done."],
+  ]
+
+  it("each variant is chosen for its finding and carries its exact words", () => {
+    expect(TABLE).toHaveLength(13)
+    for (const [variant, f, label, saw, didNot] of TABLE) {
+      expect(verdictVariant(f), variant).toBe(variant)
+      expect(verdictFor(f), variant).toEqual({ label, saw, didNot })
+    }
+  })
+
+  it("selection edges", () => {
+    expect(verdictVariant(vin("nuclei", "t", { tags: ["cve", "default-login"] }))).toBe("nuclei_default_login")
+    expect(verdictVariant(vin("nuclei", "t", { tags: "panel, default-login" }))).toBe("nuclei_default_login")
+    expect(verdictVariant(vin("nuclei", "t", { tags: ["default-logins-x"] }))).toBe("nuclei_check")
+    expect(verdictVariant(vin("nuclei", "t", null))).toBe("nuclei_check")
+    expect(verdictVariant(vin("nuclei", "exposed_panel", { tags: 5 }))).toBe("nuclei_check")
+    expect(verdictVariant(vin("nuclei", "exposed_panel"))).toBe("nuclei_check")
+    expect(verdictVariant(vin("constellus", "exposed_service", {}))).toBe("exposed_service_unidentified")
+    expect(verdictVariant(vin("constellus", "exposed_service", { confidence: "potential" }))).toBe("exposed_service_unidentified")
+    expect(verdictVariant(vin("constellus", "dangling_dns", { layer: "something_new" }))).toBe("other")
+    expect(verdictVariant(vin("constellus", "dangling_dns", {}))).toBe("other")
+    expect(verdictVariant(vin("constellus", "x"))).toBe("other")
+    expect(verdictVariant(vin("version_match", "x"))).toBe("other")
+    expect(verdictVariant(vin("shodan", "cve", { shodan_verified: false }))).toBe("shodan_cve")
+    expect(verdictVariant(vin("shodan", "cve", { shodan_verified: null }))).toBe("shodan_cve")
+    expect(verdictVariant(vin("shodan", "cve", {}))).toBe("shodan_cve")
+    expect(verdictVariant(vin("shodan", "cve", { shodan_verified: "true" }))).toBe("shodan_cve")
+    expect(verdictVariant(vin("shodan", "honeypot"))).toBe("shodan_label")
+    expect(verdictVariant(vin("shodan", "x"))).toBe("other")
+    expect(verdictVariant(vin("tenable", "cve"))).toBe("other")
+    expect(() => verdictVariant({} as VIn)).not.toThrow()
+    expect(verdictVariant({} as VIn)).toBe("other")
+  })
+
+  it("invariants over every entry", () => {
+    const entries = Object.entries(VERDICTS)
+    expect(Object.keys(VERDICTS)).toHaveLength(13)
+    for (const [k, v] of entries) {
+      expect(v.label, k).not.toMatch(/confirmed|exploited/i)
+      for (const part of [v.label, v.saw, v.didNot]) {
+        expect(part.length, k).toBeGreaterThan(0)
+        expect(part, k).not.toMatch(/\d/)
+      }
+      expect(v.saw, k).not.toMatch(/exploit/i)
+      expect(v.didNot, k).not.toMatch(/exploit/i)
+    }
+  })
+
+  it("the component prints label, both headings and both sentences, with no button", () => {
+    const html = render(<VerdictBand finding={vin("version_match", "cve")} />)
+    const t = text(html).replace(/&#x27;/g, "'")
+    expect(t).toContain("Inferred from a version")
+    expect(t).toContain("What we saw")
+    expect(t).toContain("What we did not do")
+    expect(t).toContain("Software on this host reported a version number, and that version is in the range this CVE affects.")
+    expect(t).toContain("We did not test for the weakness itself. A vendor can patch it without changing the version number, so this can overstate.")
+    expect(html).not.toContain("<button")
+    expect(html.indexOf("What we saw")).toBeGreaterThanOrEqual(0)
+    expect(html.indexOf("What we saw")).toBeLessThan(html.indexOf("What we did not do"))
+  })
+})
+
 describe("TraceChains", () => {
   it("renders an empty string when the finding carries neither key", () => {
     expect(render(<TraceChains finding={{} as Finding} />)).toBe("")
@@ -245,6 +327,13 @@ describe("TraceChains", () => {
     expect(html).toContain("Is it yours?")
     expect(html).toContain("Can it be reached?")
     expect(html).toContain('aria-label="Trace"')
+  })
+  it("puts the verdict band above the first question", () => {
+    const f = { title: TITLE, source: "version_match", finding_type: "cve", detail: {}, attribution: attribution(), exposure_paths: [path()] } as Finding
+    const html = render(<TraceChains finding={f} />)
+    expect(html.indexOf("Inferred from a version")).toBeGreaterThanOrEqual(0)
+    expect(html.indexOf("Inferred from a version")).toBeLessThan(html.indexOf("Is it yours?"))
+    expect(html.indexOf("Is it yours?")).toBeLessThan(html.indexOf("Can it be reached?"))
   })
 })
 
