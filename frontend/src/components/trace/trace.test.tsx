@@ -338,7 +338,7 @@ describe("TraceChains", () => {
   })
 })
 
-describe("Why now?", () => {
+describe("How long has this been open?", () => {
   const TODAY = "2026-11-16"
   const q = (events: TimelineEvent[] | undefined) => render(<TimelineQuestion events={events} today={TODAY} />)
   const e = timelineEvent
@@ -357,7 +357,7 @@ describe("Why now?", () => {
   it("renders every date of a CVE finding in order, with gaps", () => {
     const html = q(fullCve())
     const t = text(html)
-    expect(t).toContain("Why now?")
+    expect(t).toContain("How long has this been open?")
     const labels = [
       "Listed by VulnCheck as exploited", "CVE published", "Listed by CISA as exploited",
       "Example Holdings A acquired", "fabrikam.example.com claimed", "First seen", "Confirmed ours", "Fix due",
@@ -458,7 +458,7 @@ describe("Why now?", () => {
   it("TraceChains renders question 3 on its own when only timeline is set", () => {
     const html = render(<TraceChains finding={{ title: TITLE, timeline: [timelineEvent()] } as Finding} />)
     expect(html).toContain('aria-label="Trace"')
-    expect(html).toContain("Why now?")
+    expect(html).toContain("How long has this been open?")
   })
 
   it("TraceChains stays empty when attribution, paths and timeline are all absent", () => {
@@ -470,8 +470,8 @@ describe("Why now?", () => {
     const without = render(<TraceChains finding={{ title: TITLE, exposure_paths: [path()] } as Finding} />)
     const withTl = render(<TraceChains finding={{ title: TITLE, exposure_paths: [path()], timeline: [] as TimelineEvent[] } as Finding} />)
     expect(count(withTl, connector)).toBe(count(without, connector) + 1)
-    expect(without).not.toContain("Why now?")
-    expect(withTl).toContain("Why now?")
+    expect(without).not.toContain("How long has this been open?")
+    expect(withTl).toContain("How long has this been open?")
   })
 })
 

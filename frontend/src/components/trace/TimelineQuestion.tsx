@@ -32,7 +32,7 @@ function Spine({ kind, line }: { kind?: TimelineEvent["kind"]; line: boolean }) 
 export function TimelineQuestion({ events, today = utcToday() }: { events: TimelineEvent[] | undefined; today?: string }) {
   if (events === undefined) return null
   return (
-    <TraceSection number={3} question="Why now?" last>
+    <TraceSection number={3} question="How long has this been open?" last>
       {events.length === 0 ? (
         <p className="text-sm text-muted-foreground">No dates are on record for this finding.</p>
       ) : (

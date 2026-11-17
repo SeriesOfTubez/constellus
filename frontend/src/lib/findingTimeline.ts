@@ -1,4 +1,4 @@
-// Trace question 3 ("Why now?") as text: labels, second lines and the gaps between
+// Trace question 3 ("How long has this been open?") as text: labels, second lines and the gaps between
 // events (planning#362). Pure, no React. The API sorts the events; nothing here does.
 import type { TimelineEvent } from "@/lib/api"
 import { formatClosed } from "@/lib/organizations"
