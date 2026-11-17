@@ -17,6 +17,7 @@ export function validateJobSettings(d: JobSettings): string | null {
 const JOB_LABELS: Record<string, string> = {
   capture_sweep: "Page capture queueing",
   rediscovery_tick: "Organization re-discovery",
+  cve_refresh: "CVE re-check",
   alert_digests: "Alert digests",
   run_reaper: "Stranded scan clean-up",
   nightly_rescore: "Nightly risk re-scoring",
@@ -81,6 +82,8 @@ export function finishReasonText(reason: string, job?: string): string {
         return "Stopped at its time limit. The days it didn't reach are still due and it continues on the next run."
       return "Stopped at its time limit. Anything it didn't reach is still due and runs next hour."
     case "lookup_failures":
+      if (job === "cve_refresh")
+        return "Stopped after VulnCheck failed to answer several times in a row. The remaining CVEs are still due and are tried again next hour."
       return "Stopped after the web archive lookup failed several times in a row. The remaining pages are still due and are tried again next hour."
     case "rate_limited":
       return "Stopped because a data source asked us to slow down. The remaining organisations are still due and are tried again next hour."
@@ -130,6 +133,16 @@ export function runCountsText(run: JobRun): string | null {
     let t = `${c("ok")} refreshed, ${c("failed")} failed, out of ${c("due")} due`
     const skipped = c("skipped") + c("skipped_busy")
     if (skipped > 0) t += `, ${skipped} skipped`
+    if (c("errors") > 0) t += `, ${errorsText(c("errors"))}`
+    return t
+  }
+  if (run.job === "cve_refresh") {
+    let t = `${c("refreshed")} re-checked, ${c("failed")} failed, out of ${c("due")} due`
+    if (c("rescored") > 0) t += `, ${plural(c("rescored"), "finding", "findings")} re-scored`
+    if (c("promotions") > 0) t += `, ${c("promotions")} promoted`
+    if (run.counts && "vulncheck_configured" in run.counts && c("vulncheck_configured") === 0)
+      t += ", VulnCheck not set up, so no published dates"
+    if (run.counts && "cisa_feed_ok" in run.counts && c("cisa_feed_ok") === 0) t += ", CISA list unavailable"
     if (c("errors") > 0) t += `, ${errorsText(c("errors"))}`
     return t
   }

@@ -429,7 +429,7 @@ def test_cadence_validation():
 def test_cadence_table_shape():
     assert all(isinstance(c, job_runs.Cadence) for c in job_runs.CADENCE.values())
     hourly = [c.minute for c in job_runs.CADENCE.values() if c.kind == "hourly_at"]
-    assert sorted(hourly) == [5, 20, 40] and len(set(hourly)) == 3
+    assert sorted(hourly) == [5, 20, 40, 50] and len(set(hourly)) == 4
 
 
 def test_daily_missed_night_shows_after_its_hour():
@@ -549,6 +549,7 @@ REGISTRARS = {
     "alert_digests": scheduler._register_alert_digests,
     "rediscovery_tick": scheduler._register_rediscovery_tick,
     "capture_sweep": scheduler._register_capture_sweep,
+    "cve_refresh": scheduler._register_cve_refresh,
     "run_reaper": scheduler._register_run_reaper,
     "nightly_rescore": scheduler._register_nightly_rescore,
     "epss_refresher": scheduler._register_epss_refresher,

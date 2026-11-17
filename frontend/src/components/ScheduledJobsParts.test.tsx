@@ -76,11 +76,11 @@ describe("JobStatusRow", () => {
     expect(out).not.toContain("capture proxy")
   })
   it("every known job shows its label and never its raw id", () => {
-    const ids = ["alert_digests", "rediscovery_tick", "capture_sweep", "run_reaper", "nightly_rescore", "epss_refresher",
+    const ids = ["alert_digests", "rediscovery_tick", "capture_sweep", "cve_refresh", "run_reaper", "nightly_rescore", "epss_refresher",
       "cpe_index_refresher", "cloud_ranges_refresher", "partition_maintenance", "hygiene_scoring", "job_run_purger",
       "llm_ledger_pruner", "chat_transcript_purger", "report_purger", "llm_models_refresher",
       "page_capture", "ct_refresher", "capture_tokens", "tenancy_enricher", "tenancy_tls"]
-    expect(ids).toHaveLength(20)
+    expect(ids).toHaveLength(21)
     for (const id of ids) {
       const out = row(status({ job: id, last_run: run({ job: id }) }))
       expect(out).toContain(jobLabel(id))

@@ -32,7 +32,12 @@ import {
   REDISCOVERY_BATCH_MIN, REDISCOVERY_BATCH_MAX, REDISCOVERY_REFRESH_MIN, REDISCOVERY_REFRESH_MAX,
   REDISCOVERY_FAILED_RETRY_MIN, REDISCOVERY_FAILED_RETRY_MAX, validateDiscoverySettings,
 } from "@/lib/discoverySettings"
-import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type CaptureSettings, type DigestSettings, type DigestSummary, type DiscoverySettings, type JobRun, type JobSettings, type JobsStatus, type LogQueueSettings, type SystemStatus } from "@/lib/api"
+import {
+  CVE_REFRESH_TIME_LIMIT_MIN, CVE_REFRESH_TIME_LIMIT_MAX, CVE_REFRESH_BATCH_MIN, CVE_REFRESH_BATCH_MAX,
+  CVE_REFRESH_INTERVAL_MIN, CVE_REFRESH_INTERVAL_MAX, CVE_REFRESH_FAILED_RETRY_MIN, CVE_REFRESH_FAILED_RETRY_MAX,
+  validateCveRefreshSettings,
+} from "@/lib/cveRefreshSettings"
+import { api, type AlertDispatch, type AggressivenessTier, type AppSettings, type CaptureSettings, type CveRefreshSettings, type DigestSettings, type DigestSummary, type DiscoverySettings, type JobRun, type JobSettings, type JobsStatus, type LogQueueSettings, type SystemStatus } from "@/lib/api"
 import { useCan } from "@/lib/permissions"
 import {
   BATCH_MAX_MAX, BATCH_MAX_MIN, FLUSH_INTERVAL_S_MAX, FLUSH_INTERVAL_S_MIN, QUEUE_MAX_MAX, QUEUE_MAX_MIN, queueRestartNote,
@@ -1237,6 +1242,93 @@ export function DiscoverySettingsCard() {
   )
 }
 
+export function CveRefreshSettingsCard() {
+  const qc = useQueryClient()
+  const { data, isLoading } = useQuery({
+    queryKey: ["settings", "cve-refresh"],
+    queryFn: () => api.get<CveRefreshSettings>("/settings/cve-refresh"),
+  })
+  // Numeric fields are held as strings so a half-typed value is not coerced.
+  const [limit, setLimit] = useState("")
+  const [batch, setBatch] = useState("")
+  const [recheck, setRecheck] = useState("")
+  const [failedRetry, setFailedRetry] = useState("")
+  useEffect(() => {
+    if (!data) return
+    setLimit(String(data.time_limit_seconds))
+    setBatch(String(data.due_batch))
+    setRecheck(String(data.refresh_interval_hours))
+    setFailedRetry(String(data.failed_retry_hours))
+  }, [data])
+
+  const num = (s: string) => (s.trim() === "" ? NaN : Number(s))
+  const draft: CveRefreshSettings = {
+    time_limit_seconds: num(limit),
+    due_batch: num(batch),
+    refresh_interval_hours: num(recheck),
+    failed_retry_hours: num(failedRetry),
+  }
+  const error = data ? validateCveRefreshSettings(draft) : null
+  const dirty = data !== undefined && (
+    draft.time_limit_seconds !== data.time_limit_seconds ||
+    draft.due_batch !== data.due_batch ||
+    draft.refresh_interval_hours !== data.refresh_interval_hours ||
+    draft.failed_retry_hours !== data.failed_retry_hours
+  )
+  const save = useMutation({
+    mutationFn: () => api.put<CveRefreshSettings>("/settings/cve-refresh", draft),
+    onSuccess: (next) => {
+      qc.setQueryData(["settings", "cve-refresh"], next)
+      qc.invalidateQueries({ queryKey: ["settings", "cve-refresh"] })
+      toast.success("CVE intelligence settings saved")
+    },
+    onError: (e: Error) => toast.error(`Save failed: ${e.message}`),
+  })
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">CVE intelligence</CardTitle>
+        <CardDescription className="text-xs">How often Constellus re-checks the CVEs on your findings.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {isLoading || !data ? <Skeleton className="h-28" /> : (
+          <>
+            <div className="space-y-3">
+              <h4 className="text-xs font-medium">Re-check (hourly)</h4>
+              <p className="max-w-prose text-xs text-muted-foreground">Each hour, Constellus re-checks the CVEs on your findings that are due, oldest first: when each was published, and whether CISA or VulnCheck now list it as exploited. A CVE newly listed as exploited is re-scored straight away. Whatever is left waits for the next hour.</p>
+              <div className="space-y-1">
+                <Label htmlFor="cve-refresh-time-limit" className="text-xs text-muted-foreground">Stop each hourly run after (seconds)</Label>
+                <Input id="cve-refresh-time-limit" type="number" min={CVE_REFRESH_TIME_LIMIT_MIN} max={CVE_REFRESH_TIME_LIMIT_MAX} step={1}
+                  className="h-8 w-28 text-xs" value={limit} onChange={(e) => setLimit(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="cve-refresh-batch" className="text-xs text-muted-foreground">CVEs read per run</Label>
+                <Input id="cve-refresh-batch" type="number" min={CVE_REFRESH_BATCH_MIN} max={CVE_REFRESH_BATCH_MAX} step={1}
+                  className="h-8 w-28 text-xs" value={batch} onChange={(e) => setBatch(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="cve-refresh-interval" className="text-xs text-muted-foreground">Re-check each CVE every (hours)</Label>
+                <Input id="cve-refresh-interval" type="number" min={CVE_REFRESH_INTERVAL_MIN} max={CVE_REFRESH_INTERVAL_MAX} step={1}
+                  className="h-8 w-24 text-xs" value={recheck} onChange={(e) => setRecheck(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="cve-refresh-failed-retry" className="text-xs text-muted-foreground">Try a failed CVE again after (hours)</Label>
+                <Input id="cve-refresh-failed-retry" type="number" min={CVE_REFRESH_FAILED_RETRY_MIN} max={CVE_REFRESH_FAILED_RETRY_MAX} step={1}
+                  className="h-8 w-24 text-xs" value={failedRetry} onChange={(e) => setFailedRetry(e.target.value)} />
+                <p className="max-w-prose text-xs text-muted-foreground">No longer than the re-check interval.</p>
+              </div>
+            </div>
+            {error && <p className="text-xs text-destructive">{error}</p>}
+            <Button size="sm" className="h-8" aria-label="Save CVE intelligence settings"
+              disabled={!dirty || error !== null || save.isPending} onClick={() => save.mutate()}>Save</Button>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 function JobRunsPanel({ job }: { job: string }) {
   const { data, isLoading } = useQuery({
     queryKey: ["jobs", "runs", job],
@@ -1422,6 +1514,7 @@ export default function Settings() {
       {canReadSettings && <CaptureSettingsCard />}
 
       {canReadSettings && <DiscoverySettingsCard />}
+      {canReadSettings && <CveRefreshSettingsCard />}
 
       {canReadSettings && can("jobs.read") && <ScheduledJobsCard />}
 

@@ -132,6 +132,7 @@ def start() -> None:
     _register_capture_tokens()
     _register_capture_sweep()
     _register_rediscovery_tick()
+    _register_cve_refresh()
     _register_job_run_purger()
 
 
@@ -585,6 +586,33 @@ def _run_rediscovery_tick() -> None:
     _recorded(
         "rediscovery_tick", rolling.run_rediscovery_tick, job_runs.rediscovery_outcome,
         "Org-discovery rolling re-discovery complete", "Org-discovery rolling re-discovery failed",
+    )
+
+
+def _register_cve_refresh() -> None:
+    """Register the rolling CVE refresh (planning#360): published dates and KEV.
+    Hourly at :50 UTC with a time limit per run, oldest-due CVEs first; pacing
+    is `cve_refresh_pacing` (admin settings)."""
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        _run_cve_refresh,
+        trigger=_trigger("cve_refresh"),
+        id="cve_refresh",
+        name="CVE refresh: published dates and KEV (hourly)",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    log.info("Scheduled cve_refresh (hourly at :%02d UTC)", job_runs.CADENCE["cve_refresh"].minute)
+
+
+def _run_cve_refresh() -> None:
+    from app.services import cve_refresh
+
+    _recorded(
+        "cve_refresh", cve_refresh.run_cve_refresh_tick, job_runs.cve_refresh_outcome,
+        "CVE refresh complete", "CVE refresh failed",
     )
 
 

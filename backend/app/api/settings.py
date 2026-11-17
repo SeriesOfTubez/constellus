@@ -14,6 +14,7 @@ from app.services import aggressiveness as aggr
 from app.services import app_settings as svc
 from app.core import logging as app_logging
 from app.services import audit, cpe_cve_sync, job_runs, log_settings, page_capture
+from app.services import cve_refresh_pacing
 from app.services.org_discovery import pacing as discovery_pacing
 
 router = APIRouter()
@@ -398,6 +399,80 @@ def put_discovery_settings(
     if changes:
         audit.record_detail(request, **changes)
     return _discovery_current(db)
+
+
+# ── CVE refresh pacing (planning#360) ───────────────────────────────────────
+
+
+class CveRefreshSettings(BaseModel):
+    time_limit_seconds: int
+    due_batch: int
+    refresh_interval_hours: int
+    failed_retry_hours: int
+
+
+class CveRefreshSettingsUpdate(BaseModel):
+    time_limit_seconds: int | None = Field(
+        default=None, ge=cve_refresh_pacing.TIME_LIMIT_MIN, le=cve_refresh_pacing.TIME_LIMIT_MAX
+    )
+    due_batch: int | None = Field(
+        default=None, ge=cve_refresh_pacing.DUE_BATCH_MIN, le=cve_refresh_pacing.DUE_BATCH_MAX
+    )
+    refresh_interval_hours: int | None = Field(
+        default=None, ge=cve_refresh_pacing.REFRESH_INTERVAL_MIN, le=cve_refresh_pacing.REFRESH_INTERVAL_MAX
+    )
+    failed_retry_hours: int | None = Field(
+        default=None, ge=cve_refresh_pacing.FAILED_RETRY_MIN, le=cve_refresh_pacing.FAILED_RETRY_MAX
+    )
+
+
+def _cve_refresh_current(db: Session) -> CveRefreshSettings:
+    pacing = cve_refresh_pacing.read(db)
+    return CveRefreshSettings(
+        time_limit_seconds=pacing.time_limit_s,
+        due_batch=pacing.due_batch,
+        refresh_interval_hours=int(pacing.refresh_interval.total_seconds() // 3600),
+        failed_retry_hours=int(pacing.failed_retry_after.total_seconds() // 3600),
+    )
+
+
+@router.get("/cve-refresh", response_model=CveRefreshSettings)
+def get_cve_refresh_settings(
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.SETTINGS_READ)),
+):
+    return _cve_refresh_current(db)
+
+
+@router.put("/cve-refresh", response_model=CveRefreshSettings)
+def put_cve_refresh_settings(
+    data: CveRefreshSettingsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(Permission.SETTINGS_UPDATE)),
+):
+    """Set any of the CVE refresh pacing settings, audited old -> new per changed key."""
+    old = _cve_refresh_current(db)
+    new = old.model_copy(update=data.model_dump(exclude_none=True))
+    if new.failed_retry_hours > new.refresh_interval_hours:
+        raise HTTPException(
+            status_code=422, detail="Retrying a failed item must not take longer than the refresh interval."
+        )
+    keys = {
+        "time_limit_seconds": cve_refresh_pacing.TIME_LIMIT_KEY,
+        "due_batch": cve_refresh_pacing.DUE_BATCH_KEY,
+        "refresh_interval_hours": cve_refresh_pacing.REFRESH_INTERVAL_KEY,
+        "failed_retry_hours": cve_refresh_pacing.FAILED_RETRY_KEY,
+    }
+    changes = {}
+    for field, key in keys.items():
+        before, after = getattr(old, field), getattr(new, field)
+        if before != after:
+            svc.set_value(db, key, str(after))
+            changes[f"cve_refresh_{field}"] = {"from": before, "to": after}
+    if changes:
+        audit.record_detail(request, **changes)
+    return _cve_refresh_current(db)
 
 
 # ── job run history retention (planning#329) ────────────────────────────────

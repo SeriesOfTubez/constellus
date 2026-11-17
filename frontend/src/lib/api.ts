@@ -1223,6 +1223,13 @@ export type DiscoverySettings = {
   rediscovery_failed_retry_days: number
 }
 
+export type CveRefreshSettings = {
+  time_limit_seconds: number
+  due_batch: number
+  refresh_interval_hours: number
+  failed_retry_hours: number
+}
+
 export type JobRun = {
   id: string
   job: string
