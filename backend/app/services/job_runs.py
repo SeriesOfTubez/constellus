@@ -30,6 +30,7 @@ from app.services import app_settings
 if TYPE_CHECKING:
     from app.services.cloud_ranges import RefreshResult
     from app.services.org_discovery.rolling import RollingResult
+    from app.services.cve_refresh import CveRefreshResult
     from app.services.ct_refresher import TickResult as CtRefresherTick
     from app.services.page_capture import SweepResult, TickResult as PageCaptureTick
     from app.services.tenancy_enricher import TickResult as TenancyEnricherTick
@@ -114,6 +115,7 @@ CADENCE: dict[str, Cadence] = {
     "alert_digests": hourly_at(5),
     "rediscovery_tick": hourly_at(20),
     "capture_sweep": hourly_at(40),
+    "cve_refresh": hourly_at(50),
     "run_reaper": every(hours=1),
     "nightly_rescore": daily_at(3),
     "epss_refresher": every(hours=12),
@@ -185,6 +187,22 @@ def rediscovery_outcome(r: "RollingResult") -> RunOutcome:
         {"due": r.due, "ok": r.ok, "failed": r.failed, "rate_limited": r.rate_limited,
          "skipped_busy": r.skipped_busy, "skipped": r.skipped, "errors": r.errors},
     )
+
+
+def cve_refresh_outcome(r: "CveRefreshResult") -> RunOutcome:
+    if r.stopped_on_lookup:
+        reason = "lookup_failures"
+    elif r.out_of_time:
+        reason = "time_limit"
+    else:
+        reason = "done"
+    counts = {
+        "due": r.due, "refreshed": r.refreshed, "failed": r.failed, "errors": r.errors,
+        "kev_rows_set": r.kev_rows_set, "rescored": r.rescored, "promotions": r.promotions,
+        "vulncheck_configured": int(r.vulncheck_configured), "cisa_feed_ok": int(r.cisa_feed_ok),
+        "out_of_time": int(r.out_of_time), "stopped_on_lookup": int(r.stopped_on_lookup),
+    }
+    return RunOutcome(reason, r.due, counts)
 
 
 def int_outcome(key: str) -> Callable[[int], RunOutcome]:

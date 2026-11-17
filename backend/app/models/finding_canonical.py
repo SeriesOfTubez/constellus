@@ -104,6 +104,8 @@ class FindingCanonical(Base):
     verification: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)  # unverified | confirmed_ours | rejected_shared_infra | ownership_unverifiable
     verification_evidence: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # First time the ownership verdict became confirmed_ours; never overwritten; NULL for findings confirmed before planning#360.
+    ownership_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     acknowledged_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     suppressed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

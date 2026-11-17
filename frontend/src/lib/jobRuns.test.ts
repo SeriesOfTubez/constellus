@@ -66,6 +66,7 @@ describe("jobLabel", () => {
 const ALL_JOBS: Record<string, string> = {
   capture_sweep: "Page capture queueing",
   rediscovery_tick: "Organization re-discovery",
+  cve_refresh: "CVE re-check",
   alert_digests: "Alert digests",
   run_reaper: "Stranded scan clean-up",
   nightly_rescore: "Nightly risk re-scoring",
@@ -88,7 +89,7 @@ const ALL_JOBS: Record<string, string> = {
 
 describe("jobLabel, all known jobs", () => {
   it("labels every known job and falls back for others", () => {
-    expect(Object.keys(ALL_JOBS)).toHaveLength(20)
+    expect(Object.keys(ALL_JOBS)).toHaveLength(21)
     for (const [id, label] of Object.entries(ALL_JOBS)) expect(jobLabel(id)).toBe(label)
     expect(jobLabel("toString")).toBe("Other scheduled job")
   })
@@ -201,12 +202,32 @@ describe("runCountsText", () => {
       .toBe("5 refreshed, 1 failed, out of 9 due, 3 skipped, 1 error")
     expect(runCountsText(run("rediscovery_tick", { due: 0 }))).toBe("0 refreshed, 0 failed, out of 0 due")
   })
+  it("cve_refresh", () => {
+    expect(jobLabel("cve_refresh")).toBe("CVE re-check")
+    const base = { due: 9, refreshed: 7, failed: 2 }
+    expect(runCountsText(run("cve_refresh", base))).toBe("7 re-checked, 2 failed, out of 9 due")
+    expect(runCountsText(run("cve_refresh", { ...base, rescored: 1 }))).toBe("7 re-checked, 2 failed, out of 9 due, 1 finding re-scored")
+    expect(runCountsText(run("cve_refresh", { ...base, rescored: 3 }))).toContain(", 3 findings re-scored")
+    expect(runCountsText(run("cve_refresh", { ...base, rescored: 0, promotions: 0 }))).not.toMatch(/re-scored|promoted/)
+    expect(runCountsText(run("cve_refresh", { ...base, promotions: 2 }))).toBe("7 re-checked, 2 failed, out of 9 due, 2 promoted")
+    expect(runCountsText(run("cve_refresh", { ...base, vulncheck_configured: 0 })))
+      .toBe("7 re-checked, 2 failed, out of 9 due, VulnCheck not set up, so no published dates")
+    expect(runCountsText(run("cve_refresh", { ...base, vulncheck_configured: 1 }))).not.toContain("VulnCheck")
+    expect(runCountsText(run("cve_refresh", base))).not.toContain("VulnCheck")
+    expect(runCountsText(run("cve_refresh", { ...base, cisa_feed_ok: 0 })))
+      .toBe("7 re-checked, 2 failed, out of 9 due, CISA list unavailable")
+    expect(runCountsText(run("cve_refresh", { ...base, cisa_feed_ok: 1 }))).not.toContain("CISA")
+    expect(runCountsText(run("cve_refresh", base))).not.toContain("CISA")
+    expect(runCountsText(run("cve_refresh", { ...base, rescored: 1, promotions: 1, vulncheck_configured: 0, cisa_feed_ok: 0, errors: 1 })))
+      .toBe("7 re-checked, 2 failed, out of 9 due, 1 finding re-scored, 1 promoted, VulnCheck not set up, so no published dates, CISA list unavailable, 1 error")
+  })
   it("unknown job", () => {
     expect(runCountsText(run("other", { x: 1 }, { items_selected: 4 }))).toBe("4 items picked up")
   })
   it("a run that recorded no counts (a failed run) gets no line, not zeros", () => {
     expect(runCountsText(run("rediscovery_tick", {}))).toBeNull()
     expect(runCountsText(run("capture_sweep", {}))).toBeNull()
+    expect(runCountsText(run("cve_refresh", {}))).toBeNull()
     expect(runCountsText(run("other", {}, { items_selected: 0 }))).toBeNull()
   })
 })
@@ -245,6 +266,12 @@ describe("finishReasonText cpe_index_refresher and source_refused", () => {
     expect(finishReasonText("source_refused")).toBe(refused)
     expect(finishReasonText("source_refused", "cpe_index_refresher")).toBe(refused)
     expect(isProblem("source_refused")).toBe(true)
+  })
+  it("lookup_failures names VulnCheck and CVEs for the CVE re-check", () => {
+    const t = finishReasonText("lookup_failures", "cve_refresh")
+    expect(t).toBe("Stopped after VulnCheck failed to answer several times in a row. The remaining CVEs are still due and are tried again next hour.")
+    expect(t).not.toContain("web archive")
+    expect(finishReasonText("lookup_failures", "capture_sweep")).toContain("web archive")
   })
   it("time_limit is job-aware", () => {
     expect(finishReasonText("time_limit", "cpe_index_refresher")).toBe(daily)

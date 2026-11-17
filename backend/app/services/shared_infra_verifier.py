@@ -406,6 +406,9 @@ def _apply_verdict(finding: FindingCanonical, verdict: str, base_evidence: dict,
     finding.verification = verdict
     finding.verification_evidence = evidence
     finding.verified_at = now
+    # First confirmation only (planning#360): never moved, never cleared.
+    if verdict == "confirmed_ours" and finding.ownership_confirmed_at is None:
+        finding.ownership_confirmed_at = now
 
 
 def _contrary_signal_past_grace(finding: FindingCanonical, new_verdict: str, now: datetime) -> bool:

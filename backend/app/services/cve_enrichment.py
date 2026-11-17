@@ -136,14 +136,7 @@ def enrich_scan_findings(
                 c.epss_score_previous = cve_prev_lookup.get(cid)
             c.epss_score = new_epss
             c.epss_percentile = epss[cid]["percentile"]
-        if cid in kev:
-            c.kev = True
-            raw_date = kev[cid]
-            if raw_date:
-                try:
-                    c.kev_date_added = date.fromisoformat(raw_date)
-                except ValueError:
-                    pass
+        _apply_cisa_kev(c, kev.get(cid), cid in kev)
         if c.cvss_score is None and cid in nvd:
             c.cvss_score = nvd[cid]["score"]
             c.cvss_vector = nvd[cid]["vector"]
@@ -155,6 +148,41 @@ def enrich_scan_findings(
         scan_run_id, len(epss), sum(1 for c in canonical_rows if c.kev), len(nvd),
     )
     return {c.id for c in canonical_rows}
+
+
+def _apply_cisa_kev(c: FindingCanonical, raw_date: str | None, listed: bool) -> bool:
+    """Set kev / kev_date_added on one row when its CVE is in CISA KEV. Never
+    clears kev. Returns True when the row was set."""
+    if not listed:
+        return False
+    c.kev = True
+    if raw_date:
+        try:
+            c.kev_date_added = date.fromisoformat(raw_date)
+        except ValueError:
+            pass
+    return True
+
+
+def mirror_cisa_kev(db: Session, cve_ids: list[str], kev: dict[str, str]) -> set[uuid.UUID]:
+    """Mirror CISA KEV onto every canonical row sharing one of `cve_ids` that is
+    in `kev`. Flushes (the caller owns the commit); returns the ids it set."""
+    wanted = [cid.upper() for cid in cve_ids if cid.upper() in kev]
+    if not wanted:
+        return set()
+    rows = (
+        db.query(FindingCanonical)
+        .filter(FindingCanonical.cve_id.isnot(None))
+        .filter(FindingCanonical.cve_id.in_(wanted))
+        .all()
+    )
+    ids: set[uuid.UUID] = set()
+    for c in rows:
+        cid = (c.cve_id or "").upper()
+        if _apply_cisa_kev(c, kev.get(cid), cid in kev):
+            ids.add(c.id)
+    db.flush()
+    return ids
 
 
 # ── data fetchers ─────────────────────────────────────────────────────────────

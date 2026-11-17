@@ -71,6 +71,42 @@ def _chunks(seq: list, size: int):
         yield seq[i:i + size]
 
 
+def rescore_and_notify(db: Session, finding_ids: set[uuid.UUID], scored_at: datetime) -> int:
+    """Re-score `finding_ids` in chunks of `BATCH_SIZE`, capture score history
+    (which commits), then dispatch promotion notifications. Shared by the nightly
+    driver and the CVE refresh job so the two cannot drift.
+
+    Promotions of `EXCLUDED_VERIFICATIONS` findings are dropped from the
+    DISPATCHED list (module docstring); the dispatch is inside a try/except that
+    logs and swallows. Returns the number of promotions `capture()` detected
+    (including ones excluded from dispatch)."""
+    all_promotions: list[score_history.Promotion] = []
+    for chunk in _chunks(list(finding_ids), BATCH_SIZE):
+        chunk_ids = set(chunk)
+        risk_scorer.score_scan_findings(db, scan_run_id=None, canonical_ids=chunk_ids)
+        all_promotions.extend(score_history.capture(db, chunk_ids, scored_at=scored_at))
+
+    promoted_ids = {p.finding_canonical_id for p in all_promotions}
+    verification_by_id: dict[uuid.UUID, str | None] = {}
+    if promoted_ids:
+        verification_by_id = {
+            row[0]: row[1]
+            for row in db.query(FindingCanonical.id, FindingCanonical.verification)
+            .filter(FindingCanonical.id.in_(promoted_ids))
+            .all()
+        }
+    dispatchable = [
+        p for p in all_promotions
+        if verification_by_id.get(p.finding_canonical_id) not in EXCLUDED_VERIFICATIONS
+    ]
+    if dispatchable:
+        try:
+            notification_dispatcher.dispatch_promotions(dispatchable)
+        except Exception:
+            log.exception("nightly_rescore: dispatch_promotions failed")
+    return len(all_promotions)
+
+
 def run(db: Session) -> dict:
     """The nightly driver. Signature and return-a-stats-dict style match
     `hygiene_scorer.run(db)` / `partition_maintenance.run(db)`.
@@ -99,33 +135,10 @@ def run(db: Session) -> dict:
     start = time.monotonic()
     scored_at = datetime.now(timezone.utc)
 
-    scope_rows = (
-        db.query(FindingCanonical.id, FindingCanonical.verification)
-        .filter(FindingCanonical.state == "open")
-        .all()
-    )
-    verification_by_id: dict[uuid.UUID, str | None] = {row[0]: row[1] for row in scope_rows}
-    all_ids = list(verification_by_id.keys())
+    all_ids = [row[0] for row in db.query(FindingCanonical.id).filter(FindingCanonical.state == "open").all()]
 
-    rescored = 0
-    all_promotions: list[score_history.Promotion] = []
-
-    for chunk in _chunks(all_ids, BATCH_SIZE):
-        chunk_ids = set(chunk)
-        risk_scorer.score_scan_findings(db, scan_run_id=None, canonical_ids=chunk_ids)
-        rescored += len(chunk_ids)
-
-        all_promotions.extend(score_history.capture(db, chunk_ids, scored_at=scored_at))
-
-    dispatchable = [
-        p for p in all_promotions
-        if verification_by_id.get(p.finding_canonical_id) not in EXCLUDED_VERIFICATIONS
-    ]
-    if dispatchable:
-        try:
-            notification_dispatcher.dispatch_promotions(dispatchable)
-        except Exception:
-            log.exception("nightly_rescore: dispatch_promotions failed")
+    promotions = rescore_and_notify(db, set(all_ids), scored_at)
+    rescored = len(all_ids)
 
     history_rows = (
         db.query(ScoreHistory)
@@ -137,11 +150,11 @@ def run(db: Session) -> dict:
     stats = {
         "rescored": rescored,
         "history_rows": history_rows,
-        "promotions": len(all_promotions),
+        "promotions": promotions,
         "elapsed_ms": elapsed_ms,
     }
     log.info(
         "Nightly re-score complete — rescored=%d history_rows=%d promotions=%d elapsed_ms=%d",
-        rescored, history_rows, len(all_promotions), elapsed_ms,
+        rescored, history_rows, promotions, elapsed_ms,
     )
     return stats

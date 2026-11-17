@@ -544,6 +544,9 @@
  "GET /api/settings/cpe-index": [
   "admin"
  ],
+ "GET /api/settings/cve-refresh": [
+  "admin"
+ ],
  "GET /api/settings/discovery": [
   "admin"
  ],
@@ -891,6 +894,9 @@
   "admin"
  ],
  "PUT /api/settings/cpe-index": [
+  "admin"
+ ],
+ "PUT /api/settings/cve-refresh": [
   "admin"
  ],
  "PUT /api/settings/discovery": [

@@ -93,7 +93,7 @@ def _owned_host(value="itsupport.contoso.com"):
 def _finding(cve_id=None, title="", description=""):
     return SimpleNamespace(
         id=uuid.uuid4(), asset_canonical_id=uuid.uuid4(), cve_id=cve_id, title=title, description=description,
-        finding_type="cve", verification=None, verification_evidence=None, verified_at=None,
+        finding_type="cve", verification=None, verification_evidence=None, verified_at=None, ownership_confirmed_at=None,
     )
 
 

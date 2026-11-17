@@ -36,10 +36,11 @@ full endpoint/quirk reference. Notable shapes:
 import logging
 import time
 import uuid
+from datetime import date, datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.services import connector_instances
+from app.services import connector_instances, cve_records
 from app.connectors.http import connector_get
 from app.models.finding_canonical import FindingCanonical
 
@@ -91,16 +92,42 @@ def enrich_scan_findings(
     headers = {"Accept": "application/json", "Authorization": f"Bearer {api_key}"}
 
     signals: dict[str, dict] = {}
+    failed: list[str] = []
     for cid in cve_ids:
         sig = _lookup_cve(cid, headers)
         if sig:
             signals[cid] = sig
+        else:
+            failed.append(cid)
+
+    now = datetime.now(timezone.utc)
+    if failed:
+        cve_records.mark_failed(db, failed, now)
 
     if not signals:
         log.info("VulnCheck enrichment: no signals returned for scan %s", scan_run_id)
+        db.commit()
         return set()
 
     # Mirror onto every canonical row sharing the touched CVE IDs.
+    mirrored_ids = mirror_signals(db, signals)
+    cve_records.upsert_from_signals(db, signals, now)
+
+    db.commit()
+    kev_hits = sum(1 for s in signals.values() if s["vulncheck_kev"])
+    exploit_hits = sum(1 for s in signals.values() if s["has_exploit"])
+    log.info(
+        "VulnCheck enrichment complete for scan %s — VC-KEV: %d, with-exploit: %d, NVD2 CVSS fills: %d",
+        scan_run_id, kev_hits, exploit_hits,
+        sum(1 for s in signals.values() if s.get("cvss_score") is not None),
+    )
+    return mirrored_ids
+
+
+def mirror_signals(db: Session, signals: dict[str, dict]) -> set[uuid.UUID]:
+    """Mirror fetched CVE signals onto every canonical finding sharing those CVEs.
+
+    Flushes (the caller owns the commit). Returns the ids of the rows it touched."""
     canonical_rows = (
         db.query(FindingCanonical)
         .filter(FindingCanonical.cve_id.isnot(None))
@@ -147,29 +174,24 @@ def enrich_scan_findings(
             c.title = new_title
         elif c.cve_id and c.title and "(via " in c.title:
             c.title = c.cve_id
-
-    db.commit()
-    kev_hits = sum(1 for s in signals.values() if s["vulncheck_kev"])
-    exploit_hits = sum(1 for s in signals.values() if s["has_exploit"])
-    log.info(
-        "VulnCheck enrichment complete for scan %s — VC-KEV: %d, with-exploit: %d, NVD2 CVSS fills: %d",
-        scan_run_id, kev_hits, exploit_hits,
-        sum(1 for s in signals.values() if s.get("cvss_score") is not None),
-    )
+    db.flush()
     return {c.id for c in canonical_rows}
 
 
 # ── lookups ─────────────────────────────────────────────────────────────────────
 
-def _lookup_cve(cve_id: str, headers: dict) -> dict | None:
+def _lookup_cve(cve_id: str, headers: dict, *, fresh: bool = False) -> dict | None:
     """Returns the merged signal dict for one CVE, cached 24h. None on hard failure.
 
     Always pulls NVD2 too: it's the reliable description/reference source for *any*
     CVE (the KEV index only covers exploited ones), and it's how non-KEV findings
-    get their narrative. CVSS/CWE from NVD2 are still gap-fill-only at write time."""
+    get their narrative. CVSS/CWE from NVD2 are still gap-fill-only at write time.
+
+    `fresh=True` skips the cache read (the result is still cached); the rolling
+    refresh job uses it."""
     now = time.monotonic()
     cached = _cache.get(cve_id)
-    if cached is not None and (now - cached[1]) < _CACHE_TTL:
+    if not fresh and cached is not None and (now - cached[1]) < _CACHE_TTL:
         return cached[0]
 
     sig = _fetch_kev_signals(cve_id, headers)
@@ -179,7 +201,7 @@ def _lookup_cve(cve_id: str, headers: dict) -> dict | None:
     nvd = _fetch_nvd2(cve_id, headers)
     if nvd:
         nvd_intel = nvd.pop("intel", {})
-        sig.update(nvd)  # cvss_score / cvss_vector / cvss_version / cwe
+        sig.update(nvd)  # cvss_score / cvss_vector / cvss_version / cwe / published_at
         intel = sig.setdefault("intel", {})
         # NVD description is canonical — prefer it over KEV's shortDescription.
         if nvd_intel.get("description"):
@@ -221,6 +243,7 @@ def _fetch_kev_signals(cve_id: str, headers: dict) -> dict | None:
             "exploit_types": [],
             "ransomware_use": False,
             "canary_detected": False,
+            "vulncheck_kev_date_added": None,
             "intel": {},
         }
 
@@ -254,6 +277,7 @@ def _fetch_kev_signals(cve_id: str, headers: dict) -> dict | None:
         # NOTE: string "Known"/"Unknown", not a bool.
         "ransomware_use": rec.get("knownRansomwareCampaignUse") == "Known",
         "canary_detected": bool(rec.get("reported_exploited_by_vulncheck_canaries")),
+        "vulncheck_kev_date_added": _parse_kev_date(rec.get("date_added")),
         "intel": {k: v for k, v in intel.items() if v},
     }
 
@@ -292,6 +316,8 @@ def _fetch_nvd2(cve_id: str, headers: dict) -> dict | None:
             }
             break
 
+    result["published_at"] = _parse_published(rec.get("published"))
+
     # CWE from the first weakness description, if present.
     for weakness in rec.get("weaknesses", []):
         for desc in weakness.get("description", []):
@@ -317,7 +343,7 @@ def _fetch_nvd2(cve_id: str, headers: dict) -> dict | None:
             references.append({"url": url, "tags": r.get("tags") or []})
     result["intel"] = {k: v for k, v in {"description": description, "references": references}.items() if v}
 
-    return result or None
+    return result
 
 
 def _fetch_cvelist(cve_id: str, headers: dict) -> str | None:
@@ -339,6 +365,30 @@ def _fetch_cvelist(cve_id: str, headers: dict) -> str | None:
     return rec.get("title") or (
         rec.get("mitre_ref", {}).get("containers", {}).get("cna", {}).get("title")
     ) or None
+
+
+# ── date helpers ──────────────────────────────────────────────────────────────
+
+def _parse_published(raw) -> datetime | None:
+    """NVD2 `published` → aware UTC datetime. The usual form has no timezone and
+    means UTC; a trailing Z or an offset is honoured. Garbage → None, never raises."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(timezone.utc)
+    return dt if dt.year >= 1990 else None
+
+
+def _parse_kev_date(raw) -> date | None:
+    """VulnCheck KEV `date_added` → date. The Go zero value (year 1) and anything
+    unparseable → None."""
+    parsed = _parse_published(raw)
+    return parsed.date() if parsed else None
 
 
 # ── title helpers ─────────────────────────────────────────────────────────────
