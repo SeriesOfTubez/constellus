@@ -17,7 +17,7 @@ from app.models.finding_canonical import EXCLUDED_VERIFICATIONS, FindingCanonica
 from app.models.scan import ScanKind, ScanRun, ScanStatus
 from app.models.user import User
 from app.schemas.finding_detail import FindingDetailResponse
-from app.services import audit, bod_sla, cluster_writeup, finding_writeup, projector, read_scope, scan_executor, score_ladder
+from app.services import audit, bod_sla, cluster_writeup, finding_timeline, finding_writeup, projector, read_scope, scan_executor, score_ladder
 from app.services.asset_chain import chain_target_ids
 from app.services.attribution_chain import build_attribution
 from app.services.exposure_path import build_exposure_paths
@@ -730,9 +730,17 @@ def get_finding(
     ]
     # How the finding's asset links to an organization (planning#358). Detail
     # only, like the paths.
-    payload["attribution"] = (
-        build_attribution(db, user, asset).model_dump(mode="json") if asset is not None else None
-    )
+    attribution = build_attribution(db, user, asset) if asset is not None else None
+    payload["attribution"] = attribution.model_dump(mode="json") if attribution is not None else None
+    # The dates we hold (planning#360), from the attribution just built: never
+    # a second walk.
+    due_date = (payload["bod_sla"] or {}).get("due_date")
+    payload["timeline"] = [
+        event.model_dump(mode="json")
+        for event in finding_timeline.build_timeline(
+            finding, finding_timeline.cve_record_for(db, finding), attribution, due_date
+        )
+    ]
     return payload
 
 
