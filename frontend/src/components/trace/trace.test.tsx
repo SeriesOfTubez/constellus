@@ -8,16 +8,17 @@ import { MemoryRouter } from "react-router-dom"
 
 vi.mock("@/lib/evidence", () => ({ openEvidence: vi.fn() }))
 
-import type { Attribution, ExposurePath, Finding } from "@/lib/api"
+import type { Attribution, ExposurePath, Finding, TimelineEvent } from "@/lib/api"
 import { AttributionChainHops, AttributionQuestion } from "./AttributionQuestion"
 import { ExposurePathHops, ExposureQuestion } from "./ExposureQuestion"
 import { EvidenceList } from "./EvidenceList"
 import { CandidateList } from "./CandidateList"
+import { TimelineQuestion } from "./TimelineQuestion"
 import { TraceChains } from "./TraceChains"
 import { VerdictBand } from "./VerdictBand"
 import { VERDICTS, verdictFor, verdictVariant, type VerdictVariant } from "@/lib/trace"
 import {
-  addrHop, attribution, candidate, chain, claim, exposureHops, hostHop, orgHop, path, relation, scopeHop, signal,
+  addrHop, attribution, candidate, chain, claim, exposureHops, hostHop, orgHop, path, relation, scopeHop, signal, timelineEvent,
 } from "./fixtures"
 
 const render = (el: ReactElement) => renderToStaticMarkup(<MemoryRouter>{el}</MemoryRouter>)
@@ -334,6 +335,143 @@ describe("TraceChains", () => {
     expect(html.indexOf("Inferred from a version")).toBeGreaterThanOrEqual(0)
     expect(html.indexOf("Inferred from a version")).toBeLessThan(html.indexOf("Is it yours?"))
     expect(html.indexOf("Is it yours?")).toBeLessThan(html.indexOf("Can it be reached?"))
+  })
+})
+
+describe("Why now?", () => {
+  const TODAY = "2026-11-16"
+  const q = (events: TimelineEvent[] | undefined) => render(<TimelineQuestion events={events} today={TODAY} />)
+  const e = timelineEvent
+  const labelsIn = (html: string, labels: string[]) => labels.map((l) => html.indexOf(l))
+  const fullCve = () => [
+    e({ kind: "listed_exploited_vulncheck", date: "2024-04-08" }),
+    e({ kind: "cve_published", date: "2024-04-12" }),
+    e({ kind: "listed_exploited_cisa", date: "2024-04-12" }),
+    e({ kind: "acquired", date: "2026-08-01", precision: "month", entity_name: "Example Holdings A" }),
+    e({ kind: "claimed", date: "2026-11-09", target_value: "fabrikam.example.com" }),
+    e({ kind: "first_seen", date: "2026-11-09" }),
+    e({ kind: "ownership_confirmed", date: "2026-11-11" }),
+    e({ kind: "due", date: "2026-11-13" }),
+  ]
+
+  it("renders every date of a CVE finding in order, with gaps", () => {
+    const html = q(fullCve())
+    const t = text(html)
+    expect(t).toContain("Why now?")
+    const labels = [
+      "Listed by VulnCheck as exploited", "CVE published", "Listed by CISA as exploited",
+      "Example Holdings A acquired", "fabrikam.example.com claimed", "First seen", "Confirmed ours", "Fix due",
+    ]
+    const at = labelsIn(html, labels)
+    expect(at.every((i) => i >= 0)).toBe(true)
+    expect([...at].sort((a, b) => a - b)).toEqual(at)
+    expect(t).toContain("8 Apr 2024")
+    expect(count(t, "12 Apr 2024")).toBe(1)
+    expect(count(t, "9 Nov 2026")).toBe(1)
+    expect(t).toContain("Aug 2026")
+    expect(t).toContain("4 days later")
+    expect(t).toContain("about 2 years later")
+    expect(t).toContain("about 3 months later")
+    expect(t).toContain("2 days later")
+    expect(count(t, "days later")).toBe(3)
+    expect(t).toContain("BOD 26-04 · 3 days ago")
+    expect(html).toContain('aria-label="Timeline"')
+    expect(t.replace("Confirmed ours", "")).not.toMatch(/confirmed/i)
+  })
+
+  it("two acquisitions and two claims: one row each, no gap from a year-precision date", () => {
+    const html = q([
+      e({ kind: "acquired", date: "2019-01-01", precision: "year", entity_name: "Example Holdings A" }),
+      e({ kind: "acquired", date: "2026-08-01", precision: "month", entity_name: "Example Holdings B",
+        other_dates: [{ date: "2026-09-03", precision: "day", source: null }] }),
+      e({ kind: "claimed", date: "2026-11-02", target_value: "contoso.example.net" }),
+      e({ kind: "claimed", date: "2026-11-09", target_value: "fabrikam.example.com" }),
+      e({ kind: "first_seen", date: "2026-11-10" }),
+    ])
+    const t = text(html)
+    for (const l of ["Example Holdings A acquired", "Example Holdings B acquired", "contoso.example.net claimed", "fabrikam.example.com claimed", "First seen"]) {
+      expect(count(t, l), l).toBe(1)
+    }
+    expect(t).toContain("Another source says 3 Sep 2026")
+    expect(t).toContain("2019")
+    // 2019 -> Aug 2026 has no gap; Aug 2026 -> 2 Nov 2026 is about 3 months.
+    expect(t).not.toContain("years later")
+    expect(t).toContain("about 3 months later")
+    expect(t).toContain("7 days later")
+    expect(t).toContain("1 day later")
+  })
+
+  it("renders in the order given, never re-sorted", () => {
+    const html = q([
+      e({ kind: "due", date: "2026-11-20" }),
+      e({ kind: "cve_published", date: "2024-04-12" }),
+    ])
+    expect(html.indexOf("Fix due")).toBeLessThan(html.indexOf("CVE published"))
+    // The negative step prints no gap.
+    expect(text(html)).not.toContain("later")
+  })
+
+  it("first_seen alone says what is missing", () => {
+    const t = text(q([e()]))
+    expect(t).toContain("First seen")
+    expect(t).toContain("No published, exploited, acquired, claimed or due date is on record for this finding.")
+    expect(text(q(fullCve()))).not.toContain("No published, exploited")
+  })
+
+  it("an empty list says only that no dates are on record", () => {
+    const html = q([])
+    expect(text(html)).toContain("No dates are on record for this finding.")
+    expect(html).not.toContain("<ol")
+    expect(html).not.toContain("No published, exploited")
+  })
+
+  it("undefined renders nothing", () => {
+    expect(q(undefined)).toBe("")
+  })
+
+  it("a future due date is styled as due", () => {
+    const html = q([e({ kind: "due", date: "2026-11-21" })])
+    expect(text(html)).toContain("BOD 26-04 · in 5 days")
+    expect(html).toContain("font-semibold text-sev-high")
+    expect(html).toContain("border-sev-high")
+  })
+
+  it("dots: ours is strong, the rest muted", () => {
+    const dotOf = (kind: TimelineEvent["kind"]) => {
+      const html = q([e({ kind })])
+      return /<span class="size-2 rounded-full ([^"]*)"/.exec(html)?.[1]
+    }
+    expect(dotOf("ownership_confirmed")).toBe("bg-foreground")
+    expect(dotOf("acquired")).toBe("bg-foreground")
+    expect(dotOf("claimed")).toBe("bg-foreground")
+    expect(dotOf("cve_published")).toBe("bg-muted-foreground")
+    expect(dotOf("first_seen")).toBe("bg-muted-foreground")
+    expect(dotOf("due")).toBe("border-2 border-sev-high bg-transparent")
+    expect(q([e({ kind: "ownership_confirmed" })])).toContain("text-sm leading-5 font-semibold")
+  })
+
+  it("has no arbitrary text size", () => {
+    const src = fs.readFileSync(nodePath.join(__dirname, "TimelineQuestion.tsx"), "utf8")
+    expect(src).not.toContain("text-[")
+  })
+
+  it("TraceChains renders question 3 on its own when only timeline is set", () => {
+    const html = render(<TraceChains finding={{ title: TITLE, timeline: [timelineEvent()] } as Finding} />)
+    expect(html).toContain('aria-label="Trace"')
+    expect(html).toContain("Why now?")
+  })
+
+  it("TraceChains stays empty when attribution, paths and timeline are all absent", () => {
+    expect(render(<TraceChains finding={{ title: TITLE } as Finding} />)).toBe("")
+  })
+
+  it("question 2 connects to question 3 only when question 3 is there", () => {
+    const connector = "bg-border my-2"
+    const without = render(<TraceChains finding={{ title: TITLE, exposure_paths: [path()] } as Finding} />)
+    const withTl = render(<TraceChains finding={{ title: TITLE, exposure_paths: [path()], timeline: [] as TimelineEvent[] } as Finding} />)
+    expect(count(withTl, connector)).toBe(count(without, connector) + 1)
+    expect(without).not.toContain("Why now?")
+    expect(withTl).toContain("Why now?")
   })
 })
 

@@ -816,6 +816,34 @@ export type Attribution = {
   chains_truncated: boolean
 }
 
+// Timeline (planning#360). Mirrors backend/app/schemas/finding_timeline.py.
+export type TimelineKind =
+  | "cve_published" | "listed_exploited_cisa" | "listed_exploited_vulncheck"
+  | "acquired" | "claimed" | "first_seen" | "ownership_confirmed" | "due"
+export type TimelinePrecision = "day" | "month" | "year"
+// Another source's date for the same acquisition, where it differs.
+export type TimelineDate = {
+  date: string
+  precision: TimelinePrecision
+  source: string | null
+}
+export type TimelineEvent = {
+  kind: TimelineKind
+  // UTC calendar day "YYYY-MM-DD"; a month-precision date is the first of its month.
+  date: string
+  precision: TimelinePrecision
+  at: string | null
+  source: string | null
+  // acquired
+  entity_id: string | null
+  entity_name: string | null
+  acquirer_id: string | null
+  // claimed
+  target_id: string | null
+  target_value: string | null
+  other_dates: TimelineDate[]
+}
+
 export type Finding = {
   id: string
   asset_value: string
@@ -889,6 +917,9 @@ export type Finding = {
   // How the finding's asset links to an organization (planning#358). Detail
   // route only; null when the finding has no asset.
   attribution?: Attribution | null
+  // The dated events behind the finding (planning#360), sorted by the API. Detail
+  // route only; absent on list rows.
+  timeline?: TimelineEvent[]
 }
 
 export type AlertEventSummary = {

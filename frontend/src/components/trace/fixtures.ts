@@ -1,7 +1,7 @@
 // Synthetic, typed fixtures for the trace tests. Invented names only.
 import type {
   Attribution, AttributionChain, AttributionHop, ClaimEvidence, ExposureHop, ExposureHopCandidate,
-  ExposurePath, RelationEvidence, SignalEvidence,
+  ExposurePath, RelationEvidence, SignalEvidence, TimelineEvent,
 } from "@/lib/api"
 
 const base = () => ({ reason: null, evidence: [], evidence_truncated: false, tier: null, first_seen_at: null, last_seen_at: null })
@@ -59,4 +59,19 @@ export const exposureHops = (over: Partial<Record<ExposureHop["kind"], Record<st
 
 export const path = (over: Partial<ExposurePath> = {}): ExposurePath => ({
   endpoint_id: "ep-1", observation: "current", first_seen_at: null, last_seen_at: null, hops: exposureHops(), ...over,
+})
+
+export const timelineEvent = (over: Partial<TimelineEvent> = {}): TimelineEvent => ({
+  kind: "first_seen",
+  date: "2026-11-09",
+  precision: "day",
+  at: null,
+  source: null,
+  entity_id: null,
+  entity_name: null,
+  acquirer_id: null,
+  target_id: null,
+  target_value: null,
+  other_dates: [],
+  ...over,
 })

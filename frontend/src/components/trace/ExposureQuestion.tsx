@@ -37,10 +37,14 @@ export function ExposurePathHops({ path, findingTitle }: { path: ExposurePath; f
   )
 }
 
-export function ExposureQuestion({ paths, findingTitle }: { paths: ExposurePath[] | undefined; findingTitle: string | null }) {
+export function ExposureQuestion({ paths, findingTitle, last }: {
+  paths: ExposurePath[] | undefined
+  findingTitle: string | null
+  last?: boolean
+}) {
   if (paths === undefined) return null
   return (
-    <TraceSection number={2} question="Can it be reached?" last>
+    <TraceSection number={2} question="Can it be reached?" last={last}>
       <p className="text-sm font-medium">{pathsAnswer(paths)}</p>
       {paths.map((path, pi) => (
         <ChainRow
