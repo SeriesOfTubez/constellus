@@ -9,18 +9,20 @@ type Sla = NonNullable<Finding["bod_sla"]>
 const sla = (over: Partial<Sla> = {}): Sla => ({
   window: "3d", forensic_triage: false, due_date: "2026-11-22", days_remaining: 3, overdue: false, ...over,
 })
-const label = (s: Sla) =>
+const render = (s: Sla) =>
   renderToStaticMarkup(<TooltipProvider><BodSlaBadge finding={{ bod_sla: s } as Finding} /></TooltipProvider>)
-    .replace(/<[^>]+>/g, "")
+// The chip's whole text, bounded by its tags.
+const chip = (text: string) => `>${text}<`
 
 // planning#381: the date is ours (first-seen clock, BOD 26-04 windows), so
 // nothing on the badge may call it the BOD 26-04 deadline.
 describe("BodSlaBadge", () => {
   it("labels the fix window, not the directive", () => {
-    expect(label(sla({ overdue: true, days_remaining: -2 }))).toBe("Fix: 3d · overdue")
-    expect(label(sla({ window: "14d", days_remaining: 9 }))).toBe("Fix: 14d · 9d left")
-    expect(label(sla({ window: "3d+triage", forensic_triage: true, days_remaining: 0 }))).toBe("Fix: 3d · due today + triage")
-    expect(label(sla({ window: "upgrade", due_date: null, days_remaining: null }))).toBe("Fix: fix on upgrade")
+    expect(render(sla())).not.toContain("BOD")
+    expect(render(sla({ overdue: true, days_remaining: -2 }))).toContain(chip("Fix: 3d · overdue"))
+    expect(render(sla({ window: "14d", days_remaining: 9 }))).toContain(chip("Fix: 14d · 9d left"))
+    expect(render(sla({ window: "3d+triage", forensic_triage: true, days_remaining: 0 }))).toContain(chip("Fix: 3d · due today + triage"))
+    expect(render(sla({ window: "upgrade", due_date: null, days_remaining: null }))).toContain(chip("Fix: fix on upgrade"))
   })
 
   it("explains the window and the clock in the tooltip", () => {
