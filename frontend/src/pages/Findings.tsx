@@ -885,7 +885,7 @@ export default function Findings() {
       {bodFilter !== "all" && (
         <button onClick={() => setBodFilter("all")}
           className="inline-flex items-center gap-1 rounded border border-border bg-muted/40 px-2 h-9 text-xs font-medium hover:opacity-80 transition-opacity">
-          BOD: {bodFilter} <X className="size-3.5" />
+          Fix window: {bodFilter} <X className="size-3.5" />
         </button>
       )}
 

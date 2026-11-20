@@ -101,7 +101,7 @@ def test_each_source_gives_its_own_event_with_its_own_source():
     seen = _one(events, "first_seen")
     assert (seen.date, seen.at, seen.source) == (date(2026, 3, 1), _FIRST_SEEN, None)
     due = _one(events, "due")
-    assert (due.date, due.at, due.source) == (date(2026, 3, 4), None, "bod_26_04")
+    assert (due.date, due.at, due.source) == (date(2026, 3, 4), None, "fix_window")
     conf = _one(events, "ownership_confirmed")
     assert (conf.date, conf.at, conf.source) == (date(2026, 3, 5), datetime(2026, 3, 5, 10, 0, tzinfo=timezone.utc),
                                                  None)

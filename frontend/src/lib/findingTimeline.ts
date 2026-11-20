@@ -39,9 +39,9 @@ export function secondLines(e: TimelineEvent, today: string): string[] {
   }
   if (e.kind === "due") {
     const n = dayNumber(e.date) - dayNumber(today)
-    if (n < 0) return [`BOD 26-04 · ${plural(-n, "day")} ago`]
-    if (n === 0) return ["BOD 26-04 · today"]
-    return [`BOD 26-04 · in ${plural(n, "day")}`]
+    if (n < 0) return [`Fix window from BOD 26-04 · ${plural(-n, "day")} ago`]
+    if (n === 0) return ["Fix window from BOD 26-04 · today"]
+    return [`Fix window from BOD 26-04 · in ${plural(n, "day")}`]
   }
   return []
 }

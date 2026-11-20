@@ -903,7 +903,7 @@ export type Finding = {
   first_seen_at: string
   last_seen_at: string
   resolved_at: string | null
-  // BOD-26-04 remediation SLA lens (compliance deadline, separate from Risk Score)
+  // Fix-due lens: BOD-26-04 Table 1 windows counted from first seen (planning#381), separate from Risk Score
   bod_sla: {
     window: "3d" | "3d+triage" | "14d" | "60d" | "upgrade"
     forensic_triage: boolean

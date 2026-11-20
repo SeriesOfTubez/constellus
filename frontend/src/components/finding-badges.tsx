@@ -482,7 +482,7 @@ export function ExploitTypeBadges({ types, impactClass }: { types: string[] | nu
   )
 }
 
-// ── BOD-26-04 Remediation SLA badge ───────────────────────────────────────────
+// ── Fix-due badge (BOD-26-04 windows, first-seen clock) ───────────────────────
 
 const BOD_WINDOW_COLOR: Record<NonNullable<NonNullable<Finding["bod_sla"]>["window"]>, string> = {
   "3d":        SEV_CHIP.critical,
@@ -492,9 +492,18 @@ const BOD_WINDOW_COLOR: Record<NonNullable<NonNullable<Finding["bod_sla"]>["wind
   "upgrade":   "",
 }
 
-/** BOD-26-04 compliance deadline badge. Only rendered when the finding has real
- *  Vulnrichment SSVC data and a CVE (i.e., bod_sla is non-null). Color by urgency:
+/** Fix-due badge: our due date, using BOD-26-04's Table 1 windows counted from
+ *  first seen (planning#381), so it never calls itself the directive's deadline.
+ *  Only rendered when the finding has real Vulnrichment SSVC data and a CVE
+ *  (i.e., bod_sla is non-null). Color by urgency:
  *  overdue or 3-day window → red; 14d → amber; 60d/upgrade → neutral. */
+export function bodSlaTooltip(sla: NonNullable<Finding["bod_sla"]>): string {
+  if (sla.due_date === null) return "No fixed date: fix in the next upgrade cycle (BOD 26-04 Table 1)."
+  const days = parseInt(sla.window, 10)
+  const triage = sla.forensic_triage ? " plus forensic triage" : ""
+  return `${days}-day fix window${triage} (from BOD 26-04 Table 1), counted from first seen. Due: ${sla.due_date}`
+}
+
 export function BodSlaBadge({ finding }: { finding: Finding }) {
   const sla = finding.bod_sla
   if (!sla) return null
@@ -515,15 +524,10 @@ export function BodSlaBadge({ finding }: { finding: Finding }) {
   }
 
   const label = sla.window === "upgrade"
-    ? `BOD: ${deadline}`
-    : `BOD: ${sla.window.replace("+triage", "")} · ${deadline}`
+    ? `Fix: ${deadline}`
+    : `Fix: ${sla.window.replace("+triage", "")} · ${deadline}`
 
-  const triage = sla.forensic_triage ? " + forensic triage required" : ""
-  const dueStr = sla.due_date
-    ? `Due: ${sla.due_date}${triage}`
-    : triage || "No fixed date (upgrade path)"
-
-  const tooltip = `CISA BOD 26-04 remediation SLA\nWindow: ${sla.window}${triage}\n${dueStr}`
+  const tooltip = bodSlaTooltip(sla)
 
   return (
     <Tooltip>

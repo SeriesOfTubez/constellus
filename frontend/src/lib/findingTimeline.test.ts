@@ -84,11 +84,11 @@ describe("secondLines", () => {
   const today = "2026-11-16"
   const due = (date: string) => secondLines(ev({ kind: "due", date }), today)
   it("due, relative to today", () => {
-    expect(due("2026-11-13")).toEqual(["BOD 26-04 · 3 days ago"])
-    expect(due("2026-11-15")).toEqual(["BOD 26-04 · 1 day ago"])
-    expect(due("2026-11-16")).toEqual(["BOD 26-04 · today"])
-    expect(due("2026-11-17")).toEqual(["BOD 26-04 · in 1 day"])
-    expect(due("2026-11-21")).toEqual(["BOD 26-04 · in 5 days"])
+    expect(due("2026-11-13")).toEqual(["Fix window from BOD 26-04 · 3 days ago"])
+    expect(due("2026-11-15")).toEqual(["Fix window from BOD 26-04 · 1 day ago"])
+    expect(due("2026-11-16")).toEqual(["Fix window from BOD 26-04 · today"])
+    expect(due("2026-11-17")).toEqual(["Fix window from BOD 26-04 · in 1 day"])
+    expect(due("2026-11-21")).toEqual(["Fix window from BOD 26-04 · in 5 days"])
   })
   it("acquired lists each other source's date", () => {
     const e = ev({

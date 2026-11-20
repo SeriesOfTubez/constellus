@@ -374,7 +374,7 @@ describe("How long has this been open?", () => {
     expect(t).toContain("about 3 months later")
     expect(t).toContain("2 days later")
     expect(count(t, "days later")).toBe(3)
-    expect(t).toContain("BOD 26-04 · 3 days ago")
+    expect(t).toContain("Fix window from BOD 26-04 · 3 days ago")
     expect(html).toContain('aria-label="Timeline"')
     expect(t.replace("Confirmed ours", "")).not.toMatch(/confirmed/i)
   })
@@ -431,7 +431,7 @@ describe("How long has this been open?", () => {
 
   it("a future due date is styled as due", () => {
     const html = q([e({ kind: "due", date: "2026-11-21" })])
-    expect(text(html)).toContain("BOD 26-04 · in 5 days")
+    expect(text(html)).toContain("Fix window from BOD 26-04 · in 5 days")
     expect(html).toContain("font-semibold text-sev-high")
     expect(html).toContain("border-sev-high")
   })

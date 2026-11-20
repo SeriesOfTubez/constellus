@@ -138,7 +138,7 @@ def test_the_finding_route_returns_the_timeline(env, admin):
     # The due date is the one the same response states for the BOD SLA.
     assert body["bod_sla"]["due_date"] is not None
     assert by["due"]["date"] == body["bod_sla"]["due_date"]
-    assert by["due"]["source"] == "bod_26_04"
+    assert by["due"]["source"] == "fix_window"
 
     # Sorted by date, and a listing before the published date comes first.
     assert [e["date"] for e in timeline] == sorted(e["date"] for e in timeline)
