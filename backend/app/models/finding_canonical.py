@@ -82,7 +82,7 @@ class FindingCanonical(Base):
     # Stakeholder-Specific Vulnerability Categorization decision points, ingested
     # per-CVE from the CVE.org CISA-ADP block (ssvc_enrichment). Orthogonal Risk-Score
     # signals (Automatable → capability; Technical Impact → impact term) and the basis
-    # for a BOD-26-04 remediation-deadline lens. ssvc_source marks vulnrichment vs a
+    # for the fix-due lens (BOD-26-04 windows, bod_sla.py). ssvc_source marks vulnrichment vs a
     # derived CVSS-vector fallback; all nullable (degrade to derived/none when CISA
     # hasn't scored the CVE). ssvc_scored_at = CISA's SSVC timestamp (provenance).
     ssvc_exploitation: Mapped[str | None] = mapped_column(Text, nullable=True)        # none | poc | active

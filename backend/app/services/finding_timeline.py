@@ -124,7 +124,7 @@ def build_timeline(
         ),
         _stamped("first_seen", finding.first_seen_at),
         _stamped("ownership_confirmed", finding.ownership_confirmed_at),
-        _dated("due", date.fromisoformat(due_date) if due_date else None, "bod_26_04"),
+        _dated("due", date.fromisoformat(due_date) if due_date else None, "fix_window"),
     ]
     if attribution is not None:
         events += _acquisitions(attribution) + _claims(attribution)

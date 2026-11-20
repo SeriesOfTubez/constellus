@@ -1,9 +1,16 @@
 """
 BOD-26-04 Remediation SLA Lens.
 
-Computes a CISA Binding Operational Directive 26-04 remediation deadline from
-four binary inputs derived from the finding and its asset. This is a compliance
-lens, separate from and not replacing the Constellus Risk Score.
+Computes a finding's fix-due date using the remediation windows of CISA Binding
+Operational Directive 26-04 (Table 1), chosen from four binary inputs derived
+from the finding and its asset. This is a compliance lens, separate from and not
+replacing the Constellus Risk Score.
+
+The clock starts at the finding's first_seen_at, never at the CISA KEV listing
+(planning#381). The directive counts from the earlier of the listing and the
+agency's own enumeration; we deliberately count from when we found it, so the
+result is OUR due date using the directive's windows and must not be presented
+as the BOD 26-04 deadline. Being in CISA KEV still selects the shorter window.
 
 Only applied when:
   - the finding has a CVE id, AND
@@ -60,7 +67,7 @@ def compute_window(exposed: bool, kev: bool, automatable: bool, total: bool) -> 
 
 
 def compute_sla(finding, asset, state=None) -> dict | None:
-    """Compute the BOD-26-04 SLA envelope for one finding + its asset.
+    """Compute the fix-due envelope (BOD-26-04 windows, first-seen clock) for one finding + its asset.
 
     `state` is the asset's projected `asset_state` row (or None). As of
     planning#144 L3c-3 the `exposed` axis reads its port inventory from
@@ -106,13 +113,10 @@ def compute_sla(finding, asset, state=None) -> dict | None:
     forensic_triage = window == "3d+triage"
     days_n = _DAYS[window]
 
-    # Clock start: KEV date when in KEV (CISA's own clock), else first_seen_at.
-    if kev and finding.kev_date_added is not None:
-        # kev_date_added is a date column
-        clock_start: date = finding.kev_date_added
-    else:
-        # first_seen_at is a datetime column
-        clock_start = finding.first_seen_at.date()
+    # Clock start: always first seen (planning#381). The directive's own clock
+    # (the KEV listing) could make a finding overdue before we knew of it; the
+    # due date is ours, using the directive's windows. KEV still picks the window.
+    clock_start: date = finding.first_seen_at.date()
 
     if days_n is not None:
         due_date = clock_start + timedelta(days=days_n)
