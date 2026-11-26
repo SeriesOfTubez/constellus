@@ -34,6 +34,7 @@ import { TagEditor } from "@/components/ui/tag-editor"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { api, ApiError, type Finding, type Asset, type FindingCluster } from "@/lib/api"
 import { groupByCluster } from "@/lib/findingClusters"
+import { matchesFixWindow } from "@/lib/fixWindowFilter"
 import { useAuthStore } from "@/lib/auth"
 import { canMutate } from "@/lib/roles"
 import {
@@ -619,7 +620,7 @@ export default function Findings() {
     if (impactClassFilter !== "all" && f.impact_class !== impactClassFilter) return false
     if (automatableFilter && f.ssvc_automatable !== true) return false
     if (techImpactFilter !== "all" && f.ssvc_technical_impact !== techImpactFilter) return false
-    if (bodFilter !== "all" && f.bod_sla?.window !== bodFilter) return false
+    if (!matchesFixWindow(f.bod_sla?.window, bodFilter)) return false
     if (search) {
       const q = search.toLowerCase()
       // Match across identity, enrichment, and SSVC so typing a CVE id, CWE,
